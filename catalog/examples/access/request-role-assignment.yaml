@@ -1,0 +1,68 @@
+id: request-role-assignment
+name: Request Role Assignment
+description: Request access to cloud resources via RBAC role assignment
+category: access
+icon: shield
+
+inputs:
+  - id: target_user
+    component: UserPicker
+    label: User or group
+    required: true
+
+  - id: role
+    component: Select
+    label: Role
+    required: true
+    options:
+      - id: reader
+        label: Reader
+      - id: contributor
+        label: Contributor
+      - id: owner
+        label: Owner
+
+  - id: scope
+    component: ResourcePicker
+    label: Resource scope
+    source: azure/resources
+    required: true
+
+  - id: justification
+    component: TextInput
+    label: Business justification
+    placeholder: "Explain why this access is needed..."
+    required: true
+
+  - id: duration
+    component: Select
+    label: Access duration
+    required: true
+    options:
+      - id: "7d"
+        label: 7 days
+      - id: "30d"
+        label: 30 days
+      - id: "90d"
+        label: 90 days
+      - id: permanent
+        label: Permanent
+
+validations: []
+
+approval:
+  required: true
+  strategy: all
+  approver_group: "platform-security-reviewers"
+  timeout_hours: 72
+  escalation_group: "platform-security-leads"
+
+executor:
+  type: azure-devops-pipeline
+  connection: my-org
+  pipeline_id: 1003
+  parameters_map:
+    targetUser: "{{target_user}}"
+    role: "{{role}}"
+    scope: "{{scope}}"
+    duration: "{{duration}}"

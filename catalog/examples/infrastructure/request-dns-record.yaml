@@ -1,0 +1,75 @@
+id: request-dns-record
+name: Request DNS Record
+description: Create or update a DNS record in the internal or external zone
+category: infrastructure
+icon: globe
+
+inputs:
+  - id: record_type
+    component: Select
+    label: Record type
+    required: true
+    options:
+      - id: A
+        label: A Record
+      - id: CNAME
+        label: CNAME Record
+      - id: TXT
+        label: TXT Record
+
+  - id: hostname
+    component: TextInput
+    label: Hostname
+    placeholder: "myapp.example.com"
+    required: true
+
+  - id: value
+    component: TextInput
+    label: Value
+    placeholder: "IP address or target hostname"
+    required: true
+
+  - id: ttl
+    component: NumberInput
+    label: TTL (seconds)
+    min: 60
+    max: 86400
+    step: 60
+    required: true
+
+  - id: zone
+    component: Select
+    label: DNS zone
+    required: true
+    options:
+      - id: internal
+        label: Internal (corp.internal)
+      - id: external
+        label: External (example.com)
+
+validations:
+  - id: dns-check
+    type: dns-check
+    description: "Verify DNS record doesn't conflict"
+    target_field: hostname
+    parameters:
+      hostname: "{{hostname}}"
+      type: "{{record_type}}"
+    on_fail: "DNS record '{{hostname}}' already exists with a conflicting value"
+
+approval:
+  required: true
+  strategy: any
+  approver_group: "platform-network-admins"
+  timeout_hours: 24
+
+executor:
+  type: azure-devops-pipeline
+  connection: my-org
+  pipeline_id: 1002
+  parameters_map:
+    recordType: "{{record_type}}"
+    hostname: "{{hostname}}"
+    value: "{{value}}"
+    ttl: "{{ttl}}"
+    zone: "{{zone}}"

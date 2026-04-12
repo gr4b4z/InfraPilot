@@ -1,0 +1,7 @@
+{
+  "backendBaseUrl": "http://localhost:5259",
+  "appName": "InfraPilot",
+  "appSubtitle": "Infrastructure Portal",
+  "assistantName": "InfraPilot Assistant",
+  "pageTitle": "InfraPilot | Infrastructure Portal"
+}

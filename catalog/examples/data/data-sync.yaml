@@ -1,0 +1,33 @@
+id: data-sync
+name: Execute Data Synchronization
+description: Trigger a data synchronization pipeline with a given start date and number of days
+category: data
+icon: refresh-cw
+
+inputs:
+  - id: start_date
+    component: TextInput
+    label: Start date
+    placeholder: "YYYY-MM-DD"
+    validation: "^\\d{4}-\\d{2}-\\d{2}$"
+    required: true
+
+  - id: num_days
+    component: NumberInput
+    label: Number of days
+    min: 1
+    step: 1
+    required: true
+
+validations: []
+
+approval:
+  required: false
+
+executor:
+  type: azure-devops-pipeline
+  connection: my-org
+  pipeline_id: 1004
+  parameters_map:
+    serviceName: "data-sync"
+    command: "{{start_date}} {{num_days}}"

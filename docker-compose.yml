@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: infrapilot-postgres
+    environment:
+      POSTGRES_DB: swo_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d swo_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: mcr.microsoft.com/dotnet/sdk:10.0-preview
+    container_name: infrapilot-api
+    working_dir: /src/src/Platform.Api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://0.0.0.0:5259
+      ConnectionStrings__Platform: Host=postgres;Database=swo_platform;Username=postgres;Password=postgres
+    ports:
+      - "5259:5259"
+    volumes:
+      - ./:/src
+      - dotnet_nuget:/root/.nuget/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "dotnet restore &&
+             dotnet run --no-launch-profile"
+
+  frontend:
+    image: node:22-alpine
+    container_name: infrapilot-frontend
+    working_dir: /app
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src/Platform.Web:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      - api
+    command: >
+      sh -c "npm install &&
+             npm run dev -- --host 0.0.0.0 --port 5173"
+
+volumes:
+  postgres_data:
+  dotnet_nuget:
+  frontend_node_modules:

@@ -1,0 +1,85 @@
+id: create-namespace
+name: Create Namespace
+description: Create a Kubernetes namespace with resource quotas and network policies
+category: infrastructure
+icon: server
+
+inputs:
+  - id: namespace_name
+    component: TextInput
+    label: Namespace name
+    placeholder: "team-myapp-..."
+    validation: "^[a-z0-9][a-z0-9-]+$"
+    required: true
+
+  - id: cluster
+    component: Select
+    label: Target cluster
+    required: true
+    options:
+      - id: k8s-prod-weu
+        label: Production (West Europe)
+      - id: k8s-staging-weu
+        label: Staging (West Europe)
+      - id: k8s-dev-weu
+        label: Development (West Europe)
+
+  - id: environment
+    component: EnvironmentSelector
+    label: Environment
+    environments:
+      - dev
+      - staging
+      - production
+
+  - id: cpu_limit
+    component: NumberInput
+    label: CPU limit (cores)
+    min: 0.5
+    max: 16
+    step: 0.5
+    required: true
+
+  - id: memory_limit
+    component: NumberInput
+    label: Memory limit (Gi)
+    min: 0.5
+    max: 64
+    step: 0.5
+    required: true
+
+  - id: enable_network_policy
+    component: Toggle
+    label: Enable default network policy
+    default: true
+
+validations:
+  - id: ns-exists
+    type: api-check
+    description: "Check if namespace already exists"
+    target_field: namespace_name
+    endpoint: kubernetes
+    action: get-namespace
+    parameters:
+      name: "{{namespace_name}}"
+      cluster: "{{cluster}}"
+    expect: not-found
+    on_fail: "Namespace '{{namespace_name}}' already exists in {{cluster}}"
+
+approval:
+  required: true
+  strategy: any
+  approver_group: "platform-infra-approvers"
+  timeout_hours: 48
+  escalation_group: "platform-team-leads"
+
+executor:
+  type: azure-devops-pipeline
+  connection: my-org
+  pipeline_id: 1001
+  parameters_map:
+    namespaceName: "{{namespace_name}}"
+    cluster: "{{cluster}}"
+    cpuLimit: "{{cpu_limit}}"
+    memoryLimit: "{{memory_limit}}"
+    networkPolicy: "{{enable_network_policy}}"

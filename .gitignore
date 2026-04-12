@@ -37,3 +37,7 @@ catalog/*
 *.nupkg
 .claude
 
+
+.got/
+.dockerignore
+llm_docs/

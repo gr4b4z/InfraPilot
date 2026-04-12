@@ -1,0 +1,36 @@
+id: general-request
+name: General Request
+description: Can't find what you need? Submit a free-form request and our platform team will triage it.
+category: general
+icon: message-square
+
+inputs:
+  - id: description
+    component: TextArea
+    label: Details
+    placeholder: Describe your request in detail — what, why, and any relevant context
+    required: true
+
+  - id: priority
+    component: Select
+    label: Priority
+    options:
+      - { id: minor, label: Minor }
+      - { id: medium, label: Medium }
+      - { id: high, label: High }
+    required: true
+    default: medium
+
+validations: []
+
+approval:
+  required: false
+
+executor:
+  type: jira-ticket
+  parameters_map:
+    project_id: "10001"
+    issue_type_id: "10001"
+    summary: "{{summary}}"
+    description: "{{description}}"
+    priority: "{{priority}}"

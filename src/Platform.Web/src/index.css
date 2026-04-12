@@ -1,0 +1,255 @@
+@import "tailwindcss";
+
+/* SoftwareOne Brand Design Tokens */
+@theme {
+  /* Primary Colors */
+  --color-swo-black: #000000;
+  --color-swo-white: #FFFFFF;
+
+  /* Neutral Colors */
+  --color-swo-gray-10: #F7F8FA;
+  --color-swo-gray-20: #EEF0F4;
+  --color-swo-gray-30: #C6C6C6;
+
+  /* Secondary Colors */
+  --color-swo-dark-blue: #1801B4;
+  --color-swo-blue: #3E00FF;
+  --color-swo-purple: #5B49DE;
+  --color-swo-teal: #00ECD4;
+  --color-swo-cyan: #00DEFF;
+
+  /* Light Colors */
+  --color-swo-light-blue: #81A5FF;
+  --color-swo-light-purple: #B7A5FF;
+  --color-swo-green: #1DEEA1;
+  --color-swo-yellow: #E3EE14;
+
+  /* Font Families */
+  --font-sans: "Inter", "Neue Haas Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  --font-display: "Neue Haas Grotesk Display", "Inter", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+
+  /* Shadows — enterprise subtle depth */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 12px 24px rgba(0, 0, 0, 0.08), 0 4px 8px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.1), 0 8px 16px rgba(0, 0, 0, 0.06);
+
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+}
+
+/* Base styles */
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: light dark;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  letter-spacing: -0.011em;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Enterprise focus ring */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Smooth scrolling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Light mode (default) */
+:root {
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F7F8FA;
+  --bg-tertiary: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --text-muted: #9CA3AF;
+  --border-color: #E5E7EB;
+  --border-strong: #D1D5DB;
+  --accent: #5B49DE;
+  --accent-hover: #4A38CD;
+  --accent-muted: rgba(91, 73, 222, 0.08);
+  --accent-subtle: rgba(91, 73, 222, 0.12);
+  --success: #059669;
+  --success-bg: #ECFDF5;
+  --warning: #D97706;
+  --warning-bg: #FFFBEB;
+  --danger: #DC2626;
+  --danger-bg: #FEF2F2;
+  --info: #2563EB;
+  --info-bg: #EFF6FF;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #09090B;
+    --bg-secondary: #111113;
+    --bg-tertiary: #18181B;
+    --bg-elevated: #1E1E21;
+    --bg-overlay: rgba(0, 0, 0, 0.7);
+    --text-primary: #FAFAFA;
+    --text-secondary: #A1A1AA;
+    --text-muted: #52525B;
+    --border-color: #27272A;
+    --border-strong: #3F3F46;
+    --accent: #7C6EF0;
+    --accent-hover: #9B8FFF;
+    --accent-muted: rgba(124, 110, 240, 0.1);
+    --accent-subtle: rgba(124, 110, 240, 0.15);
+    --success: #34D399;
+    --success-bg: rgba(52, 211, 153, 0.1);
+    --warning: #FBBF24;
+    --warning-bg: rgba(251, 191, 36, 0.1);
+    --danger: #F87171;
+    --danger-bg: rgba(248, 113, 113, 0.1);
+    --info: #60A5FA;
+    --info-bg: rgba(96, 165, 250, 0.1);
+  }
+}
+
+/* Dark mode class toggle */
+.dark {
+  --bg-primary: #09090B;
+  --bg-secondary: #111113;
+  --bg-tertiary: #18181B;
+  --bg-elevated: #1E1E21;
+  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --text-primary: #FAFAFA;
+  --text-secondary: #A1A1AA;
+  --text-muted: #52525B;
+  --border-color: #27272A;
+  --border-strong: #3F3F46;
+  --accent: #7C6EF0;
+  --accent-hover: #9B8FFF;
+  --accent-muted: rgba(124, 110, 240, 0.1);
+  --accent-subtle: rgba(124, 110, 240, 0.15);
+  --success: #34D399;
+  --success-bg: rgba(52, 211, 153, 0.1);
+  --warning: #FBBF24;
+  --warning-bg: rgba(251, 191, 36, 0.1);
+  --danger: #F87171;
+  --danger-bg: rgba(248, 113, 113, 0.1);
+  --info: #60A5FA;
+  --info-bg: rgba(96, 165, 250, 0.1);
+}
+
+/* Explicit light mode override */
+.light {
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F7F8FA;
+  --bg-tertiary: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --text-muted: #9CA3AF;
+  --border-color: #E5E7EB;
+  --border-strong: #D1D5DB;
+  --accent: #5B49DE;
+  --accent-hover: #4A38CD;
+  --accent-muted: rgba(91, 73, 222, 0.08);
+  --accent-subtle: rgba(91, 73, 222, 0.12);
+  --success: #059669;
+  --success-bg: #ECFDF5;
+  --warning: #D97706;
+  --warning-bg: #FFFBEB;
+  --danger: #DC2626;
+  --danger-bg: #FEF2F2;
+  --info: #2563EB;
+  --info-bg: #EFF6FF;
+}
+
+/* SWO Gradient - Cyan to Light Purple */
+.swo-gradient {
+  background: linear-gradient(135deg, var(--color-swo-cyan), var(--color-swo-light-purple));
+}
+
+.swo-gradient-text {
+  background: linear-gradient(135deg, var(--color-swo-cyan), var(--color-swo-light-purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Enterprise table rows */
+.table-row-hover:hover {
+  background-color: var(--accent-muted);
+}
+
+/* Skeleton loader animation */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-secondary) 25%,
+    var(--bg-tertiary) 50%,
+    var(--bg-secondary) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+/* Enterprise card hover lift */
+.card-hover {
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+.card-hover:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+
+/* Badge styles */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 18px;
+}

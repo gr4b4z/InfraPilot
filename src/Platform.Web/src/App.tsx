@@ -1,0 +1,41 @@
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { Layout } from '@/components/shell/Layout';
+import { CatalogPage } from '@/app/catalog/CatalogPage';
+import { RequestPage } from '@/app/catalog/RequestPage';
+import { RequestsPage } from '@/app/requests/RequestsPage';
+import { RequestDetailPage } from '@/app/requests/RequestDetailPage';
+import { ApprovalsPage } from '@/app/approvals/ApprovalsPage';
+import { ApprovalDetailPage } from '@/app/approvals/ApprovalDetailPage';
+import { DeploymentsPage } from '@/app/deployments/DeploymentsPage';
+import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage';
+import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
+import { SettingsPage } from '@/app/settings/SettingsPage';
+import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
+import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
+import { AdminRoute } from '@/components/auth/AdminRoute';
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Navigate to="/catalog" replace />} />
+          <Route path="/catalog" element={<CatalogPage />} />
+          <Route path="/catalog/:slug" element={<RequestPage />} />
+          <Route path="/requests" element={<RequestsPage />} />
+          <Route path="/requests/:id" element={<RequestDetailPage />} />
+          <Route path="/approvals" element={<ApprovalsPage />} />
+          <Route path="/approvals/:id" element={<ApprovalDetailPage />} />
+          <Route path="/deployments" element={<DeploymentsPage />} />
+          <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
+          <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
+          <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
+          <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
+          <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;
