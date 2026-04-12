@@ -322,11 +322,24 @@ This gives you:
 
 ## CI/CD
 
-The GitHub Actions workflow in [.github/workflows/build-artifacts.yml](/Users/sylwestergrabowski/dev/infraPilot/.github/workflows/build-artifacts.yml:1):
+This repository uses two GitHub Actions workflows:
 
-- builds API and frontend artifacts
-- builds the production container image
-- publishes the image to `ghcr.io/<owner>/infrapilot`
+- [CI workflow](/Users/sylwestergrabowski/dev/infraPilot/.github/workflows/ci.yml:1)
+  Validates that the single production image builds successfully on pull requests and pushes to `main` / `master`.
+- [Release workflow](/Users/sylwestergrabowski/dev/infraPilot/.github/workflows/release-image.yml:1)
+  Publishes the production image to `ghcr.io/<owner>/<repo>` when you push a Git tag like `v0.1.0`.
+
+Example release flow:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That publishes image tags such as:
+
+- `ghcr.io/<owner>/<repo>:v0.1.0`
+- `ghcr.io/<owner>/<repo>:latest`
 
 ## Repository Structure
 
