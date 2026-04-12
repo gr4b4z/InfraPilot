@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS api-build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS api-build
 WORKDIR /src
 
 COPY InfraPilot.slnx ./
@@ -17,7 +17,7 @@ RUN npm ci
 COPY src/Platform.Web/ ./
 RUN npm run build:docker
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 
 RUN apt-get update \
