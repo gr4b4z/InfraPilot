@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
@@ -23,6 +24,31 @@ public class DeploymentService
         _db = db;
         _webhookDispatcher = webhookDispatcher;
         _logger = logger;
+    }
+
+    private static string SanitizeForLog(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value ?? string.Empty;
+
+        var sb = new StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            if (ch == '\r' || ch == '\n')
+            {
+                sb.Append(' ');
+            }
+            else if (char.IsControl(ch))
+            {
+                sb.Append('?');
+            }
+            else
+            {
+                sb.Append(ch);
+            }
+        }
+
+        return sb.ToString();
     }
 
     public async Task<DeployEvent> IngestEvent(CreateDeployEventDto dto, CancellationToken ct = default)
@@ -53,10 +79,16 @@ public class DeploymentService
         _db.DeployEvents.Add(deployEvent);
         await _db.SaveChangesAsync(ct);
 
+        var logProduct = SanitizeForLog(deployEvent.Product);
+        var logService = SanitizeForLog(deployEvent.Service);
+        var logEnvironment = SanitizeForLog(deployEvent.Environment);
+        var logVersion = SanitizeForLog(deployEvent.Version);
+        var logPreviousVersion = SanitizeForLog(deployEvent.PreviousVersion ?? "none");
+
         _logger.LogInformation(
             "Ingested deploy event {Id}: {Product}/{Service} → {Environment} v{Version} (prev: {PreviousVersion})",
-            deployEvent.Id, deployEvent.Product, deployEvent.Service, deployEvent.Environment,
-            deployEvent.Version, deployEvent.PreviousVersion ?? "none");
+            deployEvent.Id, logProduct, logService, logEnvironment,
+            logVersion, logPreviousVersion);
 
         await _webhookDispatcher.DispatchAsync("deployment.created", new
         {
