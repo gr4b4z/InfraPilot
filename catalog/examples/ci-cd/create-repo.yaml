@@ -1,0 +1,104 @@
+id: create-repo
+name: Create Repository
+description: Create a new Git repository with optional CI pipeline setup
+category: ci-cd
+icon: git-branch
+
+inputs:
+  - id: repo_name
+    component: TextInput
+    label: Repository name
+    placeholder: "my-service-..."
+    validation: "^[a-z0-9][a-z0-9-]+$"
+    required: true
+
+  - id: platform
+    component: Select
+    label: Platform
+    required: true
+    options:
+      - id: azure-devops
+        label: Azure DevOps
+      - id: github
+        label: GitHub
+
+  - id: project
+    component: ResourcePicker
+    label: Target project
+    source: azure-devops/projects
+    required: true
+    visible_when:
+      field: platform
+      equals: azure-devops
+
+  - id: org
+    component: ResourcePicker
+    label: GitHub Organization
+    source: github/orgs
+    required: true
+    visible_when:
+      field: platform
+      equals: github
+
+  - id: template
+    component: Select
+    label: Project template
+    options:
+      - id: dotnet-api
+        label: ".NET API"
+      - id: node-api
+        label: "Node.js API"
+      - id: python-func
+        label: "Python Function"
+      - id: empty
+        label: "Empty repository"
+
+  - id: setup_pipeline
+    component: Toggle
+    label: Include CI pipeline
+    default: true
+
+  - id: pipeline_variables
+    component: KeyValueList
+    label: Pipeline variables
+    visible_when:
+      field: setup_pipeline
+      equals: true
+
+  - id: description
+    component: TextInput
+    label: Repository description
+    required: false
+
+validations:
+  - id: repo-exists
+    type: api-check
+    description: "Check if repository already exists"
+    target_field: repo_name
+    endpoint: azure-devops
+    action: get-repo
+    parameters:
+      name: "{{repo_name}}"
+      project: "{{project}}"
+    expect: not-found
+    on_fail: "Repository '{{repo_name}}' already exists in {{project}}"
+
+  - id: name-reserved
+    type: lookup
+    target_field: repo_name
+    source: reserved-names
+    on_fail: "This name is reserved"
+
+approval:
+  required: false
+
+executor:
+  type: azure-devops-repo
+  connection: my-org
+  parameters_map:
+    repoName: "{{repo_name}}"
+    project: "{{project}}"
+    template: "{{template}}"
+    withPipeline: "{{setup_pipeline}}"
+    pipelineVars: "{{pipeline_variables}}"
+    description: "{{description}}"

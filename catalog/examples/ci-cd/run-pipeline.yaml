@@ -1,0 +1,57 @@
+id: run-pipeline
+name: Run Pipeline
+description: Trigger a CI/CD pipeline run with custom parameters
+category: ci-cd
+icon: play
+
+inputs:
+  - id: platform
+    component: Select
+    label: Platform
+    required: true
+    options:
+      - id: azure-devops
+        label: Azure DevOps
+      - id: github
+        label: GitHub
+
+  - id: pipeline
+    component: ResourcePicker
+    label: Pipeline
+    source: azure-devops/pipelines
+    required: true
+    visible_when:
+      field: platform
+      equals: azure-devops
+
+  - id: workflow
+    component: ResourcePicker
+    label: Workflow
+    source: github/workflows
+    required: true
+    visible_when:
+      field: platform
+      equals: github
+
+  - id: branch
+    component: TextInput
+    label: Branch
+    placeholder: "main"
+    required: true
+
+  - id: parameters
+    component: KeyValueList
+    label: Pipeline parameters
+
+validations: []
+
+approval:
+  required: false
+
+executor:
+  type: azure-devops-pipeline
+  connection: my-org
+  parameters_map:
+    pipeline: "{{pipeline}}"
+    branch: "{{branch}}"
+    parameters: "{{parameters}}"

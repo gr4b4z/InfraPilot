@@ -1,0 +1,206 @@
+using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Approvals.Models;
+using Platform.Api.Features.Catalog.Models;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.Webhooks.Models;
+using Platform.Api.Infrastructure.Audit;
+
+namespace Platform.Api.Infrastructure.Persistence;
+
+public class PlatformDbContext : DbContext
+{
+    public PlatformDbContext(DbContextOptions<PlatformDbContext> options) : base(options) { }
+
+    public DbSet<CatalogItem> CatalogItems => Set<CatalogItem>();
+    public DbSet<CatalogItemVersion> CatalogItemVersions => Set<CatalogItemVersion>();
+    public DbSet<ServiceRequest> ServiceRequests => Set<ServiceRequest>();
+    public DbSet<FileAttachment> FileAttachments => Set<FileAttachment>();
+    public DbSet<ExecutionResult> ExecutionResults => Set<ExecutionResult>();
+    public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+    public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
+    public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
+    public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
+    public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
+    public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // Catalog
+        modelBuilder.Entity<CatalogItem>(e =>
+        {
+            e.ToTable("catalog_items");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.Slug).IsUnique();
+            e.Property(x => x.Slug).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Category).HasMaxLength(50).IsRequired();
+            e.Property(x => x.Icon).HasMaxLength(50);
+            e.Property(x => x.CurrentYamlHash).HasMaxLength(64).IsRequired();
+            e.Ignore(x => x.Inputs);
+            e.Ignore(x => x.Validations);
+            e.Ignore(x => x.Approval);
+            e.Ignore(x => x.Executor);
+        });
+
+        modelBuilder.Entity<CatalogItemVersion>(e =>
+        {
+            e.ToTable("catalog_item_versions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.YamlContent).IsRequired();
+            e.Property(x => x.YamlHash).HasMaxLength(64).IsRequired();
+            e.HasOne(x => x.CatalogItem)
+                .WithMany(x => x.Versions)
+                .HasForeignKey(x => x.CatalogItemId);
+        });
+
+        // Requests
+        modelBuilder.Entity<ServiceRequest>(e =>
+        {
+            e.ToTable("service_requests");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.RequesterId).HasMaxLength(100).IsRequired();
+            e.Property(x => x.RequesterName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.RequesterEmail).HasMaxLength(300).HasDefaultValue("");
+            e.Property(x => x.Status).HasMaxLength(50).IsRequired()
+                .HasConversion<string>();
+            e.Property(x => x.InputsJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            e.HasIndex(x => x.RequesterId);
+            e.HasIndex(x => x.Status);
+            e.HasIndex(x => x.CorrelationId);
+            e.Property(x => x.ExternalTicketKey).HasColumnName("external_ticket_key").HasMaxLength(100);
+            e.Property(x => x.ExternalTicketUrl).HasColumnName("external_ticket_url").HasMaxLength(500);
+        });
+
+        modelBuilder.Entity<FileAttachment>(e =>
+        {
+            e.ToTable("file_attachments");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.InputId).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Filename).HasMaxLength(500).IsRequired();
+            e.Property(x => x.BlobReference).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.ContentType).HasMaxLength(200);
+            e.HasOne(x => x.ServiceRequest)
+                .WithMany(x => x.Attachments)
+                .HasForeignKey(x => x.ServiceRequestId);
+        });
+
+        modelBuilder.Entity<ExecutionResult>(e =>
+        {
+            e.ToTable("execution_results");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Status).HasMaxLength(50).IsRequired();
+            e.Property(x => x.OutputJson).HasColumnType("jsonb");
+            e.HasOne(x => x.ServiceRequest)
+                .WithMany(x => x.ExecutionResults)
+                .HasForeignKey(x => x.ServiceRequestId);
+        });
+
+        // Approvals
+        modelBuilder.Entity<ApprovalRequest>(e =>
+        {
+            e.ToTable("approval_requests");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Strategy).HasMaxLength(20).IsRequired()
+                .HasConversion<string>();
+            e.Property(x => x.Status).HasMaxLength(50).IsRequired();
+            e.Property(x => x.EscalationGroup).HasMaxLength(200);
+            e.HasIndex(x => x.Status);
+            e.HasOne(x => x.ServiceRequest)
+                .WithOne(x => x.ApprovalRequest)
+                .HasForeignKey<ApprovalRequest>(x => x.ServiceRequestId);
+        });
+
+        modelBuilder.Entity<ApprovalDecision>(e =>
+        {
+            e.ToTable("approval_decisions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ApproverId).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ApproverName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Decision).HasMaxLength(20).IsRequired();
+            e.HasIndex(x => x.ApproverId);
+            e.HasOne(x => x.ApprovalRequest)
+                .WithMany(x => x.Decisions)
+                .HasForeignKey(x => x.ApprovalRequestId);
+        });
+
+        // Audit Log
+        modelBuilder.Entity<AuditEntry>(e =>
+        {
+            e.ToTable("audit_log");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Module).HasMaxLength(50).IsRequired();
+            e.Property(x => x.Action).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ActorId).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ActorName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ActorType).HasMaxLength(20).IsRequired();
+            e.Property(x => x.EntityType).HasMaxLength(50).IsRequired();
+            e.Property(x => x.BeforeState).HasColumnType("jsonb");
+            e.Property(x => x.AfterState).HasColumnType("jsonb");
+            e.Property(x => x.Metadata).HasColumnType("jsonb");
+            e.Property(x => x.SourceIp).HasMaxLength(45);
+            e.HasIndex(x => x.CorrelationId);
+            e.HasIndex(x => new { x.EntityType, x.EntityId });
+            e.HasIndex(x => x.ActorId);
+            e.HasIndex(x => new { x.Module, x.Action });
+        });
+
+        // Deploy Events
+        modelBuilder.Entity<DeployEvent>(e =>
+        {
+            e.ToTable("deploy_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            e.Property(x => x.PreviousVersion).HasMaxLength(200);
+            e.Property(x => x.Source).HasMaxLength(50).IsRequired();
+            e.Property(x => x.ReferencesJson).HasColumnType("jsonb").HasDefaultValue("[]");
+            e.Property(x => x.ParticipantsJson).HasColumnType("jsonb").HasDefaultValue("[]");
+            e.Property(x => x.EnrichmentJson).HasColumnType("jsonb");
+            e.Property(x => x.MetadataJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.DeployedAt })
+                .IsDescending(false, false, false, true);
+            e.HasIndex(x => x.Product);
+            e.HasIndex(x => new { x.Environment, x.DeployedAt })
+                .IsDescending(false, true);
+            e.Ignore(x => x.References);
+            e.Ignore(x => x.Participants);
+            e.Ignore(x => x.Enrichment);
+            e.Ignore(x => x.Metadata);
+        });
+
+        // Webhook Subscriptions
+        modelBuilder.Entity<WebhookSubscription>(e =>
+        {
+            e.ToTable("webhook_subscriptions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Url).HasMaxLength(2000).IsRequired();
+            e.Property(x => x.EncryptedSecret).IsRequired();
+            e.Property(x => x.EventsJson).HasColumnType("jsonb").HasDefaultValue("[]");
+            e.Property(x => x.FilterProduct).HasMaxLength(200);
+            e.Property(x => x.FilterEnvironment).HasMaxLength(100);
+            e.HasIndex(x => x.Active);
+        });
+
+        // Webhook Deliveries
+        modelBuilder.Entity<WebhookDelivery>(e =>
+        {
+            e.ToTable("webhook_deliveries");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.EventType).HasMaxLength(100).IsRequired();
+            e.Property(x => x.PayloadJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.ResponseBody).HasMaxLength(4000);
+            e.Property(x => x.ErrorMessage).HasMaxLength(2000);
+            e.HasOne(x => x.Subscription)
+                .WithMany(x => x.Deliveries)
+                .HasForeignKey(x => x.SubscriptionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.Status, x.NextRetryAt });
+            e.HasIndex(x => x.SubscriptionId);
+        });
+    }
+}
