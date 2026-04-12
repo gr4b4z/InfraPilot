@@ -1,7 +1,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS api-build
 WORKDIR /src
 
-COPY swo-platform.slnx ./
+COPY InfraPilot-platform.slnx ./
 COPY src/Platform.Api/Platform.Api.csproj src/Platform.Api/
 RUN dotnet restore src/Platform.Api/Platform.Api.csproj
 
