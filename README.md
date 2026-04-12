@@ -324,9 +324,9 @@ This gives you:
 
 This repository uses two GitHub Actions workflows:
 
-- [CI workflow](/Users/sylwestergrabowski/dev/infraPilot/.github/workflows/ci.yml:1)
+- [CI workflow](./.github/workflows/ci.yml)
   Validates that the single production image builds successfully on pull requests and pushes to `main` / `master`.
-- [Release workflow](/Users/sylwestergrabowski/dev/infraPilot/.github/workflows/release-image.yml:1)
+- [Release workflow](./.github/workflows/release-image.yml)
   Publishes the production image to `ghcr.io/<owner>/<repo>` when you push a Git tag like `v0.1.0`.
 
 Example release flow:
