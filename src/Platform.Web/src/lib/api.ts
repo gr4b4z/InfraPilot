@@ -14,7 +14,7 @@ class ApiClient {
       ...((options.headers as Record<string, string>) || {}),
     };
 
-    if (isMsalEnabled) {
+    if (isMsalEnabled()) {
       const token = await acquireToken();
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { MsalProvider, useMsal, useMsalAuthentication } from '@azure/msal-react';
 import { InteractionType } from '@azure/msal-browser';
-import { msalInstance, isMsalEnabled, loginRequest } from '@/lib/auth';
+import { getMsalInstance, isMsalEnabled, getLoginRequest } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
 import { Loader2 } from 'lucide-react';
 
@@ -13,10 +13,12 @@ const DEV_USER = createAuthUser(
 );
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [msalReady, setMsalReady] = useState(!isMsalEnabled);
+  const msalEnabled = isMsalEnabled();
+  const msalInstance = getMsalInstance();
+  const [msalReady, setMsalReady] = useState(!msalEnabled);
 
   useEffect(() => {
-    if (!isMsalEnabled || !msalInstance) {
+    if (!msalEnabled || !msalInstance) {
       // Dev mode — populate store with dev user immediately
       useAuthStore.getState().setUser(DEV_USER);
       return;
@@ -25,7 +27,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Initialize MSAL and handle any pending redirect
     msalInstance
       .initialize()
-      .then(() => msalInstance!.handleRedirectPromise())
+      .then(() => msalInstance.handleRedirectPromise())
       .then(() => setMsalReady(true))
       .catch((err) => {
         console.error('MSAL initialization failed:', err);
@@ -33,13 +35,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         useAuthStore.getState().setUser(DEV_USER);
         setMsalReady(true);
       });
-  }, []);
+  }, [msalEnabled, msalInstance]);
 
   if (!msalReady) {
     return <LoadingScreen />;
   }
 
-  if (isMsalEnabled && msalInstance) {
+  if (msalEnabled && msalInstance) {
     return (
       <MsalProvider instance={msalInstance}>
         <MsalAuthGuard>{children}</MsalAuthGuard>
@@ -55,6 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
  * Must be rendered inside MsalProvider.
  */
 function MsalAuthGuard({ children }: { children: ReactNode }) {
+  const loginRequest = getLoginRequest();
   const { accounts } = useMsal();
   const { login, error } = useMsalAuthentication(InteractionType.Redirect, loginRequest);
   const setUser = useAuthStore((s) => s.setUser);

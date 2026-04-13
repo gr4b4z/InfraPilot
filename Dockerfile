@@ -41,6 +41,11 @@ ENV APP_NAME=InfraPilot
 ENV APP_SUBTITLE="Infrastructure Portal"
 ENV ASSISTANT_NAME="InfraPilot Assistant"
 ENV PAGE_TITLE="InfraPilot | Infrastructure Portal"
+# MSAL is configured at runtime via /config.json (see start-single-container.sh).
+# Empty defaults disable MSAL and fall back to the dev user; override at deploy
+# time with -e AZURE_CLIENT_ID=... -e AZURE_TENANT_ID=... or equivalent.
+ENV AZURE_CLIENT_ID=
+ENV AZURE_TENANT_ID=
 
 EXPOSE 8080
 

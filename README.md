@@ -98,6 +98,10 @@ These variables are used to generate `config.json` inside the container at start
 | `APP_SUBTITLE` | No | `Infrastructure Portal` | Sets the smaller subtitle shown in the sidebar. |
 | `ASSISTANT_NAME` | No | `InfraPilot Assistant` | Sets the label used in the assistant/chat area. |
 | `PAGE_TITLE` | No | `InfraPilot \| Infrastructure Portal` | Sets the browser tab title. |
+| `AZURE_CLIENT_ID` | No | empty | Entra app (client) ID for SPA sign-in. Empty disables MSAL and falls back to a local dev user — use that for local runs only. |
+| `AZURE_TENANT_ID` | No | empty | Entra tenant ID that hosts the SPA app registration. Required when `AZURE_CLIENT_ID` is set. |
+
+MSAL config is read from `/config.json` at page load, so the same container image can be pointed at a different tenant by changing env vars at deploy time (no rebuild).
 
 ### Example Production Configuration
 
