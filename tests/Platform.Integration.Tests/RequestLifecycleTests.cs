@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using NSubstitute;
 using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.Realtime;
@@ -13,6 +14,7 @@ public class RequestLifecycleTests : IDisposable
     private readonly PlatformDbContext _db;
     private readonly IAuditLogger _auditLogger = Substitute.For<IAuditLogger>();
     private readonly IPlatformEventPublisher _eventPublisher = Substitute.For<IPlatformEventPublisher>();
+    private readonly IWebhookDispatcher _webhookDispatcher = Substitute.For<IWebhookDispatcher>();
     private readonly RequestStateMachine _stateMachine;
 
     public RequestLifecycleTests()
@@ -22,7 +24,7 @@ public class RequestLifecycleTests : IDisposable
             .Options;
 
         _db = new PlatformDbContext(options);
-        _stateMachine = new RequestStateMachine(_auditLogger, _eventPublisher);
+        _stateMachine = new RequestStateMachine(_auditLogger, _eventPublisher, _webhookDispatcher);
     }
 
     public void Dispose()

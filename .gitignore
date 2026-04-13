@@ -41,3 +41,7 @@ catalog/*
 .got/
 .dockerignore
 llm_docs/
+
+# Local infrastructure experiments — may contain secrets
+local_tf/
+local/

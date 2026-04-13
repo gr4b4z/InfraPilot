@@ -34,9 +34,24 @@ if (!string.IsNullOrEmpty(appInsightsCs) && !appInsightsCs.StartsWith('<'))
     });
 }
 
-// Database
-builder.Services.AddDbContext<PlatformDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("Platform")));
+// Database — provider is selectable via config (Postgres default, SqlServer alternative).
+// We register a provider-specific subclass of PlatformDbContext so EF can disambiguate the two
+// migration sets (Migrations/Postgres vs Migrations/SqlServer). PlatformDbContext is then
+// mapped to whichever subclass was registered.
+var dbProvider = (builder.Configuration["Database:Provider"] ?? "Postgres").Trim();
+var dbConnectionString = builder.Configuration.GetConnectionString("Platform");
+if (dbProvider.Equals("SqlServer", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddDbContext<SqlServerPlatformDbContext>(options =>
+        options.UseSqlServer(dbConnectionString));
+    builder.Services.AddScoped<PlatformDbContext>(sp => sp.GetRequiredService<SqlServerPlatformDbContext>());
+}
+else
+{
+    builder.Services.AddDbContext<PostgresPlatformDbContext>(options =>
+        options.UseNpgsql(dbConnectionString));
+    builder.Services.AddScoped<PlatformDbContext>(sp => sp.GetRequiredService<PostgresPlatformDbContext>());
+}
 
 // Auth — skip Entra ID in Development when no real tenant is configured
 var tenantId = builder.Configuration["AzureAd:TenantId"];

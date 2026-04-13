@@ -8,10 +8,10 @@ using Platform.Api.Infrastructure.Persistence;
 
 #nullable disable
 
-namespace Platform.Api.Migrations
+namespace Platform.Api.Migrations.Postgres
 {
-    [DbContext(typeof(PlatformDbContext))]
-    partial class PlatformDbContextModelSnapshot : ModelSnapshot
+    [DbContext(typeof(PostgresPlatformDbContext))]
+    partial class PostgresPlatformDbContextModelSnapshot : ModelSnapshot
     {
         protected override void BuildModel(ModelBuilder modelBuilder)
         {

@@ -82,7 +82,8 @@ These are the most important environment variables for a real deployment.
 
 | Variable | Required | Default | Why it is needed |
 |---|---|---|---|
-| `ConnectionStrings__Platform` | Yes | none | Tells the API how to connect to PostgreSQL. The app cannot start correctly without a database connection. |
+| `ConnectionStrings__Platform` | Yes | none | Tells the API how to connect to the database. The app cannot start correctly without a database connection. Format depends on `Database__Provider` (see below). |
+| `Database__Provider` | No | `Postgres` | Selects the EF Core provider. Accepted values: `Postgres`, `SqlServer`. Must match the format of `ConnectionStrings__Platform`. |
 | `ASPNETCORE_ENVIRONMENT` | Recommended | `Production` in the container image | Controls ASP.NET runtime behavior and environment-specific configuration. |
 | `CatalogPath` | No | `/app/catalog` | Tells the API where to load catalog YAML definitions from. |
 
@@ -111,6 +112,20 @@ ASSISTANT_NAME="Contoso Assistant"
 PAGE_TITLE="Contoso Platform | Operations Portal"
 BACKEND_BASE_URL=""
 ```
+
+### Using Azure SQL instead of Postgres
+
+InfraPilot supports Azure SQL Database as an alternative to PostgreSQL. Switch by setting `Database__Provider=SqlServer` and using a SQL Server-format connection string. Both providers share the same schema — migrations for each set live under `Migrations/Postgres` and `Migrations/SqlServer` and are applied automatically on startup in Development.
+
+```bash
+Database__Provider=SqlServer
+ConnectionStrings__Platform="Server=tcp:<server>.database.windows.net,1433;Database=infrapilot;Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;"
+```
+
+Notes:
+- Azure SQL requires `Encrypt=True`.
+- Azure AD authentication (`Authentication=Active Directory Default`) is recommended over SQL auth when running on Container Apps with managed identity.
+- On SQL Server, JSON payload columns are stored as `nvarchar(max)` (on Postgres they use `jsonb`). The application serialises JSON itself so there is no behavioural difference.
 
 ## Optional Integrations
 
