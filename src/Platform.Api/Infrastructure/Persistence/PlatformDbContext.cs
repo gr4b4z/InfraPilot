@@ -12,6 +12,10 @@ public class PlatformDbContext : DbContext
 {
     public PlatformDbContext(DbContextOptions<PlatformDbContext> options) : base(options) { }
 
+    // Used by the provider-specific subclasses (PostgresPlatformDbContext / SqlServerPlatformDbContext)
+    // so each subclass can receive its own DbContextOptions<T> from DI.
+    protected PlatformDbContext(DbContextOptions options) : base(options) { }
+
     public DbSet<CatalogItem> CatalogItems => Set<CatalogItem>();
     public DbSet<CatalogItemVersion> CatalogItemVersions => Set<CatalogItemVersion>();
     public DbSet<ServiceRequest> ServiceRequests => Set<ServiceRequest>();
@@ -26,6 +30,10 @@ public class PlatformDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // On SQL Server, `string` columns default to nvarchar(max) which is what we want for JSON payloads.
+        // On Postgres we annotate them as `jsonb` for better storage + indexability.
+        var jsonType = Database.IsNpgsql() ? "jsonb" : null;
+
         // Catalog
         modelBuilder.Entity<CatalogItem>(e =>
         {
@@ -64,7 +72,8 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.RequesterEmail).HasMaxLength(300).HasDefaultValue("");
             e.Property(x => x.Status).HasMaxLength(50).IsRequired()
                 .HasConversion<string>();
-            e.Property(x => x.InputsJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            var inputsJson = e.Property(x => x.InputsJson).HasDefaultValue("{}");
+            if (jsonType != null) inputsJson.HasColumnType(jsonType);
             e.HasIndex(x => x.RequesterId);
             e.HasIndex(x => x.Status);
             e.HasIndex(x => x.CorrelationId);
@@ -90,7 +99,8 @@ public class PlatformDbContext : DbContext
             e.ToTable("execution_results");
             e.HasKey(x => x.Id);
             e.Property(x => x.Status).HasMaxLength(50).IsRequired();
-            e.Property(x => x.OutputJson).HasColumnType("jsonb");
+            var outputJson = e.Property(x => x.OutputJson);
+            if (jsonType != null) outputJson.HasColumnType(jsonType);
             e.HasOne(x => x.ServiceRequest)
                 .WithMany(x => x.ExecutionResults)
                 .HasForeignKey(x => x.ServiceRequestId);
@@ -135,9 +145,15 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.ActorName).HasMaxLength(200).IsRequired();
             e.Property(x => x.ActorType).HasMaxLength(20).IsRequired();
             e.Property(x => x.EntityType).HasMaxLength(50).IsRequired();
-            e.Property(x => x.BeforeState).HasColumnType("jsonb");
-            e.Property(x => x.AfterState).HasColumnType("jsonb");
-            e.Property(x => x.Metadata).HasColumnType("jsonb");
+            var beforeState = e.Property(x => x.BeforeState);
+            var afterState = e.Property(x => x.AfterState);
+            var auditMetadata = e.Property(x => x.Metadata);
+            if (jsonType != null)
+            {
+                beforeState.HasColumnType(jsonType);
+                afterState.HasColumnType(jsonType);
+                auditMetadata.HasColumnType(jsonType);
+            }
             e.Property(x => x.SourceIp).HasMaxLength(45);
             e.HasIndex(x => x.CorrelationId);
             e.HasIndex(x => new { x.EntityType, x.EntityId });
@@ -156,10 +172,17 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.Version).HasMaxLength(200).IsRequired();
             e.Property(x => x.PreviousVersion).HasMaxLength(200);
             e.Property(x => x.Source).HasMaxLength(50).IsRequired();
-            e.Property(x => x.ReferencesJson).HasColumnType("jsonb").HasDefaultValue("[]");
-            e.Property(x => x.ParticipantsJson).HasColumnType("jsonb").HasDefaultValue("[]");
-            e.Property(x => x.EnrichmentJson).HasColumnType("jsonb");
-            e.Property(x => x.MetadataJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            var referencesJson = e.Property(x => x.ReferencesJson).HasDefaultValue("[]");
+            var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
+            var enrichmentJson = e.Property(x => x.EnrichmentJson);
+            var metadataJson = e.Property(x => x.MetadataJson).HasDefaultValue("{}");
+            if (jsonType != null)
+            {
+                referencesJson.HasColumnType(jsonType);
+                participantsJson.HasColumnType(jsonType);
+                enrichmentJson.HasColumnType(jsonType);
+                metadataJson.HasColumnType(jsonType);
+            }
             e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.DeployedAt })
                 .IsDescending(false, false, false, true);
             e.HasIndex(x => x.Product);
@@ -179,7 +202,8 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Url).HasMaxLength(2000).IsRequired();
             e.Property(x => x.EncryptedSecret).IsRequired();
-            e.Property(x => x.EventsJson).HasColumnType("jsonb").HasDefaultValue("[]");
+            var eventsJson = e.Property(x => x.EventsJson).HasDefaultValue("[]");
+            if (jsonType != null) eventsJson.HasColumnType(jsonType);
             e.Property(x => x.FilterProduct).HasMaxLength(200);
             e.Property(x => x.FilterEnvironment).HasMaxLength(100);
             e.HasIndex(x => x.Active);
@@ -191,7 +215,8 @@ public class PlatformDbContext : DbContext
             e.ToTable("webhook_deliveries");
             e.HasKey(x => x.Id);
             e.Property(x => x.EventType).HasMaxLength(100).IsRequired();
-            e.Property(x => x.PayloadJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            var payloadJson = e.Property(x => x.PayloadJson).HasDefaultValue("{}");
+            if (jsonType != null) payloadJson.HasColumnType(jsonType);
             e.Property(x => x.Status).HasMaxLength(20).IsRequired();
             e.Property(x => x.ResponseBody).HasMaxLength(4000);
             e.Property(x => x.ErrorMessage).HasMaxLength(2000);

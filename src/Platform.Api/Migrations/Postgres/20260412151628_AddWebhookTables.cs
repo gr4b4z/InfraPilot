@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace Platform.Api.Migrations
+namespace Platform.Api.Migrations.Postgres
 {
     /// <inheritdoc />
     public partial class AddWebhookTables : Migration

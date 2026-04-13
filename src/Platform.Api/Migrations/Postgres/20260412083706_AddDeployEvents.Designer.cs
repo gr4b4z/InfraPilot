@@ -9,9 +9,9 @@ using Platform.Api.Infrastructure.Persistence;
 
 #nullable disable
 
-namespace Platform.Api.Migrations
+namespace Platform.Api.Migrations.Postgres
 {
-    [DbContext(typeof(PlatformDbContext))]
+    [DbContext(typeof(PostgresPlatformDbContext))]
     [Migration("20260412083706_AddDeployEvents")]
     partial class AddDeployEvents
     {
