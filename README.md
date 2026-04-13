@@ -287,6 +287,32 @@ When a request needs approval, the backend calls `IIdentityService.GetGroupMembe
 
 Without either registration configured, the app runs fully functional in open development mode.
 
+## Deployment Ingestion API Keys
+
+Pipelines post deployment events to `POST /api/deployments/events` with the header `X-Api-Key: <key>`. Keys are configured via `Deployments:ApiKeys`:
+
+```bash
+# Minimum — plaintext key (fine for dev, OK for prod if secrets are in a vault)
+Deployments__ApiKeys__0__Name=azure-devops-pipeline
+Deployments__ApiKeys__0__Key=dpk-a1b2c3d4e5f6g7h8i9j0-ado
+
+# Production — hashed key; restricted to specific products; revocable
+Deployments__ApiKeys__1__Name=github-actions-platform
+Deployments__ApiKeys__1__KeyHash=9a86f1a7e8c6... # lowercase SHA-256 hex of the real key
+Deployments__ApiKeys__1__AllowedProducts__0=platform
+Deployments__ApiKeys__1__AllowedProducts__1=billing
+Deployments__ApiKeys__1__Revoked=false
+```
+
+Hardening:
+
+- **`KeyHash`** (preferred for prod) — store `sha256(key)` instead of the raw key. Generate with `printf '%s' 'dpk-...' | shasum -a 256`. If `KeyHash` is set, `Key` is ignored.
+- **`AllowedProducts`** — restrict a key so it can only post events for specific products. Empty list = any product. Requests for other products get `403 Forbidden`.
+- **`Revoked`** — set to `true` to instantly kill a key without removing the entry (keeps audit history aligned).
+- **Rate limit** — each authenticated key is limited to 120 requests/minute (sliding window). Unauthenticated callers get a stricter shared 10/min bucket. Excess returns `429`.
+- **Constant-time compare** — both plaintext and hash comparisons use `CryptographicOperations.FixedTimeEquals` to resist timing attacks.
+- **HTTPS** — keys travel in a header, so always terminate TLS before the API. Never expose `/api/deployments/events` over plain HTTP.
+
 ## Secrets
 
 Do not commit real secrets to the repository.

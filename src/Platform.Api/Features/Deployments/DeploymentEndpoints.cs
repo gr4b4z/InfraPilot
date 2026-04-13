@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Infrastructure.Auth;
 
@@ -7,16 +8,26 @@ public static class DeploymentEndpoints
 {
     public static RouteGroupBuilder MapDeploymentEndpoints(this RouteGroupBuilder group)
     {
-        // Ingestion — called by pipelines, secured with API key
-        group.MapPost("/events", async (DeploymentService service, CreateDeployEventDto dto, CancellationToken ct) =>
+        // Ingestion — called by pipelines, secured with API key + per-key rate limit + optional product scope
+        group.MapPost("/events", async (DeploymentService service, ClaimsPrincipal user, CreateDeployEventDto dto, CancellationToken ct) =>
         {
             var errors = Validate(dto);
             if (errors.Count > 0)
                 return Results.BadRequest(new { errors });
 
+            // Enforce product scope when the key restricts which products it can post for.
+            var allowedProducts = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
+            if (allowedProducts.Count > 0 &&
+                !allowedProducts.Contains(dto.Product, StringComparer.OrdinalIgnoreCase))
+            {
+                return Results.Forbid();
+            }
+
             var result = await service.IngestEvent(dto, ct);
             return Results.Created($"/api/deployments/events/{result.Id}", new { result.Id, result.Version, result.PreviousVersion });
-        }).RequireAuthorization(ApiKeyAuthHandler.PolicyName);
+        })
+        .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
+        .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
 
         // Product overview
         group.MapGet("/products", async (DeploymentService service, CancellationToken ct) =>
