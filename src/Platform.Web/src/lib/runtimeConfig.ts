@@ -4,6 +4,8 @@ interface RuntimeConfig {
   appSubtitle?: string;
   assistantName?: string;
   pageTitle?: string;
+  azureClientId?: string;
+  azureTenantId?: string;
 }
 
 let runtimeConfig: RuntimeConfig = {};
@@ -32,6 +34,8 @@ export async function loadRuntimeConfig() {
       appSubtitle: config.appSubtitle,
       assistantName: config.assistantName,
       pageTitle: config.pageTitle,
+      azureClientId: config.azureClientId,
+      azureTenantId: config.azureTenantId,
     };
   } catch {
     runtimeConfig = {};
@@ -66,4 +70,14 @@ export function getAssistantName() {
 
 export function getPageTitle() {
   return runtimeConfig.pageTitle || defaultConfig.pageTitle;
+}
+
+// MSAL config — sourced from /config.json at runtime so the same image works across tenants.
+// Falls back to Vite build-time env (`VITE_AZURE_*`) so local `npm run dev` with `.env` keeps working.
+export function getAzureClientId(): string {
+  return runtimeConfig.azureClientId || import.meta.env.VITE_AZURE_CLIENT_ID || '';
+}
+
+export function getAzureTenantId(): string {
+  return runtimeConfig.azureTenantId || import.meta.env.VITE_AZURE_TENANT_ID || '';
 }
