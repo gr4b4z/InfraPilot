@@ -52,6 +52,7 @@ else
 builder.Services.AddAuthentication()
     .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { });
 builder.Services.AddPlatformAuthorization(builder.Configuration);
+builder.Services.AddDeploymentIngestionRateLimit();
 
 // Infrastructure
 builder.Services.AddHttpContextAccessor();
@@ -186,6 +187,7 @@ if (app.Environment.IsDevelopment())
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 // Health check
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow }))
