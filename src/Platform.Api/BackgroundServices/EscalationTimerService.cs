@@ -80,6 +80,12 @@ public class EscalationTimerService : BackgroundService
         }
     }
 
+    private static readonly RequestStatus[] TerminalStatuses =
+    [
+        RequestStatus.Completed, RequestStatus.Failed, RequestStatus.Rejected,
+        RequestStatus.TimedOut, RequestStatus.ManuallyResolved, RequestStatus.Cancelled,
+    ];
+
     private async Task HandleTimeout(
         PlatformDbContext db,
         RequestStateMachine stateMachine,
@@ -88,6 +94,18 @@ public class EscalationTimerService : BackgroundService
         CancellationToken ct)
     {
         var request = approval.ServiceRequest!;
+
+        // The request may have been cancelled/completed while the approval was still
+        // pending. Mark the approval as timed-out but skip the state machine transition.
+        if (TerminalStatuses.Contains(request.Status))
+        {
+            _logger.LogInformation(
+                "Skipping timeout for approval {ApprovalId} — request {RequestId} is already {Status}",
+                approval.Id, request.Id, request.Status);
+            approval.Status = "TimedOut";
+            await db.SaveChangesAsync(ct);
+            return;
+        }
 
         _logger.LogWarning(
             "Approval {ApprovalId} timed out for request {RequestId}",

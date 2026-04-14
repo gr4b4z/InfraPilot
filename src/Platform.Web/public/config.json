@@ -3,5 +3,6 @@
   "appName": "InfraPilot",
   "appSubtitle": "Infrastructure Portal",
   "assistantName": "InfraPilot Assistant",
-  "pageTitle": "InfraPilot | Infrastructure Portal"
+  "pageTitle": "InfraPilot | Infrastructure Portal",
+  "environmentLabel": "Development"
 }

@@ -6,6 +6,7 @@ interface RuntimeConfig {
   pageTitle?: string;
   azureClientId?: string;
   azureTenantId?: string;
+  environmentLabel?: string;
 }
 
 let runtimeConfig: RuntimeConfig = {};
@@ -36,6 +37,7 @@ export async function loadRuntimeConfig() {
       pageTitle: config.pageTitle,
       azureClientId: config.azureClientId,
       azureTenantId: config.azureTenantId,
+      environmentLabel: config.environmentLabel,
     };
   } catch {
     runtimeConfig = {};
@@ -70,6 +72,10 @@ export function getAssistantName() {
 
 export function getPageTitle() {
   return runtimeConfig.pageTitle || defaultConfig.pageTitle;
+}
+
+export function getEnvironmentLabel(): string {
+  return runtimeConfig.environmentLabel || '';
 }
 
 // MSAL config — sourced from /config.json at runtime so the same image works across tenants.

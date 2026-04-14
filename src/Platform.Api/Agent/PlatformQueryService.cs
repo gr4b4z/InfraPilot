@@ -178,7 +178,7 @@ public class PlatformQueryService
 
     public async Task<DeploymentStateCardData> GetDeploymentState(string product, CancellationToken ct = default)
     {
-        var state = await _deployments.GetState(product, environment: null, ct);
+        var state = await _deployments.GetState(product, environment: null, serviceName: null, ct);
 
         var services = state.Select(s => s.Service).Distinct().OrderBy(s => s).ToList();
         var environments = state.Select(s => s.Environment).Distinct().OrderBy(e => e).ToList();

@@ -52,12 +52,20 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
         if (match is null)
             return Task.FromResult(AuthenticateResult.Fail("Invalid API key"));
 
+        // Resolve effective roles: explicit list, or default to User so existing
+        // keys that only pushed deploy events keep working without config changes.
+        var roles = match.Roles is { Count: > 0 }
+            ? match.Roles
+            : ["InfraPortal.User"];
+
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, $"apikey:{match.Name}"),
             new(ClaimTypes.Name, match.Name),
             new("auth_method", "api_key"),
         };
+        foreach (var role in roles)
+            claims.Add(new Claim("roles", role));
         foreach (var product in match.AllowedProducts)
         {
             if (!string.IsNullOrWhiteSpace(product))
@@ -105,4 +113,6 @@ public class ApiKeyEntry
     public bool Revoked { get; set; }
     /// <summary>Product slugs this key is allowed to post events for. Empty = all products.</summary>
     public List<string> AllowedProducts { get; set; } = [];
+    /// <summary>Authorization roles granted to this key (e.g. "InfraPortal.User", "InfraPortal.Admin"). Defaults to ["InfraPortal.User"] when empty.</summary>
+    public List<string> Roles { get; set; } = [];
 }
