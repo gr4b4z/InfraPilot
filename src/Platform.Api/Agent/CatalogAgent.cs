@@ -8,7 +8,7 @@ namespace Platform.Api.Agent;
 
 public class CatalogAgent
 {
-    private readonly CatalogYamlLoader _catalogLoader;
+    private readonly CatalogService _catalogService;
     private readonly A2UIFormGenerator _formGenerator;
     private readonly ValidationRunner _validationRunner;
     private readonly PlatformQueryService _queryService;
@@ -181,7 +181,7 @@ public class CatalogAgent
     ];
 
     public CatalogAgent(
-        CatalogYamlLoader catalogLoader,
+        CatalogService catalogService,
         A2UIFormGenerator formGenerator,
         ValidationRunner validationRunner,
         PlatformQueryService queryService,
@@ -189,7 +189,7 @@ public class CatalogAgent
         IConfiguration configuration,
         ILogger<CatalogAgent> logger)
     {
-        _catalogLoader = catalogLoader;
+        _catalogService = catalogService;
         _formGenerator = formGenerator;
         _validationRunner = validationRunner;
         _queryService = queryService;
@@ -205,7 +205,7 @@ public class CatalogAgent
         // Route 1: catalogSlug provided, no formData -> generate form
         if (!string.IsNullOrWhiteSpace(request.CatalogSlug) && request.FormData is null)
         {
-            return HandleGenerateForm(request.CatalogSlug, request.Message);
+            return await HandleGenerateForm(request.CatalogSlug, request.Message);
         }
 
         // Route 2: explicit validate action + formData -> run validation
@@ -224,10 +224,10 @@ public class CatalogAgent
         return await HandleChat(request.Message, history);
     }
 
-    private CatalogAgentResponse HandleGenerateForm(string catalogSlug, string? userMessage)
+    private async Task<CatalogAgentResponse> HandleGenerateForm(string catalogSlug, string? userMessage)
     {
-        var definition = _catalogLoader.LoadAll().FirstOrDefault(d => d.Id == catalogSlug);
-        if (definition is null)
+        var item = await _catalogService.GetBySlug(catalogSlug, includeInactive: true);
+        if (item is null)
         {
             return new CatalogAgentResponse
             {
@@ -235,6 +235,7 @@ public class CatalogAgent
             };
         }
 
+        var definition = CatalogDefinition.FromEntity(item);
         var formJson = _formGenerator.Generate(definition);
 
         return new CatalogAgentResponse
@@ -249,8 +250,8 @@ public class CatalogAgent
         Dictionary<string, JsonElement> formData,
         string? userMessage)
     {
-        var definition = _catalogLoader.LoadAll().FirstOrDefault(d => d.Id == catalogSlug);
-        if (definition is null)
+        var item = await _catalogService.GetBySlug(catalogSlug, includeInactive: true);
+        if (item is null)
         {
             return new CatalogAgentResponse
             {
@@ -258,6 +259,7 @@ public class CatalogAgent
             };
         }
 
+        var definition = CatalogDefinition.FromEntity(item);
         var converted = new Dictionary<string, object?>();
         foreach (var (key, value) in formData)
         {
@@ -297,14 +299,16 @@ public class CatalogAgent
         string userMessage,
         List<HistoryMessage> history)
     {
-        var definition = _catalogLoader.LoadAll().FirstOrDefault(d => d.Id == catalogSlug);
-        if (definition is null)
+        var item = await _catalogService.GetBySlug(catalogSlug, includeInactive: true);
+        if (item is null)
         {
             return new CatalogAgentResponse
             {
                 Reply = $"I couldn't find a catalog item with ID '{catalogSlug}'.",
             };
         }
+
+        var definition = CatalogDefinition.FromEntity(item);
 
         // Build field context: definitions + current values
         var fieldContext = new StringBuilder();
@@ -530,7 +534,8 @@ public class CatalogAgent
             };
         }
 
-        var catalogItems = _catalogLoader.LoadAll();
+        var dbItems = await _catalogService.GetAll();
+        var catalogItems = dbItems.Select(CatalogDefinition.FromEntity).ToList();
         var catalogContext = BuildCatalogContext(catalogItems);
 
         var systemPrompt = $"""
@@ -833,8 +838,9 @@ public class CatalogAgent
     private async Task<Dictionary<string, object>?> ExtractFieldSuggestions(
         string catalogSlug, string userMessage, List<HistoryMessage> history)
     {
-        var definition = _catalogLoader.LoadAll().FirstOrDefault(d => d.Id == catalogSlug);
-        if (definition is null || definition.Inputs.Count == 0) return null;
+        var item = await _catalogService.GetBySlug(catalogSlug, includeInactive: true);
+        if (item is null || item.Inputs.Count == 0) return null;
+        var definition = CatalogDefinition.FromEntity(item);
 
         var fieldDescriptions = string.Join("\n", definition.Inputs.Select(i =>
             $"- {i.Id} ({i.Component}): {i.Label}" + (i.Options?.Count > 0 ? $" [options: {string.Join(", ", i.Options.Select(o => o.Id))}]" : "")));

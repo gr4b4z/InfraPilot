@@ -4,66 +4,120 @@ public static class CatalogEndpoints
 {
     public static RouteGroupBuilder MapCatalogEndpoints(this RouteGroupBuilder group)
     {
-        // List catalog — reads from YAML directly (works without DB)
-        group.MapGet("/", (CatalogYamlLoader loader, string? category, string? search) =>
+        // Public: list active catalog items
+        group.MapGet("/", async (CatalogService service, string? category, string? search) =>
         {
-            var definitions = loader.LoadAll();
-
-            if (!string.IsNullOrWhiteSpace(category))
-                definitions = definitions.Where(d => d.Category == category).ToList();
-
-            if (!string.IsNullOrWhiteSpace(search))
-                definitions = definitions.Where(d =>
-                    d.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                    d.Description.Contains(search, StringComparison.OrdinalIgnoreCase)).ToList();
-
-            var items = definitions.Select(d => new
+            var items = await service.GetAll(category, search);
+            return Results.Ok(new
             {
-                id = d.Id,
-                slug = d.Id,
-                name = d.Name,
-                description = d.Description,
-                category = d.Category,
-                icon = d.Icon,
-                isActive = true,
+                items = items.Select(i => new
+                {
+                    id = i.Slug,
+                    slug = i.Slug,
+                    name = i.Name,
+                    description = i.Description,
+                    category = i.Category,
+                    icon = i.Icon,
+                    isActive = i.IsActive,
+                })
             });
-
-            return Results.Ok(new { items });
         });
 
-        // Get single item with full definition
-        group.MapGet("/{slug}", (CatalogYamlLoader loader, string slug) =>
+        // Public: get single item with full definition
+        group.MapGet("/{slug}", async (CatalogService service, string slug) =>
         {
-            var definition = loader.LoadAll().FirstOrDefault(d => d.Id == slug);
-            if (definition is null)
+            var item = await service.GetBySlug(slug);
+            if (item is null)
                 return Results.NotFound(new { error = $"Service '{slug}' not found" });
 
             return Results.Ok(new
             {
                 item = new
                 {
-                    id = definition.Id,
-                    slug = definition.Id,
-                    name = definition.Name,
-                    description = definition.Description,
-                    category = definition.Category,
-                    icon = definition.Icon,
-                    isActive = true,
+                    id = item.Slug,
+                    slug = item.Slug,
+                    name = item.Name,
+                    description = item.Description,
+                    category = item.Category,
+                    icon = item.Icon,
+                    isActive = item.IsActive,
                 },
-                inputs = definition.Inputs,
-                validations = definition.Validations,
-                approval = definition.Approval,
-                executor = definition.Executor != null ? new { definition.Executor.Type } : null,
+                inputs = item.Inputs,
+                validations = item.Validations,
+                approval = item.Approval,
+                executor = item.Executor != null ? new { item.Executor.Type } : null,
             });
         });
 
-        // Sync YAML to DB (requires DB + admin auth)
-        group.MapPost("/sync", async (CatalogService service) =>
+        // Admin: list all items including inactive
+        group.MapGet("/admin", async (CatalogService service) =>
         {
-            await service.SyncFromYaml();
-            return Results.Ok(new { message = "Catalog synced from YAML definitions" });
+            var items = await service.GetAll(includeInactive: true);
+            return Results.Ok(new
+            {
+                items = items.Select(i => new
+                {
+                    id = i.Id,
+                    slug = i.Slug,
+                    name = i.Name,
+                    description = i.Description,
+                    category = i.Category,
+                    icon = i.Icon,
+                    isActive = i.IsActive,
+                    createdAt = i.CreatedAt,
+                    updatedAt = i.UpdatedAt,
+                })
+            });
+        }).RequireAuthorization("CatalogAdmin");
+
+        // Admin: create new item
+        group.MapPost("/", async (CatalogService service, CreateCatalogRequest request) =>
+        {
+            var (item, errors) = await service.Create(request.YamlContent);
+            if (item is null)
+                return Results.BadRequest(new { errors });
+
+            return Results.Created($"/api/catalog/{item.Slug}", new { item = new { item.Id, item.Slug, item.Name } });
+        }).RequireAuthorization("CatalogAdmin");
+
+        // Admin: update item
+        group.MapPut("/{slug}", async (CatalogService service, string slug, UpdateCatalogRequest request) =>
+        {
+            var (item, errors) = await service.Update(slug, request.YamlContent);
+            if (item is null)
+                return Results.BadRequest(new { errors });
+
+            return Results.Ok(new { item = new { item.Id, item.Slug, item.Name } });
+        }).RequireAuthorization("CatalogAdmin");
+
+        // Admin: delete item
+        group.MapDelete("/{slug}", async (CatalogService service, string slug) =>
+        {
+            var deleted = await service.Delete(slug);
+            return deleted ? Results.NoContent() : Results.NotFound();
+        }).RequireAuthorization("CatalogAdmin");
+
+        // Admin: toggle active state
+        group.MapPatch("/{slug}/active", async (CatalogService service, string slug, ToggleActiveRequest request) =>
+        {
+            var item = await service.ToggleActive(slug, request.IsActive);
+            return item is not null
+                ? Results.Ok(new { item.Slug, item.IsActive })
+                : Results.NotFound();
+        }).RequireAuthorization("CatalogAdmin");
+
+        // Admin: validate YAML
+        group.MapPost("/validate", (CatalogService service, ValidateYamlRequest request) =>
+        {
+            var result = service.ValidateYaml(request.YamlContent);
+            return Results.Ok(result);
         }).RequireAuthorization("CatalogAdmin");
 
         return group;
     }
 }
+
+public record CreateCatalogRequest(string YamlContent);
+public record UpdateCatalogRequest(string YamlContent);
+public record ToggleActiveRequest(bool IsActive);
+public record ValidateYamlRequest(string YamlContent);

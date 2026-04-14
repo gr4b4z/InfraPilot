@@ -150,7 +150,9 @@ builder.Services.AddScoped<IPlatformEventPublisher, SsePlatformEventPublisher>()
 
 // Background services
 builder.Services.AddHostedService<EscalationTimerService>();
-builder.Services.AddHostedService<CatalogSyncService>();
+var syncFromDisk = builder.Configuration.GetValue("Catalog:SyncFromDisk", builder.Environment.IsDevelopment());
+if (syncFromDisk)
+    builder.Services.AddHostedService<CatalogSyncService>();
 builder.Services.AddHostedService<DeploymentEnrichmentService>();
 builder.Services.AddHostedService<ExecutorWorkerService>();
 
@@ -185,11 +187,14 @@ var app = builder.Build();
     var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
     await db.Database.MigrateAsync();
 
+    // Seed catalog from YAML (production-safe: only adds new slugs)
+    var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
+    await SeedData.SeedCatalog(db, loader);
+
     // Seed demo data in development only.
     if (app.Environment.IsDevelopment())
     {
-        var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
-        await SeedData.Seed(db, loader);
+        await SeedData.SeedDemoData(db);
         await DeploymentSeedData.Seed(db);
     }
 }

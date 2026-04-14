@@ -82,6 +82,10 @@ public class CatalogSyncService : BackgroundService
                 existingItem.Category = def.Category;
                 existingItem.Icon = def.Icon;
                 existingItem.CurrentYamlHash = def.YamlHash;
+                existingItem.Inputs = def.Inputs;
+                existingItem.Validations = def.Validations;
+                existingItem.Approval = def.Approval;
+                existingItem.Executor = def.Executor;
                 existingItem.IsActive = true;
                 existingItem.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -109,6 +113,10 @@ public class CatalogSyncService : BackgroundService
                     Category = def.Category,
                     Icon = def.Icon,
                     CurrentYamlHash = def.YamlHash,
+                    Inputs = def.Inputs,
+                    Validations = def.Validations,
+                    Approval = def.Approval,
+                    Executor = def.Executor,
                     IsActive = true,
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow

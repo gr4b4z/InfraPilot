@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Approvals.Models;
-using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Notifications;
@@ -14,7 +13,6 @@ public class RequestService
     private readonly PlatformDbContext _db;
     private readonly RequestStateMachine _stateMachine;
     private readonly ICurrentUser _currentUser;
-    private readonly CatalogYamlLoader _yamlLoader;
     private readonly ApprovalService _approvalService;
     private readonly ApproverResolver _approverResolver;
     private readonly INotificationService _notificationService;
@@ -23,7 +21,6 @@ public class RequestService
         PlatformDbContext db,
         RequestStateMachine stateMachine,
         ICurrentUser currentUser,
-        CatalogYamlLoader yamlLoader,
         ApprovalService approvalService,
         ApproverResolver approverResolver,
         INotificationService notificationService)
@@ -31,7 +28,6 @@ public class RequestService
         _db = db;
         _stateMachine = stateMachine;
         _currentUser = currentUser;
-        _yamlLoader = yamlLoader;
         _approvalService = approvalService;
         _approverResolver = approverResolver;
         _notificationService = notificationService;
@@ -105,38 +101,34 @@ public class RequestService
         await _stateMachine.TransitionTo(request, RequestStatus.Validating,
             _currentUser.Id, _currentUser.Name, "user");
 
-        // Auto-transition: check if approval is required
-        var definition = request.CatalogItem != null
-            ? _yamlLoader.LoadAll().FirstOrDefault(d => d.Id == request.CatalogItem.Slug)
-            : null;
-
-        var needsApproval = definition?.Approval?.Required == true;
+        // Auto-transition: check if approval is required (read from DB entity)
+        var approvalConfig = request.CatalogItem?.Approval;
+        var needsApproval = approvalConfig?.Required == true;
 
         if (needsApproval)
         {
             await _stateMachine.TransitionTo(request, RequestStatus.AwaitingApproval,
                 "system", "System", "system");
 
-            var approval = definition!.Approval!;
-            var strategy = Enum.TryParse<ApprovalStrategy>(approval.Strategy, ignoreCase: true, out var s)
+            var strategy = Enum.TryParse<ApprovalStrategy>(approvalConfig!.Strategy, ignoreCase: true, out var s)
                 ? s : ApprovalStrategy.Any;
 
             var approvalRequest = await _approvalService.CreateApproval(
-                request, strategy, approval.QuorumCount,
-                approval.ApproverGroup, approval.TimeoutHours, approval.EscalationGroup);
+                request, strategy, approvalConfig.QuorumCount,
+                approvalConfig.ApproverGroup, approvalConfig.TimeoutHours, approvalConfig.EscalationGroup);
 
-            if (!string.IsNullOrEmpty(approval.ApproverGroup))
+            if (!string.IsNullOrEmpty(approvalConfig.ApproverGroup))
             {
-                var approvers = await _approverResolver.ResolveApprovers(approval.ApproverGroup);
+                var approvers = await _approverResolver.ResolveApprovers(approvalConfig.ApproverGroup);
                 var emails = approvers.Select(a => a.Email).Where(e => !string.IsNullOrEmpty(e)).ToList();
 
                 if (emails.Count > 0)
                 {
                     await _notificationService.SendApprovalNotification(
                         approvalRequest.Id,
-                        definition.Name,
+                        request.CatalogItem!.Name,
                         _currentUser.Name,
-                        $"Request for {definition.Name}",
+                        $"Request for {request.CatalogItem.Name}",
                         emails);
                 }
             }

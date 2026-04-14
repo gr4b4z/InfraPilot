@@ -6,6 +6,7 @@ import {
   type ActivityTemplateLine,
 } from '@/stores/settingsStore';
 import { GripVertical, Plus, Trash2, Check, RotateCcw, X } from 'lucide-react';
+import { CatalogSettings } from './CatalogSettings';
 
 export function SettingsPage() {
   const {
@@ -502,6 +503,9 @@ export function SettingsPage() {
           )}
         </div>
       </div>
+
+      {/* ── Service Catalog ── */}
+      <CatalogSettings />
     </div>
   );
 }
