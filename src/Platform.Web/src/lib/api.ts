@@ -123,7 +123,7 @@ class ApiClient {
     return this.request<import('./types').ProductSummary[]>('/deployments/products');
   }
 
-  getDeploymentState(params?: { product?: string; environment?: string }) {
+  getDeploymentState(params?: { product?: string; environment?: string; serviceName?: string }) {
     const query = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]).toString() : '';
     return this.request<import('./types').DeploymentStateEntry[]>(`/deployments/state${query}`);
   }

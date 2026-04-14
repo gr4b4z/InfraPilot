@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { format, formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download } from 'lucide-react';
 import type { DeployEvent } from '@/lib/types';
 
 export function DeploymentHistoryPage() {
@@ -19,6 +19,32 @@ export function DeploymentHistoryPage() {
   useEffect(() => {
     if (product && service) fetchHistory(product, service, environment);
   }, [product, service, environment, fetchHistory]);
+
+  const downloadFile = useCallback((content: string, filename: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const exportJson = useCallback(() => {
+    const data = history.map(flattenEvent);
+    downloadFile(JSON.stringify(data, null, 2), `${product}-${service}-history.json`, 'application/json');
+  }, [history, product, service, downloadFile]);
+
+  const exportCsv = useCallback(() => {
+    const rows = history.map(flattenEvent);
+    if (rows.length === 0) return;
+    const headers = Object.keys(rows[0]);
+    const lines = [
+      headers.join(','),
+      ...rows.map((r) => headers.map((h) => csvCell(String(r[h as keyof typeof r] ?? ''))).join(',')),
+    ];
+    downloadFile(lines.join('\n'), `${product}-${service}-history.csv`, 'text/csv');
+  }, [history, product, service, downloadFile]);
 
   return (
     <div className="space-y-6">
@@ -39,6 +65,26 @@ export function DeploymentHistoryPage() {
             {environment && <span> — {displayName(environment)}</span>}
           </p>
         </div>
+        {history.length > 0 && (
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              onClick={exportCsv}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-colors hover:opacity-80"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)', backgroundColor: 'var(--bg-secondary)' }}
+            >
+              <Download size={13} />
+              CSV
+            </button>
+            <button
+              onClick={exportJson}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-colors hover:opacity-80"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)', backgroundColor: 'var(--bg-secondary)' }}
+            >
+              <Download size={13} />
+              JSON
+            </button>
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -171,4 +217,42 @@ function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: Depl
       )}
     </div>
   );
+}
+
+// ── Export helpers ─────────────────────────────────────────────────
+
+function csvCell(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function flattenEvent(evt: DeployEvent): Record<string, string> {
+  const workItems = evt.references
+    .filter((r) => r.type === 'work-item')
+    .map((r) => r.key ?? r.url ?? '')
+    .join('; ');
+  const prs = evt.references
+    .filter((r) => r.type === 'pull-request')
+    .map((r) => r.url ?? r.key ?? '')
+    .join('; ');
+  const allParticipants = [...evt.participants, ...(evt.enrichment?.participants ?? [])];
+  const participants = allParticipants
+    .map((p) => `${p.role}: ${p.displayName ?? p.email ?? ''}`)
+    .join('; ');
+
+  return {
+    id: evt.id,
+    product: evt.product,
+    service: evt.service,
+    environment: evt.environment,
+    version: evt.version,
+    previousVersion: evt.previousVersion ?? '',
+    source: evt.source,
+    deployedAt: evt.deployedAt,
+    workItems,
+    pullRequests: prs,
+    participants,
+  };
 }
