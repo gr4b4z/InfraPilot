@@ -220,18 +220,18 @@ if (app.Environment.IsDevelopment())
     app.MapGroup("/api/requests").MapRequestEndpoints();
     app.MapGroup("/api/approvals").MapApprovalEndpoints();
     app.MapGroup("/api/audit").MapAuditEndpoints();
+    app.MapGroup("/api/deployments").MapDeploymentEndpoints();
 }
 else
 {
-    app.MapGroup("/api/requests").MapRequestEndpoints().RequireAuthorization();
-    app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization();
-    app.MapGroup("/api/audit").MapAuditEndpoints();
+    // All policies accept both Entra (Bearer) and API key (X-Api-Key) schemes.
+    app.MapGroup("/api/requests").MapRequestEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+    app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+    app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
+    app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 }
 
-// Deployment tracking — POST uses API key auth (always), GET endpoints follow env-based auth
-app.MapGroup("/api/deployments").MapDeploymentEndpoints();
-
-// Webhooks — admin only
+// Webhooks — admin only (both schemes)
 app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
 app.MapGroup("/agent").MapAgentEndpoints().AllowAnonymous();
