@@ -1,7 +1,8 @@
-import { Bell, Monitor, Moon, Sun, Sparkles } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Bell, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useAuthStore } from '@/stores/authStore';
+import { isLocalAuthEnabled } from '@/lib/authConfig';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -10,6 +11,9 @@ const THEME_STORAGE_KEY = 'theme-mode';
 export function Topbar() {
   const { sidebarOpen, toggleSidebar } = useConversationStore();
   const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
@@ -59,6 +63,17 @@ export function Topbar() {
     : themeMode === 'dark'
       ? 'Always dark'
       : 'Always light';
+
+  // Close user menu on outside click
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node))
+        setUserMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [userMenuOpen]);
 
   // Keyboard shortcut: Cmd+K / Ctrl+K
   useEffect(() => {
@@ -161,17 +176,51 @@ export function Topbar() {
 
         <div className="w-px h-6 mx-1.5" style={{ backgroundColor: 'var(--border-color)' }} />
 
-        <button className="flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]">
-          <div
-            className="flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold text-white"
-            style={{ backgroundColor: 'var(--accent)' }}
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setUserMenuOpen((prev) => !prev)}
+            className="flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
           >
-            {user?.initials ?? 'DU'}
-          </div>
-          <span className="hidden sm:block text-[13px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-            {user?.name?.split(' ')[0] ?? 'Dev'}
-          </span>
-        </button>
+            <div
+              className="flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold text-white"
+              style={{ backgroundColor: 'var(--accent)' }}
+            >
+              {user?.initials ?? 'DU'}
+            </div>
+            <span className="hidden sm:block text-[13px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+              {user?.name?.split(' ')[0] ?? 'Dev'}
+            </span>
+          </button>
+
+          {userMenuOpen && (
+            <div
+              className="absolute right-0 top-full mt-1 w-48 rounded-lg border shadow-lg py-1 z-50"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-secondary)',
+              }}
+            >
+              <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
+                <p className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {user?.name}
+                </p>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {user?.email}
+                </p>
+              </div>
+              {isLocalAuthEnabled() && (
+                <button
+                  onClick={() => { setUserMenuOpen(false); logout(); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-[var(--bg-primary)]"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  <LogOut size={14} />
+                  Sign out
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
