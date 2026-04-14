@@ -211,10 +211,6 @@ public class CatalogService
         return Convert.ToHexStringLower(bytes);
     }
 
-    private static string SanitizeForLog(string value)
-    {
-        return value.Replace("\r", "").Replace("\n", "");
-    }
 }
 
 public record CatalogValidationResult(bool IsValid, List<string> Errors);
