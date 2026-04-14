@@ -4,6 +4,7 @@ using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Features.Webhooks.Models;
+using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
 
 namespace Platform.Api.Infrastructure.Persistence;
@@ -27,6 +28,7 @@ public class PlatformDbContext : DbContext
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
+    public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -241,6 +243,20 @@ public class PlatformDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.Status, x.NextRetryAt });
             e.HasIndex(x => x.SubscriptionId);
+        });
+
+        // Local Users (dev/test authentication)
+        modelBuilder.Entity<LocalUser>(e =>
+        {
+            e.ToTable("local_users");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.Email).IsUnique();
+            e.Property(x => x.Email).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.PasswordHash).IsRequired();
+            var rolesJson = e.Property(x => x.RolesJson).HasColumnName("Roles").HasDefaultValue("[]");
+            if (jsonType != null) rolesJson.HasColumnType(jsonType);
+            e.Ignore(x => x.Roles);
         });
     }
 }

@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.Identity;
 using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
 
 namespace Platform.Api.Infrastructure.Persistence;
@@ -238,6 +240,38 @@ public static class SeedData
         };
 
         db.AuditLog.AddRange(auditEntries);
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Seed local dev users for DB-based authentication. Idempotent.
+    /// </summary>
+    public static async Task SeedLocalUsers(PlatformDbContext db)
+    {
+        if (db.LocalUsers.Any()) return;
+
+        var hasher = new PasswordHasher<LocalUser>();
+
+        var users = new (string Email, string Password, string Name, List<string> Roles)[]
+        {
+            ("admin@localhost", "admin123", "Admin User", ["InfraPortal.Admin", "InfraPortal.User"]),
+            ("user@localhost", "user123", "Regular User", ["InfraPortal.User"]),
+            ("viewer@localhost", "viewer123", "Viewer", []),
+        };
+
+        foreach (var (email, password, name, roles) in users)
+        {
+            var user = new LocalUser
+            {
+                Id = Guid.NewGuid(),
+                Email = email,
+                Name = name,
+                Roles = roles,
+            };
+            user.PasswordHash = hasher.HashPassword(user, password);
+            db.LocalUsers.Add(user);
+        }
+
         await db.SaveChangesAsync();
     }
 
