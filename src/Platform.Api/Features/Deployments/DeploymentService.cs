@@ -73,11 +73,12 @@ public class DeploymentService
         return deployEvent;
     }
 
-    public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, CancellationToken ct = default)
+    public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
         var query = _db.DeployEvents.AsQueryable();
         if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
+        if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
 
         // Latest event per (product, service, environment) using a window-function approach
         var latest = await query

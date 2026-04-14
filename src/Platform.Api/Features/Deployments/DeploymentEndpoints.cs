@@ -36,9 +36,9 @@ public static class DeploymentEndpoints
         });
 
         // Current state matrix
-        group.MapGet("/state", async (DeploymentService service, string? product, string? environment, CancellationToken ct) =>
+        group.MapGet("/state", async (DeploymentService service, string? product, string? environment, string? serviceName, CancellationToken ct) =>
         {
-            return Results.Ok(await service.GetState(product, environment, ct));
+            return Results.Ok(await service.GetState(product, environment, serviceName, ct));
         });
 
         // Deployment history for a specific service

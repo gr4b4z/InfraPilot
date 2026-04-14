@@ -179,15 +179,19 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Seed data in development
-if (app.Environment.IsDevelopment())
+// Apply pending EF Core migrations on every startup (idempotent).
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-    var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
     await db.Database.MigrateAsync();
-    await SeedData.Seed(db, loader);
-    await DeploymentSeedData.Seed(db);
+
+    // Seed demo data in development only.
+    if (app.Environment.IsDevelopment())
+    {
+        var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
+        await SeedData.Seed(db, loader);
+        await DeploymentSeedData.Seed(db);
+    }
 }
 
 // Middleware pipeline
