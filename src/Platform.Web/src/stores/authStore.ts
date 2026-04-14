@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { clearStoredToken } from '@/lib/localAuth';
 
 export interface AuthUser {
   id: string;
@@ -16,6 +17,7 @@ interface AuthState {
   setUser: (user: AuthUser) => void;
   setLoading: (loading: boolean) => void;
   clear: () => void;
+  logout: () => void;
 }
 
 function getInitials(name: string): string {
@@ -49,4 +51,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   setUser: (user) => set({ user, isAuthenticated: true, isLoading: false }),
   setLoading: (isLoading) => set({ isLoading }),
   clear: () => set({ user: null, isAuthenticated: false, isLoading: false }),
+  logout: () => {
+    clearStoredToken();
+    set({ user: null, isAuthenticated: false, isLoading: false });
+  },
 }));

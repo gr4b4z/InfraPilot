@@ -4,9 +4,11 @@ import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from '@/components/auth/AuthProvider'
 import { getPageTitle, loadRuntimeConfig } from '@/lib/runtimeConfig'
+import { loadAuthConfig } from '@/lib/authConfig'
 
 async function bootstrap() {
   await loadRuntimeConfig()
+  await loadAuthConfig()
   document.title = getPageTitle()
 
   createRoot(document.getElementById('root')!).render(

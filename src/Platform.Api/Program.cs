@@ -1,6 +1,9 @@
+using System.Text;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
+using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
@@ -53,17 +56,37 @@ else
     builder.Services.AddScoped<PlatformDbContext>(sp => sp.GetRequiredService<PostgresPlatformDbContext>());
 }
 
-// Auth — skip Entra ID in Development when no real tenant is configured
-var tenantId = builder.Configuration["AzureAd:TenantId"];
-if (!string.IsNullOrEmpty(tenantId) && !tenantId.StartsWith('<'))
+// Auth — mode is explicitly configured: "Msal" (Azure AD) or "Local" (DB-based JWT)
+var authMode = (builder.Configuration["Auth:Mode"] ?? "Local").Trim();
+if (authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddAuthentication()
         .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
 }
 else
 {
-    builder.Services.AddAuthentication();
+    // Local DB-based authentication with self-issued JWTs
+    var localJwtKey = builder.Configuration["Auth:LocalJwt:Key"] ?? LocalAuthEndpoints.DefaultDevKey;
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            // Prevent the JWT middleware from remapping claim types (e.g. "roles" → ClaimTypes.Role)
+            // so CurrentUser can read them using the original claim names.
+            options.MapInboundClaims = false;
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuer = LocalAuthEndpoints.Issuer,
+                ValidateAudience = true,
+                ValidAudience = LocalAuthEndpoints.Audience,
+                ValidateLifetime = true,
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(localJwtKey)),
+                NameClaimType = "name",
+                RoleClaimType = "roles",
+            };
+        });
 }
+var isMsal = authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase);
 builder.Services.AddAuthentication()
     .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { });
 builder.Services.AddPlatformAuthorization(builder.Configuration);
@@ -191,6 +214,10 @@ var app = builder.Build();
     var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
     await SeedData.SeedCatalog(db, loader);
 
+    // Seed local users when MSAL is not configured (dev/test)
+    if (!isMsal)
+        await SeedData.SeedLocalUsers(db);
+
     // Seed demo data in development only.
     if (app.Environment.IsDevelopment())
     {
@@ -217,26 +244,29 @@ app.UseRateLimiter();
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow }))
     .AllowAnonymous();
 
-// API endpoint groups
+// Auth config — tells the frontend which auth mode to use
+app.MapGet("/api/auth/config", (IConfiguration config) =>
+{
+    return Results.Ok(new
+    {
+        mode = authMode.ToLowerInvariant(),
+        clientId = isMsal ? config["AzureAd:ClientId"] ?? "" : "",
+        tenantId = isMsal ? config["AzureAd:TenantId"] ?? "" : "",
+    });
+}).AllowAnonymous();
+
+// Local auth endpoints (login/me) — only when MSAL is not configured
+if (!isMsal)
+    app.MapGroup("/api/auth").MapLocalAuthEndpoints();
+
+// API endpoint groups — authorization policies always applied.
+// In dev, local JWT satisfies the Bearer scheme; in prod, Entra ID does.
 app.MapGroup("/api/catalog").MapCatalogEndpoints();
-if (app.Environment.IsDevelopment())
-{
-    // No auth requirement in dev
-    app.MapGroup("/api/catalog/admin").MapCatalogAdminEndpoints();
-    app.MapGroup("/api/requests").MapRequestEndpoints();
-    app.MapGroup("/api/approvals").MapApprovalEndpoints();
-    app.MapGroup("/api/audit").MapAuditEndpoints();
-    app.MapGroup("/api/deployments").MapDeploymentEndpoints();
-}
-else
-{
-    // All policies accept both Entra (Bearer) and API key (X-Api-Key) schemes.
-    app.MapGroup("/api/catalog/admin").MapCatalogAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
-    app.MapGroup("/api/requests").MapRequestEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
-    app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
-    app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
-    app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
-}
+app.MapGroup("/api/catalog/admin").MapCatalogAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/requests").MapRequestEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
+app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 
 // Webhooks — admin only (both schemes)
 app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);

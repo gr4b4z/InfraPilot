@@ -1,11 +1,15 @@
 import type { Configuration, PopupRequest } from '@azure/msal-browser';
 import { PublicClientApplication } from '@azure/msal-browser';
-import { getAzureClientId, getAzureTenantId } from './runtimeConfig';
+import {
+  isMsalEnabled as checkMsal,
+  getAuthClientId,
+  getAuthTenantId,
+} from './authConfig';
 
-// MSAL is initialised lazily the first time any caller asks for it, so we pick up
-// values populated by `loadRuntimeConfig()` (which runs before React mounts in
-// `main.tsx`). That means the same built image can be retargeted at a different
-// tenant by editing `/config.json` at container start — no rebuild needed.
+// MSAL is initialised lazily the first time any caller asks for it, using
+// auth config fetched from the backend at startup (`loadAuthConfig()` in main.tsx).
+// The backend decides whether MSAL is active and supplies clientId/tenantId,
+// so the same built image works across tenants with no rebuild.
 interface MsalState {
   enabled: boolean;
   instance: PublicClientApplication | null;
@@ -17,14 +21,14 @@ let cached: MsalState | null = null;
 function init(): MsalState {
   if (cached) return cached;
 
-  const clientId = getAzureClientId();
-  const tenantId = getAzureTenantId();
-  const enabled = Boolean(clientId && !clientId.startsWith('<'));
-
+  const enabled = checkMsal();
   if (!enabled) {
     cached = { enabled: false, instance: null, loginRequest: { scopes: [] } };
     return cached;
   }
+
+  const clientId = getAuthClientId();
+  const tenantId = getAuthTenantId();
 
   const msalConfig: Configuration = {
     auth: {

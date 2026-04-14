@@ -606,6 +606,47 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("audit_log", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Infrastructure.Auth.LocalUser", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RolesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("Roles");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Email")
+                        .IsUnique();
+
+                    b.ToTable("local_users", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Approvals.Models.ApprovalDecision", b =>
                 {
                     b.HasOne("Platform.Api.Features.Approvals.Models.ApprovalRequest", "ApprovalRequest")

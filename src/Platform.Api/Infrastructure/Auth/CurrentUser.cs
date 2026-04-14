@@ -13,7 +13,7 @@ public class CurrentUser : ICurrentUser
 
     private ClaimsPrincipal? User => _httpContextAccessor.HttpContext?.User;
 
-    public string Id => User?.FindFirstValue("oid") ?? User?.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous";
+    public string Id => User?.FindFirstValue("oid") ?? User?.FindFirstValue("sub") ?? User?.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous";
     public string Name => User?.FindFirstValue("name") ?? User?.FindFirstValue(ClaimTypes.Name) ?? "Anonymous";
     public string Email => User?.FindFirstValue("preferred_username") ?? User?.FindFirstValue(ClaimTypes.Email) ?? "";
 

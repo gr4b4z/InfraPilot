@@ -1,5 +1,7 @@
 import { acquireToken, isMsalEnabled } from './auth';
 import { buildApiUrl } from './runtimeConfig';
+import { isLocalAuthEnabled } from './authConfig';
+import { getStoredToken } from './localAuth';
 
 class ApiClient {
   private token: string | null = null;
@@ -16,6 +18,11 @@ class ApiClient {
 
     if (isMsalEnabled()) {
       const token = await acquireToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    } else if (isLocalAuthEnabled()) {
+      const token = getStoredToken();
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }

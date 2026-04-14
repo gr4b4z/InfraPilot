@@ -3,6 +3,9 @@ import { MsalProvider, useMsal, useMsalAuthentication } from '@azure/msal-react'
 import { InteractionType } from '@azure/msal-browser';
 import { getMsalInstance, isMsalEnabled, getLoginRequest } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
+import { isLocalAuthEnabled } from '@/lib/authConfig';
+import { getStoredToken, fetchCurrentUser } from '@/lib/localAuth';
+import { LoginPage } from '@/app/login/LoginPage';
 import { Loader2 } from 'lucide-react';
 
 const DEV_USER = createAuthUser(
@@ -14,39 +17,71 @@ const DEV_USER = createAuthUser(
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const msalEnabled = isMsalEnabled();
+  const localAuth = isLocalAuthEnabled();
   const msalInstance = getMsalInstance();
   const [msalReady, setMsalReady] = useState(!msalEnabled);
+  const [localAuthChecked, setLocalAuthChecked] = useState(!localAuth);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
 
   useEffect(() => {
-    if (!msalEnabled || !msalInstance) {
-      // Dev mode — populate store with dev user immediately
-      useAuthStore.getState().setUser(DEV_USER);
+    if (msalEnabled) {
+      if (!msalInstance) return;
+      // Initialize MSAL and handle any pending redirect
+      msalInstance
+        .initialize()
+        .then(() => msalInstance.handleRedirectPromise())
+        .then(() => setMsalReady(true))
+        .catch((err) => {
+          console.error('MSAL initialization failed:', err);
+          useAuthStore.getState().setUser(DEV_USER);
+          setMsalReady(true);
+        });
       return;
     }
 
-    // Initialize MSAL and handle any pending redirect
-    msalInstance
-      .initialize()
-      .then(() => msalInstance.handleRedirectPromise())
-      .then(() => setMsalReady(true))
-      .catch((err) => {
-        console.error('MSAL initialization failed:', err);
-        // Fall back to dev mode on MSAL failure
-        useAuthStore.getState().setUser(DEV_USER);
-        setMsalReady(true);
-      });
-  }, [msalEnabled, msalInstance]);
+    if (localAuth) {
+      // Check for existing token in localStorage
+      const token = getStoredToken();
+      if (token) {
+        fetchCurrentUser(token)
+          .then((user) => {
+            useAuthStore.getState().setUser(
+              createAuthUser(user.id, user.name, user.email, user.roles),
+            );
+          })
+          .catch(() => {
+            // Token is invalid/expired — clear it, user will see login page
+            localStorage.removeItem('platform_auth_token');
+          })
+          .finally(() => setLocalAuthChecked(true));
+      } else {
+        setLocalAuthChecked(true);
+      }
+      return;
+    }
 
-  if (!msalReady) {
+    // Neither MSAL nor local auth — legacy dev mode with hardcoded user
+    useAuthStore.getState().setUser(DEV_USER);
+  }, [msalEnabled, localAuth, msalInstance]);
+
+  // MSAL loading
+  if (msalEnabled && !msalReady) {
     return <LoadingScreen />;
   }
 
+  // MSAL flow
   if (msalEnabled && msalInstance) {
     return (
       <MsalProvider instance={msalInstance}>
         <MsalAuthGuard>{children}</MsalAuthGuard>
       </MsalProvider>
     );
+  }
+
+  // Local auth — show login page if not authenticated
+  if (localAuth) {
+    if (!localAuthChecked) return <LoadingScreen />;
+    if (!isAuthenticated) return <LoginPage />;
   }
 
   return <>{children}</>;
