@@ -146,6 +146,47 @@ class ApiClient {
     return this.request<import('./types').DeployEvent[]>(`/deployments/recent/${product}${query}`);
   }
 
+  // Catalog Admin
+  getCatalogAdmin() {
+    return this.request<CatalogAdminResponse>('/catalog/admin');
+  }
+
+  createCatalogItem(yamlContent: string) {
+    return this.request<{ item: { id: string; slug: string; name: string } }>('/catalog/admin', {
+      method: 'POST',
+      body: JSON.stringify({ yamlContent }),
+    });
+  }
+
+  updateCatalogItem(slug: string, yamlContent: string) {
+    return this.request<{ item: { id: string; slug: string; name: string } }>(`/catalog/admin/${slug}`, {
+      method: 'PUT',
+      body: JSON.stringify({ yamlContent }),
+    });
+  }
+
+  deleteCatalogItem(slug: string) {
+    return this.request<void>(`/catalog/admin/${slug}`, { method: 'DELETE' });
+  }
+
+  toggleCatalogItem(slug: string, isActive: boolean) {
+    return this.request<{ slug: string; isActive: boolean }>(`/catalog/admin/${slug}/active`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isActive }),
+    });
+  }
+
+  getCatalogItemYaml(slug: string) {
+    return this.request<{ yamlContent: string }>(`/catalog/admin/${slug}/yaml`);
+  }
+
+  validateCatalogYaml(yamlContent: string) {
+    return this.request<{ isValid: boolean; errors: string[] }>('/catalog/admin/validate', {
+      method: 'POST',
+      body: JSON.stringify({ yamlContent }),
+    });
+  }
+
   // Webhooks
   getWebhooks() {
     return this.request<import('./types').WebhookSubscription[]>('/webhooks');
@@ -215,6 +256,20 @@ interface CatalogItemResponse {
   validations?: unknown[];
   approval?: { required: boolean; type?: string };
   executor?: { type: string };
+}
+
+interface CatalogAdminResponse {
+  items: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    description?: string;
+    category: string;
+    icon?: string;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+  }>;
 }
 
 interface RequestListResponse {

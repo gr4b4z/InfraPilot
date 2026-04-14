@@ -112,6 +112,9 @@ namespace Platform.Api.Migrations.Postgres
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("ApprovalJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -128,9 +131,18 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<string>("Description")
                         .HasColumnType("text");
 
+                    b.Property<string>("ExecutorJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("Icon")
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
+
+                    b.Property<string>("InputsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
@@ -147,6 +159,12 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ValidationsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
 
                     b.HasKey("Id");
 

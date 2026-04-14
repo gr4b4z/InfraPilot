@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
@@ -13,16 +12,13 @@ public class ExecutorWorkerService : BackgroundService
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
 
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly CatalogYamlLoader _yamlLoader;
     private readonly ILogger<ExecutorWorkerService> _logger;
 
     public ExecutorWorkerService(
         IServiceScopeFactory scopeFactory,
-        CatalogYamlLoader yamlLoader,
         ILogger<ExecutorWorkerService> logger)
     {
         _scopeFactory = scopeFactory;
-        _yamlLoader = yamlLoader;
         _logger = logger;
     }
 
@@ -120,9 +116,6 @@ public class ExecutorWorkerService : BackgroundService
         ServiceRequest request,
         CancellationToken ct)
     {
-        // Hydrate executor config from stored YAML (CatalogItem.Executor is EF-Ignored)
-        HydrateExecutorConfig(db, request);
-
         var executorType = request.CatalogItem?.Executor?.Type;
 
         if (string.IsNullOrEmpty(executorType))
@@ -260,9 +253,6 @@ public class ExecutorWorkerService : BackgroundService
             return;
         }
 
-        // Hydrate executor config
-        HydrateExecutorConfig(db, request);
-
         var executorType = request.CatalogItem?.Executor?.Type;
         if (string.IsNullOrEmpty(executorType))
         {
@@ -336,38 +326,4 @@ public class ExecutorWorkerService : BackgroundService
             request.Id, newStatus);
     }
 
-    // ──────────────────────────────────────────────
-    //  Helpers
-    // ──────────────────────────────────────────────
-
-    /// <summary>
-    /// Hydrate CatalogItem.Executor from the stored YAML content, since EF ignores it.
-    /// </summary>
-    private void HydrateExecutorConfig(PlatformDbContext db, ServiceRequest request)
-    {
-        if (request.CatalogItem?.Executor is not null)
-            return; // Already hydrated
-
-        if (request.CatalogItem is null)
-            return;
-
-        var version = db.CatalogItemVersions
-            .Where(v => v.CatalogItemId == request.CatalogItemId)
-            .OrderByDescending(v => v.CreatedAt)
-            .FirstOrDefault();
-
-        if (version is null)
-        {
-            _logger.LogWarning(
-                "No CatalogItemVersion found for CatalogItem {CatalogItemId}",
-                request.CatalogItemId);
-            return;
-        }
-
-        var definition = _yamlLoader.DeserializeDefinition(version.YamlContent);
-        if (definition?.Executor is not null)
-        {
-            request.CatalogItem.Executor = definition.Executor;
-        }
-    }
 }
