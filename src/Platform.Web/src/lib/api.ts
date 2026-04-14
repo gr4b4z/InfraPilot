@@ -152,32 +152,36 @@ class ApiClient {
   }
 
   createCatalogItem(yamlContent: string) {
-    return this.request<{ item: { id: string; slug: string; name: string } }>('/catalog', {
+    return this.request<{ item: { id: string; slug: string; name: string } }>('/catalog/admin', {
       method: 'POST',
       body: JSON.stringify({ yamlContent }),
     });
   }
 
   updateCatalogItem(slug: string, yamlContent: string) {
-    return this.request<{ item: { id: string; slug: string; name: string } }>(`/catalog/${slug}`, {
+    return this.request<{ item: { id: string; slug: string; name: string } }>(`/catalog/admin/${slug}`, {
       method: 'PUT',
       body: JSON.stringify({ yamlContent }),
     });
   }
 
   deleteCatalogItem(slug: string) {
-    return this.request<void>(`/catalog/${slug}`, { method: 'DELETE' });
+    return this.request<void>(`/catalog/admin/${slug}`, { method: 'DELETE' });
   }
 
   toggleCatalogItem(slug: string, isActive: boolean) {
-    return this.request<{ slug: string; isActive: boolean }>(`/catalog/${slug}/active`, {
+    return this.request<{ slug: string; isActive: boolean }>(`/catalog/admin/${slug}/active`, {
       method: 'PATCH',
       body: JSON.stringify({ isActive }),
     });
   }
 
+  getCatalogItemYaml(slug: string) {
+    return this.request<{ yamlContent: string }>(`/catalog/admin/${slug}/yaml`);
+  }
+
   validateCatalogYaml(yamlContent: string) {
-    return this.request<{ isValid: boolean; errors: string[] }>('/catalog/validate', {
+    return this.request<{ isValid: boolean; errors: string[] }>('/catalog/admin/validate', {
       method: 'POST',
       body: JSON.stringify({ yamlContent }),
     });

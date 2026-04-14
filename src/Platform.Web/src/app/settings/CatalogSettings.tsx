@@ -47,33 +47,22 @@ export function CatalogSettings() {
     }
   };
 
-  const handleEdit = (slug: string) => {
-    // Fetch the full item YAML from the detail endpoint — for now, we
-    // load the item and let the user edit the YAML representation.
-    // The backend stores YAML in CatalogItemVersion, but the admin
-    // endpoint doesn't return it. We'll construct a template.
-    const item = items.find((i) => i.slug === slug);
-    if (!item) return;
-    // Pre-fill with a YAML template from known fields
-    const yaml = `id: ${item.slug}
-name: ${item.name}
-description: ${item.description || ''}
-category: ${item.category}
-icon: ${item.icon || ''}
-
-inputs: []
-
-# approval:
-#   required: false
-
-executor:
-  type: manual
-  parameters_map: {}
-`;
-    setYamlContent(yaml);
-    setEditSlug(slug);
+  const handleEdit = async (slug: string) => {
     setErrors([]);
+    setEditSlug(slug);
     setView('edit');
+    setYamlContent('# Loading...');
+    try {
+      const data = await api.getCatalogItemYaml(slug);
+      setYamlContent(data.yamlContent);
+    } catch {
+      // Fallback to a template if YAML content is not available
+      const item = items.find((i) => i.slug === slug);
+      const yaml = item
+        ? `id: ${item.slug}\nname: ${item.name}\ndescription: ${item.description || ''}\ncategory: ${item.category}\nicon: ${item.icon || ''}\n\ninputs: []\n\nexecutor:\n  type: manual\n  parameters_map: {}\n`
+        : '';
+      setYamlContent(yaml);
+    }
   };
 
   const handleCreate = () => {

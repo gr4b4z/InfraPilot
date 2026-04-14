@@ -158,6 +158,19 @@ public class CatalogService
         return (item, []);
     }
 
+    public async Task<string?> GetYamlContent(string slug)
+    {
+        var item = await _db.CatalogItems.FirstOrDefaultAsync(c => c.Slug == slug);
+        if (item is null) return null;
+
+        var version = await _db.CatalogItemVersions
+            .Where(v => v.CatalogItemId == item.Id)
+            .OrderByDescending(v => v.CreatedAt)
+            .FirstOrDefaultAsync();
+
+        return version?.YamlContent;
+    }
+
     public async Task<bool> Delete(string slug)
     {
         var item = await _db.CatalogItems
