@@ -153,7 +153,7 @@ public class CatalogService
         });
 
         await _db.SaveChangesAsync();
-        _logger.LogInformation("Updated catalog item: {Slug}", slug);
+        _logger.LogInformation("Updated catalog item: {Slug}", SanitizeForLog(slug));
 
         return (item, []);
     }
@@ -204,6 +204,11 @@ public class CatalogService
         var bytes = System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(content));
         return Convert.ToHexStringLower(bytes);
+    }
+
+    private static string SanitizeForLog(string value)
+    {
+        return value.Replace("\r", "").Replace("\n", "");
     }
 }
 
