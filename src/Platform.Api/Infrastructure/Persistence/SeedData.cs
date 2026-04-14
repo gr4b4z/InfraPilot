@@ -8,20 +8,20 @@ namespace Platform.Api.Infrastructure.Persistence;
 
 public static class SeedData
 {
-    public static async Task Seed(PlatformDbContext db, CatalogYamlLoader loader)
+    /// <summary>
+    /// Seed catalog items from YAML files. Production-safe: only adds items with new slugs.
+    /// Fresh DB: items are active. Existing DB: new items are inactive (admin enables them).
+    /// </summary>
+    public static async Task SeedCatalog(PlatformDbContext db, CatalogYamlLoader loader)
     {
-        // 1. Sync catalog from YAML
         var definitions = loader.LoadAll();
-        var catalogItems = new Dictionary<string, CatalogItem>();
+        var existingSlugs = db.CatalogItems.Select(c => c.Slug).ToHashSet();
+        var isFreshDb = existingSlugs.Count == 0;
 
         foreach (var def in definitions)
         {
-            var existing = db.CatalogItems.FirstOrDefault(c => c.Slug == def.Id);
-            if (existing is not null)
-            {
-                catalogItems[def.Id] = existing;
+            if (existingSlugs.Contains(def.Id))
                 continue;
-            }
 
             var item = new CatalogItem
             {
@@ -32,7 +32,11 @@ public static class SeedData
                 Category = def.Category,
                 Icon = def.Icon,
                 CurrentYamlHash = def.YamlHash,
-                IsActive = true,
+                IsActive = isFreshDb,
+                Inputs = def.Inputs,
+                Validations = def.Validations,
+                Approval = def.Approval,
+                Executor = def.Executor,
             };
 
             db.CatalogItems.Add(item);
@@ -43,14 +47,20 @@ public static class SeedData
                 YamlContent = def.YamlContent,
                 YamlHash = def.YamlHash,
             });
-
-            catalogItems[def.Id] = item;
         }
 
         await db.SaveChangesAsync();
+    }
 
-        // 2. Skip if requests already exist
+    /// <summary>
+    /// Seed demo requests, approvals, and audit entries. Development only.
+    /// </summary>
+    public static async Task SeedDemoData(PlatformDbContext db)
+    {
+        // Skip if requests already exist
         if (db.ServiceRequests.Any()) return;
+
+        var catalogItems = db.CatalogItems.ToDictionary(c => c.Slug);
 
         var now = DateTimeOffset.UtcNow;
 

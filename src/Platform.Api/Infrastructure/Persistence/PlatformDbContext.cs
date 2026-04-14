@@ -45,6 +45,21 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.Category).HasMaxLength(50).IsRequired();
             e.Property(x => x.Icon).HasMaxLength(50);
             e.Property(x => x.CurrentYamlHash).HasMaxLength(64).IsRequired();
+
+            // JSON storage columns for catalog definition
+            var inputsJson = e.Property(x => x.InputsJson).HasDefaultValue("[]");
+            var validationsJson = e.Property(x => x.ValidationsJson).HasDefaultValue("[]");
+            var approvalJson = e.Property(x => x.ApprovalJson);
+            var executorJson = e.Property(x => x.ExecutorJson);
+            if (jsonType != null)
+            {
+                inputsJson.HasColumnType(jsonType);
+                validationsJson.HasColumnType(jsonType);
+                approvalJson.HasColumnType(jsonType);
+                executorJson.HasColumnType(jsonType);
+            }
+
+            // Computed accessors — not persisted
             e.Ignore(x => x.Inputs);
             e.Ignore(x => x.Validations);
             e.Ignore(x => x.Approval);

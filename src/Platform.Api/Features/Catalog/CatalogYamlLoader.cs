@@ -116,4 +116,21 @@ public class CatalogDefinition
     public string YamlContent { get; set; } = "";
     public string YamlHash { get; set; } = "";
     public string SourcePath { get; set; } = "";
+
+    /// <summary>
+    /// Create a CatalogDefinition from a CatalogItem entity (DB → definition bridge).
+    /// </summary>
+    public static CatalogDefinition FromEntity(CatalogItem item) => new()
+    {
+        Id = item.Slug,
+        Name = item.Name,
+        Description = item.Description ?? "",
+        Category = item.Category,
+        Icon = item.Icon,
+        Inputs = item.Inputs,
+        Validations = item.Validations,
+        Approval = item.Approval,
+        Executor = item.Executor,
+        YamlHash = item.CurrentYamlHash,
+    };
 }
