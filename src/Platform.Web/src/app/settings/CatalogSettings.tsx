@@ -24,6 +24,7 @@ export function CatalogSettings() {
   const [yamlContent, setYamlContent] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [validationOk, setValidationOk] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const loadItems = () => {
@@ -92,12 +93,13 @@ executor:
 
   const handleValidate = async () => {
     setErrors([]);
+    setValidationOk(false);
     try {
       const result = await api.validateCatalogYaml(yamlContent);
       if (!result.isValid) {
         setErrors(result.errors);
       } else {
-        setErrors([]);
+        setValidationOk(true);
       }
       return result.isValid;
     } catch (err) {
@@ -191,9 +193,20 @@ executor:
           </div>
         )}
 
+        {validationOk && (
+          <div
+            className="rounded-lg border p-3"
+            style={{ borderColor: 'var(--success)', backgroundColor: 'color-mix(in srgb, var(--success) 8%, transparent)' }}
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--success)' }}>
+              <Check size={14} /> YAML is valid
+            </div>
+          </div>
+        )}
+
         <textarea
           value={yamlContent}
-          onChange={(e) => setYamlContent(e.target.value)}
+          onChange={(e) => { setYamlContent(e.target.value); setValidationOk(false); }}
           className="w-full rounded-lg border p-3 text-[13px] leading-relaxed resize-y"
           style={{
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -269,14 +282,6 @@ executor:
               style={{ backgroundColor: item.isActive ? 'transparent' : 'color-mix(in srgb, var(--text-muted) 5%, transparent)' }}
             >
               <div className="flex items-center gap-3 min-w-0 flex-1">
-                <button
-                  onClick={() => handleToggle(item.slug, item.isActive)}
-                  title={item.isActive ? 'Disable' : 'Enable'}
-                  className="shrink-0"
-                  style={{ color: item.isActive ? 'var(--success)' : 'var(--text-muted)' }}
-                >
-                  {item.isActive ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
-                </button>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span
@@ -308,6 +313,14 @@ executor:
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0 ml-2">
+                <button
+                  onClick={() => handleToggle(item.slug, item.isActive)}
+                  title={item.isActive ? 'Disable' : 'Enable'}
+                  className="p-1.5 rounded-md transition-colors hover:bg-opacity-50"
+                  style={{ color: item.isActive ? 'var(--success)' : 'var(--text-muted)' }}
+                >
+                  {item.isActive ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+                </button>
                 <button
                   onClick={() => handleEdit(item.slug)}
                   className="p-1.5 rounded-md transition-colors hover:bg-opacity-50"
