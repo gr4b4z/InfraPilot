@@ -231,8 +231,8 @@ else
 // Deployment tracking — POST uses API key auth (always), GET endpoints follow env-based auth
 app.MapGroup("/api/deployments").MapDeploymentEndpoints();
 
-// Webhooks
-app.MapGroup("/api/webhooks").MapWebhookEndpoints();
+// Webhooks — admin only
+app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
 app.MapGroup("/agent").MapAgentEndpoints().AllowAnonymous();
 
