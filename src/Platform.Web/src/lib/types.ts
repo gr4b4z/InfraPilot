@@ -139,6 +139,7 @@ export interface DeploymentStateEntry {
   environment: string;
   version: string;
   previousVersion: string | null;
+  status: string;
   source: string;
   deployedAt: string;
   references: DeployReference[];

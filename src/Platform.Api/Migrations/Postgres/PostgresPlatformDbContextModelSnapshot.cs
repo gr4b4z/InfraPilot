@@ -259,6 +259,13 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("succeeded");
+
                     b.Property<string>("Version")
                         .IsRequired()
                         .HasMaxLength(200)

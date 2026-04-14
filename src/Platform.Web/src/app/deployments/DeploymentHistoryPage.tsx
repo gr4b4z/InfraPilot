@@ -1,24 +1,45 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { format, formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter } from 'lucide-react';
 import type { DeployEvent } from '@/lib/types';
 
 export function DeploymentHistoryPage() {
   const { product, service } = useParams<{ product: string; service: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const environment = searchParams.get('environment') ?? undefined;
-  const { history, loading, fetchHistory } = useDeploymentStore();
+  const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const displayName = (key: string) => getDisplayName(key, product);
 
+  // Always fetch full history (no environment filter) so the env list stays stable
   useEffect(() => {
-    if (product && service) fetchHistory(product, service, environment);
-  }, [product, service, environment, fetchHistory]);
+    if (product && service) fetchHistory(product, service);
+  }, [product, service, fetchHistory]);
+
+  // Derive unique environments from the full set
+  const environments = useMemo(() => {
+    const envSet = new Set(allHistory.map((e) => e.environment));
+    return Array.from(envSet).sort();
+  }, [allHistory]);
+
+  // Client-side filter
+  const history = useMemo(
+    () => environment ? allHistory.filter((e) => e.environment === environment) : allHistory,
+    [allHistory, environment],
+  );
+
+  const setEnvironmentFilter = useCallback((env: string | undefined) => {
+    if (env) {
+      setSearchParams({ environment: env });
+    } else {
+      setSearchParams({});
+    }
+  }, [setSearchParams]);
 
   const downloadFile = useCallback((content: string, filename: string, mime: string) => {
     const blob = new Blob([content], { type: mime });
@@ -65,26 +86,15 @@ export function DeploymentHistoryPage() {
             {environment && <span> — {displayName(environment)}</span>}
           </p>
         </div>
-        {history.length > 0 && (
-          <div className="flex items-center gap-2 ml-auto">
-            <button
-              onClick={exportCsv}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-colors hover:opacity-80"
-              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)', backgroundColor: 'var(--bg-secondary)' }}
-            >
-              <Download size={13} />
-              CSV
-            </button>
-            <button
-              onClick={exportJson}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-colors hover:opacity-80"
-              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)', backgroundColor: 'var(--bg-secondary)' }}
-            >
-              <Download size={13} />
-              JSON
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-2 ml-auto">
+          <EnvironmentFilter
+            environments={environments}
+            selected={environment}
+            displayName={displayName}
+            onChange={setEnvironmentFilter}
+          />
+          <ExportMenu onCSV={exportCsv} onJSON={exportJson} disabled={history.length === 0} />
+        </div>
       </div>
 
       {loading ? (
@@ -132,9 +142,11 @@ function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: Depl
           {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
 
-        <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: 'var(--text-primary)' }}>
+        <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: statusColor(evt.status) }}>
           v{evt.version}
         </span>
+
+        <StatusBadge status={evt.status} />
 
         <span
           className="badge text-[11px]"
@@ -219,6 +231,137 @@ function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: Depl
   );
 }
 
+// ── Status helpers ────────────────────────────────────────────────
+
+const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> = {
+  succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
+  failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
+  in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
+};
+
+function StatusBadge({ status }: { status?: string }) {
+  const s = STATUS_STYLES[status ?? 'succeeded'] ?? STATUS_STYLES.succeeded;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide leading-none"
+      style={{ backgroundColor: s.bg, color: s.fg }}
+    >
+      <span
+        className="inline-block w-1.5 h-1.5 rounded-full"
+        style={{ backgroundColor: s.fg }}
+      />
+      {s.label}
+    </span>
+  );
+}
+
+function statusColor(status?: string): string {
+  if (status === 'failed') return '#ef4444';
+  if (status === 'in_progress') return '#eab308';
+  return 'var(--text-primary)';
+}
+
+// ── Sub-components ────────────────────────────────────────────────
+
+function ExportMenu({ onCSV, onJSON, disabled }: { onCSV: () => void; onJSON: () => void; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        disabled={disabled}
+        className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-colors hover:opacity-80 disabled:opacity-40"
+        style={{ color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+      >
+        <Download size={13} />
+        Export
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            className="absolute right-0 top-full mt-1 z-20 rounded-lg border shadow-lg py-1 min-w-[120px]"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+          >
+            <button
+              onClick={() => { onCSV(); setOpen(false); }}
+              className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              Export CSV
+            </button>
+            <button
+              onClick={() => { onJSON(); setOpen(false); }}
+              className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              Export JSON
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function EnvironmentFilter({
+  environments,
+  selected,
+  displayName,
+  onChange,
+}: {
+  environments: string[];
+  selected: string | undefined;
+  displayName: (key: string) => string;
+  onChange: (env: string | undefined) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (environments.length <= 1) return null;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-colors hover:opacity-80"
+        style={{ color: selected ? 'var(--accent)' : 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+      >
+        <Filter size={13} />
+        {selected ? displayName(selected) : 'All environments'}
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            className="absolute right-0 top-full mt-1 z-20 rounded-lg border shadow-lg py-1 min-w-[160px]"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+          >
+            <button
+              onClick={() => { onChange(undefined); setOpen(false); }}
+              className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
+              style={{ color: !selected ? 'var(--accent)' : 'var(--text-primary)', fontWeight: !selected ? 600 : 400 }}
+            >
+              All environments
+            </button>
+            {environments.map((env) => (
+              <button
+                key={env}
+                onClick={() => { onChange(env); setOpen(false); }}
+                className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
+                style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}
+              >
+                {displayName(env)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Export helpers ─────────────────────────────────────────────────
 
 function csvCell(value: string): string {
@@ -249,6 +392,7 @@ function flattenEvent(evt: DeployEvent): Record<string, string> {
     environment: evt.environment,
     version: evt.version,
     previousVersion: evt.previousVersion ?? '',
+    status: evt.status ?? 'succeeded',
     source: evt.source,
     deployedAt: evt.deployedAt,
     workItems,
