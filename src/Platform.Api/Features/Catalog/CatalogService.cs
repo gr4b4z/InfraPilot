@@ -182,7 +182,7 @@ public class CatalogService
         _db.CatalogItems.Remove(item);
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("Deleted catalog item: {Slug}", slug);
+        _logger.LogInformation("Deleted catalog item: {Slug}", SanitizeForLog(slug));
         return true;
     }
 
@@ -195,8 +195,13 @@ public class CatalogService
         item.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("Toggled catalog item {Slug} active={Active}", slug, isActive);
+        _logger.LogInformation("Toggled catalog item {Slug} active={Active}", SanitizeForLog(slug), isActive);
         return item;
+    }
+
+    private static string SanitizeForLog(string value)
+    {
+        return value.Replace("\r", string.Empty).Replace("\n", string.Empty);
     }
 
     private static string ComputeHash(string content)
