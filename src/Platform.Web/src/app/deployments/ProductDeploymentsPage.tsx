@@ -110,9 +110,9 @@ export function ProductDeploymentsPage() {
 
   const setTab = useCallback(
     (v: ViewTab) => {
-      // When switching tabs, keep only relevant params
+      // When switching tabs, keep only relevant params but preserve env across tabs
       if (v === 'state') {
-        updateParams({ tab: null, atime: null, asince: null, env: null });
+        updateParams({ tab: null, atime: null, asince: null });
       } else {
         updateParams({ tab: 'activity', time: null, since: null });
       }
