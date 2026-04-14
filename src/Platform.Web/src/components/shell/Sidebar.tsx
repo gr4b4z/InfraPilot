@@ -12,7 +12,7 @@ import {
   Webhook,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { getAppName, getAppSubtitle } from '@/lib/runtimeConfig';
+import { getAppName, getAppSubtitle, getEnvironmentLabel } from '@/lib/runtimeConfig';
 
 interface NavItem {
   to: string;
@@ -86,15 +86,15 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* Environment badge */}
-      {!collapsed && (
+      {/* Environment badge — only shown when ENVIRONMENT_LABEL is set in config.json */}
+      {!collapsed && getEnvironmentLabel() && (
         <div className="px-3 pt-3 pb-1">
           <div
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium"
             style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
           >
             <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--warning)' }} />
-            Development
+            {getEnvironmentLabel()}
           </div>
         </div>
       )}
