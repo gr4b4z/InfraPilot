@@ -277,6 +277,7 @@ app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(Autho
 app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
