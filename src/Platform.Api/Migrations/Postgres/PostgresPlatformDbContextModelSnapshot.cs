@@ -222,6 +222,11 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<bool>("IsRollback")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("MetadataJson")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -258,6 +263,13 @@ namespace Platform.Api.Migrations.Postgres
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("succeeded");
 
                     b.Property<string>("Version")
                         .IsRequired()

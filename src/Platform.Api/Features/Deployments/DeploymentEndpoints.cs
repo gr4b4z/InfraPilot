@@ -70,6 +70,9 @@ public static class DeploymentEndpoints
         return group;
     }
 
+    private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
+        { "succeeded", "failed", "in_progress" };
+
     private static List<string> Validate(CreateDeployEventDto dto)
     {
         var errors = new List<string>();
@@ -79,6 +82,8 @@ public static class DeploymentEndpoints
         if (string.IsNullOrWhiteSpace(dto.Version)) errors.Add("'version' is required");
         if (string.IsNullOrWhiteSpace(dto.Source)) errors.Add("'source' is required");
         if (dto.DeployedAt == default) errors.Add("'deployedAt' is required");
+        if (dto.Status is not null && !ValidStatuses.Contains(dto.Status))
+            errors.Add($"'status' must be one of: {string.Join(", ", ValidStatuses)}");
         return errors;
     }
 }

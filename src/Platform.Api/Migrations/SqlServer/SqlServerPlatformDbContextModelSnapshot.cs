@@ -222,6 +222,11 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<bool>("IsRollback")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("MetadataJson")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -258,6 +263,13 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasDefaultValue("succeeded");
 
                     b.Property<string>("Version")
                         .IsRequired()

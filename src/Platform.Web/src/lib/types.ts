@@ -139,6 +139,8 @@ export interface DeploymentStateEntry {
   environment: string;
   version: string;
   previousVersion: string | null;
+  isRollback?: boolean;
+  status: string;
   source: string;
   deployedAt: string;
   references: DeployReference[];
