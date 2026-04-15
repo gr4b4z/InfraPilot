@@ -230,10 +230,8 @@ var app = builder.Build();
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+// Expose OpenAPI spec (JSON only, no UI) in all environments.
+app.MapOpenApi();
 
 app.UseCors();
 app.UseAuthentication();
