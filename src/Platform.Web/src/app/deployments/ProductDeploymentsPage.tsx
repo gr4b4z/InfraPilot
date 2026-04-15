@@ -14,6 +14,9 @@ import {
   Workflow,
   Download,
   Undo2,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
 
@@ -89,6 +92,9 @@ export function ProductDeploymentsPage() {
   const customDate = searchParams.get('since') ?? '';
   const activityCustomDate = searchParams.get('asince') ?? '';
   const envFilter = searchParams.get('env') ?? 'all';
+  const sortBy = searchParams.get('sort') ?? 'service'; // 'service' or an env key
+  const sortDir: 'asc' | 'desc' =
+    searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
 
   // Write filter state to URL search params
   const updateParams = useCallback(
@@ -188,12 +194,54 @@ export function ProductDeploymentsPage() {
   }, [recentActivity]);
 
   // State matrix helpers
-  const services = Array.from(new Set(stateMatrix.map((s) => s.service))).sort();
   const environments = getOrderedEnvironments(
     Array.from(new Set(stateMatrix.map((s) => s.environment)))
   );
-  const getCell = (service: string, env: string) =>
-    stateMatrix.find((s) => s.service === service && s.environment === env);
+  const getCell = useCallback(
+    (service: string, env: string) =>
+      stateMatrix.find((s) => s.service === service && s.environment === env),
+    [stateMatrix]
+  );
+
+  // Sorted service list — "service" sorts alphabetically, env-key sort sorts by
+  // that environment's last deploy time (services with no deploy in that env
+  // sink to the bottom regardless of direction).
+  const services = useMemo(() => {
+    const names = Array.from(new Set(stateMatrix.map((s) => s.service)));
+    const dirMul = sortDir === 'asc' ? 1 : -1;
+
+    if (sortBy === 'service') {
+      return names.sort((a, b) => a.localeCompare(b) * dirMul);
+    }
+
+    // Sort by deploy time for the given environment
+    return names.sort((a, b) => {
+      const ca = getCell(a, sortBy);
+      const cb = getCell(b, sortBy);
+      if (!ca && !cb) return a.localeCompare(b);
+      if (!ca) return 1; // missing always at bottom
+      if (!cb) return -1;
+      const ta = new Date(ca.deployedAt).getTime();
+      const tb = new Date(cb.deployedAt).getTime();
+      return (ta - tb) * dirMul;
+    });
+  }, [stateMatrix, sortBy, sortDir, getCell]);
+
+  const toggleSort = useCallback(
+    (key: string) => {
+      const updates: Record<string, string | null> = {};
+      if (sortBy === key) {
+        // Same column — flip direction
+        updates.dir = sortDir === 'asc' ? 'desc' : null; // omit when back to default asc
+      } else {
+        updates.sort = key === 'service' ? null : key; // omit default
+        // New column: service defaults to asc, env defaults to desc (latest first)
+        updates.dir = key === 'service' ? null : 'desc';
+      }
+      updateParams(updates);
+    },
+    [sortBy, sortDir, updateParams]
+  );
   const isBehind = (service: string, envIndex: number) => {
     if (envIndex === 0) return false;
     const current = getCell(service, environments[envIndex]);
@@ -423,11 +471,14 @@ export function ProductDeploymentsPage() {
           <table className="w-full text-[13px]">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                <th
-                  className="text-left px-4 py-3 font-medium"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Service
+                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
+                  <SortHeader
+                    label="Service"
+                    active={sortBy === 'service'}
+                    dir={sortDir}
+                    onClick={() => toggleSort('service')}
+                    align="left"
+                  />
                 </th>
                 {environments.map((env) => (
                   <th
@@ -435,7 +486,13 @@ export function ProductDeploymentsPage() {
                     className="text-center px-4 py-3 font-medium"
                     style={{ color: 'var(--text-muted)' }}
                   >
-                    {getDisplayName(env)}
+                    <SortHeader
+                      label={getDisplayName(env)}
+                      active={sortBy === env}
+                      dir={sortDir}
+                      onClick={() => toggleSort(env)}
+                      align="center"
+                    />
                   </th>
                 ))}
               </tr>
@@ -620,6 +677,34 @@ function ExportMenu({
         </>
       )}
     </div>
+  );
+}
+
+function SortHeader({
+  label,
+  active,
+  dir,
+  onClick,
+  align,
+}: {
+  label: string;
+  active: boolean;
+  dir: 'asc' | 'desc';
+  onClick: () => void;
+  align: 'left' | 'center';
+}) {
+  const Icon = active ? (dir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1 transition-colors hover:opacity-80 ${align === 'center' ? 'justify-center' : ''}`}
+      style={{ color: active ? 'var(--text-primary)' : 'inherit' }}
+      title={active ? `Sorted ${dir}ending — click to ${dir === 'asc' ? 'reverse' : 'reverse'}` : 'Click to sort'}
+    >
+      {label}
+      <Icon size={12} style={{ opacity: active ? 1 : 0.5 }} />
+    </button>
   );
 }
 
