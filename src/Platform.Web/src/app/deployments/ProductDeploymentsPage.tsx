@@ -12,6 +12,7 @@ import {
   Ticket,
   Workflow,
   Download,
+  Undo2,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
 
@@ -235,17 +236,21 @@ export function ProductDeploymentsPage() {
   }, []);
 
   const exportStateCSV = useCallback(() => {
-    const header = ['Service', ...environments.map((e) => `${getDisplayName(e)} (version)`), ...environments.map((e) => `${getDisplayName(e)} (deployed)`)];
+    const header = ['Service', ...environments.map((e) => `${getDisplayName(e)} (version)`), ...environments.map((e) => `${getDisplayName(e)} (status)`), ...environments.map((e) => `${getDisplayName(e)} (deployed)`)];
     const rows = services.map((service) => {
       const versions = environments.map((env) => {
         const cell = getCell(service, env);
         return cell ? `v${cell.version}` : '';
       });
+      const statuses = environments.map((env) => {
+        const cell = getCell(service, env);
+        return cell?.status ?? '';
+      });
       const dates = environments.map((env) => {
         const cell = getCell(service, env);
         return cell ? cell.deployedAt : '';
       });
-      return [service, ...versions, ...dates];
+      return [service, ...versions, ...statuses, ...dates];
     });
     const csv = [header, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
     downloadFile(csv, `${product}-state.csv`, 'text/csv');
@@ -253,10 +258,10 @@ export function ProductDeploymentsPage() {
 
   const exportStateJSON = useCallback(() => {
     const data = services.map((service) => {
-      const envData: Record<string, { version: string; deployedAt: string }> = {};
+      const envData: Record<string, { version: string; status: string; deployedAt: string }> = {};
       for (const env of environments) {
         const cell = getCell(service, env);
-        if (cell) envData[env] = { version: cell.version, deployedAt: cell.deployedAt };
+        if (cell) envData[env] = { version: cell.version, status: cell.status ?? 'succeeded', deployedAt: cell.deployedAt };
       }
       return { service, environments: envData };
     });
@@ -264,7 +269,7 @@ export function ProductDeploymentsPage() {
   }, [services, environments, getCell, product, downloadFile]);
 
   const exportActivityCSV = useCallback(() => {
-    const header = ['Service', 'Environment', 'Version', 'Previous Version', 'Deployed At', 'Source', 'Work Item', 'Work Item Title', 'PR Author', 'QA'];
+    const header = ['Service', 'Environment', 'Version', 'Previous Version', 'Status', 'Deployed At', 'Source', 'Work Item', 'Work Item Title', 'PR Author', 'QA'];
     const rows = filteredActivity.map((evt) => {
       const workItem = evt.references.find((r) => r.type === 'work-item');
       const allP = [...evt.participants, ...(evt.enrichment?.participants ?? [])];
@@ -275,6 +280,7 @@ export function ProductDeploymentsPage() {
         evt.environment,
         evt.version,
         evt.previousVersion ?? '',
+        evt.status ?? 'succeeded',
         evt.deployedAt,
         evt.source,
         workItem?.key ?? '',
@@ -485,16 +491,25 @@ export function ProductDeploymentsPage() {
                         onClick={() => setSelected(cell)}
                       >
                         <div className="inline-flex flex-col items-center gap-0.5">
-                          <span
-                            className="font-mono text-[12px] font-medium"
-                            style={{
-                              color: behind
-                                ? 'var(--warning)'
-                                : 'var(--text-primary)',
-                            }}
-                          >
-                            {behind && '\u26a0 '}v{cell.version}
+                          <span className="inline-flex items-center gap-1">
+                            <span
+                              className="font-mono text-[12px] font-medium"
+                              style={{
+                                color: behind
+                                  ? 'var(--warning)'
+                                  : statusColor(cell.status),
+                              }}
+                            >
+                              {behind && '\u26a0 '}v{cell.version}
+                            </span>
+                            <RollbackIndicator
+                              isRollback={cell.isRollback}
+                              previousVersion={cell.previousVersion}
+                            />
                           </span>
+                          {cell.status && cell.status !== 'succeeded' && (
+                            <StatusBadge status={cell.status} />
+                          )}
                           <span
                             className="text-[11px]"
                             style={{ color: 'var(--text-muted)' }}
@@ -695,6 +710,54 @@ function EnvPill({
   );
 }
 
+const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> = {
+  succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
+  failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
+  in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
+};
+
+function StatusBadge({ status }: { status?: string }) {
+  const s = STATUS_STYLES[status ?? 'succeeded'] ?? STATUS_STYLES.succeeded;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide leading-none"
+      style={{ backgroundColor: s.bg, color: s.fg }}
+    >
+      <span
+        className="inline-block w-1.5 h-1.5 rounded-full"
+        style={{ backgroundColor: s.fg }}
+      />
+      {s.label}
+    </span>
+  );
+}
+
+function statusColor(status?: string): string {
+  if (status === 'failed') return '#ef4444';
+  if (status === 'in_progress') return '#eab308';
+  return 'var(--text-primary)';
+}
+
+function RollbackIndicator({
+  isRollback,
+  previousVersion,
+}: {
+  isRollback?: boolean;
+  previousVersion?: string | null;
+}) {
+  if (!isRollback) return null;
+  const title = previousVersion ? `Rolled back from v${previousVersion}` : 'Rollback';
+  return (
+    <span
+      className="inline-flex items-center"
+      title={title}
+      aria-label={title}
+    >
+      <Undo2 size={12} style={{ color: 'var(--text-muted)' }} />
+    </span>
+  );
+}
+
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
   'pull-request': GitPullRequest,
@@ -759,14 +822,23 @@ function ActivityCard({
             </>
           )}
         </div>
-        <span
-          className="font-mono text-[12px] font-medium whitespace-nowrap"
-          style={{ color: 'var(--text-primary)' }}
-        >
-          {evt.previousVersion
-            ? `v${evt.previousVersion} → v${evt.version}`
-            : `v${evt.version}`}
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <span
+            className="font-mono text-[12px] font-medium whitespace-nowrap"
+            style={{ color: statusColor(evt.status) }}
+          >
+            {evt.previousVersion
+              ? `v${evt.previousVersion} → v${evt.version}`
+              : `v${evt.version}`}
+          </span>
+          <RollbackIndicator
+            isRollback={evt.isRollback}
+            previousVersion={evt.previousVersion}
+          />
+          {evt.status && evt.status !== 'succeeded' && (
+            <StatusBadge status={evt.status} />
+          )}
+        </div>
       </div>
 
       {/* Template lines — last line shares row with reference icons */}

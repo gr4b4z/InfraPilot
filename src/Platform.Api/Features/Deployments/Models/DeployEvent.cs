@@ -16,6 +16,8 @@ public class DeployEvent
     public string Environment { get; set; } = "";
     public string Version { get; set; } = "";
     public string? PreviousVersion { get; set; }
+    public bool IsRollback { get; set; }
+    public string Status { get; set; } = "succeeded";
     public string Source { get; set; } = "";
     public DateTimeOffset DeployedAt { get; set; }
     public string ReferencesJson { get; set; } = "[]";

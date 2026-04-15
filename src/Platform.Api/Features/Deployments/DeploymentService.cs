@@ -34,6 +34,7 @@ public class DeploymentService
             .Select(e => new { e.Version })
             .FirstOrDefaultAsync(ct);
 
+        var status = dto.Status ?? "succeeded";
         var deployEvent = new DeployEvent
         {
             Id = Guid.NewGuid(),
@@ -42,6 +43,8 @@ public class DeploymentService
             Environment = dto.Environment,
             Version = dto.Version,
             PreviousVersion = previousEvent?.Version,
+            IsRollback = dto.IsRollback,
+            Status = status,
             Source = dto.Source,
             DeployedAt = dto.DeployedAt,
             ReferencesJson = JsonSerializer.Serialize(dto.References ?? [], JsonOptions),
@@ -66,6 +69,8 @@ public class DeploymentService
             deployEvent.Environment,
             deployEvent.Version,
             deployEvent.PreviousVersion,
+            deployEvent.IsRollback,
+            deployEvent.Status,
             deployEvent.Source,
             deployEvent.DeployedAt,
         }, new WebhookEventFilters(deployEvent.Product, deployEvent.Environment));
@@ -168,7 +173,7 @@ public class DeploymentService
 
         return new DeploymentStateDto(
             e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.Source, e.DeployedAt, refs, parts, enrichment);
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment);
     }
 
     private static DeployEventResponseDto MapToResponseDto(DeployEvent e)
@@ -182,7 +187,7 @@ public class DeploymentService
 
         return new DeployEventResponseDto(
             e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
     }
 
     private static T? Deserialize<T>(string? json)
