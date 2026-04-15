@@ -153,6 +153,17 @@ class ApiClient {
     return this.request<import('./types').DeployEvent[]>(`/deployments/recent/${product}${query}`);
   }
 
+  // Deployment admin — duplicate cleanup (admin only)
+  getDeploymentDuplicatesPreview() {
+    return this.request<{ groups: number; rows: number }>('/deployments/admin/duplicates');
+  }
+
+  removeDeploymentDuplicates() {
+    return this.request<{ groups: number; rows: number }>('/deployments/admin/duplicates', {
+      method: 'DELETE',
+    });
+  }
+
   // Catalog Admin
   getCatalogAdmin() {
     return this.request<CatalogAdminResponse>('/catalog/admin');

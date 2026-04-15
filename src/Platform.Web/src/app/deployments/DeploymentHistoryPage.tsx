@@ -2,9 +2,53 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { format, formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2 } from 'lucide-react';
-import type { DeployEvent } from '@/lib/types';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
+import type { DeployEvent, DeployReference } from '@/lib/types';
+
+const REF_ICONS: Record<string, typeof ExternalLink> = {
+  'work-item': Ticket,
+  'pull-request': GitPullRequest,
+  repository: GitBranch,
+  pipeline: Workflow,
+};
+
+function referenceLabel(ref: DeployReference): string {
+  switch (ref.type) {
+    case 'work-item':
+      return ref.key ?? 'Work Item';
+    case 'pull-request':
+      return 'Pull Request';
+    case 'repository':
+      if (ref.key) return ref.key;
+      if (ref.url) {
+        // Parse "owner/repo" from a URL like https://github.com/owner/repo or .../repo.git
+        const m = ref.url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?(?:\/|$|\?|#)/);
+        if (m) return m[1];
+      }
+      if (ref.revision) return ref.revision.slice(0, 8);
+      return 'Repository';
+    case 'pipeline':
+      return ref.key ?? ref.provider ?? 'Pipeline';
+    default:
+      return ref.key ?? ref.type;
+  }
+}
+
+function referenceTooltip(ref: DeployReference, labels: Record<string, string>): string {
+  switch (ref.type) {
+    case 'work-item':
+      return labels.workItemTitle ?? ref.type;
+    case 'pull-request':
+      return labels.prTitle ?? ref.type;
+    default:
+      return ref.type;
+  }
+}
+
+const PAGE_SIZE = 20;
+const MAX_HISTORY_FETCH = 500;
 
 export function DeploymentHistoryPage() {
   const { product, service } = useParams<{ product: string; service: string }>();
@@ -13,12 +57,11 @@ export function DeploymentHistoryPage() {
   const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
   const [expanded, setExpanded] = useState<string | null>(null);
-
-  const displayName = (key: string) => getDisplayName(key, product);
+  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
 
   // Always fetch full history (no environment filter) so the env list stays stable
   useEffect(() => {
-    if (product && service) fetchHistory(product, service);
+    if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
   }, [product, service, fetchHistory]);
 
   // Derive unique environments from the full set
@@ -32,6 +75,14 @@ export function DeploymentHistoryPage() {
     () => environment ? allHistory.filter((e) => e.environment === environment) : allHistory,
     [allHistory, environment],
   );
+
+  // Reset pagination when the environment filter changes
+  useEffect(() => {
+    setDisplayCount(PAGE_SIZE);
+  }, [environment]);
+
+  const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
+  const hasMore = displayCount < history.length;
 
   const setEnvironmentFilter = useCallback((env: string | undefined) => {
     if (env) {
@@ -83,14 +134,14 @@ export function DeploymentHistoryPage() {
           </h1>
           <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
             Deployment history for {product}/{service}
-            {environment && <span> — {displayName(environment)}</span>}
+            {environment && <span> — {getDisplayName(environment)}</span>}
           </p>
         </div>
         <div className="flex items-center gap-2 ml-auto">
           <EnvironmentFilter
             environments={environments}
             selected={environment}
-            displayName={displayName}
+            displayName={getDisplayName}
             onChange={setEnvironmentFilter}
           />
           <ExportMenu onCSV={exportCsv} onJSON={exportJson} disabled={history.length === 0} />
@@ -107,24 +158,37 @@ export function DeploymentHistoryPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {history.map((evt) => (
+          {visibleHistory.map((evt) => (
             <HistoryRow
               key={evt.id}
               event={evt}
-              product={product}
               isExpanded={expanded === evt.id}
               onToggle={() => setExpanded(expanded === evt.id ? null : evt.id)}
             />
           ))}
+          {hasMore && (
+            <div className="flex flex-col items-center gap-1 pt-3">
+              <button
+                onClick={() => setDisplayCount((n) => n + PAGE_SIZE)}
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg transition-colors hover:opacity-80"
+                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+              >
+                Load more
+                <ChevronDown size={14} />
+              </button>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Showing {visibleHistory.length} of {history.length}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: DeployEvent; product?: string; isExpanded: boolean; onToggle: () => void; }) {
-  const { getDisplayName: rawGetDisplayName } = useSettingsStore();
-  const getDisplayName = (key: string) => rawGetDisplayName(key, product);
+function HistoryRow({ event: evt, isExpanded, onToggle }: { event: DeployEvent; isExpanded: boolean; onToggle: () => void; }) {
+  const { getDisplayName } = useSettingsStore();
   const workItem = evt.references.find((r) => r.type === 'work-item');
   const prAuthor = evt.participants.find((p) => p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
@@ -200,29 +264,44 @@ function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: Depl
 
           {evt.references.length > 0 && (
             <div className="flex flex-wrap gap-3">
-              {evt.references.map((ref, i) => (
-                ref.url ? (
+              {evt.references.map((ref, i) => {
+                const Icon = REF_ICONS[ref.type] ?? ExternalLink;
+                const label = referenceLabel(ref);
+                const tooltip = referenceTooltip(ref, labels);
+                return ref.url ? (
                   <a
                     key={i}
                     href={ref.url}
                     target="_blank"
                     rel="noopener noreferrer"
+                    title={tooltip}
                     className="inline-flex items-center gap-1 hover:underline"
                     style={{ color: 'var(--accent)' }}
                   >
-                    <ExternalLink size={11} />
-                    {ref.type === 'work-item' ? ref.key : ref.type}
+                    <Icon size={11} />
+                    {label}
                   </a>
-                ) : null
-              ))}
+                ) : (
+                  <span
+                    key={i}
+                    title={tooltip}
+                    className="inline-flex items-center gap-1"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    <Icon size={11} />
+                    {label}
+                  </span>
+                );
+              })}
             </div>
           )}
 
           {[...evt.participants, ...(evt.enrichment?.participants ?? [])].length > 0 && (
             <div className="flex flex-wrap gap-x-4 gap-y-1">
               {[...evt.participants, ...(evt.enrichment?.participants ?? [])].map((p, i) => (
-                <span key={i} style={{ color: 'var(--text-muted)' }}>
+                <span key={i} className="inline-flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
                   {p.role}: <span style={{ color: 'var(--text-secondary)' }}>{p.displayName ?? p.email}</span>
+                  <CopyEmailButton email={p.email} size={11} />
                 </span>
               ))}
             </div>

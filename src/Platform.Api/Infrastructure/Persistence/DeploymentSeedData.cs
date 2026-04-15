@@ -3,307 +3,301 @@ using Platform.Api.Features.Deployments.Models;
 
 namespace Platform.Api.Infrastructure.Persistence;
 
+/// <summary>
+/// Generates deterministic demo deployment data: 40 services spread across
+/// 4 products, each with 30 deployment events stretched over the last 90 days.
+/// Regenerating against a clean database always produces the same output
+/// (seeded Random), so dev screenshots stay consistent.
+/// </summary>
 public static class DeploymentSeedData
 {
+    private const int EventsPerService = 30;
+    private const int HistoryDays = 90;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
+    // 40 services total, grouped by product.
+    private static readonly ProductCatalog[] Catalog =
+    [
+        new("ticketing-platform", "https://dev.azure.com/softwareone-pc/MPT", SourceStyle.AzureDevOps,
+            [
+                "orders", "schedule", "billing", "checkout", "inventory",
+                "pricing", "promotions", "reviews", "notifications", "search",
+            ]),
+        new("marketplace", "https://github.com/softwareone", SourceStyle.GitHub,
+            [
+                "marketplace-api", "marketplace-ui", "vendor-portal", "catalog-sync", "payment-gateway",
+                "shipping", "tax-engine", "reports", "admin-console", "mobile-app",
+            ]),
+        new("identity-platform", "https://dev.azure.com/softwareone-pc/IDP", SourceStyle.AzureDevOps,
+            [
+                "auth-api", "sso-bridge", "user-service", "token-issuer", "session-manager",
+                "mfa-service", "audit-log", "policy-engine", "role-admin", "profile-api",
+            ]),
+        new("observability", "https://github.com/softwareone", SourceStyle.GitHub,
+            [
+                "metrics-collector", "log-aggregator", "trace-pipeline", "dashboard-api", "alert-engine",
+                "anomaly-detector", "synthetic-probe", "uptime-checker", "capacity-planner", "cost-tracker",
+            ]),
+    ];
+
+    private static readonly string[] Environments = ["development", "staging", "production"];
+
+    // Weighted environment pick — dev deploys happen most often, prod least.
+    private static readonly (string env, int weight)[] EnvWeights =
+    [
+        ("development", 5),
+        ("staging", 3),
+        ("production", 2),
+    ];
+
+    private static readonly Person[] People =
+    [
+        new("Jan Kowalski", "jan.kowalski@softwareone.com"),
+        new("Anna Kowalska", "anna.kowalska@softwareone.com"),
+        new("Piotr Nowak", "piotr.nowak@softwareone.com"),
+        new("Marta Wiśniewska", "marta.wisniewska@softwareone.com"),
+        new("Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
+        new("Tomasz Wójcik", "tomasz.wojcik@softwareone.com"),
+        new("Katarzyna Lewandowska", "katarzyna.lewandowska@softwareone.com"),
+        new("Michał Zieliński", "michal.zielinski@softwareone.com"),
+        new("Agnieszka Kamińska", "agnieszka.kaminska@softwareone.com"),
+        new("Paweł Szymański", "pawel.szymanski@softwareone.com"),
+    ];
+
+    private static readonly string[] WorkItemTitles =
+    [
+        "Fix flaky integration test for checkout", "Add pagination to history endpoint",
+        "Implement rate-limit headers on public API", "Migrate cron jobs off legacy scheduler",
+        "Switch to System.Text.Json for performance", "Reduce memory footprint on long polling worker",
+        "Patch CVE-2026-0432 in upstream dependency", "Harden CSP on public dashboard",
+        "Add webhook retry with exponential backoff", "Fix timezone handling in recurring schedules",
+        "Wire OpenTelemetry through background jobs", "Rebuild search index pipeline for incremental updates",
+        "Add dark mode support", "Introduce feature flag for new onboarding flow",
+        "Fix N+1 query on invoice list page", "Ingest vendor catalog in chunks to avoid OOM",
+        "Enable HTTP/2 on edge proxy", "Audit data retention policy for analytics exports",
+        "Add soft-delete to customer records", "Introduce per-tenant quotas for API usage",
+    ];
+
+    private static readonly string[] PrTitles =
+    [
+        "fix: correct currency rounding for EUR/PLN pair",
+        "feat: bulk import endpoint for catalog items",
+        "chore: bump dotnet sdk to 10.0.3",
+        "perf: stream large result sets instead of buffering",
+        "refactor: split auth middleware into request + policy",
+        "fix: swallow cancellation exceptions in worker",
+        "feat: add structured logging with Serilog",
+        "fix: race condition on concurrent webhook delivery",
+        "feat: expose health endpoint for ready/live probes",
+        "docs: README section on local container run",
+        "test: integration tests for rollback path",
+        "ci: publish OCI image on main branch",
+        "fix: handle null vendor in report generator",
+        "feat: rolling deployment window configuration",
+        "refactor: pull DTO mapping into extension methods",
+    ];
+
     public static async Task Seed(PlatformDbContext db)
     {
         if (db.DeployEvents.Any()) return;
 
+        var rand = new Random(20260415); // deterministic
         var now = DateTimeOffset.UtcNow;
-        var events = new List<DeployEvent>();
+        var events = new List<DeployEvent>(capacity: 40 * EventsPerService);
 
-        // ──────────────────────────────────────────────
-        // ticketing-platform: orders
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("ticketing-platform", "orders", "production", "2.3.0", "2.2.8",
-            "webhook", now.AddDays(-7),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/softwareone-pc/MPT/_build/results?buildId=12300"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1234", "jira", "PLAT-1234"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/orders/pullrequest/542")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Anna Kowalska", "anna.kowalska@softwareone.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
+        foreach (var product in Catalog)
+        {
+            foreach (var service in product.Services)
             {
-                ["workItemTitle"] = "Fix order total calculation for multi-currency baskets",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: correct currency conversion in order totals",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "orders", "staging", "2.3.1", "2.3.0",
-            "webhook", now.AddDays(-4),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/softwareone-pc/MPT/_build/results?buildId=12335"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1280", "jira", "PLAT-1280"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/orders/pullrequest/558")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add pagination to order history endpoint",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: paginated order history with cursor-based navigation",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "orders", "development", "2.4.0", "2.3.1",
-            "webhook", now.AddDays(-2),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/softwareone-pc/MPT/_build/results?buildId=12340"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1301", "jira", "PLAT-1301"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/orders/pullrequest/563")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@softwareone.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement order cancellation with refund workflow",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: order cancellation API with automatic refund trigger",
-            }, [])));
-
-        // orders — deployed today to dev
-        events.Add(MakeEvent("ticketing-platform", "orders", "development", "2.4.1", "2.4.0",
-            "webhook", now.AddHours(-3),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/softwareone-pc/MPT/_build/results?buildId=12380"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/orders/pullrequest/567"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1315", "jira", "PLAT-1315")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Jan Kowalski", "jan.kowalski@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add webhook retry with exponential backoff for payment notifications",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: exponential backoff for payment webhook retries",
-            }, [])));
-
-        // orders — promoted to staging today
-        events.Add(MakeEvent("ticketing-platform", "orders", "staging", "2.4.0", "2.3.1",
-            "webhook", now.AddHours(-1),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/softwareone-pc/MPT/_build/results?buildId=12385"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1301", "jira", "PLAT-1301"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/orders/pullrequest/563")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@softwareone.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement order cancellation with refund workflow",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: order cancellation API with automatic refund trigger",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // ticketing-platform: schedule
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("ticketing-platform", "schedule", "production", "1.7.1", "1.7.0",
-            "k8s-observer", now.AddDays(-6),
-            [new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1190", "jira", "PLAT-1190"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/schedule/pullrequest/320")],
-            [new ParticipantDto("PR Author", "Marta Wiśniewska", "marta.wisniewska@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Jan Kowalski", "jan.kowalski@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix timezone handling in recurring event schedules",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: use UTC offset for recurring schedule calculations",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "schedule", "staging", "1.7.2", "1.7.1",
-            "k8s-observer", now.AddDays(-3),
-            [new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1245", "jira", "PLAT-1245"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/schedule/pullrequest/331")],
-            [new ParticipantDto("PR Author", "Anna Kowalska", "anna.kowalska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add bulk schedule import from CSV",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: CSV import endpoint for bulk schedule creation",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "schedule", "development", "1.8.0", "1.7.2",
-            "k8s-observer", now.AddDays(-1),
-            [new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1298", "jira", "PLAT-1298"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/schedule/pullrequest/345"),
-             new ReferenceDto("repository", "https://dev.azure.com/softwareone-pc/MPT/_git/schedule", Revision: "f8e2a1c9d4b7")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Marta Wiśniewska", "marta.wisniewska@softwareone.com"),
-             new ParticipantDto("QA", "Anna Kowalska", "anna.kowalska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement schedule conflict detection and resolution",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: conflict detection engine for overlapping schedules",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // ticketing-platform: billing
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("ticketing-platform", "billing", "production", "3.0.4", "3.0.3",
-            "webhook", now.AddDays(-8),
-            [new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1150", "jira", "PLAT-1150"),
-             new ReferenceDto("pipeline", "https://dev.azure.com/softwareone-pc/MPT/_build/results?buildId=12210"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/billing/pullrequest/410")],
-            [new ParticipantDto("PR Author", "Anna Kowalska", "anna.kowalska@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-             new ParticipantDto("QA", "Jan Kowalski", "jan.kowalski@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix invoice PDF generation for VAT-exempt transactions",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: skip VAT line items in PDF when tax-exempt flag is set",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "billing", "staging", "3.0.5", "3.0.4",
-            "webhook", now.AddDays(-3),
-            [new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1220", "jira", "PLAT-1220"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/billing/pullrequest/425")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Anna Kowalska", "anna.kowalska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add Stripe Connect integration for marketplace payouts",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: Stripe Connect payout flow for seller accounts",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "billing", "development", "3.1.0", "3.0.5",
-            "webhook", now.AddHours(-5),
-            [new ReferenceDto("repository", "https://dev.azure.com/softwareone-pc/MPT/_git/billing", Revision: "a1b2c3d4e5f6"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/PLAT-1310", "jira", "PLAT-1310"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/softwareone-pc/MPT/_git/billing/pullrequest/440")],
-            [new ParticipantDto("PR Author", "Anna Kowalska", "anna.kowalska@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement usage-based billing metering API",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: metering endpoint for tracking API usage per subscription",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // marketplace: marketplace-api
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("marketplace", "marketplace-api", "production", "5.1.2", "5.1.1",
-            "github-actions", now.AddDays(-10),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-api/actions/runs/97200"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-389", "jira", "MKT-389"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-api/pull/201")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix product search returning stale results after catalog update",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: invalidate search index cache on catalog write",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-api", "staging", "5.1.3", "5.1.2",
-            "github-actions", now.AddDays(-3),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-api/actions/runs/98100"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-420", "jira", "MKT-420"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-api/pull/215")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement vendor onboarding API with document verification",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: vendor registration flow with KYC document upload",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-api", "development", "5.2.0", "5.1.3",
-            "github-actions", now.AddHours(-2),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-api/actions/runs/98765"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-456", "jira", "MKT-456"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-api/pull/230")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Anna Kowalska", "anna.kowalska@softwareone.com"),
-             new ParticipantDto("QA", "Jan Kowalski", "jan.kowalski@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add product comparison API with feature matrix",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: comparison endpoint returning normalized feature matrix",
-            }, [])));
-
-        // marketplace-api — promoted to production today
-        events.Add(MakeEvent("marketplace", "marketplace-api", "production", "5.1.3", "5.1.2",
-            "github-actions", now.AddMinutes(-45),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-api/actions/runs/98900"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-420", "jira", "MKT-420"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-api/pull/215")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement vendor onboarding API with document verification",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "feat: vendor registration flow with KYC document upload",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // marketplace: marketplace-ui
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("marketplace", "marketplace-ui", "production", "1.9.7", "1.9.6",
-            "github-actions", now.AddDays(-12),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-ui/actions/runs/45100"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-370", "jira", "MKT-370"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-ui/pull/180")],
-            [new ParticipantDto("PR Author", "Marta Wiśniewska", "marta.wisniewska@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix mobile layout breakpoints on product detail page",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: responsive grid breakpoints for product detail cards",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-ui", "staging", "1.9.8", "1.9.7",
-            "github-actions", now.AddDays(-5),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-ui/actions/runs/46200"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-410", "jira", "MKT-410"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-ui/pull/195")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Marta Wiśniewska", "marta.wisniewska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add dark mode support with system preference detection",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: dark mode toggle with prefers-color-scheme sync",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-ui", "development", "2.0.0-beta.3", "2.0.0-beta.2",
-            "github-actions", now.AddHours(-4),
-            [new ReferenceDto("pipeline", "https://github.com/softwareone/marketplace-ui/actions/runs/47500"),
-             new ReferenceDto("work-item", "https://softwareone.atlassian.net/browse/MKT-460", "jira", "MKT-460"),
-             new ReferenceDto("pull-request", "https://github.com/softwareone/marketplace-ui/pull/210"),
-             new ReferenceDto("repository", "https://github.com/softwareone/marketplace-ui", Revision: "b3c4d5e6f7a8")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@softwareone.com"),
-             new ParticipantDto("QA", "Anna Kowalska", "anna.kowalska@softwareone.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Rebuild checkout flow with multi-step wizard and validation",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: multi-step checkout wizard with real-time validation",
-            }, [])));
+                events.AddRange(GenerateServiceHistory(product, service, now, rand));
+            }
+        }
 
         db.DeployEvents.AddRange(events);
         await db.SaveChangesAsync();
     }
+
+    private static IEnumerable<DeployEvent> GenerateServiceHistory(
+        ProductCatalog product, string service, DateTimeOffset now, Random rand)
+    {
+        // 30 evenly-but-jittered timestamps across the last HistoryDays.
+        var totalHours = HistoryDays * 24;
+        var slot = totalHours / (double)EventsPerService;
+        var timestamps = new DateTimeOffset[EventsPerService];
+        for (var i = 0; i < EventsPerService; i++)
+        {
+            // Place each event inside its slot with a little noise so it looks organic.
+            var baseOffset = i * slot;
+            var jitter = (rand.NextDouble() - 0.5) * slot * 0.6;
+            timestamps[i] = now.AddHours(-(totalHours - (baseOffset + jitter)));
+        }
+
+        // Start each service at a different semver base so they don't all look identical.
+        var major = rand.Next(1, 5);
+        var minor = rand.Next(0, 6);
+        var patch = rand.Next(0, 9);
+
+        // Track last version per environment for realistic previousVersion + rollback.
+        var lastPerEnv = new Dictionary<string, string>();
+
+        for (var i = 0; i < EventsPerService; i++)
+        {
+            var environment = PickEnvironment(rand);
+
+            // Version progression: 60% patch bump, 30% minor bump, 10% major bump.
+            var bump = rand.NextDouble();
+            if (bump < 0.1) { major++; minor = 0; patch = 0; }
+            else if (bump < 0.4) { minor++; patch = 0; }
+            else { patch++; }
+
+            var version = $"{major}.{minor}.{patch}";
+            lastPerEnv.TryGetValue(environment, out var previousVersion);
+
+            // 5% rollbacks — re-deploy the previous version and flag it.
+            var isRollback = previousVersion is not null && rand.NextDouble() < 0.05;
+            if (isRollback) version = previousVersion!;
+
+            // 5% failed, 3% in_progress, rest succeeded.
+            var statusRoll = rand.NextDouble();
+            var status = statusRoll < 0.05 ? "failed" : statusRoll < 0.08 ? "in_progress" : "succeeded";
+
+            var references = BuildReferences(product, service, rand);
+            var participants = BuildParticipants(rand);
+            var enrichment = BuildEnrichment(rand);
+
+            yield return MakeEvent(
+                product.Name, service, environment, version, previousVersion,
+                SourceLabel(product.SourceStyle), timestamps[i],
+                isRollback, status,
+                references, participants, enrichment);
+
+            // Only update the env tracker for successful / in-progress deploys
+            // so rollbacks don't poison the "last known good" pointer.
+            if (status != "failed") lastPerEnv[environment] = version;
+        }
+    }
+
+    private static string PickEnvironment(Random rand)
+    {
+        var total = 0;
+        foreach (var (_, w) in EnvWeights) total += w;
+        var roll = rand.Next(total);
+        foreach (var (env, w) in EnvWeights)
+        {
+            if (roll < w) return env;
+            roll -= w;
+        }
+        return Environments[0];
+    }
+
+    private static List<ReferenceDto> BuildReferences(ProductCatalog product, string service, Random rand)
+    {
+        var refs = new List<ReferenceDto>();
+
+        // Pipeline + PR are always present; work-item ~80%; repository ~40%.
+        var buildId = rand.Next(10000, 99999);
+        var prNum = rand.Next(50, 900);
+        var wiKey = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
+
+        if (product.SourceStyle == SourceStyle.AzureDevOps)
+        {
+            refs.Add(new ReferenceDto("pipeline", $"{product.BaseUrl}/_build/results?buildId={buildId}", "azure-devops", buildId.ToString()));
+            refs.Add(new ReferenceDto("pull-request", $"{product.BaseUrl}/_git/{service}/pullrequest/{prNum}", "azure-devops", prNum.ToString()));
+        }
+        else
+        {
+            refs.Add(new ReferenceDto("pipeline", $"{product.BaseUrl}/{service}/actions/runs/{buildId}", "github", buildId.ToString()));
+            refs.Add(new ReferenceDto("pull-request", $"{product.BaseUrl}/{service}/pull/{prNum}", "github", prNum.ToString()));
+        }
+
+        if (rand.NextDouble() < 0.8)
+        {
+            refs.Add(new ReferenceDto("work-item",
+                $"https://softwareone.atlassian.net/browse/{wiKey}", "jira", wiKey));
+        }
+
+        if (rand.NextDouble() < 0.4)
+        {
+            var revision = Guid.NewGuid().ToString("N")[..12];
+            if (product.SourceStyle == SourceStyle.AzureDevOps)
+            {
+                refs.Add(new ReferenceDto("repository",
+                    $"{product.BaseUrl}/_git/{service}", "azure-devops",
+                    $"{product.Name}/{service}", revision));
+            }
+            else
+            {
+                refs.Add(new ReferenceDto("repository",
+                    $"{product.BaseUrl}/{service}", "github",
+                    $"softwareone/{service}", revision));
+            }
+        }
+
+        return refs;
+    }
+
+    private static List<ParticipantDto> BuildParticipants(Random rand)
+    {
+        // Pick 2-3 distinct people; always include PR Author.
+        var shuffled = People.OrderBy(_ => rand.Next()).ToArray();
+        var participants = new List<ParticipantDto>
+        {
+            new("PR Author", shuffled[0].Name, shuffled[0].Email),
+            new("PR Reviewer", shuffled[1].Name, shuffled[1].Email),
+        };
+        if (rand.NextDouble() < 0.6)
+        {
+            participants.Add(new ParticipantDto("QA", shuffled[2].Name, shuffled[2].Email));
+        }
+        return participants;
+    }
+
+    private static EnrichmentData BuildEnrichment(Random rand)
+    {
+        var wi = WorkItemTitles[rand.Next(WorkItemTitles.Length)];
+        var pr = PrTitles[rand.Next(PrTitles.Length)];
+        var status = rand.NextDouble() switch
+        {
+            < 0.4 => "Done",
+            < 0.75 => "In Review",
+            _ => "In Progress",
+        };
+        return new EnrichmentData(new Dictionary<string, string>
+        {
+            ["workItemTitle"] = wi,
+            ["workItemStatus"] = status,
+            ["prTitle"] = pr,
+        }, []);
+    }
+
+    private static string SourceLabel(SourceStyle style) =>
+        style == SourceStyle.GitHub ? "github-actions" : "azure-devops";
+
+    private static string ProductPrefix(string product) => product switch
+    {
+        "ticketing-platform" => "PLAT",
+        "marketplace" => "MKT",
+        "identity-platform" => "IDP",
+        "observability" => "OBS",
+        _ => "SVC",
+    };
+
+    private record ProductCatalog(string Name, string BaseUrl, SourceStyle SourceStyle, string[] Services);
+
+    private record Person(string Name, string Email);
+
+    private enum SourceStyle { AzureDevOps, GitHub }
 
     private record EnrichmentData(Dictionary<string, string> Labels, List<ParticipantDto> Participants);
 
     private static DeployEvent MakeEvent(
         string product, string service, string environment, string version, string? previousVersion,
         string source, DateTimeOffset deployedAt,
+        bool isRollback, string status,
         List<ReferenceDto> references, List<ParticipantDto> participants,
         EnrichmentData? enrichment = null)
     {
@@ -326,6 +320,8 @@ public static class DeploymentSeedData
             Environment = environment,
             Version = version,
             PreviousVersion = previousVersion,
+            IsRollback = isRollback,
+            Status = status,
             Source = source,
             DeployedAt = deployedAt,
             ReferencesJson = JsonSerializer.Serialize(references, JsonOptions),

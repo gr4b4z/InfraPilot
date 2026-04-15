@@ -230,10 +230,8 @@ var app = builder.Build();
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+// Expose OpenAPI spec (JSON only, no UI) in all environments.
+app.MapOpenApi();
 
 app.UseCors();
 app.UseAuthentication();
@@ -267,6 +265,7 @@ app.MapGroup("/api/requests").MapRequestEndpoints().RequireAuthorization(Authori
 app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
 // Webhooks — admin only (both schemes)
 app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);

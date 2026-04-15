@@ -161,6 +161,72 @@ public class DeploymentService
         return events.Select(MapToResponseDto).ToList();
     }
 
+    // --- Admin: duplicate cleanup ---
+
+    /// <summary>
+    /// Natural key used to detect a DeployEvent that was ingested twice.
+    /// Rows matching on every field here are duplicates; the earliest-created one is kept.
+    /// </summary>
+    private readonly record struct DuplicateKey(
+        string Product, string Service, string Environment, string Version, DateTimeOffset DeployedAt, string Source);
+
+    /// <summary>Count of duplicate groups and total rows that would be removed by <see cref="RemoveDuplicates"/>.</summary>
+    public async Task<(int Groups, int Rows)> CountDuplicates(CancellationToken ct = default)
+    {
+        // Pull only the natural-key fields to keep the query light.
+        var keys = await _db.DeployEvents
+            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt, e.Source })
+            .ToListAsync(ct);
+
+        var grouped = keys
+            .GroupBy(k => new DuplicateKey(k.Product, k.Service, k.Environment, k.Version, k.DeployedAt, k.Source))
+            .Where(g => g.Count() > 1)
+            .ToList();
+
+        var groups = grouped.Count;
+        var rows = grouped.Sum(g => g.Count() - 1);
+        return (groups, rows);
+    }
+
+    /// <summary>
+    /// Deletes duplicate DeployEvent rows, keeping the one with the earliest <c>CreatedAt</c> per natural-key group.
+    /// Returns the number of distinct groups touched and total rows removed.
+    /// </summary>
+    public async Task<(int Groups, int Rows)> RemoveDuplicates(CancellationToken ct = default)
+    {
+        // Fetch just what we need to partition client-side. We can't delete directly in SQL
+        // because the "keep earliest" rule is easier to express in memory and keeps this
+        // provider-agnostic across Postgres + SqlServer.
+        var rows = await _db.DeployEvents
+            .Select(e => new { e.Id, e.Product, e.Service, e.Environment, e.Version, e.DeployedAt, e.Source, e.CreatedAt })
+            .ToListAsync(ct);
+
+        var toDelete = rows
+            .GroupBy(r => new DuplicateKey(r.Product, r.Service, r.Environment, r.Version, r.DeployedAt, r.Source))
+            .Where(g => g.Count() > 1)
+            .SelectMany(g => g.OrderBy(r => r.CreatedAt).Skip(1)) // keep earliest, drop the rest
+            .Select(r => r.Id)
+            .ToList();
+
+        if (toDelete.Count == 0) return (0, 0);
+
+        var groupCount = rows
+            .GroupBy(r => new DuplicateKey(r.Product, r.Service, r.Environment, r.Version, r.DeployedAt, r.Source))
+            .Count(g => g.Count() > 1);
+
+        // Single SaveChanges is atomic at the EF level (one DB transaction under the hood).
+        var idSet = toDelete.ToHashSet();
+        var stale = await _db.DeployEvents.Where(e => idSet.Contains(e.Id)).ToListAsync(ct);
+        _db.DeployEvents.RemoveRange(stale);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Deploy-event dedup removed {Rows} rows across {Groups} groups",
+            stale.Count, groupCount);
+
+        return (groupCount, stale.Count);
+    }
+
     // --- Mapping helpers ---
 
     private static DeploymentStateDto MapToStateDto(DeployEvent e)

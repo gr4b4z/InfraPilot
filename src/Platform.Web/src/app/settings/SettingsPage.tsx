@@ -5,46 +5,28 @@ import {
   type EnvironmentConfig,
   type ActivityTemplateLine,
 } from '@/stores/settingsStore';
-import { GripVertical, Plus, Trash2, Check, RotateCcw, X } from 'lucide-react';
+import { useAuthStore } from '@/stores/authStore';
+import { api } from '@/lib/api';
+import { GripVertical, Plus, Trash2, Check, RotateCcw } from 'lucide-react';
 import { CatalogSettings } from './CatalogSettings';
 
 export function SettingsPage() {
   const {
-    defaultEnvironments,
-    productEnvironments,
+    environments,
     activityTemplate,
-    setDefaultEnvironments,
-    setProductEnvironments,
-    removeProductEnvironments,
+    setEnvironments,
     setActivityTemplate,
   } = useSettingsStore();
 
-  // Which product config is being edited: null = default
-  const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
-  const [newProductName, setNewProductName] = useState('');
-  const [showAddProduct, setShowAddProduct] = useState(false);
-
-  const currentEnvs =
-    selectedProduct === null
-      ? defaultEnvironments
-      : productEnvironments.find((pe) => pe.product === selectedProduct)?.environments ??
-        defaultEnvironments;
-
-  const [envItems, setEnvItems] = useState<EnvironmentConfig[]>(currentEnvs);
+  const [envItems, setEnvItems] = useState<EnvironmentConfig[]>(environments);
   const [templateLines, setTemplateLines] = useState<ActivityTemplateLine[]>(activityTemplate);
   const [envSaved, setEnvSaved] = useState(false);
   const [templateSaved, setTemplateSaved] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
-  // Sync envItems when switching product tabs
   useEffect(() => {
-    const envs =
-      selectedProduct === null
-        ? defaultEnvironments
-        : productEnvironments.find((pe) => pe.product === selectedProduct)?.environments ??
-          defaultEnvironments;
-    setEnvItems(envs);
-  }, [selectedProduct, defaultEnvironments, productEnvironments]);
+    setEnvItems(environments);
+  }, [environments]);
 
   useEffect(() => {
     setTemplateLines(activityTemplate);
@@ -54,30 +36,10 @@ export function SettingsPage() {
 
   const handleEnvSave = () => {
     const cleaned = envItems.filter((i) => i.key.trim() !== '');
-    if (selectedProduct === null) {
-      setDefaultEnvironments(cleaned);
-    } else {
-      setProductEnvironments(selectedProduct, cleaned);
-    }
+    setEnvironments(cleaned);
     setEnvItems(cleaned);
     setEnvSaved(true);
     setTimeout(() => setEnvSaved(false), 2000);
-  };
-
-  const handleRemoveProductConfig = () => {
-    if (selectedProduct === null) return;
-    removeProductEnvironments(selectedProduct);
-    setSelectedProduct(null);
-  };
-
-  const handleAddProduct = () => {
-    const name = newProductName.trim();
-    if (!name) return;
-    // Initialize with a copy of defaults
-    setProductEnvironments(name, [...defaultEnvironments]);
-    setNewProductName('');
-    setShowAddProduct(false);
-    setSelectedProduct(name);
   };
 
   const updateEnvItem = (index: number, field: keyof EnvironmentConfig, value: string) => {
@@ -134,8 +96,6 @@ export function SettingsPage() {
     setTemplateLines(DEFAULT_ACTIVITY_TEMPLATE);
   };
 
-  const configuredProducts = productEnvironments.map((pe) => pe.product);
-
   return (
     <div className="space-y-6">
       <div>
@@ -160,90 +120,8 @@ export function SettingsPage() {
             Environments
           </h2>
           <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Define the environments and their display order per product. Products without a
-            specific config use the default. Drag to reorder.
+            Define the environments and their display order. Drag to reorder.
           </p>
-        </div>
-
-        {/* Product tabs */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <button
-            onClick={() => setSelectedProduct(null)}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-lg transition-all"
-            style={{
-              backgroundColor: selectedProduct === null ? 'var(--accent-muted)' : 'transparent',
-              color: selectedProduct === null ? 'var(--accent)' : 'var(--text-muted)',
-              border:
-                selectedProduct === null
-                  ? '1px solid var(--accent)'
-                  : '1px solid var(--border-color)',
-            }}
-          >
-            Default
-          </button>
-          {configuredProducts.map((p) => (
-            <button
-              key={p}
-              onClick={() => setSelectedProduct(p)}
-              className="px-3 py-1.5 text-[12px] font-medium rounded-lg transition-all"
-              style={{
-                backgroundColor: selectedProduct === p ? 'var(--accent-muted)' : 'transparent',
-                color: selectedProduct === p ? 'var(--accent)' : 'var(--text-muted)',
-                border:
-                  selectedProduct === p
-                    ? '1px solid var(--accent)'
-                    : '1px solid var(--border-color)',
-              }}
-            >
-              {p}
-            </button>
-          ))}
-
-          {showAddProduct ? (
-            <div className="inline-flex items-center gap-1.5">
-              <input
-                type="text"
-                value={newProductName}
-                onChange={(e) => setNewProductName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddProduct()}
-                placeholder="product name"
-                autoFocus
-                className="px-2 py-1 rounded-lg border text-[12px] outline-none transition-colors focus:border-[var(--accent)]"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                  width: 140,
-                }}
-              />
-              <button
-                onClick={handleAddProduct}
-                className="p-1 rounded-lg hover:opacity-80"
-                style={{ color: 'var(--accent)' }}
-              >
-                <Check size={14} />
-              </button>
-              <button
-                onClick={() => {
-                  setShowAddProduct(false);
-                  setNewProductName('');
-                }}
-                className="p-1 rounded-lg hover:opacity-80"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setShowAddProduct(true)}
-              className="px-2.5 py-1.5 text-[12px] font-medium rounded-lg transition-all hover:opacity-80"
-              style={{ color: 'var(--text-muted)', border: '1px dashed var(--border-color)' }}
-            >
-              <Plus size={12} className="inline -mt-0.5 mr-0.5" />
-              Product
-            </button>
-          )}
         </div>
 
         {/* Env grid */}
@@ -329,16 +207,6 @@ export function SettingsPage() {
           >
             Save
           </button>
-          {selectedProduct !== null && (
-            <button
-              onClick={handleRemoveProductConfig}
-              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              <Trash2 size={13} />
-              Remove Override
-            </button>
-          )}
           {envSaved && (
             <span
               className="inline-flex items-center gap-1 text-[13px]"
@@ -506,6 +374,154 @@ export function SettingsPage() {
 
       {/* ── Service Catalog ── */}
       <CatalogSettings />
+
+      {/* ── Deployment Maintenance (admin only) ── */}
+      <DeploymentMaintenanceCard />
+    </div>
+  );
+}
+
+// ── Deployment Maintenance ──
+
+function DeploymentMaintenanceCard() {
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
+  const [scanResult, setScanResult] = useState<{ groups: number; rows: number } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removedResult, setRemovedResult] = useState<{ groups: number; rows: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!isAdmin) return null;
+
+  const handleScan = async () => {
+    setScanning(true);
+    setError(null);
+    setRemovedResult(null);
+    try {
+      const result = await api.getDeploymentDuplicatesPreview();
+      setScanResult(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to scan for duplicates');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    setRemoving(true);
+    setError(null);
+    try {
+      const result = await api.removeDeploymentDuplicates();
+      setRemovedResult(result);
+      setScanResult(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to remove duplicates');
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setScanResult(null);
+    setError(null);
+  };
+
+  return (
+    <div
+      className="rounded-xl border p-5 space-y-4"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div>
+        <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Deployment Maintenance
+        </h2>
+        <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          Duplicate deployment events can accumulate when CI systems retry ingest webhooks. Scan to
+          see how many exist, then remove them. Duplicates are rows matching on product, service,
+          environment, version, deployedAt and source — the earliest ingested row per group is kept.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        {/* Idle or post-remove — show Scan button */}
+        {!scanResult && (
+          <button
+            onClick={handleScan}
+            disabled={scanning}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
+            style={{ backgroundColor: 'var(--accent)' }}
+          >
+            {scanning ? 'Scanning…' : 'Scan for duplicates'}
+          </button>
+        )}
+
+        {/* Scan found zero duplicates */}
+        {scanResult && scanResult.rows === 0 && (
+          <>
+            <span className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+              No duplicates found.
+            </span>
+            <button
+              onClick={handleCancel}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Dismiss
+            </button>
+          </>
+        )}
+
+        {/* Scan found duplicates — two-step confirm */}
+        {scanResult && scanResult.rows > 0 && (
+          <>
+            <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+              Found <strong>{scanResult.rows}</strong>{' '}
+              {scanResult.rows === 1 ? 'duplicate' : 'duplicates'} across{' '}
+              <strong>{scanResult.groups}</strong>{' '}
+              {scanResult.groups === 1 ? 'group' : 'groups'}.
+            </span>
+            <button
+              onClick={handleRemove}
+              disabled={removing}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
+              style={{ backgroundColor: 'var(--danger, #dc2626)' }}
+            >
+              <Trash2 size={14} />
+              {removing ? 'Removing…' : 'Remove duplicates'}
+            </button>
+            <button
+              onClick={handleCancel}
+              disabled={removing}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Cancel
+            </button>
+          </>
+        )}
+
+        {/* Post-remove success */}
+        {removedResult && (
+          <span
+            className="inline-flex items-center gap-1 text-[13px]"
+            style={{ color: 'var(--success)' }}
+          >
+            <Check size={14} />
+            Removed {removedResult.rows}{' '}
+            {removedResult.rows === 1 ? 'duplicate' : 'duplicates'} across{' '}
+            {removedResult.groups} {removedResult.groups === 1 ? 'group' : 'groups'}.
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div
+          className="text-[13px] rounded-lg px-3 py-2"
+          style={{ color: 'var(--danger, #dc2626)', backgroundColor: 'var(--danger-muted, #fee2e2)' }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   );
 }
