@@ -7,6 +7,7 @@ using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Infrastructure.Auth;
@@ -275,6 +276,8 @@ app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(Autho
 app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)
 app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
