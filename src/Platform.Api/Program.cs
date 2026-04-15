@@ -90,7 +90,7 @@ var isMsal = authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase);
 builder.Services.AddAuthentication()
     .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { });
 builder.Services.AddPlatformAuthorization(builder.Configuration);
-builder.Services.AddDeploymentIngestionRateLimit();
+builder.Services.AddDeploymentIngestionRateLimit(builder.Configuration);
 
 // Infrastructure
 builder.Services.AddHttpContextAccessor();
