@@ -424,6 +424,13 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<bool>("ExcludeDeployer")
                         .HasColumnType("bit");
 
+                    b.Property<string>("ExecutorConfigJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ExecutorKind")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
                     b.Property<int>("MinApprovers")
                         .HasColumnType("int");
 

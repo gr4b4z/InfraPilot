@@ -27,6 +27,13 @@ public class PromotionPolicy
     public int TimeoutHours { get; set; } = 24;
     public string? EscalationGroup { get; set; }
 
+    // Execution binding — optional. When set, transitioning a candidate to Approved also
+    // dispatches the named executor, which is expected to trigger the target-env deploy
+    // out-of-band (pipeline, workflow, webhook, etc). <c>ExecutorConfigJson</c> is an opaque
+    // blob handed to the executor; shape is executor-specific.
+    public string? ExecutorKind { get; set; }
+    public string? ExecutorConfigJson { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

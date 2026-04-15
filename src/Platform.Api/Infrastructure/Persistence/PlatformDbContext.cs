@@ -288,6 +288,9 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.ApproverGroup).HasMaxLength(400);
             e.Property(x => x.Strategy).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
+            e.Property(x => x.ExecutorKind).HasMaxLength(50);
+            var executorConfigJson = e.Property(x => x.ExecutorConfigJson);
+            if (jsonType != null) executorConfigJson.HasColumnType(jsonType);
             // Unique per (product, service?, target_env). SQL Server and Postgres both treat
             // NULL as distinct from NULL in unique indexes, which is the semantics we want:
             // one product-default row AND any number of service-specific rows.

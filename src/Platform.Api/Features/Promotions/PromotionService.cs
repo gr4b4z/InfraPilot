@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions.Executors;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
@@ -28,6 +29,7 @@ public class PromotionService
     private readonly IIdentityService _identity;
     private readonly ICurrentUser _currentUser;
     private readonly IAuditLogger _audit;
+    private readonly PromotionExecutorDispatcher? _executor;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -42,13 +44,15 @@ public class PromotionService
         IIdentityService identity,
         ICurrentUser currentUser,
         IAuditLogger audit,
-        ILogger<PromotionService> logger)
+        ILogger<PromotionService> logger,
+        PromotionExecutorDispatcher? executor = null)
     {
         _db = db;
         _resolver = resolver;
         _identity = identity;
         _currentUser = currentUser;
         _audit = audit;
+        _executor = executor;
         _logger = logger;
     }
 
@@ -136,6 +140,12 @@ public class PromotionService
             "Created promotion candidate {Id}: {Product}/{Service} {Source}→{Target} v{Version} ({Status})",
             candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv, candidate.TargetEnv,
             candidate.Version, candidate.Status);
+
+        // If the candidate was born Approved (auto-approve policy), kick off execution right away.
+        // Done *after* the initial SaveChangesAsync so the candidate is visible to queries even if
+        // dispatch transiently fails.
+        if (candidate.Status == PromotionStatus.Approved)
+            await TryDispatchAsync(candidate, snapshot, ct);
 
         return candidate;
     }
@@ -276,6 +286,12 @@ public class PromotionService
             "Approval recorded on candidate {Id} by {Email}; threshold met: {ThresholdMet}",
             candidate.Id, _currentUser.Email, thresholdMet);
 
+        // Threshold met → hand off to the executor so the target-env deploy starts without
+        // another round-trip. Dispatch failures don't roll back the approval: the candidate
+        // simply stays Approved and can be manually re-dispatched.
+        if (thresholdMet)
+            await TryDispatchAsync(candidate, snapshot, ct);
+
         return candidate;
     }
 
@@ -359,6 +375,61 @@ public class PromotionService
 
         _logger.LogInformation("Candidate {Id} → Deployed", candidateId);
         return candidate;
+    }
+
+    // ---------------------------------------------------------------------
+    // Executor dispatch (called after an Approved transition — both paths)
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Dispatches the configured executor (if any) and transitions the candidate to
+    /// <see cref="PromotionStatus.Deploying"/> on success. No-op when the policy snapshot has no
+    /// executor bound (manual deploy model) or when the candidate is not <c>Approved</c>.
+    ///
+    /// <para>Dispatch is intentionally non-fatal: a failed dispatch logs an audit entry and keeps
+    /// the candidate in <c>Approved</c> so operators can retry or fall back to a manual trigger
+    /// in the external system.</para>
+    /// </summary>
+    private async Task TryDispatchAsync(
+        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
+    {
+        if (_executor is null) return;
+        if (candidate.Status != PromotionStatus.Approved) return;
+        if (!snapshot.HasExecutor) return;
+
+        var result = await _executor.DispatchAsync(candidate, snapshot, ct);
+        if (result is null) return; // HasExecutor was true but dispatcher returned null — shouldn't happen
+
+        if (result.Success)
+        {
+            try
+            {
+                await MarkDeployingAsync(candidate.Id, result.ExternalRunUrl, ct);
+                await _audit.Log(
+                    "promotions", "promotion.dispatched",
+                    _currentUser.Id, _currentUser.Name, "user",
+                    "PromotionCandidate", candidate.Id, null,
+                    new { snapshot.ExecutorKind, result.ExternalRunUrl });
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Race: someone else already transitioned the candidate. Fine — log and move on.
+                _logger.LogWarning(ex,
+                    "Could not transition candidate {Id} to Deploying after successful dispatch",
+                    candidate.Id);
+            }
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Executor '{Kind}' failed for candidate {Id}: {Error}",
+                snapshot.ExecutorKind, candidate.Id, result.Error);
+            await _audit.Log(
+                "promotions", "promotion.dispatch.failed",
+                _currentUser.Id, _currentUser.Name, "user",
+                "PromotionCandidate", candidate.Id, null,
+                new { snapshot.ExecutorKind, error = result.Error });
+        }
     }
 
     // ---------------------------------------------------------------------

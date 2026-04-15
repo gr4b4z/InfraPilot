@@ -158,6 +158,13 @@ builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionTopologySer
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
+// Promotion executors — dispatched when a candidate transitions to Approved.
+builder.Services.AddScoped<Platform.Api.Features.Promotions.Executors.PromotionExecutorDispatcher>();
+builder.Services.AddHttpClient("promotion-webhook");
+builder.Services.AddKeyedScoped<Platform.Api.Features.Promotions.Executors.IPromotionExecutor,
+    Platform.Api.Features.Promotions.Executors.WebhookPromotionExecutor>(
+    Platform.Api.Features.Promotions.Executors.WebhookPromotionExecutor.KindName);
+
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();
 builder.Services.AddScoped<ValidationRunner>();

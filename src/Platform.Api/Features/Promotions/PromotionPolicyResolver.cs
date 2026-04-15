@@ -55,7 +55,9 @@ public class PromotionPolicyResolver
                 MinApprovers: 0,
                 ExcludeDeployer: false,
                 TimeoutHours: 0,
-                EscalationGroup: null);
+                EscalationGroup: null,
+                ExecutorKind: null,
+                ExecutorConfigJson: null);
         }
 
         return new ResolvedPolicySnapshot(
@@ -65,6 +67,8 @@ public class PromotionPolicyResolver
             MinApprovers: policy.MinApprovers,
             ExcludeDeployer: policy.ExcludeDeployer,
             TimeoutHours: policy.TimeoutHours,
-            EscalationGroup: policy.EscalationGroup);
+            EscalationGroup: policy.EscalationGroup,
+            ExecutorKind: policy.ExecutorKind,
+            ExecutorConfigJson: policy.ExecutorConfigJson);
     }
 }
