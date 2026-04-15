@@ -12,7 +12,8 @@ public record CreateDeployEventDto(
     List<ReferenceDto>? References,
     List<ParticipantDto>? Participants,
     Dictionary<string, object>? Metadata,
-    string? Status = null);
+    string? Status = null,
+    bool IsRollback = false);
 
 public record ReferenceDto(
     string Type,
@@ -35,6 +36,7 @@ public record DeployEventResponseDto(
     string Environment,
     string Version,
     string? PreviousVersion,
+    bool IsRollback,
     string Status,
     string Source,
     DateTimeOffset DeployedAt,
@@ -54,6 +56,7 @@ public record DeploymentStateDto(
     string Environment,
     string Version,
     string? PreviousVersion,
+    bool IsRollback,
     string Status,
     string Source,
     DateTimeOffset DeployedAt,

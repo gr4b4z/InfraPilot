@@ -43,6 +43,7 @@ public class DeploymentService
             Environment = dto.Environment,
             Version = dto.Version,
             PreviousVersion = previousEvent?.Version,
+            IsRollback = dto.IsRollback,
             Status = status,
             Source = dto.Source,
             DeployedAt = dto.DeployedAt,
@@ -68,6 +69,7 @@ public class DeploymentService
             deployEvent.Environment,
             deployEvent.Version,
             deployEvent.PreviousVersion,
+            deployEvent.IsRollback,
             deployEvent.Status,
             deployEvent.Source,
             deployEvent.DeployedAt,
@@ -171,7 +173,7 @@ public class DeploymentService
 
         return new DeploymentStateDto(
             e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.Status, e.Source, e.DeployedAt, refs, parts, enrichment);
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment);
     }
 
     private static DeployEventResponseDto MapToResponseDto(DeployEvent e)
@@ -185,7 +187,7 @@ public class DeploymentService
 
         return new DeployEventResponseDto(
             e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
     }
 
     private static T? Deserialize<T>(string? json)

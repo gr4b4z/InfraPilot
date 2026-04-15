@@ -188,6 +188,7 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
             e.Property(x => x.Version).HasMaxLength(200).IsRequired();
             e.Property(x => x.PreviousVersion).HasMaxLength(200);
+            e.Property(x => x.IsRollback).HasDefaultValue(false);
             e.Property(x => x.Status).HasMaxLength(20).HasDefaultValue("succeeded").IsRequired();
             e.Property(x => x.Source).HasMaxLength(50).IsRequired();
             var referencesJson = e.Property(x => x.ReferencesJson).HasDefaultValue("[]");

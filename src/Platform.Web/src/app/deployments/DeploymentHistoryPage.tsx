@@ -3,7 +3,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { format, formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2 } from 'lucide-react';
 import type { DeployEvent } from '@/lib/types';
 
 export function DeploymentHistoryPage() {
@@ -146,6 +146,8 @@ function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: Depl
           v{evt.version}
         </span>
 
+        <RollbackIndicator isRollback={evt.isRollback} previousVersion={evt.previousVersion} />
+
         <StatusBadge status={evt.status} />
 
         <span
@@ -238,6 +240,21 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
   in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
 };
+
+function RollbackIndicator({ isRollback, previousVersion }: { isRollback?: boolean; previousVersion?: string | null }) {
+  if (!isRollback) return null;
+  const title = previousVersion ? `Rolled back from v${previousVersion}` : 'Rollback';
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      className="inline-flex"
+      style={{ color: 'var(--text-muted)' }}
+    >
+      <Undo2 size={12} />
+    </span>
+  );
+}
 
 function StatusBadge({ status }: { status?: string }) {
   const s = STATUS_STYLES[status ?? 'succeeded'] ?? STATUS_STYLES.succeeded;
@@ -392,6 +409,7 @@ function flattenEvent(evt: DeployEvent): Record<string, string> {
     environment: evt.environment,
     version: evt.version,
     previousVersion: evt.previousVersion ?? '',
+    isRollback: evt.isRollback ? 'true' : '',
     status: evt.status ?? 'succeeded',
     source: evt.source,
     deployedAt: evt.deployedAt,

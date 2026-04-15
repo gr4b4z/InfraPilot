@@ -491,15 +491,21 @@ export function ProductDeploymentsPage() {
                         onClick={() => setSelected(cell)}
                       >
                         <div className="inline-flex flex-col items-center gap-0.5">
-                          <span
-                            className="font-mono text-[12px] font-medium"
-                            style={{
-                              color: behind
-                                ? 'var(--warning)'
-                                : statusColor(cell.status),
-                            }}
-                          >
-                            {behind && '\u26a0 '}v{cell.version}
+                          <span className="inline-flex items-center gap-1">
+                            <span
+                              className="font-mono text-[12px] font-medium"
+                              style={{
+                                color: behind
+                                  ? 'var(--warning)'
+                                  : statusColor(cell.status),
+                              }}
+                            >
+                              {behind && '\u26a0 '}v{cell.version}
+                            </span>
+                            <RollbackIndicator
+                              isRollback={cell.isRollback}
+                              previousVersion={cell.previousVersion}
+                            />
                           </span>
                           {cell.status && cell.status !== 'succeeded' && (
                             <StatusBadge status={cell.status} />
@@ -732,20 +738,22 @@ function statusColor(status?: string): string {
   return 'var(--text-primary)';
 }
 
-function getRollbackFrom(metadata?: Record<string, unknown>): string | null {
-  const val = metadata?.rollbackFromVersion;
-  return typeof val === 'string' ? val : null;
-}
-
-function RollbackIndicator({ metadata }: { metadata?: Record<string, unknown> }) {
-  const from = getRollbackFrom(metadata);
-  if (!from) return null;
+function RollbackIndicator({
+  isRollback,
+  previousVersion,
+}: {
+  isRollback?: boolean;
+  previousVersion?: string | null;
+}) {
+  if (!isRollback) return null;
+  const title = previousVersion ? `Rolled back from v${previousVersion}` : 'Rollback';
   return (
     <span
       className="inline-flex items-center"
-      title={`Rolled back from v${from}`}
+      title={title}
+      aria-label={title}
     >
-      <Undo2 size={13} style={{ color: 'var(--text-muted)' }} />
+      <Undo2 size={12} style={{ color: 'var(--text-muted)' }} />
     </span>
   );
 }
@@ -823,6 +831,10 @@ function ActivityCard({
               ? `v${evt.previousVersion} → v${evt.version}`
               : `v${evt.version}`}
           </span>
+          <RollbackIndicator
+            isRollback={evt.isRollback}
+            previousVersion={evt.previousVersion}
+          />
           {evt.status && evt.status !== 'succeeded' && (
             <StatusBadge status={evt.status} />
           )}
