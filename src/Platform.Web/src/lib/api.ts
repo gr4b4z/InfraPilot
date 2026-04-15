@@ -247,6 +247,116 @@ class ApiClient {
   testWebhook(id: string) {
     return this.request<{ message: string; deliveryId: string }>(`/webhooks/${id}/test`, { method: 'POST' });
   }
+
+  // ── Promotions ─────────────────────────────────────────────────────────
+
+  listPromotions(params?: {
+    status?: string;
+    product?: string;
+    service?: string;
+    targetEnv?: string;
+    limit?: number;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.status) entries.push(['status', params.status]);
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.service) entries.push(['service', params.service]);
+    if (params?.targetEnv) entries.push(['targetEnv', params.targetEnv]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<{ candidates: PromotionCandidate[] }>(`/promotions/${query}`);
+  }
+
+  getPromotion(id: string) {
+    return this.request<{ candidate: PromotionCandidate; approvals: PromotionApprovalEntry[] }>(
+      `/promotions/${id}`,
+    );
+  }
+
+  approvePromotion(id: string, comment?: string) {
+    return this.request<PromotionCandidate>(`/promotions/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+  }
+
+  rejectPromotion(id: string, comment?: string) {
+    return this.request<PromotionCandidate>(`/promotions/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+  }
+
+  bulkApprovePromotions(ids: string[], comment?: string) {
+    return this.request<{ results: Array<{ id: string; ok: boolean; status?: string; error?: string }> }>(
+      `/promotions/bulk/approve`,
+      { method: 'POST', body: JSON.stringify({ ids, comment }) },
+    );
+  }
+
+  // ── Promotion admin ────────────────────────────────────────────────────
+
+  listPromotionPolicies() {
+    return this.request<{ policies: PromotionPolicy[] }>(`/promotions/admin/policies`);
+  }
+
+  upsertPromotionPolicy(policy: UpsertPromotionPolicyPayload, id?: string) {
+    return id
+      ? this.request<PromotionPolicy>(`/promotions/admin/policies/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(policy),
+        })
+      : this.request<PromotionPolicy>(`/promotions/admin/policies`, {
+          method: 'POST',
+          body: JSON.stringify(policy),
+        });
+  }
+
+  deletePromotionPolicy(id: string) {
+    return this.request<void>(`/promotions/admin/policies/${id}`, { method: 'DELETE' });
+  }
+
+  getPromotionTopology() {
+    return this.request<{ environments: string[]; edges: Array<{ from: string; to: string }> }>(
+      `/promotions/admin/topology`,
+    );
+  }
+
+  updatePromotionTopology(topology: {
+    environments: string[];
+    edges: Array<{ from: string; to: string }>;
+  }) {
+    return this.request<typeof topology>(`/promotions/admin/topology`, {
+      method: 'PUT',
+      body: JSON.stringify(topology),
+    });
+  }
+
+  // ── Feature flags ──────────────────────────────────────────────────────
+
+  listFeatureFlags() {
+    return this.request<{ flags: FeatureFlag[] }>(`/features`);
+  }
+
+  setFeatureFlag(key: string, enabled: boolean) {
+    return this.request<{ key: string; enabled: boolean }>(`/features/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  // ── Deployment versions (for rollback picker) ──────────────────────────
+
+  getDeploymentVersions(params: { product: string; environment: string; service?: string; limit?: number }) {
+    const entries: [string, string][] = [
+      ['product', params.product],
+      ['environment', params.environment],
+    ];
+    if (params.service) entries.push(['serviceName', params.service]);
+    if (params.limit) entries.push(['limit', String(params.limit)]);
+    const query = '?' + new URLSearchParams(entries).toString();
+    return this.request<{ versions: DeploymentVersion[] }>(`/deployments/versions${query}`);
+  }
 }
 
 // Response types
@@ -316,6 +426,88 @@ interface AuditLogResponse {
 interface CreateRequestPayload {
   catalogItemId: string;
   inputs: Record<string, unknown>;
+}
+
+// ── Promotions ────────────────────────────────────────────────────────────
+export type PromotionStatus =
+  | 'Pending'
+  | 'Approved'
+  | 'Deploying'
+  | 'Deployed'
+  | 'Superseded'
+  | 'Rejected';
+
+export interface PromotionCandidate {
+  id: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  status: PromotionStatus;
+  sourceDeployerEmail: string | null;
+  externalRunUrl: string | null;
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+  supersededById: string | null;
+  canApprove: boolean;
+}
+
+export interface PromotionApprovalEntry {
+  id: string;
+  approverEmail: string;
+  approverName: string;
+  comment: string | null;
+  decision: 'Approved' | 'Rejected';
+  createdAt: string;
+}
+
+export interface PromotionPolicy {
+  id: string;
+  product: string;
+  service: string | null;
+  targetEnv: string;
+  approverGroup: string | null;
+  strategy: 'Any' | 'NOfM';
+  minApprovers: number;
+  excludeDeployer: boolean;
+  timeoutHours: number;
+  escalationGroup: string | null;
+  executorKind: string | null;
+  executorConfigJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpsertPromotionPolicyPayload {
+  product: string;
+  service: string | null;
+  targetEnv: string;
+  approverGroup: string | null;
+  strategy: 'Any' | 'NOfM';
+  minApprovers: number;
+  excludeDeployer: boolean;
+  timeoutHours: number;
+  escalationGroup: string | null;
+  executorKind: string | null;
+  executorConfigJson: string | null;
+}
+
+export interface FeatureFlag {
+  key: string;
+  enabled: boolean;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface DeploymentVersion {
+  id: string;
+  service: string;
+  version: string;
+  deployedAt: string;
+  deployerEmail: string | null;
+  isRollback: boolean;
 }
 
 export const api = new ApiClient();
