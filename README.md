@@ -332,6 +332,67 @@ Hardening:
 - **Constant-time compare** — both plaintext and hash comparisons use `CryptographicOperations.FixedTimeEquals` to resist timing attacks.
 - **HTTPS** — keys travel in a header, so always terminate TLS before the API. Never expose `/api/deployments/events` over plain HTTP.
 
+### Event Payload Shape
+
+A deployment event is a small JSON document. Only `product`, `service`, `environment`, `version`, `source`, and `deployedAt` are required; everything else is optional enrichment that the UI uses to render richer cards and links.
+
+```jsonc
+{
+  "product": "platform",
+  "service": "platform-api",
+  "environment": "production",
+  "version": "2.4.1",
+  "source": "azure-devops",              // free-form tag (e.g. pipeline name)
+  "deployedAt": "2026-04-15T09:12:00Z",
+  "status": "succeeded",                  // "succeeded" | "failed" | "in_progress"
+  "isRollback": false,                    // set true when this deploy reverted to a prior version
+  "references": [
+    { "type": "pull-request", "url": "https://github.com/acme/platform-api/pull/482", "provider": "github", "key": "482" },
+    { "type": "work-item",    "url": "https://acme.atlassian.net/browse/PLAT-1234",   "provider": "jira",   "key": "PLAT-1234" },
+    { "type": "repository",   "url": "https://github.com/acme/platform-api",           "provider": "github", "key": "acme/platform-api", "revision": "a1b2c3d4" },
+    { "type": "pipeline",     "url": "https://dev.azure.com/acme/_build/results?buildId=98765", "provider": "azure-devops", "key": "98765" }
+  ],
+  "participants": [
+    { "role": "PR Author",   "displayName": "Sylwester Grabowski", "email": "sg@acme.com" },
+    { "role": "PR Reviewer", "displayName": "Alex Kim",             "email": "ak@acme.com" },
+    { "role": "QA",          "displayName": "Jordan Lee",           "email": "jl@acme.com" }
+  ],
+  "metadata": { "runId": "20260415.1", "releaseNotes": "hotfix for auth cache" }
+}
+```
+
+Reference types the UI recognises with a dedicated icon and label:
+
+| `type` | Icon | Label preference |
+|---|---|---|
+| `work-item` | ticket | `key` (e.g. `PLAT-1234`) — shows Jira title when present |
+| `pull-request` | PR | `labels.prTitle` → `key` |
+| `repository` | branch | `key` (e.g. `acme/platform-api`) → parsed from `url` → short `revision` |
+| `pipeline` | workflow | `key` → `provider` |
+
+Unknown types render with a generic external-link icon. Always include `url` when you have it — the UI turns the label into a link.
+
+**Minimal curl example:**
+
+```bash
+curl -X POST "$PLATFORM_URL/api/deployments/events" \
+  -H "X-Api-Key: $DEPLOY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product": "platform",
+    "service": "platform-api",
+    "environment": "production",
+    "version": "2.4.1",
+    "source": "github-actions",
+    "deployedAt": "2026-04-15T09:12:00Z",
+    "references": [
+      { "type": "repository", "url": "https://github.com/acme/platform-api", "provider": "github", "key": "acme/platform-api", "revision": "a1b2c3d4" }
+    ]
+  }'
+```
+
+`previousVersion` is computed automatically by the server from the last event for the same `(product, service, environment)` tuple — publishers never send it. Set `isRollback: true` when the new `version` is a re-deploy of a prior version (the UI then renders an `Undo2` icon next to the version with a `Rolled back from v{previousVersion}` tooltip).
+
 ## Secrets
 
 Do not commit real secrets to the repository.

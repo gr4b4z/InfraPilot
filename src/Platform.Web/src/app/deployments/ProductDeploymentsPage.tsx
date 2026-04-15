@@ -6,20 +6,25 @@ import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowLeft,
+  ArrowUp,
   Loader2,
   ExternalLink,
+  GitBranch,
   GitPullRequest,
   Ticket,
   Workflow,
   Download,
   Undo2,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
 
-type ViewTab = 'state' | 'activity';
+type ViewTab = 'state' | 'activity' | 'compare';
 type TimeFilter = 'all' | 'today' | '24h' | '7d' | 'custom';
 
-const VIEW_TABS: ViewTab[] = ['state', 'activity'];
+const VIEW_TABS: ViewTab[] = ['state', 'activity', 'compare'];
 const TIME_FILTERS: TimeFilter[] = ['all', 'today', '24h', '7d', 'custom'];
 
 const TIME_PRESETS: { key: TimeFilter; label: string }[] = [
@@ -78,9 +83,7 @@ export function ProductDeploymentsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { stateMatrix, recentActivity, loading, fetchState, fetchRecentByProduct } =
     useDeploymentStore();
-  const settings = useSettingsStore();
-  const getDisplayName = useCallback((key: string) => settings.getDisplayName(key, product), [settings, product]);
-  const getOrderedEnvironments = useCallback((keys: string[]) => settings.getOrderedEnvironments(keys, product), [settings, product]);
+  const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
   const [selected, setSelected] = useState<DeploymentStateEntry | null>(null);
 
   // Read filter state from URL search params
@@ -90,6 +93,13 @@ export function ProductDeploymentsPage() {
   const customDate = searchParams.get('since') ?? '';
   const activityCustomDate = searchParams.get('asince') ?? '';
   const envFilter = searchParams.get('env') ?? 'all';
+  const sortBy = searchParams.get('sort') ?? 'service'; // 'service' or an env key
+  const sortDir: 'asc' | 'desc' =
+    searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
+  const fromEnv = searchParams.get('from') ?? '';
+  const toEnv = searchParams.get('to') ?? '';
+  // Compare view mode: 'diff' (default, only services where versions differ) or 'all'.
+  const compareMode: 'diff' | 'all' = searchParams.get('all') === '1' ? 'all' : 'diff';
 
   // Write filter state to URL search params
   const updateParams = useCallback(
@@ -111,13 +121,32 @@ export function ProductDeploymentsPage() {
 
   const setTab = useCallback(
     (v: ViewTab) => {
-      // When switching tabs, keep only relevant params but preserve env across tabs
+      // When switching tabs, drop params that don't apply to the destination.
+      // Keep `env` across tabs; keep `from`/`to` so the compare view is remembered.
+      // Drop `all` (compare-only) when leaving the compare tab.
       if (v === 'state') {
-        updateParams({ tab: null, atime: null, asince: null });
+        updateParams({ tab: null, atime: null, asince: null, all: null });
+      } else if (v === 'compare') {
+        updateParams({ tab: 'compare', time: null, since: null, atime: null, asince: null });
       } else {
-        updateParams({ tab: 'activity', time: null, since: null });
+        updateParams({ tab: 'activity', time: null, since: null, all: null });
       }
     },
+    [updateParams]
+  );
+
+  const setFromEnv = useCallback(
+    (v: string) => updateParams({ from: v || null }),
+    [updateParams]
+  );
+
+  const setToEnv = useCallback(
+    (v: string) => updateParams({ to: v || null }),
+    [updateParams]
+  );
+
+  const setCompareMode = useCallback(
+    (v: 'diff' | 'all') => updateParams({ all: v === 'all' ? '1' : null }),
     [updateParams]
   );
 
@@ -189,18 +218,85 @@ export function ProductDeploymentsPage() {
   }, [recentActivity]);
 
   // State matrix helpers
-  const services = Array.from(new Set(stateMatrix.map((s) => s.service))).sort();
   const environments = getOrderedEnvironments(
     Array.from(new Set(stateMatrix.map((s) => s.environment)))
   );
-  const getCell = (service: string, env: string) =>
-    stateMatrix.find((s) => s.service === service && s.environment === env);
+  const getCell = useCallback(
+    (service: string, env: string) =>
+      stateMatrix.find((s) => s.service === service && s.environment === env),
+    [stateMatrix]
+  );
+
+  // Sorted service list — "service" sorts alphabetically, env-key sort sorts by
+  // that environment's last deploy time (services with no deploy in that env
+  // sink to the bottom regardless of direction).
+  const services = useMemo(() => {
+    const names = Array.from(new Set(stateMatrix.map((s) => s.service)));
+    const dirMul = sortDir === 'asc' ? 1 : -1;
+
+    if (sortBy === 'service') {
+      return names.sort((a, b) => a.localeCompare(b) * dirMul);
+    }
+
+    // Sort by deploy time for the given environment
+    return names.sort((a, b) => {
+      const ca = getCell(a, sortBy);
+      const cb = getCell(b, sortBy);
+      if (!ca && !cb) return a.localeCompare(b);
+      if (!ca) return 1; // missing always at bottom
+      if (!cb) return -1;
+      const ta = new Date(ca.deployedAt).getTime();
+      const tb = new Date(cb.deployedAt).getTime();
+      return (ta - tb) * dirMul;
+    });
+  }, [stateMatrix, sortBy, sortDir, getCell]);
+
+  const toggleSort = useCallback(
+    (key: string) => {
+      const updates: Record<string, string | null> = {};
+      if (sortBy === key) {
+        // Same column — flip direction
+        updates.dir = sortDir === 'asc' ? 'desc' : null; // omit when back to default asc
+      } else {
+        updates.sort = key === 'service' ? null : key; // omit default
+        // New column: service defaults to asc, env defaults to desc (latest first)
+        updates.dir = key === 'service' ? null : 'desc';
+      }
+      updateParams(updates);
+    },
+    [sortBy, sortDir, updateParams]
+  );
   const isBehind = (service: string, envIndex: number) => {
     if (envIndex === 0) return false;
     const current = getCell(service, environments[envIndex]);
     const prev = getCell(service, environments[envIndex - 1]);
     return current && prev && current.version !== prev.version;
   };
+
+  // ── Compare helpers ──
+  // If the user hasn't picked envs, default to the last two ordered envs —
+  // usually staging -> production. Keep these resolved values out of the URL
+  // so the URL stays clean when defaults are in use.
+  const resolvedFrom = fromEnv || environments[environments.length - 2] || '';
+  const resolvedTo = toEnv || environments[environments.length - 1] || '';
+
+  const compareRows = useMemo(() => {
+    if (!resolvedFrom || !resolvedTo || resolvedFrom === resolvedTo) return [];
+    const names = Array.from(new Set(stateMatrix.map((s) => s.service))).sort((a, b) =>
+      a.localeCompare(b)
+    );
+    const mapped = names.map((service) => ({
+      service,
+      from: getCell(service, resolvedFrom),
+      to: getCell(service, resolvedTo),
+    }));
+    if (compareMode === 'all') return mapped;
+    return mapped.filter(({ from, to }) => {
+      if (!from) return false; // nothing in source — not "ready"
+      if (!to) return true; // built in source, never shipped to target
+      return from.version !== to.version; // drift
+    });
+  }, [stateMatrix, getCell, resolvedFrom, resolvedTo, compareMode]);
 
   // Activity helpers
   const allActivityEnvs = getOrderedEnvironments(
@@ -301,6 +397,50 @@ export function ProductDeploymentsPage() {
     );
   }, [filteredActivity, product, downloadFile]);
 
+  const exportCompareCSV = useCallback(() => {
+    const fromLabel = getDisplayName(resolvedFrom);
+    const toLabel = getDisplayName(resolvedTo);
+    const header = [
+      'Service',
+      `${fromLabel} (version)`,
+      `${fromLabel} (deployed)`,
+      `${toLabel} (version)`,
+      `${toLabel} (deployed)`,
+    ];
+    const rows = compareRows.map(({ service, from, to }) => [
+      service,
+      from ? `v${from.version}` : '',
+      from ? from.deployedAt : '',
+      to ? `v${to.version}` : '',
+      to ? to.deployedAt : '',
+    ]);
+    const csv = [header, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
+    downloadFile(csv, `${product}-compare-${resolvedFrom}-${resolvedTo}.csv`, 'text/csv');
+  }, [compareRows, resolvedFrom, resolvedTo, getDisplayName, product, downloadFile]);
+
+  const exportCompareJSON = useCallback(() => {
+    const data = {
+      product,
+      from: resolvedFrom,
+      to: resolvedTo,
+      exportedAt: new Date().toISOString(),
+      services: compareRows.map(({ service, from, to }) => ({
+        service,
+        from: from
+          ? { version: from.version, deployedAt: from.deployedAt, status: from.status ?? 'succeeded' }
+          : null,
+        to: to
+          ? { version: to.version, deployedAt: to.deployedAt, status: to.status ?? 'succeeded' }
+          : null,
+      })),
+    };
+    downloadFile(
+      JSON.stringify(data, null, 2),
+      `${product}-compare-${resolvedFrom}-${resolvedTo}.json`,
+      'application/json',
+    );
+  }, [compareRows, resolvedFrom, resolvedTo, product, downloadFile]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -322,18 +462,21 @@ export function ProductDeploymentsPage() {
           <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
             {tab === 'state'
               ? getSubtitle(timeFilter, customDate)
-              : getSubtitle(activityTimeFilter, activityCustomDate)}
+              : tab === 'activity'
+              ? getSubtitle(activityTimeFilter, activityCustomDate)
+              : 'Compare versions between two environments'}
           </p>
         </div>
       </div>
 
       {/* Tab switcher + filters */}
       <div className="flex items-center gap-4 flex-wrap">
-        {/* State / Activity tabs */}
+        {/* State / Activity / Compare tabs — Compare only when 2+ environments */}
         <SegmentedControl
           options={[
             { key: 'state', label: 'State' },
             { key: 'activity', label: 'Activity' },
+            ...(environments.length >= 2 ? [{ key: 'compare', label: 'Compare' }] : []),
           ]}
           value={tab}
           onChange={(v) => setTab(v as ViewTab)}
@@ -394,12 +537,68 @@ export function ProductDeploymentsPage() {
           </span>
         )}
 
+        {/* Compare tab — From / To env selectors + row-mode toggle */}
+        {tab === 'compare' && (
+          <>
+            <div className="inline-flex items-center gap-2">
+              <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>From</span>
+              <EnvSelect
+                value={resolvedFrom}
+                options={environments}
+                getLabel={getDisplayName}
+                onChange={setFromEnv}
+              />
+              <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>→</span>
+              <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>To</span>
+              <EnvSelect
+                value={resolvedTo}
+                options={environments}
+                getLabel={getDisplayName}
+                onChange={setToEnv}
+              />
+            </div>
+            <SegmentedControl
+              options={[
+                { key: 'diff', label: 'Diffs only' },
+                { key: 'all', label: 'All services' },
+              ]}
+              value={compareMode}
+              onChange={(v) => setCompareMode(v as 'diff' | 'all')}
+            />
+            <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              {resolvedFrom === resolvedTo
+                ? 'Pick two different environments'
+                : compareMode === 'all'
+                ? `${compareRows.length} service${compareRows.length === 1 ? '' : 's'}`
+                : `${compareRows.length} service${compareRows.length === 1 ? '' : 's'} pending promotion`}
+            </span>
+          </>
+        )}
+
         {/* Export dropdown — pushed to the right */}
         <div className="flex-1" />
         <ExportMenu
-          onCSV={tab === 'state' ? exportStateCSV : exportActivityCSV}
-          onJSON={tab === 'state' ? exportStateJSON : exportActivityJSON}
-          disabled={tab === 'state' ? services.length === 0 : filteredActivity.length === 0}
+          onCSV={
+            tab === 'state'
+              ? exportStateCSV
+              : tab === 'compare'
+              ? exportCompareCSV
+              : exportActivityCSV
+          }
+          onJSON={
+            tab === 'state'
+              ? exportStateJSON
+              : tab === 'compare'
+              ? exportCompareJSON
+              : exportActivityJSON
+          }
+          disabled={
+            tab === 'state'
+              ? services.length === 0
+              : tab === 'compare'
+              ? compareRows.length === 0
+              : filteredActivity.length === 0
+          }
         />
       </div>
 
@@ -424,11 +623,14 @@ export function ProductDeploymentsPage() {
           <table className="w-full text-[13px]">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                <th
-                  className="text-left px-4 py-3 font-medium"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Service
+                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
+                  <SortHeader
+                    label="Service"
+                    active={sortBy === 'service'}
+                    dir={sortDir}
+                    onClick={() => toggleSort('service')}
+                    align="left"
+                  />
                 </th>
                 {environments.map((env) => (
                   <th
@@ -436,7 +638,13 @@ export function ProductDeploymentsPage() {
                     className="text-center px-4 py-3 font-medium"
                     style={{ color: 'var(--text-muted)' }}
                   >
-                    {getDisplayName(env)}
+                    <SortHeader
+                      label={getDisplayName(env)}
+                      active={sortBy === env}
+                      dir={sortDir}
+                      onClick={() => toggleSort(env)}
+                      align="center"
+                    />
                   </th>
                 ))}
               </tr>
@@ -527,6 +735,17 @@ export function ProductDeploymentsPage() {
             </tbody>
           </table>
         </div>
+      ) : tab === 'compare' ? (
+        /* ── Compare View ── */
+        <CompareView
+          rows={compareRows}
+          fromEnv={resolvedFrom}
+          toEnv={resolvedTo}
+          fromLabel={getDisplayName(resolvedFrom)}
+          toLabel={getDisplayName(resolvedTo)}
+          mode={compareMode}
+          onRowClick={(cell) => setSelected(cell)}
+        />
       ) : filteredActivity.length === 0 ? (
         <div
           className="text-center py-20 text-sm"
@@ -624,6 +843,34 @@ function ExportMenu({
   );
 }
 
+function SortHeader({
+  label,
+  active,
+  dir,
+  onClick,
+  align,
+}: {
+  label: string;
+  active: boolean;
+  dir: 'asc' | 'desc';
+  onClick: () => void;
+  align: 'left' | 'center';
+}) {
+  const Icon = active ? (dir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1 transition-colors hover:opacity-80 ${align === 'center' ? 'justify-center' : ''}`}
+      style={{ color: active ? 'var(--text-primary)' : 'inherit' }}
+      title={active ? `Sorted ${dir}ending — click to ${dir === 'asc' ? 'reverse' : 'reverse'}` : 'Click to sort'}
+    >
+      {label}
+      <Icon size={12} style={{ opacity: active ? 1 : 0.5 }} />
+    </button>
+  );
+}
+
 function SegmentedControl({
   options,
   value,
@@ -710,6 +957,160 @@ function EnvPill({
   );
 }
 
+function EnvSelect({
+  value,
+  options,
+  getLabel,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  getLabel: (env: string) => string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+      style={{
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-primary)',
+        color: 'var(--text-primary)',
+      }}
+    >
+      {options.map((env) => (
+        <option key={env} value={env}>
+          {getLabel(env)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function CompareView({
+  rows,
+  fromEnv,
+  toEnv,
+  fromLabel,
+  toLabel,
+  mode,
+  onRowClick,
+}: {
+  rows: { service: string; from?: DeploymentStateEntry; to?: DeploymentStateEntry }[];
+  fromEnv: string;
+  toEnv: string;
+  fromLabel: string;
+  toLabel: string;
+  mode: 'diff' | 'all';
+  onRowClick: (cell: DeploymentStateEntry) => void;
+}) {
+  if (!fromEnv || !toEnv || fromEnv === toEnv) {
+    return (
+      <div
+        className="text-center py-20 text-sm"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        Pick two different environments to compare.
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div
+        className="text-center py-20 text-sm"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        {mode === 'all'
+          ? `No services found for ${fromLabel} or ${toLabel}.`
+          : `All services are in sync between ${fromLabel} and ${toLabel}.`}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-xl border overflow-hidden"
+      style={{
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-secondary)',
+      }}
+    >
+      <table className="w-full text-[13px]">
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
+            <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
+              Service
+            </th>
+            <th className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
+              {fromLabel}
+            </th>
+            <th className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
+              {toLabel}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ service, from, to }) => (
+            <tr key={service} style={{ borderBottom: '1px solid var(--border-color)' }}>
+              <td className="px-4 py-3 font-medium" style={{ color: 'var(--text-primary)' }}>
+                {service}
+              </td>
+              <td
+                className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
+                onClick={() => from && onRowClick(from)}
+              >
+                {from ? (
+                  <div className="inline-flex flex-col items-center gap-0.5">
+                    <span className="font-mono text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                      v{from.version}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      {formatDistanceToNow(new Date(from.deployedAt), { addSuffix: true })}
+                    </span>
+                  </div>
+                ) : (
+                  <span style={{ color: 'var(--text-muted)' }}>—</span>
+                )}
+              </td>
+              {(() => {
+                // Target is "behind" when either missing or on a different version than source.
+                const behind = !to || (!!from && from.version !== to.version);
+                return (
+                  <td
+                    className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
+                    onClick={() => to && onRowClick(to)}
+                  >
+                    {to ? (
+                      <div className="inline-flex flex-col items-center gap-0.5">
+                        <span
+                          className="inline-flex items-center gap-1 font-mono text-[12px] font-medium"
+                          style={{ color: behind ? 'var(--warning)' : 'var(--text-primary)' }}
+                        >
+                          {behind && <ArrowUp size={12} />}
+                          v{to.version}
+                        </span>
+                        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                          {formatDistanceToNow(new Date(to.deployedAt), { addSuffix: true })}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-[12px] italic" style={{ color: 'var(--text-muted)' }}>
+                        never deployed
+                      </span>
+                    )}
+                  </td>
+                );
+              })()}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> = {
   succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
   failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
@@ -761,6 +1162,7 @@ function RollbackIndicator({
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
   'pull-request': GitPullRequest,
+  repository: GitBranch,
   pipeline: Workflow,
 };
 

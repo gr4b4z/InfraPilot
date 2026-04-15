@@ -8,31 +8,20 @@ export interface EnvironmentConfig {
   displayName: string;
 }
 
-export interface ProductEnvironments {
-  product: string;
-  environments: EnvironmentConfig[];
-}
-
 export interface ActivityTemplateLine {
   template: string;
   style: 'primary' | 'secondary' | 'muted';
 }
 
 interface SettingsState {
-  /** Default environments used when a product has no specific config */
-  defaultEnvironments: EnvironmentConfig[];
-  /** Per-product environment overrides */
-  productEnvironments: ProductEnvironments[];
+  /** Globally configured environments (shared across all products) */
+  environments: EnvironmentConfig[];
   activityTemplate: ActivityTemplateLine[];
 
-  setDefaultEnvironments: (envs: EnvironmentConfig[]) => void;
-  setProductEnvironments: (product: string, envs: EnvironmentConfig[]) => void;
-  removeProductEnvironments: (product: string) => void;
+  setEnvironments: (envs: EnvironmentConfig[]) => void;
   setActivityTemplate: (lines: ActivityTemplateLine[]) => void;
-  /** Get the environment config list for a product (falls back to defaults) */
-  getEnvironments: (product?: string) => EnvironmentConfig[];
-  getDisplayName: (key: string, product?: string) => string;
-  getOrderedEnvironments: (keys: string[], product?: string) => string[];
+  getDisplayName: (key: string) => string;
+  getOrderedEnvironments: (keys: string[]) => string[];
 }
 
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
@@ -49,45 +38,20 @@ export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
-      defaultEnvironments: DEFAULT_ENVIRONMENTS,
-      productEnvironments: [],
+      environments: DEFAULT_ENVIRONMENTS,
       activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
 
-      setDefaultEnvironments: (envs) => set({ defaultEnvironments: envs }),
-
-      setProductEnvironments: (product, envs) =>
-        set((state) => {
-          const existing = state.productEnvironments.filter((pe) => pe.product !== product);
-          return { productEnvironments: [...existing, { product, environments: envs }] };
-        }),
-
-      removeProductEnvironments: (product) =>
-        set((state) => ({
-          productEnvironments: state.productEnvironments.filter((pe) => pe.product !== product),
-        })),
+      setEnvironments: (envs) => set({ environments: envs }),
 
       setActivityTemplate: (lines) => set({ activityTemplate: lines }),
 
-      getEnvironments: (product) => {
-        if (product) {
-          const pe = get().productEnvironments.find((p) => p.product === product);
-          if (pe) return pe.environments;
-        }
-        return get().defaultEnvironments;
+      getDisplayName: (key) => {
+        const env = get().environments.find((e) => e.key === key);
+        return env?.displayName ?? key;
       },
 
-      getDisplayName: (key, product) => {
-        const envs = get().getEnvironments(product);
-        const env = envs.find((e) => e.key === key);
-        if (env) return env.displayName;
-        // Fallback: check defaults too in case product config omits this env
-        const def = get().defaultEnvironments.find((e) => e.key === key);
-        return def?.displayName ?? key;
-      },
-
-      getOrderedEnvironments: (keys, product) => {
-        const envs = get().getEnvironments(product);
-        const order = envs.map((e) => e.key);
+      getOrderedEnvironments: (keys) => {
+        const order = get().environments.map((e) => e.key);
         return [...keys].sort((a, b) => {
           const ai = order.indexOf(a);
           const bi = order.indexOf(b);
@@ -97,19 +61,20 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'platform-settings',
-      // Migrate old shape: `environments` → `defaultEnvironments`
+      // Migrate old shapes:
+      //  v0: { environments }                            (pre-rename)
+      //  v1: { defaultEnvironments, productEnvironments } (per-product overrides)
+      //  v2: { environments }                            (current — global only)
       migrate: (persisted: unknown) => {
         const state = persisted as Record<string, unknown>;
-        if (state.environments && !state.defaultEnvironments) {
-          state.defaultEnvironments = state.environments;
-          delete state.environments;
+        if (state.defaultEnvironments && !state.environments) {
+          state.environments = state.defaultEnvironments;
         }
-        if (!state.productEnvironments) {
-          state.productEnvironments = [];
-        }
+        delete state.defaultEnvironments;
+        delete state.productEnvironments;
         return state as SettingsState;
       },
-      version: 1,
+      version: 2,
     }
   )
 );
