@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { format, formatDistanceToNow } from 'date-fns';
 import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
@@ -271,8 +272,9 @@ function HistoryRow({ event: evt, isExpanded, onToggle }: { event: DeployEvent; 
           {[...evt.participants, ...(evt.enrichment?.participants ?? [])].length > 0 && (
             <div className="flex flex-wrap gap-x-4 gap-y-1">
               {[...evt.participants, ...(evt.enrichment?.participants ?? [])].map((p, i) => (
-                <span key={i} style={{ color: 'var(--text-muted)' }}>
+                <span key={i} className="inline-flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
                   {p.role}: <span style={{ color: 'var(--text-secondary)' }}>{p.displayName ?? p.email}</span>
+                  <CopyEmailButton email={p.email} size={11} />
                 </span>
               ))}
             </div>

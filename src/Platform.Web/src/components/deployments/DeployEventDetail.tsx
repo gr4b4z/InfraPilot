@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { CopyEmailButton } from './CopyEmailButton';
 import type { DeploymentStateEntry, DeployReference, DeployParticipant } from '@/lib/types';
 
 interface Props {
@@ -167,7 +168,10 @@ function ParticipantItem({ participant }: { participant: DeployParticipant }) {
   return (
     <div className="flex items-center justify-between text-[13px]">
       <span style={{ color: 'var(--text-muted)' }}>{participant.role}</span>
-      <span style={{ color: 'var(--text-secondary)' }}>{participant.displayName ?? participant.email ?? '—'}</span>
+      <span className="inline-flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+        {participant.displayName ?? participant.email ?? '—'}
+        <CopyEmailButton email={participant.email} />
+      </span>
     </div>
   );
 }
