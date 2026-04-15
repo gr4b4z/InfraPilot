@@ -18,8 +18,7 @@ const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
 };
 
 export function DeployEventDetail({ entry, product, onClose }: Props) {
-  const settings = useSettingsStore();
-  const getDisplayName = (key: string) => settings.getDisplayName(key, product);
+  const { getDisplayName } = useSettingsStore();
   const allParticipants = [
     ...entry.participants,
     ...(entry.enrichment?.participants ?? []),

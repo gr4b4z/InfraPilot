@@ -78,9 +78,7 @@ export function ProductDeploymentsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { stateMatrix, recentActivity, loading, fetchState, fetchRecentByProduct } =
     useDeploymentStore();
-  const settings = useSettingsStore();
-  const getDisplayName = useCallback((key: string) => settings.getDisplayName(key, product), [settings, product]);
-  const getOrderedEnvironments = useCallback((keys: string[]) => settings.getOrderedEnvironments(keys, product), [settings, product]);
+  const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
   const [selected, setSelected] = useState<DeploymentStateEntry | null>(null);
 
   // Read filter state from URL search params
