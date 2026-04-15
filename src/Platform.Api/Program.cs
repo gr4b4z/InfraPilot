@@ -156,6 +156,7 @@ builder.Services.AddScoped<DeploymentService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionTopologyService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();

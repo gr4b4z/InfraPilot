@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -10,6 +11,7 @@ public class DeploymentService
 {
     private readonly PlatformDbContext _db;
     private readonly IWebhookDispatcher _webhookDispatcher;
+    private readonly IPromotionIngestHook _promotionHook;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -18,10 +20,15 @@ public class DeploymentService
         PropertyNameCaseInsensitive = true,
     };
 
-    public DeploymentService(PlatformDbContext db, IWebhookDispatcher webhookDispatcher, ILogger<DeploymentService> logger)
+    public DeploymentService(
+        PlatformDbContext db,
+        IWebhookDispatcher webhookDispatcher,
+        IPromotionIngestHook promotionHook,
+        ILogger<DeploymentService> logger)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
+        _promotionHook = promotionHook;
         _logger = logger;
     }
 
@@ -74,6 +81,11 @@ public class DeploymentService
             deployEvent.Source,
             deployEvent.DeployedAt,
         }, new WebhookEventFilters(deployEvent.Product, deployEvent.Environment));
+
+        // Fire-and-observe: generate promotion candidates / close in-flight ones. The hook is
+        // feature-flag gated internally and swallows its own failures so ingestion stays
+        // resilient even when the promotion machinery misbehaves.
+        await _promotionHook.OnIngestedAsync(deployEvent, ct);
 
         return deployEvent;
     }
