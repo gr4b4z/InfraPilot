@@ -118,32 +118,49 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
 
 function ReferenceItem({ reference, labels }: { reference: DeployReference; labels: Record<string, string> }) {
   const Icon = REFERENCE_ICONS[reference.type] ?? ExternalLink;
-  const label = reference.type === 'work-item'
-    ? `${reference.key ?? reference.type}${labels.workItemTitle ? ` — ${labels.workItemTitle}` : ''}`
-    : reference.type === 'repository' && reference.revision
-      ? `${reference.revision.slice(0, 8)}`
-      : reference.type === 'pull-request' && labels.prTitle
-        ? labels.prTitle
-        : reference.type;
+  const label = buildReferenceLabel(reference, labels);
 
   return (
-    <div className="flex items-center gap-2 text-[13px]">
-      <Icon size={13} style={{ color: 'var(--text-muted)' }} />
+    <div className="flex items-center gap-2 text-[13px] min-w-0">
+      <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
       {reference.url ? (
         <a
           href={reference.url}
           target="_blank"
           rel="noopener noreferrer"
           className="hover:underline truncate"
+          title={label}
           style={{ color: 'var(--accent)' }}
         >
           {label}
         </a>
       ) : (
-        <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+        <span className="truncate" title={label} style={{ color: 'var(--text-secondary)' }}>{label}</span>
       )}
     </div>
   );
+}
+
+function buildReferenceLabel(ref: DeployReference, labels: Record<string, string>): string {
+  switch (ref.type) {
+    case 'work-item': {
+      const key = ref.key ?? 'work-item';
+      return labels.workItemTitle ? `${key} \u2014 ${labels.workItemTitle}` : key;
+    }
+    case 'pull-request': {
+      const num = ref.key ? `#${ref.key}` : 'Pull Request';
+      return labels.prTitle ? `${num} \u2014 ${labels.prTitle}` : num;
+    }
+    case 'repository': {
+      if (ref.key) return ref.revision ? `${ref.key} @ ${ref.revision.slice(0, 8)}` : ref.key;
+      if (ref.revision) return ref.revision.slice(0, 8);
+      return 'repository';
+    }
+    case 'pipeline':
+      return ref.key ?? ref.provider ?? 'pipeline';
+    default:
+      return ref.key ?? ref.type;
+  }
 }
 
 function ParticipantItem({ participant }: { participant: DeployParticipant }) {

@@ -8,6 +8,7 @@ import {
   ArrowLeft,
   Loader2,
   ExternalLink,
+  GitBranch,
   GitPullRequest,
   Ticket,
   Workflow,
@@ -759,6 +760,7 @@ function RollbackIndicator({
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
   'pull-request': GitPullRequest,
+  repository: GitBranch,
   pipeline: Workflow,
 };
 
