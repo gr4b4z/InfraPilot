@@ -1,0 +1,81 @@
+id: rollback-deployment
+name: Roll back a deployment
+description: >
+  Request a rollback of a service to a previously deployed version. The
+  version list is sourced from the deployment history so only versions
+  that have actually shipped to the target environment appear.
+category: deployments
+icon: rotate-ccw
+
+inputs:
+  - id: product
+    component: TextInput
+    label: Product
+    placeholder: "acme"
+    required: true
+
+  - id: service
+    component: TextInput
+    label: Service
+    placeholder: "api"
+    required: true
+
+  - id: environment
+    component: Select
+    label: Target environment
+    required: true
+    options:
+      - id: dev
+        label: Development
+      - id: staging
+        label: Staging
+      - id: prod
+        label: Production
+
+  # Dynamic source — the frontend resolves "deployments/versions" by calling
+  # GET /api/deployments/versions?product={product}&serviceName={service}&environment={environment}
+  # and uses the returned list to populate the picker. Each option shows the
+  # version plus its deploy timestamp so operators have context when choosing.
+  - id: target_version
+    component: ResourcePicker
+    label: Roll back to version
+    source: deployments/versions
+    required: true
+    visible_when:
+      field: environment
+      # Any truthy value works — the picker just needs product+service+environment
+      # to have been filled in before it can query the API.
+      equals: "*"
+
+  - id: reason
+    component: TextArea
+    label: Reason for rollback
+    placeholder: "Regression in checkout flow — revert to last known-good version"
+    required: true
+
+validations: []
+
+approval:
+  required: true
+  # Rollbacks to production go through the same approvers as forward deploys.
+  strategy: any
+  group: "prod-approvers"
+  visible_when:
+    field: environment
+    equals: prod
+
+# The executor is a generic webhook handoff: the platform notifies an external
+# rollback pipeline, which is responsible for actually reverting the service.
+# Ingest the resulting deploy event back into /api/deployments/events with
+# `is_rollback: true` so the dashboard surfaces it as a rollback.
+executor:
+  type: webhook
+  url: "{{rollback_webhook_url}}"
+  headers:
+    X-Rollback-Reason: "{{reason}}"
+  parameters_map:
+    product: "{{product}}"
+    service: "{{service}}"
+    environment: "{{environment}}"
+    targetVersion: "{{target_version}}"
+    reason: "{{reason}}"
