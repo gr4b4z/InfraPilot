@@ -152,6 +152,8 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<DeploymentService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
 
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();
