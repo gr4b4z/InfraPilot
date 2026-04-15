@@ -11,6 +11,7 @@ using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
+using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.FileStorage;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Middleware;
@@ -97,6 +98,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
+builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection(NotificationOptions.SectionName));
 builder.Services.AddHttpClient("notification-webhook");
 builder.Services.AddSingleton<INotificationChannel, EmailChannel>();
@@ -209,6 +211,10 @@ var app = builder.Build();
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
     await db.Database.MigrateAsync();
+
+    // Seed feature flags so admins can flip them from the UI without touching appsettings.
+    // Only inserts missing rows — never overwrites an operator's explicit value.
+    await FeatureFlagSeeder.SeedDefaults(db, builder.Configuration);
 
     // Seed catalog from YAML (production-safe: only adds new slugs)
     var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
