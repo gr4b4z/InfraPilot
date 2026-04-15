@@ -47,6 +47,9 @@ function referenceTooltip(ref: DeployReference, labels: Record<string, string>):
   }
 }
 
+const PAGE_SIZE = 20;
+const MAX_HISTORY_FETCH = 500;
+
 export function DeploymentHistoryPage() {
   const { product, service } = useParams<{ product: string; service: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -54,10 +57,11 @@ export function DeploymentHistoryPage() {
   const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
 
   // Always fetch full history (no environment filter) so the env list stays stable
   useEffect(() => {
-    if (product && service) fetchHistory(product, service);
+    if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
   }, [product, service, fetchHistory]);
 
   // Derive unique environments from the full set
@@ -71,6 +75,14 @@ export function DeploymentHistoryPage() {
     () => environment ? allHistory.filter((e) => e.environment === environment) : allHistory,
     [allHistory, environment],
   );
+
+  // Reset pagination when the environment filter changes
+  useEffect(() => {
+    setDisplayCount(PAGE_SIZE);
+  }, [environment]);
+
+  const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
+  const hasMore = displayCount < history.length;
 
   const setEnvironmentFilter = useCallback((env: string | undefined) => {
     if (env) {
@@ -146,7 +158,7 @@ export function DeploymentHistoryPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {history.map((evt) => (
+          {visibleHistory.map((evt) => (
             <HistoryRow
               key={evt.id}
               event={evt}
@@ -154,6 +166,21 @@ export function DeploymentHistoryPage() {
               onToggle={() => setExpanded(expanded === evt.id ? null : evt.id)}
             />
           ))}
+          {hasMore && (
+            <div className="flex flex-col items-center gap-1 pt-3">
+              <button
+                onClick={() => setDisplayCount((n) => n + PAGE_SIZE)}
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg transition-colors hover:opacity-80"
+                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+              >
+                Load more
+                <ChevronDown size={14} />
+              </button>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Showing {visibleHistory.length} of {history.length}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -13,7 +13,7 @@ interface DeploymentState {
 
   fetchProducts: () => Promise<void>;
   fetchState: (product?: string, environment?: string) => Promise<void>;
-  fetchHistory: (product: string, service: string, environment?: string) => Promise<void>;
+  fetchHistory: (product: string, service: string, environment?: string, limit?: number) => Promise<void>;
   fetchRecent: (product: string, environment: string, since?: string) => Promise<void>;
   fetchRecentByProduct: (product: string, since: string) => Promise<void>;
   setSelectedProduct: (product: string | null) => void;
@@ -49,10 +49,10 @@ export const useDeploymentStore = create<DeploymentState>((set) => ({
     }
   },
 
-  fetchHistory: async (product, service, environment) => {
+  fetchHistory: async (product, service, environment, limit) => {
     set({ loading: true });
     try {
-      const history = await api.getDeploymentHistory(product, service, { environment });
+      const history = await api.getDeploymentHistory(product, service, { environment, limit });
       set({ history });
     } finally {
       set({ loading: false });
