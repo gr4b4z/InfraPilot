@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Infrastructure.Logging;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Infrastructure.Features;
@@ -70,7 +71,7 @@ public class FeatureFlags : IFeatureFlags
 
         // Invalidate on success so a failed save doesn't leak a stale cache update.
         _cache[feature] = (DateTimeOffset.UtcNow.Add(CacheTtl), enabled);
-        _logger.LogInformation("Feature flag {Feature} set to {Enabled} by {UpdatedBy}", feature, enabled, updatedBy);
+        _logger.LogInformation("Feature flag {Feature} set to {Enabled} by {UpdatedBy}", LogSanitizer.Sanitize(feature), enabled, LogSanitizer.Sanitize(updatedBy));
     }
 
     /// <summary>
