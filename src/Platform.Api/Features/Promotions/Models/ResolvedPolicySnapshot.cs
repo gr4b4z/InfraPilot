@@ -9,8 +9,6 @@ namespace Platform.Api.Features.Promotions.Models;
 /// (no matching row at all). <c>ApproverGroup</c> is <c>null</c> when the policy exists but
 /// intentionally has no approver group — also treated as auto-approve.</para>
 ///
-/// <para><c>ExecutorKind</c>/<c>ExecutorConfigJson</c> are snapshotted from the policy so
-/// that a candidate's executor binding cannot drift between creation and dispatch.</para>
 /// </summary>
 public record ResolvedPolicySnapshot(
     Guid? PolicyId,
@@ -19,13 +17,8 @@ public record ResolvedPolicySnapshot(
     int MinApprovers,
     bool ExcludeDeployer,
     int TimeoutHours,
-    string? EscalationGroup,
-    string? ExecutorKind = null,
-    string? ExecutorConfigJson = null)
+    string? EscalationGroup)
 {
     /// <summary>True when no human approval is required for this edge.</summary>
     public bool IsAutoApprove => string.IsNullOrEmpty(ApproverGroup);
-
-    /// <summary>True when the policy wants us to dispatch an executor on approval.</summary>
-    public bool HasExecutor => !string.IsNullOrEmpty(ExecutorKind);
 }

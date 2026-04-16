@@ -370,6 +370,10 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
 
+                    b.Property<string>("SourceDeployerName")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
                     b.Property<string>("SourceEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -423,13 +427,6 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.Property<bool>("ExcludeDeployer")
                         .HasColumnType("boolean");
-
-                    b.Property<string>("ExecutorConfigJson")
-                        .HasColumnType("jsonb");
-
-                    b.Property<string>("ExecutorKind")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
 
                     b.Property<int>("MinApprovers")
                         .HasColumnType("integer");

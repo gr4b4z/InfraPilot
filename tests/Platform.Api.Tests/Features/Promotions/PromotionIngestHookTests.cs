@@ -9,6 +9,7 @@ using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Features.Webhooks;
 
 namespace Platform.Api.Tests.Features.Promotions;
 
@@ -45,7 +46,8 @@ public class PromotionIngestHookTests : IDisposable
         var resolver = new PromotionPolicyResolver(_db);
         _promotions = new PromotionService(
             _db, resolver, identity, currentUser, audit,
-            Substitute.For<ILogger<PromotionService>>());
+            Substitute.For<ILogger<PromotionService>>(),
+            Substitute.For<IWebhookDispatcher>());
 
         _sut = new PromotionIngestHook(
             _flags, _topology, _promotions, _db,
@@ -65,6 +67,36 @@ public class PromotionIngestHookTests : IDisposable
                     new PromotionEdge("staging", "prod"),
                 }),
             "test");
+    }
+
+    /// <summary>
+    /// Seeds auto-approve policies for the standard topology so candidates are created.
+    /// Without a policy, candidate creation is skipped (product not enrolled).
+    /// </summary>
+    private async Task SeedAutoApprovePoliciesAsync()
+    {
+        _db.PromotionPolicies.AddRange(
+            new PromotionPolicy
+            {
+                Id = Guid.NewGuid(),
+                Product = "acme",
+                Service = null,
+                TargetEnv = "staging",
+                ApproverGroup = null, // auto-approve
+                Strategy = PromotionStrategy.Any,
+                MinApprovers = 0,
+            },
+            new PromotionPolicy
+            {
+                Id = Guid.NewGuid(),
+                Product = "acme",
+                Service = null,
+                TargetEnv = "prod",
+                ApproverGroup = null, // auto-approve
+                Strategy = PromotionStrategy.Any,
+                MinApprovers = 0,
+            });
+        await _db.SaveChangesAsync();
     }
 
     private DeployEvent SeedDeploy(string env, string version = "v1")
@@ -111,9 +143,22 @@ public class PromotionIngestHookTests : IDisposable
     }
 
     [Fact]
+    public async Task NoPolicyForProduct_NoCandidatesCreated()
+    {
+        await SeedTopologyAsync();
+        // No policies seeded — product is not enrolled in promotions.
+        var e = SeedDeploy("dev");
+
+        await _sut.OnIngestedAsync(e);
+
+        Assert.Empty(_db.PromotionCandidates);
+    }
+
+    [Fact]
     public async Task SourceEnvHasDownstream_CandidateCreated()
     {
         await SeedTopologyAsync();
+        await SeedAutoApprovePoliciesAsync();
         var e = SeedDeploy("dev");
 
         await _sut.OnIngestedAsync(e);
@@ -136,6 +181,20 @@ public class PromotionIngestHookTests : IDisposable
                 }),
             "test");
 
+        // Enroll product for both target envs.
+        _db.PromotionPolicies.AddRange(
+            new PromotionPolicy
+            {
+                Id = Guid.NewGuid(), Product = "acme", TargetEnv = "prod",
+                Strategy = PromotionStrategy.Any,
+            },
+            new PromotionPolicy
+            {
+                Id = Guid.NewGuid(), Product = "acme", TargetEnv = "canary",
+                Strategy = PromotionStrategy.Any,
+            });
+        await _db.SaveChangesAsync();
+
         var e = SeedDeploy("staging");
         await _sut.OnIngestedAsync(e);
 
@@ -149,13 +208,14 @@ public class PromotionIngestHookTests : IDisposable
     public async Task DeployInTargetEnv_MatchingCandidateMarkedDeployed()
     {
         await SeedTopologyAsync();
+        await SeedAutoApprovePoliciesAsync();
 
-        // Step 1: deploy to staging → creates a pending candidate for prod (auto-approve since no policy)
+        // Step 1: deploy to staging → creates candidate for prod (auto-approve policy)
         var stagingEvent = SeedDeploy("staging", version: "v1");
         await _sut.OnIngestedAsync(stagingEvent);
 
         var candidate = await _db.PromotionCandidates.SingleAsync(c => c.TargetEnv == "prod");
-        Assert.Equal(PromotionStatus.Approved, candidate.Status); // no policy → auto-approve
+        Assert.Equal(PromotionStatus.Approved, candidate.Status); // auto-approve policy
         await _promotions.MarkDeployingAsync(candidate.Id, "https://ci/1");
 
         // Step 2: a deploy event lands on prod with matching version → close the candidate.
@@ -171,6 +231,7 @@ public class PromotionIngestHookTests : IDisposable
     public async Task DeployInTargetEnv_VersionMismatch_NoMatchDoesNothing()
     {
         await SeedTopologyAsync();
+        await SeedAutoApprovePoliciesAsync();
 
         var stagingEvent = SeedDeploy("staging", version: "v1");
         await _sut.OnIngestedAsync(stagingEvent);

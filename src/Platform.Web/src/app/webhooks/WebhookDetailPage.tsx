@@ -25,6 +25,9 @@ const AVAILABLE_EVENTS = [
   'approval.approved',
   'approval.rejected',
   'approval.changesrequested',
+  'promotion.approved',
+  'promotion.rejected',
+  'promotion.deployed',
   'ping',
 ];
 

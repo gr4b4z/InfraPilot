@@ -445,6 +445,7 @@ export interface PromotionCandidate {
   targetEnv: string;
   version: string;
   status: PromotionStatus;
+  sourceDeployerName: string | null;
   sourceDeployerEmail: string | null;
   externalRunUrl: string | null;
   createdAt: string;
@@ -474,8 +475,6 @@ export interface PromotionPolicy {
   excludeDeployer: boolean;
   timeoutHours: number;
   escalationGroup: string | null;
-  executorKind: string | null;
-  executorConfigJson: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -490,8 +489,6 @@ export interface UpsertPromotionPolicyPayload {
   excludeDeployer: boolean;
   timeoutHours: number;
   escalationGroup: string | null;
-  executorKind: string | null;
-  executorConfigJson: string | null;
 }
 
 export interface FeatureFlag {

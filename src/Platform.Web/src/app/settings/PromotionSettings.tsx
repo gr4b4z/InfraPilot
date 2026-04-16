@@ -18,8 +18,6 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   excludeDeployer: false,
   timeoutHours: 24,
   escalationGroup: null,
-  executorKind: null,
-  executorConfigJson: null,
 };
 
 const inputClass =
@@ -133,8 +131,6 @@ export function PromotionSettings() {
       excludeDeployer: p.excludeDeployer,
       timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
-      executorKind: p.executorKind,
-      executorConfigJson: p.executorConfigJson,
     });
     setEditingId(p.id);
     setShowForm(true);
@@ -597,35 +593,6 @@ export function PromotionSettings() {
                     />
                   </div>
 
-                  {/* Executor Kind */}
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                      Executor Kind
-                    </label>
-                    <input
-                      type="text"
-                      value={form.executorKind ?? ''}
-                      onChange={(e) => setField('executorKind', e.target.value || null)}
-                      placeholder='e.g. "webhook"'
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    />
-                  </div>
-                </div>
-
-                {/* Executor Config JSON — full width */}
-                <div className="space-y-1">
-                  <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                    Executor Config JSON
-                  </label>
-                  <textarea
-                    value={form.executorConfigJson ?? ''}
-                    onChange={(e) => setField('executorConfigJson', e.target.value || null)}
-                    rows={3}
-                    placeholder='{"url": "https://..."}'
-                    className={`${inputClass} w-full font-mono`}
-                    style={inputStyle}
-                  />
                 </div>
 
                 {/* Form actions */}

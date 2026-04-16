@@ -141,6 +141,7 @@ public static class PromotionEndpoints
         targetEnv = c.TargetEnv,
         version = c.Version,
         status = c.Status.ToString(),
+        sourceDeployerName = c.SourceDeployerName,
         sourceDeployerEmail = c.SourceDeployerEmail,
         externalRunUrl = c.ExternalRunUrl,
         createdAt = c.CreatedAt,

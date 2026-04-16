@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
-using Platform.Api.Features.Promotions.Executors;
+using Platform.Api.Features.Webhooks;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
@@ -29,7 +29,7 @@ public class PromotionService
     private readonly IIdentityService _identity;
     private readonly ICurrentUser _currentUser;
     private readonly IAuditLogger _audit;
-    private readonly PromotionExecutorDispatcher? _executor;
+    private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -45,14 +45,14 @@ public class PromotionService
         ICurrentUser currentUser,
         IAuditLogger audit,
         ILogger<PromotionService> logger,
-        PromotionExecutorDispatcher? executor = null)
+        IWebhookDispatcher webhookDispatcher)
     {
         _db = db;
         _resolver = resolver;
         _identity = identity;
         _currentUser = currentUser;
         _audit = audit;
-        _executor = executor;
+        _webhookDispatcher = webhookDispatcher;
         _logger = logger;
     }
 
@@ -72,6 +72,9 @@ public class PromotionService
     /// <para>Supersedes any currently <c>Pending</c> candidate for the same
     /// <c>(Product, Service, SourceEnv, TargetEnv)</c> — a newer version in source always replaces
     /// an older still-pending one.</para>
+    ///
+    /// <para>If no promotion policy exists for the product × target-env combination, candidate
+    /// creation is skipped entirely — the product is not enrolled in promotions for that edge.</para>
     ///
     /// <para>If the resolved policy is auto-approve (no gate), the candidate is created directly
     /// in <see cref="PromotionStatus.Approved"/> so downstream executor dispatch can pick it up.</para>
@@ -95,8 +98,19 @@ public class PromotionService
             return null;
         }
 
+        // No policy → product is not enrolled in promotions for this edge.
+        var policy = await _resolver.ResolveAsync(source.Product, source.Service, targetEnv, ct);
+        if (policy is null)
+        {
+            _logger.LogDebug(
+                "No promotion policy for {Product}/{Service} → {Target}; skipping candidate creation",
+                source.Product, source.Service, targetEnv);
+            return null;
+        }
+
         var snapshot = await _resolver.SnapshotAsync(source.Product, source.Service, targetEnv, ct);
 
+        var deployer = ExtractDeployer(source);
         var now = DateTimeOffset.UtcNow;
         var candidate = new PromotionCandidate
         {
@@ -107,7 +121,8 @@ public class PromotionService
             TargetEnv = targetEnv,
             Version = source.Version,
             SourceDeployEventId = source.Id,
-            SourceDeployerEmail = ExtractDeployerEmail(source),
+            SourceDeployerName = deployer?.Name,
+            SourceDeployerEmail = deployer?.Email,
             Status = snapshot.IsAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
             PolicyId = snapshot.PolicyId,
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
@@ -145,7 +160,7 @@ public class PromotionService
         // Done *after* the initial SaveChangesAsync so the candidate is visible to queries even if
         // dispatch transiently fails.
         if (candidate.Status == PromotionStatus.Approved)
-            await TryDispatchAsync(candidate, snapshot, ct);
+            await DispatchWebhookAsync(candidate, "promotion.approved", ct);
 
         return candidate;
     }
@@ -172,7 +187,9 @@ public class PromotionService
                 stale.Count, fresh.Product, fresh.Service, fresh.SourceEnv, fresh.TargetEnv);
     }
 
-    private static string? ExtractDeployerEmail(DeployEvent source)
+    private record DeployerInfo(string? Name, string? Email);
+
+    private static DeployerInfo? ExtractDeployer(DeployEvent source)
     {
         // Participants JSON is a serialised List<ParticipantDto>. The deployer (if present)
         // is the participant whose role/kind is "deployer". Best-effort parse — return null
@@ -183,7 +200,8 @@ public class PromotionService
             var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(source.ParticipantsJson, JsonOptions);
             var deployer = parts?.FirstOrDefault(p =>
                 string.Equals(p.Role, "deployer", StringComparison.OrdinalIgnoreCase));
-            return deployer?.Email;
+            if (deployer is null) return null;
+            return new DeployerInfo(deployer.DisplayName, deployer.Email);
         }
         catch
         {
@@ -290,7 +308,7 @@ public class PromotionService
         // another round-trip. Dispatch failures don't roll back the approval: the candidate
         // simply stays Approved and can be manually re-dispatched.
         if (thresholdMet)
-            await TryDispatchAsync(candidate, snapshot, ct);
+            await DispatchWebhookAsync(candidate, "promotion.approved", ct);
 
         return candidate;
     }
@@ -331,6 +349,8 @@ public class PromotionService
 
         _logger.LogInformation(
             "Candidate {Id} rejected by {Email}", candidate.Id, _currentUser.Email);
+
+        await DispatchWebhookAsync(candidate, "promotion.rejected", ct);
 
         return candidate;
     }
@@ -374,61 +394,48 @@ public class PromotionService
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Candidate {Id} → Deployed", candidateId);
+
+        await DispatchWebhookAsync(candidate, "promotion.deployed", ct);
+
         return candidate;
     }
 
     // ---------------------------------------------------------------------
-    // Executor dispatch (called after an Approved transition — both paths)
+    // Webhook dispatch (called after state transitions)
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Dispatches the configured executor (if any) and transitions the candidate to
-    /// <see cref="PromotionStatus.Deploying"/> on success. No-op when the policy snapshot has no
-    /// executor bound (manual deploy model) or when the candidate is not <c>Approved</c>.
-    ///
-    /// <para>Dispatch is intentionally non-fatal: a failed dispatch logs an audit entry and keeps
-    /// the candidate in <c>Approved</c> so operators can retry or fall back to a manual trigger
-    /// in the external system.</para>
+    /// Dispatches a webhook event for a promotion state change. Non-fatal: logs a warning on
+    /// failure but never throws — the state transition has already been persisted.
     /// </summary>
-    private async Task TryDispatchAsync(
-        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
+    private async Task DispatchWebhookAsync(
+        PromotionCandidate candidate, string eventType, CancellationToken ct)
     {
-        if (_executor is null) return;
-        if (candidate.Status != PromotionStatus.Approved) return;
-        if (!snapshot.HasExecutor) return;
-
-        var result = await _executor.DispatchAsync(candidate, snapshot, ct);
-        if (result is null) return; // HasExecutor was true but dispatcher returned null — shouldn't happen
-
-        if (result.Success)
+        try
         {
-            try
+            var payload = new
             {
-                await MarkDeployingAsync(candidate.Id, result.ExternalRunUrl, ct);
-                await _audit.Log(
-                    "promotions", "promotion.dispatched",
-                    _currentUser.Id, _currentUser.Name, "user",
-                    "PromotionCandidate", candidate.Id, null,
-                    new { snapshot.ExecutorKind, result.ExternalRunUrl });
-            }
-            catch (InvalidOperationException ex)
-            {
-                // Race: someone else already transitioned the candidate. Fine — log and move on.
-                _logger.LogWarning(ex,
-                    "Could not transition candidate {Id} to Deploying after successful dispatch",
-                    candidate.Id);
-            }
+                candidateId = candidate.Id,
+                candidate.Product,
+                candidate.Service,
+                candidate.SourceEnv,
+                candidate.TargetEnv,
+                candidate.Version,
+                candidate.SourceDeployEventId,
+                candidate.SourceDeployerEmail,
+                status = candidate.Status.ToString(),
+                candidate.ApprovedAt,
+            };
+
+            var filters = new WebhookEventFilters(Product: candidate.Product, Environment: candidate.TargetEnv);
+
+            await _webhookDispatcher.DispatchAsync(eventType, payload, filters);
         }
-        else
+        catch (Exception ex)
         {
-            _logger.LogWarning(
-                "Executor '{Kind}' failed for candidate {Id}: {Error}",
-                snapshot.ExecutorKind, candidate.Id, result.Error);
-            await _audit.Log(
-                "promotions", "promotion.dispatch.failed",
-                _currentUser.Id, _currentUser.Name, "user",
-                "PromotionCandidate", candidate.Id, null,
-                new { snapshot.ExecutorKind, error = result.Error });
+            _logger.LogWarning(ex,
+                "Webhook dispatch '{EventType}' failed for candidate {Id}",
+                eventType, candidate.Id);
         }
     }
 

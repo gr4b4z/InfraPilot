@@ -12,7 +12,9 @@ import {
   Rocket,
   ExternalLink,
   GitPullRequest,
+  User,
 } from 'lucide-react';
+import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 
 const STATUS_CONFIG: Record<
   PromotionStatus,
@@ -250,16 +252,14 @@ export function PromotionDetailPage() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
-                          <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                          <span className="inline-flex items-center gap-1.5 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
                             {a.approverName}
+                            <CopyEmailButton email={a.approverEmail} />
                           </span>
                           <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                             {format(new Date(a.createdAt), 'MMM d, HH:mm')}
                           </span>
                         </div>
-                        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                          {a.approverEmail}
-                        </span>
                         <div className="mt-1">
                           <span
                             className="badge"
@@ -313,12 +313,13 @@ export function PromotionDetailPage() {
                   {candidate.service}
                 </span>
               </div>
-              {candidate.sourceDeployerEmail && (
+              {(candidate.sourceDeployerName || candidate.sourceDeployerEmail) && (
                 <div className="flex items-center gap-2">
-                  <Clock size={14} style={{ color: 'var(--text-muted)' }} />
+                  <User size={14} style={{ color: 'var(--text-muted)' }} />
                   <span style={{ color: 'var(--text-muted)' }}>Deployer:</span>
-                  <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                    {candidate.sourceDeployerEmail}
+                  <span className="inline-flex items-center gap-1.5 font-medium" style={{ color: 'var(--text-primary)' }}>
+                    {candidate.sourceDeployerName ?? candidate.sourceDeployerEmail}
+                    <CopyEmailButton email={candidate.sourceDeployerEmail} />
                   </span>
                 </div>
               )}

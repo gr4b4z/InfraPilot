@@ -9,6 +9,7 @@ using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Features.Webhooks;
 
 namespace Platform.Api.Tests.Features.Promotions;
 
@@ -43,7 +44,8 @@ public class PromotionServiceTests : IDisposable
         var resolver = new PromotionPolicyResolver(_db);
         _sut = new PromotionService(
             _db, resolver, _identity, _currentUser, _audit,
-            Substitute.For<ILogger<PromotionService>>());
+            Substitute.For<ILogger<PromotionService>>(),
+            Substitute.For<IWebhookDispatcher>());
     }
 
     public void Dispose() => _db.Dispose();
@@ -127,15 +129,25 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Create_NoPolicy_AutoApproved()
+    public async Task Create_NoPolicy_Skipped()
     {
+        var e = SeedDeploy();
+        var c = await _sut.CreateCandidateAsync(e, "prod");
+
+        Assert.Null(c);
+        Assert.Empty(_db.PromotionCandidates);
+    }
+
+    [Fact]
+    public async Task Create_AutoApprovePolicy_ApprovedImmediately()
+    {
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
         Assert.NotNull(c);
         Assert.Equal(PromotionStatus.Approved, c!.Status);
         Assert.NotNull(c.ApprovedAt);
-        Assert.Null(c.PolicyId);
     }
 
     [Fact]
@@ -169,6 +181,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Create_CapturesDeployerEmail()
     {
+        SeedPolicy();
         var e = SeedDeploy(deployerEmail: "deployer@example.com");
         var c = await _sut.CreateCandidateAsync(e, "prod");
         Assert.Equal("deployer@example.com", c!.SourceDeployerEmail);
@@ -273,7 +286,8 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeploying_FromApproved_Works()
     {
-        var e = SeedDeploy(); // no policy → auto-approved candidate
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false); // auto-approve policy
+        var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
         var updated = await _sut.MarkDeployingAsync(c!.Id, "https://ci/run/1");
@@ -295,6 +309,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeployed_FromDeploying_Works()
     {
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         await _sut.MarkDeployingAsync(c!.Id, null);
@@ -321,6 +336,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_AutoApprove_False()
     {
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         Assert.False(await _sut.CanUserApproveAsync(c!));
@@ -329,6 +345,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_NotPending_False()
     {
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         c!.Status = PromotionStatus.Rejected;

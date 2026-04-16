@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Api.Migrations.SqlServer
 {
     [DbContext(typeof(SqlServerPlatformDbContext))]
-    partial class SqlServerPlatformDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260416064304_DropPromotionPolicyExecutor")]
+    partial class DropPromotionPolicyExecutor
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -367,10 +370,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("SourceDeployerEmail")
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.Property<string>("SourceDeployerName")
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)");
 

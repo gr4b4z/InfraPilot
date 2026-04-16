@@ -18,8 +18,9 @@ public class PromotionPolicyResolver
     }
 
     /// <summary>
-    /// Returns the most specific policy that applies, or <c>null</c> if no policy exists for this edge
-    /// (caller should treat <c>null</c> as implicit auto-approve).
+    /// Returns the most specific policy that applies, or <c>null</c> if no policy exists for this edge.
+    /// A <c>null</c> return means the product is <b>not enrolled</b> in promotions for this target —
+    /// callers should skip candidate creation entirely rather than auto-approving.
     /// </summary>
     public async Task<PromotionPolicy?> ResolveAsync(
         string product, string service, string targetEnv, CancellationToken ct = default)
@@ -38,8 +39,9 @@ public class PromotionPolicyResolver
 
     /// <summary>
     /// Wraps <see cref="ResolveAsync"/> and projects the result into the snapshot record stored on the
-    /// candidate. When no policy row matches, returns an auto-approve snapshot so the caller has a
-    /// uniform shape to persist.
+    /// candidate. Callers should first check <see cref="ResolveAsync"/> to confirm a policy exists
+    /// (no policy = not enrolled). When no policy row matches, this still returns a fallback
+    /// auto-approve snapshot for backwards compatibility.
     /// </summary>
     public async Task<ResolvedPolicySnapshot> SnapshotAsync(
         string product, string service, string targetEnv, CancellationToken ct = default)
@@ -55,9 +57,7 @@ public class PromotionPolicyResolver
                 MinApprovers: 0,
                 ExcludeDeployer: false,
                 TimeoutHours: 0,
-                EscalationGroup: null,
-                ExecutorKind: null,
-                ExecutorConfigJson: null);
+                EscalationGroup: null);
         }
 
         return new ResolvedPolicySnapshot(
@@ -67,8 +67,6 @@ public class PromotionPolicyResolver
             MinApprovers: policy.MinApprovers,
             ExcludeDeployer: policy.ExcludeDeployer,
             TimeoutHours: policy.TimeoutHours,
-            EscalationGroup: policy.EscalationGroup,
-            ExecutorKind: policy.ExecutorKind,
-            ExecutorConfigJson: policy.ExecutorConfigJson);
+            EscalationGroup: policy.EscalationGroup);
     }
 }

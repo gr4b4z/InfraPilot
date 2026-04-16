@@ -59,8 +59,6 @@ public static class PromotionAdminEndpoints
                 ExcludeDeployer = request.ExcludeDeployer,
                 TimeoutHours = Math.Max(0, request.TimeoutHours),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
-                ExecutorKind = string.IsNullOrWhiteSpace(request.ExecutorKind) ? null : request.ExecutorKind,
-                ExecutorConfigJson = string.IsNullOrWhiteSpace(request.ExecutorConfigJson) ? null : request.ExecutorConfigJson,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -88,8 +86,6 @@ public static class PromotionAdminEndpoints
             policy.ExcludeDeployer = request.ExcludeDeployer;
             policy.TimeoutHours = Math.Max(0, request.TimeoutHours);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
-            policy.ExecutorKind = string.IsNullOrWhiteSpace(request.ExecutorKind) ? null : request.ExecutorKind;
-            policy.ExecutorConfigJson = string.IsNullOrWhiteSpace(request.ExecutorConfigJson) ? null : request.ExecutorConfigJson;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
 
             await db.SaveChangesAsync();
@@ -142,8 +138,6 @@ public static class PromotionAdminEndpoints
         excludeDeployer = p.ExcludeDeployer,
         timeoutHours = p.TimeoutHours,
         escalationGroup = p.EscalationGroup,
-        executorKind = p.ExecutorKind,
-        executorConfigJson = p.ExecutorConfigJson,
         createdAt = p.CreatedAt,
         updatedAt = p.UpdatedAt,
     };
@@ -171,6 +165,4 @@ public record UpsertPolicyRequest(
     int MinApprovers,
     bool ExcludeDeployer,
     int TimeoutHours,
-    string? EscalationGroup,
-    string? ExecutorKind = null,
-    string? ExecutorConfigJson = null);
+    string? EscalationGroup);
