@@ -2,10 +2,12 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
+using Platform.Api.Infrastructure.Features;
 
 namespace Platform.Api.Infrastructure.Persistence;
 
@@ -29,6 +31,10 @@ public class PlatformDbContext : DbContext
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
+    public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+    public DbSet<PromotionPolicy> PromotionPolicies => Set<PromotionPolicy>();
+    public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
+    public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -259,6 +265,73 @@ public class PlatformDbContext : DbContext
             var rolesJson = e.Property(x => x.RolesJson).HasColumnName("Roles").HasDefaultValue("[]");
             if (jsonType != null) rolesJson.HasColumnType(jsonType);
             e.Ignore(x => x.Roles);
+        });
+
+        // Platform Settings — generic key/value store for feature flags, env topology, etc.
+        modelBuilder.Entity<PlatformSetting>(e =>
+        {
+            e.ToTable("platform_settings");
+            e.HasKey(x => x.Key);
+            e.Property(x => x.Key).HasMaxLength(100);
+            e.Property(x => x.Value).HasMaxLength(4000).IsRequired();
+            e.Property(x => x.UpdatedBy).HasMaxLength(200).IsRequired();
+        });
+
+        // Promotion Policies
+        modelBuilder.Entity<PromotionPolicy>(e =>
+        {
+            e.ToTable("promotion_policies");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200);
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ApproverGroup).HasMaxLength(400);
+            e.Property(x => x.Strategy).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.EscalationGroup).HasMaxLength(400);
+            // Unique per (product, service?, target_env). SQL Server and Postgres both treat
+            // NULL as distinct from NULL in unique indexes, which is the semantics we want:
+            // one product-default row AND any number of service-specific rows.
+            e.HasIndex(x => new { x.Product, x.Service, x.TargetEnv }).IsUnique();
+            e.HasIndex(x => new { x.Product, x.TargetEnv });
+        });
+
+        // Promotion Candidates
+        modelBuilder.Entity<PromotionCandidate>(e =>
+        {
+            e.ToTable("promotion_candidates");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.SourceEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            e.Property(x => x.SourceDeployerName).HasMaxLength(300);
+            e.Property(x => x.SourceDeployerEmail).HasMaxLength(300);
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.ExternalRunUrl).HasMaxLength(2000);
+            var resolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
+            if (jsonType != null) resolvedPolicyJson.HasColumnType(jsonType);
+
+            e.HasIndex(x => x.Status);
+            e.HasIndex(x => new { x.Product, x.Service, x.SourceEnv, x.TargetEnv });
+            e.HasIndex(x => x.SourceDeployEventId);
+        });
+
+        // Promotion Approvals
+        modelBuilder.Entity<PromotionApproval>(e =>
+        {
+            e.ToTable("promotion_approvals");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ApproverEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Comment).HasMaxLength(2000);
+            e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            // DB-level guard against double approval from the same user.
+            e.HasIndex(x => new { x.CandidateId, x.ApproverEmail }).IsUnique();
+            e.HasOne<PromotionCandidate>()
+                .WithMany()
+                .HasForeignKey(x => x.CandidateId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

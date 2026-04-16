@@ -8,6 +8,7 @@ export interface LocalAuthUser {
   email: string;
   roles: string[];
   isAdmin: boolean;
+  isQA: boolean;
 }
 
 interface LoginResponse {

@@ -255,6 +255,7 @@ public static class SeedData
         var users = new (string Email, string Password, string Name, List<string> Roles)[]
         {
             ("admin@localhost", "admin123", "Admin User", ["InfraPortal.Admin", "InfraPortal.User"]),
+            ("qa@localhost", "qa123", "QA Engineer", ["InfraPortal.QA", "InfraPortal.User"]),
             ("user@localhost", "user123", "Regular User", ["InfraPortal.User"]),
             ("viewer@localhost", "viewer123", "Viewer", []),
         };

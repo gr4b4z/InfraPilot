@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -10,6 +11,7 @@ public class DeploymentService
 {
     private readonly PlatformDbContext _db;
     private readonly IWebhookDispatcher _webhookDispatcher;
+    private readonly IPromotionIngestHook _promotionHook;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -18,10 +20,15 @@ public class DeploymentService
         PropertyNameCaseInsensitive = true,
     };
 
-    public DeploymentService(PlatformDbContext db, IWebhookDispatcher webhookDispatcher, ILogger<DeploymentService> logger)
+    public DeploymentService(
+        PlatformDbContext db,
+        IWebhookDispatcher webhookDispatcher,
+        IPromotionIngestHook promotionHook,
+        ILogger<DeploymentService> logger)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
+        _promotionHook = promotionHook;
         _logger = logger;
     }
 
@@ -75,7 +82,89 @@ public class DeploymentService
             deployEvent.DeployedAt,
         }, new WebhookEventFilters(deployEvent.Product, deployEvent.Environment));
 
+        // Fire-and-observe: generate promotion candidates / close in-flight ones. The hook is
+        // feature-flag gated internally and swallows its own failures so ingestion stays
+        // resilient even when the promotion machinery misbehaves.
+        await _promotionHook.OnIngestedAsync(deployEvent, ct);
+
         return deployEvent;
+    }
+
+    /// <summary>
+    /// Returns the distinct versions that have been deployed to the given (product, service, environment),
+    /// most-recent-first. Intended as the backing data source for a rollback picker in the UI:
+    /// each item carries the deploy id, version, deployer, and timestamp so the UI can show a
+    /// meaningful label ("v1.2.3 — deployed 2 days ago by alice").
+    ///
+    /// <para><c>product</c> and <c>environment</c> are required; <c>service</c> is optional and
+    /// when omitted returns versions across all services for the product/environment. Results
+    /// are capped by <paramref name="limit"/> (default 50).</para>
+    /// </summary>
+    public async Task<List<DeploymentVersionDto>> GetVersions(
+        string product, string environment, string? serviceName,
+        int limit = 50, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(environment))
+            return new List<DeploymentVersionDto>();
+
+        var query = _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == product && e.Environment == environment);
+        if (!string.IsNullOrWhiteSpace(serviceName))
+            query = query.Where(e => e.Service == serviceName);
+
+        // Only successful deploys are rollback candidates; failed events don't represent a
+        // real deployed version to go back to.
+        query = query.Where(e => e.Status == "succeeded");
+
+        // DeployedAt-desc with a DeployEventId tiebreak (LINQ `.First()` inside GroupBy would
+        // be the natural shape but the in-memory provider doesn't translate it cleanly, so we
+        // project, order, and then distinct-by version client-side.)
+        var raw = await query
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new
+            {
+                e.Id,
+                e.Service,
+                e.Version,
+                e.DeployedAt,
+                e.IsRollback,
+                e.ParticipantsJson,
+            })
+            .Take(Math.Max(1, limit) * 4) // oversample so distinct-by-version still hits the limit
+            .ToListAsync(ct);
+
+        var versions = new List<DeploymentVersionDto>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in raw)
+        {
+            // Unique key includes service — same version number across two services is not a duplicate.
+            var key = $"{e.Service}\0{e.Version}";
+            if (!seen.Add(key)) continue;
+
+            string? deployer = null;
+            if (!string.IsNullOrWhiteSpace(e.ParticipantsJson))
+            {
+                try
+                {
+                    var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(e.ParticipantsJson, JsonOptions);
+                    deployer = parts?.FirstOrDefault(p =>
+                        string.Equals(p.Role, "deployer", StringComparison.OrdinalIgnoreCase))?.Email;
+                }
+                catch { /* best-effort */ }
+            }
+
+            versions.Add(new DeploymentVersionDto(
+                Id: e.Id,
+                Service: e.Service,
+                Version: e.Version,
+                DeployedAt: e.DeployedAt,
+                DeployerEmail: deployer,
+                IsRollback: e.IsRollback));
+
+            if (versions.Count >= limit) break;
+        }
+
+        return versions;
     }
 
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)

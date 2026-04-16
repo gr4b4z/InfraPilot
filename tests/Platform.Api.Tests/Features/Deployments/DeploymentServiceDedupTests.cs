@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -21,7 +22,8 @@ public class DeploymentServiceDedupTests : IDisposable
         _db = new PlatformDbContext(options);
 
         var webhooks = Substitute.For<IWebhookDispatcher>();
-        _sut = new DeploymentService(_db, webhooks, Substitute.For<ILogger<DeploymentService>>());
+        var hook = Substitute.For<IPromotionIngestHook>();
+        _sut = new DeploymentService(_db, webhooks, hook, Substitute.For<ILogger<DeploymentService>>());
     }
 
     public void Dispose() => _db.Dispose();

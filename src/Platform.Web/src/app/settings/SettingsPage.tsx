@@ -9,6 +9,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { api } from '@/lib/api';
 import { GripVertical, Plus, Trash2, Check, RotateCcw } from 'lucide-react';
 import { CatalogSettings } from './CatalogSettings';
+import { FeatureFlagSettings } from './FeatureFlagSettings';
+import { PromotionSettings } from './PromotionSettings';
 
 export function SettingsPage() {
   const {
@@ -372,8 +374,14 @@ export function SettingsPage() {
         </div>
       </div>
 
+      {/* ── Feature Flags ── */}
+      <FeatureFlagSettings />
+
       {/* ── Service Catalog ── */}
       <CatalogSettings />
+
+      {/* ── Promotions ── */}
+      <PromotionSettings />
 
       {/* ── Deployment Maintenance (admin only) ── */}
       <DeploymentMaintenanceCard />

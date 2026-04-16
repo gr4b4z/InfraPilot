@@ -289,6 +289,183 @@ namespace Platform.Api.Migrations.Postgres
                     b.ToTable("deploy_events", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ApproverEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ApproverName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Comment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidateId", "ApproverEmail")
+                        .IsUnique();
+
+                    b.ToTable("promotion_approvals", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionCandidate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ApprovedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DeployedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExternalRunUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<Guid?>("PolicyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("ResolvedPolicyJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid>("SourceDeployEventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SourceDeployerEmail")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("SourceDeployerName")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("SourceEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid?>("SupersededById")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SourceDeployEventId");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("Product", "Service", "SourceEnv", "TargetEnv");
+
+                    b.ToTable("promotion_candidates", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ApproverGroup")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EscalationGroup")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)");
+
+                    b.Property<bool>("ExcludeDeployer")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("MinApprovers")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Service")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Strategy")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int>("TimeoutHours")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "TargetEnv");
+
+                    b.HasIndex("Product", "Service", "TargetEnv")
+                        .IsUnique();
+
+                    b.ToTable("promotion_policies", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Requests.Models.ExecutionResult", b =>
                 {
                     b.Property<Guid>("Id")
@@ -659,6 +836,30 @@ namespace Platform.Api.Migrations.Postgres
                     b.ToTable("local_users", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Infrastructure.Features.PlatformSetting", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("platform_settings", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Approvals.Models.ApprovalDecision", b =>
                 {
                     b.HasOne("Platform.Api.Features.Approvals.Models.ApprovalRequest", "ApprovalRequest")
@@ -690,6 +891,15 @@ namespace Platform.Api.Migrations.Postgres
                         .IsRequired();
 
                     b.Navigation("CatalogItem");
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
+                        .WithMany()
+                        .HasForeignKey("CandidateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Requests.Models.ExecutionResult", b =>
