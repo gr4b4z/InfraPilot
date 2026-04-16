@@ -72,3 +72,16 @@ public record EnvironmentSummaryDto(
     int TotalServices,
     int DeployedServices,
     DateTimeOffset? LastDeployedAt);
+
+/// <summary>
+/// Compact shape for the version picker / rollback-target selector: each entry represents a
+/// distinct deployed version, not a single deploy event (so the list doesn't balloon when a
+/// version was re-deployed multiple times).
+/// </summary>
+public record DeploymentVersionDto(
+    Guid Id,
+    string Service,
+    string Version,
+    DateTimeOffset DeployedAt,
+    string? DeployerEmail,
+    bool IsRollback);

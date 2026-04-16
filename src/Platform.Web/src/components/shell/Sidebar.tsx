@@ -10,6 +10,7 @@ import {
   Zap,
   Rocket,
   Webhook,
+  GitPullRequest,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { getAppName, getAppSubtitle, getEnvironmentLabel } from '@/lib/runtimeConfig';
@@ -28,6 +29,7 @@ const navItems: NavItem[] = [
   { to: '/requests', label: 'My Requests', icon: FileText, section: 'main' },
   { to: '/approvals', label: 'Approvals', icon: CheckCircle, badge: 0, section: 'main' },
   { to: '/deployments', label: 'Deployments', icon: Rocket, section: 'main' },
+  { to: '/promotions', label: 'Promotions', icon: GitPullRequest, section: 'main' },
   { to: '/webhooks', label: 'Webhooks', icon: Webhook, section: 'main', adminOnly: true },
   { to: '/settings', label: 'Settings', icon: Settings, section: 'main', adminOnly: true },
 ];

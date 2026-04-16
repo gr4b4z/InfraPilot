@@ -8,6 +8,7 @@ export interface AuthUser {
   initials: string;
   roles: string[];
   isAdmin: boolean;
+  isQA: boolean;
 }
 
 interface AuthState {
@@ -41,6 +42,7 @@ export function createAuthUser(
     initials: getInitials(name),
     roles,
     isAdmin: roles.includes('InfraPortal.Admin'),
+    isQA: roles.includes('InfraPortal.QA'),
   };
 }
 

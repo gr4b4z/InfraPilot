@@ -7,10 +7,12 @@ using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
+using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.FileStorage;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Middleware;
@@ -97,6 +99,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
+builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection(NotificationOptions.SectionName));
 builder.Services.AddHttpClient("notification-webhook");
 builder.Services.AddSingleton<INotificationChannel, EmailChannel>();
@@ -150,6 +153,10 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<DeploymentService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionTopologyService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();
@@ -210,6 +217,10 @@ var app = builder.Build();
     var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
     await db.Database.MigrateAsync();
 
+    // Seed feature flags so admins can flip them from the UI without touching appsettings.
+    // Only inserts missing rows — never overwrites an operator's explicit value.
+    await FeatureFlagSeeder.SeedDefaults(db, builder.Configuration);
+
     // Seed catalog from YAML (production-safe: only adds new slugs)
     var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
     await SeedData.SeedCatalog(db, loader);
@@ -223,6 +234,7 @@ var app = builder.Build();
     {
         await SeedData.SeedDemoData(db);
         await DeploymentSeedData.Seed(db);
+        await PromotionSeedData.Seed(db);
     }
 }
 
@@ -266,6 +278,9 @@ app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(Autho
 app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)
 app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
@@ -276,3 +291,6 @@ app.MapGroup("/agent").MapAgentEndpoints().AllowAnonymous();
 app.MapSseEndpoints();
 
 app.Run();
+
+// Make the auto-generated Program class accessible to integration tests.
+public partial class Program { }

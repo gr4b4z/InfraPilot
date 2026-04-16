@@ -62,6 +62,7 @@ public static class LocalAuthEndpoints
                     email = user.Email,
                     roles = user.Roles,
                     isAdmin = user.Roles.Contains("InfraPortal.Admin"),
+                    isQA = user.Roles.Contains("InfraPortal.QA"),
                 },
             });
         }).AllowAnonymous();
@@ -75,6 +76,7 @@ public static class LocalAuthEndpoints
                 email = currentUser.Email,
                 roles = currentUser.Roles,
                 isAdmin = currentUser.IsAdmin,
+                isQA = currentUser.IsQA,
             });
         });
 

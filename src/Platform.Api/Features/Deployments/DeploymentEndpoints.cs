@@ -67,6 +67,20 @@ public static class DeploymentEndpoints
             return Results.Ok(await service.GetRecentByEnvironment(product, environment, sinceDate, ct));
         });
 
+        // Versions deployed to a given (product, environment[, service]) — powers the rollback
+        // picker's "source: deployments/versions" catalog input.
+        group.MapGet("/versions", async (
+            DeploymentService service,
+            string product, string environment, string? serviceName, int? limit,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(environment))
+                return Results.BadRequest(new { error = "'product' and 'environment' are required" });
+
+            var versions = await service.GetVersions(product, environment, serviceName, limit ?? 50, ct);
+            return Results.Ok(new { versions });
+        });
+
         return group;
     }
 

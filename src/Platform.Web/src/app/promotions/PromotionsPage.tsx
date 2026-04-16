@@ -1,0 +1,370 @@
+import { useEffect, useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '@/lib/api';
+import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
+import { formatDistanceToNow } from 'date-fns';
+import {
+  ArrowRight,
+  Clock,
+  CheckCircle,
+  XCircle,
+  Rocket,
+  ArrowUpRight,
+  GitPullRequest,
+} from 'lucide-react';
+
+const STATUS_CONFIG: Record<
+  PromotionStatus,
+  { icon: typeof Clock; color: string; bg: string }
+> = {
+  Pending: { icon: Clock, color: 'var(--warning)', bg: 'var(--warning-bg)' },
+  Approved: { icon: CheckCircle, color: 'var(--info)', bg: 'var(--info-bg)' },
+  Deploying: { icon: Rocket, color: 'var(--accent)', bg: 'var(--accent-bg)' },
+  Deployed: { icon: CheckCircle, color: 'var(--success)', bg: 'var(--success-bg)' },
+  Superseded: { icon: Clock, color: 'var(--text-muted)', bg: 'var(--bg-secondary)' },
+  Rejected: { icon: XCircle, color: 'var(--danger)', bg: 'var(--danger-bg)' },
+};
+
+const STATUS_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: 'All', value: '' },
+  { label: 'Pending', value: 'Pending' },
+  { label: 'Approved', value: 'Approved' },
+  { label: 'Deploying', value: 'Deploying' },
+  { label: 'Deployed', value: 'Deployed' },
+  { label: 'Rejected', value: 'Rejected' },
+];
+
+export function PromotionsPage() {
+  const [candidates, setCandidates] = useState<PromotionCandidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [productFilter, setProductFilter] = useState('');
+  const [targetEnvFilter, setTargetEnvFilter] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const navigate = useNavigate();
+
+  const fetchData = () => {
+    setLoading(true);
+    const params: Record<string, string> = {};
+    if (statusFilter) params.status = statusFilter;
+    if (productFilter) params.product = productFilter;
+    if (targetEnvFilter) params.targetEnv = targetEnvFilter;
+    api
+      .listPromotions(params)
+      .then((data) => setCandidates(data.candidates || []))
+      .catch(() => setCandidates([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [statusFilter, productFilter, targetEnvFilter]);
+
+  const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
+  const nonPending = useMemo(() => candidates.filter((c) => c.status !== 'Pending'), [candidates]);
+
+  const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
+  const allApprovableSelected =
+    approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allApprovableSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(approvablePending.map((c) => c.id)));
+    }
+  };
+
+  const handleBulkApprove = async () => {
+    if (selected.size === 0) return;
+    setBulkLoading(true);
+    try {
+      await api.bulkApprovePromotions(Array.from(selected));
+      setSelected(new Set());
+      fetchData();
+    } catch {
+      // silently refresh
+      fetchData();
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const statCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      Pending: 0,
+      Approved: 0,
+      Deploying: 0,
+      Deployed: 0,
+      Rejected: 0,
+    };
+    for (const c of candidates) {
+      if (counts[c.status] !== undefined) counts[c.status]++;
+    }
+    return counts;
+  }, [candidates]);
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+          Promotions
+        </h1>
+        <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+          Review and approve version promotions across environments
+        </p>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-5 gap-3">
+        {[
+          { label: 'Pending', color: 'var(--warning)', bg: 'var(--warning-bg)', icon: Clock },
+          { label: 'Approved', color: 'var(--info)', bg: 'var(--info-bg)', icon: CheckCircle },
+          { label: 'Deploying', color: 'var(--accent)', bg: 'var(--accent-bg)', icon: Rocket },
+          { label: 'Deployed', color: 'var(--success)', bg: 'var(--success-bg)', icon: CheckCircle },
+          { label: 'Rejected', color: 'var(--danger)', bg: 'var(--danger-bg)', icon: XCircle },
+        ].map((s) => (
+          <div
+            key={s.label}
+            className="flex items-center gap-3 p-3.5 rounded-xl border"
+            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+          >
+            <div
+              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+              style={{ backgroundColor: s.bg, color: s.color }}
+            >
+              <s.icon size={16} />
+            </div>
+            <div>
+              <p className="text-lg font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
+                {statCounts[s.label] ?? 0}
+              </p>
+              <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px]"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
+        >
+          {STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <input
+          type="text"
+          placeholder="Product..."
+          value={productFilter}
+          onChange={(e) => setProductFilter(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px]"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        <input
+          type="text"
+          placeholder="Target env..."
+          value={targetEnvFilter}
+          onChange={(e) => setTargetEnvFilter(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px]"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="skeleton h-24" />
+          ))}
+        </div>
+      ) : candidates.length === 0 ? (
+        <div
+          className="flex flex-col items-center justify-center py-20 rounded-xl border"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+        >
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+          >
+            <GitPullRequest size={24} />
+          </div>
+          <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
+            No promotion candidates
+          </p>
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            Promotion candidates will appear here when new versions are ready to move between environments
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Pending section */}
+          {pending.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  {approvablePending.length > 0 && (
+                    <input
+                      type="checkbox"
+                      checked={allApprovableSelected}
+                      onChange={toggleSelectAll}
+                      className="rounded"
+                    />
+                  )}
+                  <h2
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Pending ({pending.length})
+                  </h2>
+                </div>
+                {selected.size > 0 && (
+                  <button
+                    onClick={handleBulkApprove}
+                    disabled={bulkLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                    style={{
+                      backgroundColor: 'var(--success)',
+                      color: '#fff',
+                      opacity: bulkLoading ? 0.6 : 1,
+                    }}
+                  >
+                    <CheckCircle size={12} />
+                    {bulkLoading ? 'Approving...' : `Approve selected (${selected.size})`}
+                  </button>
+                )}
+              </div>
+              <div className="space-y-2">
+                {pending.map((c) => (
+                  <CandidateCard
+                    key={c.id}
+                    candidate={c}
+                    urgent
+                    selectable={c.canApprove}
+                    selected={selected.has(c.id)}
+                    onToggleSelect={() => toggleSelect(c.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Non-pending section */}
+          {nonPending.length > 0 && (
+            <div>
+              <h2
+                className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Resolved ({nonPending.length})
+              </h2>
+              <div className="space-y-2">
+                {nonPending.map((c) => (
+                  <CandidateCard key={c.id} candidate={c} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CandidateCard({
+  candidate,
+  urgent,
+  selectable,
+  selected,
+  onToggleSelect,
+}: {
+  candidate: PromotionCandidate;
+  urgent?: boolean;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+}) {
+  const navigate = useNavigate();
+  const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
+  const StatusIcon = cfg.icon;
+
+  return (
+    <div
+      className="card-hover rounded-xl border p-4 cursor-pointer flex items-start gap-3"
+      style={{
+        borderColor: urgent ? cfg.color + '40' : 'var(--border-color)',
+        backgroundColor: 'var(--bg-primary)',
+        borderLeft: candidate.canApprove ? `3px solid var(--warning)` : undefined,
+      }}
+      onClick={() => navigate(`/promotions/${candidate.id}`)}
+    >
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onClick={(e) => e.stopPropagation()}
+          onChange={onToggleSelect}
+          className="rounded mt-1 shrink-0"
+        />
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <h3 className="text-[14px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
+            {candidate.product} / {candidate.service}
+          </h3>
+          <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
+            <StatusIcon size={10} />
+            {candidate.status}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          <span className="font-medium">{candidate.sourceEnv}</span>
+          <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
+          <span className="font-medium">{candidate.targetEnv}</span>
+          <span
+            className="ml-2 px-1.5 py-0.5 rounded text-[11px] font-mono"
+            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+          >
+            {candidate.version}
+          </span>
+        </div>
+        <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {candidate.sourceDeployerEmail && <span>{candidate.sourceDeployerEmail}</span>}
+          <span className="flex items-center gap-1">
+            <Clock size={10} />
+            {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
+          </span>
+        </div>
+      </div>
+      <ArrowUpRight size={16} style={{ color: 'var(--text-muted)' }} className="shrink-0 mt-1" />
+    </div>
+  );
+}

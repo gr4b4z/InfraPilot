@@ -26,6 +26,7 @@ public class CurrentUser : ICurrentUser
         ?? new List<string>().AsReadOnly();
 
     public bool IsAdmin => Roles.Contains("InfraPortal.Admin");
+    public bool IsQA => Roles.Contains("InfraPortal.QA");
 
     public bool IsInGroup(string groupId) => Groups.Contains(groupId);
 }

@@ -9,6 +9,8 @@ import { ApprovalDetailPage } from '@/app/approvals/ApprovalDetailPage';
 import { DeploymentsPage } from '@/app/deployments/DeploymentsPage';
 import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage';
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
+import { PromotionsPage } from '@/app/promotions/PromotionsPage';
+import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { SettingsPage } from '@/app/settings/SettingsPage';
 import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
@@ -29,6 +31,8 @@ function App() {
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
+          <Route path="/promotions" element={<PromotionsPage />} />
+          <Route path="/promotions/:id" element={<PromotionDetailPage />} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
