@@ -194,10 +194,13 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     {
         await SeedTopologyAndPoliciesAsync();
 
+        // Use a unique service to avoid interference with other tests.
+        var service = $"approve-svc-{Guid.NewGuid():N}"[..20];
+
         // Ingest to staging → creates a Pending candidate for prod (gated policy).
         await _apiKeyClient.PostAsJsonAsync(
             "/api/deployments/events",
-            MakeDeployPayload("staging", version: "v5.0.0"));
+            MakeDeployPayload("staging", version: "v5.0.0", service: service));
 
         // Find the pending candidate.
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
@@ -227,10 +230,13 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     {
         await SeedTopologyAndPoliciesAsync();
 
+        // Use a unique service name to avoid interference with other tests' candidates.
+        var service = $"reject-svc-{Guid.NewGuid():N}"[..20];
+
         // Ingest to staging → creates Pending candidate for prod.
         await _apiKeyClient.PostAsJsonAsync(
             "/api/deployments/events",
-            MakeDeployPayload("staging", version: "v6.0.0"));
+            MakeDeployPayload("staging", version: "v6.0.0", service: service));
 
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
         listResponse.EnsureSuccessStatusCode();
@@ -259,10 +265,13 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     {
         await SeedTopologyAndPoliciesAsync();
 
+        // Use a unique service to avoid interference with other tests.
+        var service = $"close-svc-{Guid.NewGuid():N}"[..20];
+
         // 1. Ingest to staging → creates Pending candidate for prod.
         await _apiKeyClient.PostAsJsonAsync(
             "/api/deployments/events",
-            MakeDeployPayload("staging", version: "v7.0.0"));
+            MakeDeployPayload("staging", version: "v7.0.0", service: service));
 
         // 2. Find and approve the candidate.
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
@@ -278,7 +287,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         // 3. Ingest the same version landing in prod → should close the candidate.
         await _apiKeyClient.PostAsJsonAsync(
             "/api/deployments/events",
-            MakeDeployPayload("prod", version: "v7.0.0"));
+            MakeDeployPayload("prod", version: "v7.0.0", service: service));
 
         // 4. Assert: candidate is now Deployed.
         var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
@@ -394,24 +403,4 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 }
 
-/// <summary>
-/// SQLite doesn't support <c>DateTimeOffset</c> in ORDER BY or WHERE comparisons. This subclass
-/// registers a convention that converts all <c>DateTimeOffset</c> properties to ticks (long) so
-/// queries work correctly against the in-memory SQLite test database.
-/// </summary>
-/// <summary>
-/// SQLite doesn't support <c>DateTimeOffset</c> in ORDER BY or WHERE comparisons. This subclass
-/// registers a convention that converts all <c>DateTimeOffset</c> properties to ticks (long) so
-/// queries work correctly against the in-memory SQLite test database.
-/// </summary>
-internal class SqliteTestDbContext : PlatformDbContext
-{
-    public SqliteTestDbContext(DbContextOptions<SqliteTestDbContext> options) : base(options) { }
-
-    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
-    {
-        base.ConfigureConventions(configurationBuilder);
-        configurationBuilder.Properties<DateTimeOffset>().HaveConversion<long>();
-        configurationBuilder.Properties<DateTimeOffset?>().HaveConversion<long>();
-    }
-}
+// SqliteTestDbContext is now defined in TestInfrastructure.cs
