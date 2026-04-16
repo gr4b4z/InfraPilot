@@ -33,6 +33,7 @@ public class PromotionServiceTests : IDisposable
         _currentUser.Name.Returns("Alice");
         _currentUser.Email.Returns("alice@example.com");
         _currentUser.IsAdmin.Returns(false);
+        _currentUser.IsQA.Returns(false);
         _currentUser.Roles.Returns(new List<string>().AsReadOnly());
         _currentUser.Groups.Returns(new List<string>().AsReadOnly());
         _currentUser.IsInGroup(Arg.Any<string>()).Returns(false);

@@ -40,6 +40,7 @@ public class PromotionApproverGroupTests : IDisposable
         _currentUser.Name.Returns("TestUser");
         _currentUser.Email.Returns("test@example.com");
         _currentUser.IsAdmin.Returns(false);
+        _currentUser.IsQA.Returns(false);
         _currentUser.Roles.Returns(new List<string>().AsReadOnly());
         _currentUser.Groups.Returns(new List<string>().AsReadOnly());
         _currentUser.IsInGroup(Arg.Any<string>()).Returns(false);
@@ -396,5 +397,40 @@ public class PromotionApproverGroupTests : IDisposable
 
         var afterSecond = await _sut.ApproveAsync(candidate.Id, null);
         Assert.Equal(PromotionStatus.Approved, afterSecond.Status);
+    }
+
+    // ── QA role bypass ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Approve_ViaQARole_Succeeds()
+    {
+        // QA role qualifies for any approver group, like admin.
+        _currentUser.IsQA.Returns(true);
+
+        var candidate = SeedPendingCandidate("release-approvers");
+        var result = await _sut.ApproveAsync(candidate.Id, "qa approved");
+
+        Assert.Equal(PromotionStatus.Approved, result.Status);
+    }
+
+    [Fact]
+    public async Task Approve_QARole_GraphNeverCalled()
+    {
+        _currentUser.IsQA.Returns(true);
+
+        var candidate = SeedPendingCandidate("release-approvers");
+        await _sut.ApproveAsync(candidate.Id, null);
+
+        await _identity.DidNotReceive()
+            .GetGroupMembers(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CanApprove_ViaQARole_ReturnsTrue()
+    {
+        _currentUser.IsQA.Returns(true);
+
+        var candidate = SeedPendingCandidate("release-approvers");
+        Assert.True(await _sut.CanUserApproveAsync(candidate));
     }
 }

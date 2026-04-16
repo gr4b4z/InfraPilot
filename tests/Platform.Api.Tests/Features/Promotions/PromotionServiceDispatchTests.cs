@@ -37,6 +37,7 @@ public class PromotionServiceDispatchTests : IDisposable
         _currentUser.Name.Returns("Alice");
         _currentUser.Email.Returns("alice@example.com");
         _currentUser.IsAdmin.Returns(true); // short-circuit group membership for threshold-met test
+        _currentUser.IsQA.Returns(false);
         _currentUser.Roles.Returns(new List<string>().AsReadOnly());
         _currentUser.Groups.Returns(new List<string>().AsReadOnly());
         _identity.GetGroupMembers(Arg.Any<string>(), Arg.Any<CancellationToken>())

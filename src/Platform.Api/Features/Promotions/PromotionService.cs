@@ -578,6 +578,9 @@ public class PromotionService
         // Admin always qualifies — avoids bootstrapping hell when groups aren't wired up yet.
         if (_currentUser.IsAdmin) return true;
 
+        // QA role qualifies for all promotions — lightweight alternative to AD groups for small teams.
+        if (_currentUser.IsQA) return true;
+
         if (_currentUser.Roles.Contains(approverGroup, StringComparer.OrdinalIgnoreCase)) return true;
         if (_currentUser.IsInGroup(approverGroup)) return true;
 
