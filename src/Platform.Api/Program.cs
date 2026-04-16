@@ -297,3 +297,6 @@ app.MapGroup("/agent").MapAgentEndpoints().AllowAnonymous();
 app.MapSseEndpoints();
 
 app.Run();
+
+// Make the auto-generated Program class accessible to integration tests.
+public partial class Program { }
