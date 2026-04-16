@@ -6,7 +6,6 @@ using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
-using Platform.Api.Infrastructure.Logging;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Promotions;
@@ -85,18 +84,13 @@ public class PromotionService
     {
         if (source.IsRollback)
         {
-            _logger.LogInformation(
-                "Skipping promotion candidate for rollback event {EventId} ({Product}/{Service} {Source}→{Target} v{Version})",
-                source.Id, LogSanitizer.Sanitize(source.Product), LogSanitizer.Sanitize(source.Service),
-                LogSanitizer.Sanitize(source.Environment), LogSanitizer.Sanitize(targetEnv), LogSanitizer.Sanitize(source.Version));
+            _logger.LogInformation("Skipping promotion candidate for rollback event {EventId}", source.Id);
             return null;
         }
 
         if (!string.Equals(source.Status, "succeeded", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogInformation(
-                "Skipping promotion candidate for non-succeeded event {EventId} (status={Status})",
-                source.Id, LogSanitizer.Sanitize(source.Status));
+            _logger.LogInformation("Skipping promotion candidate for non-succeeded event {EventId}", source.Id);
             return null;
         }
 
@@ -104,9 +98,7 @@ public class PromotionService
         var policy = await _resolver.ResolveAsync(source.Product, source.Service, targetEnv, ct);
         if (policy is null)
         {
-            _logger.LogDebug(
-                "No promotion policy for {Product}/{Service} → {Target}; skipping candidate creation",
-                LogSanitizer.Sanitize(source.Product), LogSanitizer.Sanitize(source.Service), LogSanitizer.Sanitize(targetEnv));
+            _logger.LogDebug("No promotion policy found for event {EventId}; skipping candidate creation", source.Id);
             return null;
         }
 
@@ -154,10 +146,8 @@ public class PromotionService
             });
 
         _logger.LogInformation(
-            "Created promotion candidate {Id}: {Product}/{Service} {Source}→{Target} v{Version} ({Status})",
-            candidate.Id, LogSanitizer.Sanitize(candidate.Product), LogSanitizer.Sanitize(candidate.Service),
-            LogSanitizer.Sanitize(candidate.SourceEnv), LogSanitizer.Sanitize(candidate.TargetEnv),
-            LogSanitizer.Sanitize(candidate.Version), candidate.Status);
+            "Created promotion candidate {CandidateId} from event {EventId} ({Status})",
+            candidate.Id, source.Id, candidate.Status);
 
         // If the candidate was born Approved (auto-approve policy), kick off execution right away.
         // Done *after* the initial SaveChangesAsync so the candidate is visible to queries even if
@@ -186,9 +176,8 @@ public class PromotionService
 
         if (stale.Count > 0)
             _logger.LogInformation(
-                "Superseding {Count} pending candidates for {Product}/{Service} {Source}→{Target}",
-                stale.Count, LogSanitizer.Sanitize(fresh.Product), LogSanitizer.Sanitize(fresh.Service),
-                LogSanitizer.Sanitize(fresh.SourceEnv), LogSanitizer.Sanitize(fresh.TargetEnv));
+                "Superseded {Count} pending candidates in favour of {CandidateId}",
+                stale.Count, fresh.Id);
     }
 
     private record DeployerInfo(string? Name, string? Email);
