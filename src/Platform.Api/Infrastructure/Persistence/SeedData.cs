@@ -101,7 +101,7 @@ public static class SeedData
             RequesterId = "user-2",
             RequesterName = "Anna Nowak",
             Status = RequestStatus.Completed,
-            InputsJson = """{"record_type":"CNAME","hostname":"api.softwareone.com","value":"swo-api-gateway.azurefd.net","ttl":3600,"zone":"external"}""",
+            InputsJson = """{"record_type":"CNAME","hostname":"api.acmetrix.com","value":"swo-api-gateway.azurefd.net","ttl":3600,"zone":"external"}""",
             CreatedAt = now.AddDays(-5),
             UpdatedAt = now.AddDays(-4),
         };
@@ -166,7 +166,7 @@ public static class SeedData
                 ServiceRequestId = req3.Id,
                 Attempt = 1,
                 Status = "Completed",
-                OutputJson = """{"recordId":"dns-rec-789","fqdn":"api.softwareone.com"}""",
+                OutputJson = """{"recordId":"dns-rec-789","fqdn":"api.acmetrix.com"}""",
                 StartedAt = now.AddDays(-4).AddMinutes(-2),
                 CompletedAt = now.AddDays(-4),
             },
