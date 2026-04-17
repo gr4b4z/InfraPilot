@@ -130,15 +130,16 @@ public class CatalogAgent
             function = new
             {
                 name = "get_deployment_state",
-                description = "Get the current deployment state matrix for a product — shows latest version of every service in every environment. Use when users ask 'what is deployed', 'current versions', 'what's in production', etc.",
+                description = "Get the current deployment state matrix — shows latest version per service per environment. Filter by product or by service (or both). Use when users ask 'what is deployed', 'current versions', 'what's in production', etc.",
                 parameters = new
                 {
                     type = "object",
                     properties = new Dictionary<string, object>
                     {
-                        ["product"] = new { type = "string", description = "Product name, e.g. 'billing-platform'. Call list_products first if unknown." },
+                        ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional — omit to query across all products (typically when filtering by service instead)." },
+                        ["service"] = new { type = "string", description = "Service name, e.g. 'auth-api'. Optional — use when the user asks about a specific service rather than a product." },
                     },
-                    required = new[] { "product" },
+                    required = Array.Empty<string>(),
                 },
             },
         },
@@ -154,7 +155,8 @@ public class CatalogAgent
                     type = "object",
                     properties = new Dictionary<string, object>
                     {
-                        ["product"] = new { type = "string", description = "Product name, e.g. 'billing-platform'. Optional — omit to query across all products." },
+                        ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional — omit to query across all products." },
+                        ["service"] = new { type = "string", description = "Service name, e.g. 'auth-api'. Optional — use when the user asks about a specific service." },
                         ["environment"] = new { type = "string", description = "Environment name, e.g. 'production', 'staging'. Optional." },
                         ["since"] = new { type = "string", description = "ISO8601 datetime — only return deployments after this time. Defaults to start of today if omitted." },
                     },
@@ -667,15 +669,27 @@ public class CatalogAgent
 
                 case "get_deployment_state":
                 {
-                    var rawProduct = args.GetProperty("product").GetString()!;
-                    var product = await ResolveProductSlug(rawProduct);
-                    var stateData = await _queryService.GetDeploymentState(product);
+                    var rawProduct = args.TryGetProperty("product", out var pp) ? pp.GetString() : null;
+                    var service = args.TryGetProperty("service", out var ss) ? ss.GetString() : null;
+                    var product = string.IsNullOrWhiteSpace(rawProduct) ? null : await ResolveProductSlug(rawProduct);
+
+                    if (string.IsNullOrWhiteSpace(product) && string.IsNullOrWhiteSpace(service))
+                        return ("Provide at least a product or a service to look up deployment state.", null, null, null);
+
+                    var stateData = await _queryService.GetDeploymentState(product, service);
                     var resultJson = JsonSerializer.Serialize(stateData, JsonOptions);
+                    var title = (product, service) switch
+                    {
+                        (not null, not null) => $"Deployment State — {product} / {service}",
+                        (not null, _) => $"Deployment State — {product}",
+                        (_, not null) => $"Deployment State — {service}",
+                        _ => "Deployment State",
+                    };
 
                     return (resultJson, new AgentCard
                     {
                         Type = "deployment-state",
-                        Title = $"Deployment State — {product}",
+                        Title = title,
                         Data = stateData,
                     }, null, null);
                 }
@@ -684,18 +698,27 @@ public class CatalogAgent
                 {
                     var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
                     var product = rawProduct is null ? null : await ResolveProductSlug(rawProduct);
+                    var service = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
                     var environment = args.TryGetProperty("environment", out var env) ? env.GetString() : null;
                     var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd
                         : DateTimeOffset.UtcNow.Date;
 
-                    var activityData = await _queryService.GetRecentDeployments(product, environment, since, ct: default);
+                    var activityData = await _queryService.GetRecentDeployments(product, environment, since, service: service);
                     var resultJson = JsonSerializer.Serialize(activityData, JsonOptions);
+
+                    var scope = (product, service) switch
+                    {
+                        (not null, not null) => $" — {product} / {service}",
+                        (not null, _) => $" — {product}",
+                        (_, not null) => $" — {service}",
+                        _ => "",
+                    };
 
                     return (resultJson, new AgentCard
                     {
                         Type = "deployment-activity",
-                        Title = $"Recent Deployments{(product != null ? $" — {product}" : "")}",
+                        Title = $"Recent Deployments{scope}",
                         Data = activityData,
                     }, null, null);
                 }
