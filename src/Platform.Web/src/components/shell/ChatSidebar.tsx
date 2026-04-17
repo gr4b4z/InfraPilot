@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell } from 'lucide-react';
 import { useConversationStore } from '@/stores/conversationStore';
 import { ChatCard } from '@/components/chat/ChatCard';
+import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
 
 export function ChatSidebar() {
@@ -108,6 +109,7 @@ export function ChatSidebar() {
         suggestedSlug: data.suggestedSlug || undefined,
         fieldSuggestions,
         cards: data.cards || undefined,
+        a2uiSurface: data.a2uiSurface || undefined,
       });
 
       // If a service was suggested, set it in context
@@ -208,6 +210,14 @@ export function ChatSidebar() {
                 </span>
               )}
             </div>
+
+            {/* Inline form rendered by the generate_form tool */}
+            {msg.a2uiSurface && (
+              <ChatInlineForm
+                surfaceJson={msg.a2uiSurface}
+                initialValues={msg.fieldSuggestions}
+              />
+            )}
 
             {/* Structured data cards */}
             {msg.cards && msg.cards.length > 0 && (

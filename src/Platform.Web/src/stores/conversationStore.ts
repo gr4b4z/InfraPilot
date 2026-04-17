@@ -11,6 +11,8 @@ export interface ChatMessage {
   fieldSuggestions?: Record<string, unknown>;
   /** Structured data cards for rich rendering */
   cards?: AgentCard[];
+  /** A2UI surface JSON emitted by the generate_form tool — renders a form inline in chat */
+  a2uiSurface?: string;
   /** Whether this is an ambient notification (SSE push) */
   isNotification?: boolean;
   isLoading?: boolean;
