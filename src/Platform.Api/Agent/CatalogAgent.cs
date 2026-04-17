@@ -41,7 +41,7 @@ public class CatalogAgent
 
         When a user asks about deployments, releases, what's deployed, what version is running, what was deployed to production, what changed recently, etc.:
         - ALWAYS use the deployment tools (list_products, get_deployment_state, query_deployments) — NEVER say you don't have access to deployment data
-        - Use list_products first if you don't know which products exist
+        - Product identifiers are lowercase, hyphen-separated slugs (e.g. `identity-platform`, `order-service`). If the user says "identity platform", pass `identity-platform` to the tools. When unsure, call list_products first.
         - Use get_deployment_state to show the current version matrix for a product
         - Use query_deployments to show recent deployment activity (what was deployed today, what changed in production, etc.)
         - The system will render rich data cards for deployment results
@@ -376,6 +376,24 @@ public class CatalogAgent
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Resolve a model-provided product name to a real product slug.
+    /// Tries exact match first, then a normalized form (lowercased, spaces → hyphens),
+    /// then prefix/contains match. Falls back to the raw value so the downstream
+    /// query can report "not found" naturally.
+    /// </summary>
+    private async Task<string> ResolveProductSlug(string raw)
+    {
+        var products = await _queryService.GetProducts();
+        if (products.Contains(raw)) return raw;
+
+        var normalized = raw.Trim().ToLowerInvariant().Replace(' ', '-');
+        var match = products.FirstOrDefault(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase))
+            ?? products.FirstOrDefault(p => p.Replace("-", " ").Equals(raw, StringComparison.OrdinalIgnoreCase))
+            ?? products.FirstOrDefault(p => p.Contains(normalized, StringComparison.OrdinalIgnoreCase));
+        return match ?? raw;
+    }
+
     private static string SanitizeInline(string? value, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
@@ -649,7 +667,8 @@ public class CatalogAgent
 
                 case "get_deployment_state":
                 {
-                    var product = args.GetProperty("product").GetString()!;
+                    var rawProduct = args.GetProperty("product").GetString()!;
+                    var product = await ResolveProductSlug(rawProduct);
                     var stateData = await _queryService.GetDeploymentState(product);
                     var resultJson = JsonSerializer.Serialize(stateData, JsonOptions);
 
@@ -663,7 +682,8 @@ public class CatalogAgent
 
                 case "query_deployments":
                 {
-                    var product = args.TryGetProperty("product", out var p) ? p.GetString() : null;
+                    var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
+                    var product = rawProduct is null ? null : await ResolveProductSlug(rawProduct);
                     var environment = args.TryGetProperty("environment", out var env) ? env.GetString() : null;
                     var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd
