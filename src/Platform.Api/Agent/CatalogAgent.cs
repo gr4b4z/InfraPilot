@@ -42,6 +42,7 @@ public class CatalogAgent
         When a user asks about deployments, releases, what's deployed, what version is running, what was deployed to production, what changed recently, etc.:
         - ALWAYS use the deployment tools (list_products, get_deployment_state, query_deployments) — NEVER say you don't have access to deployment data
         - Product identifiers are lowercase, hyphen-separated slugs (e.g. `identity-platform`, `order-service`). If the user says "identity platform", pass `identity-platform` to the tools. When unsure, call list_products first.
+        - Distinguish product from service: a product groups many services. If the user names a single service (e.g. "audit-log", "auth-api", "payments-worker"), pass it as the `service` parameter — not `product`. Example: "latest version of audit-log" → `get_deployment_state({ service: "audit-log" })`.
         - Use get_deployment_state to show the current version matrix for a product
         - Use query_deployments to show recent deployment activity (what was deployed today, what changed in production, etc.)
         - The system will render rich data cards for deployment results
@@ -130,7 +131,7 @@ public class CatalogAgent
             function = new
             {
                 name = "get_deployment_state",
-                description = "Get the current deployment state matrix — shows latest version per service per environment. Filter by product or by service (or both). Use when users ask 'what is deployed', 'current versions', 'what's in production', etc.",
+                description = "Get the current deployment state matrix — shows latest version per service per environment. Pass `product` OR `service` (at least one). CRITICAL: if the user names a single service (e.g. 'audit-log', 'auth-api', 'payments-worker'), pass it as `service` and leave `product` empty. Do NOT guess a product the user didn't mention.",
                 parameters = new
                 {
                     type = "object",
@@ -149,7 +150,7 @@ public class CatalogAgent
             function = new
             {
                 name = "query_deployments",
-                description = "Query recent deployment activity across all products and environments. ALWAYS use this tool when users ask about deployments, releases, versions, what was deployed, what changed in production/staging, etc. Returns deployment events with version changes, work items, participants, and PR links.",
+                description = "Query recent deployment activity across all products and environments. ALWAYS use this tool when users ask about deployments, releases, versions, what was deployed, what changed in production/staging, etc. Returns deployment events with version changes, work items, participants, and PR links. CRITICAL: if the user names a single service (e.g. 'audit-log', 'auth-api'), pass it as `service` and leave `product` empty. Do NOT guess a product the user didn't mention.",
                 parameters = new
                 {
                     type = "object",
@@ -379,21 +380,65 @@ public class CatalogAgent
     }
 
     /// <summary>
-    /// Resolve a model-provided product name to a real product slug.
-    /// Tries exact match first, then a normalized form (lowercased, spaces → hyphens),
-    /// then prefix/contains match. Falls back to the raw value so the downstream
-    /// query can report "not found" naturally.
+    /// Resolve a model-provided name for a deployment query. The LLM often conflates
+    /// "product" and "service" — it might say `product: "audit-log"` when `audit-log`
+    /// is actually a service. This returns (product, service) so the caller can pick
+    /// whichever axis matches real data.
     /// </summary>
-    private async Task<string> ResolveProductSlug(string raw)
+    private async Task<(string? Product, string? Service)> ResolveProductOrService(
+        string? rawProduct, string? rawService, string? userMessage = null)
     {
+        string? product = null, service = rawService;
         var products = await _queryService.GetProducts();
-        if (products.Contains(raw)) return raw;
+        var services = await _queryService.GetServices();
 
+        if (!string.IsNullOrWhiteSpace(rawProduct))
+        {
+            product = FuzzyMatch(rawProduct, products);
+
+            if (product is null && string.IsNullOrWhiteSpace(service))
+            {
+                // Model passed a service under the product slot — reroute.
+                service = FuzzyMatch(rawProduct, services);
+            }
+        }
+
+        // Safety net: the model often guesses a plausible product ignoring the user's
+        // message. If the user clearly named a known service but the model didn't pass
+        // one, override to use service filtering.
+        if (string.IsNullOrWhiteSpace(service) && !string.IsNullOrWhiteSpace(userMessage))
+        {
+            var lowerMsg = userMessage.ToLowerInvariant();
+            var mentioned = services.FirstOrDefault(s =>
+                System.Text.RegularExpressions.Regex.IsMatch(
+                    lowerMsg, $@"(?<![a-z0-9-]){System.Text.RegularExpressions.Regex.Escape(s.ToLowerInvariant())}(?![a-z0-9-])"));
+            if (mentioned is not null)
+            {
+                service = mentioned;
+                // If the model's guessed product doesn't actually contain this service, drop it.
+                if (product is not null)
+                {
+                    var state = await _queryService.GetDeploymentState(product, mentioned);
+                    if (state.Cells.Count == 0) product = null;
+                }
+            }
+        }
+
+        if (product is null && !string.IsNullOrWhiteSpace(rawProduct) && string.IsNullOrWhiteSpace(service))
+            product = rawProduct; // let downstream query report empty naturally
+
+        _logger.LogInformation("Resolved deployment filter: rawProduct={RawProduct} rawService={RawService} → product={Product} service={Service} (userMsg='{Msg}')",
+            rawProduct, rawService, product, service, userMessage);
+        return (product, service);
+    }
+
+    private static string? FuzzyMatch(string raw, List<string> candidates)
+    {
+        if (candidates.Contains(raw)) return raw;
         var normalized = raw.Trim().ToLowerInvariant().Replace(' ', '-');
-        var match = products.FirstOrDefault(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase))
-            ?? products.FirstOrDefault(p => p.Replace("-", " ").Equals(raw, StringComparison.OrdinalIgnoreCase))
-            ?? products.FirstOrDefault(p => p.Contains(normalized, StringComparison.OrdinalIgnoreCase));
-        return match ?? raw;
+        return candidates.FirstOrDefault(c => string.Equals(c, normalized, StringComparison.OrdinalIgnoreCase))
+            ?? candidates.FirstOrDefault(c => c.Replace("-", " ").Equals(raw, StringComparison.OrdinalIgnoreCase))
+            ?? candidates.FirstOrDefault(c => c.Contains(normalized, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string SanitizeInline(string? value, int maxLength)
@@ -548,7 +593,7 @@ public class CatalogAgent
                         _logger.LogInformation("Agent calling tool: {Tool} with args: {Args}", functionName, arguments);
 
                         var (toolResult, card, formSurface, fieldSuggestions) =
-                            await ExecuteTool(functionName, arguments, formDefinition);
+                            await ExecuteTool(functionName, arguments, formDefinition, userMessage);
 
                         if (card is not null)
                             cards.Add(card);
@@ -595,7 +640,7 @@ public class CatalogAgent
     /// Returns (resultText, optionalCard, optionalA2uiSurface, optionalFieldSuggestions).
     /// </summary>
     private async Task<(string Result, AgentCard? Card, string? A2uiSurface, Dictionary<string, object>? FieldSuggestions)>
-        ExecuteTool(string functionName, string arguments, CatalogDefinition? formDefinition = null)
+        ExecuteTool(string functionName, string arguments, CatalogDefinition? formDefinition = null, string? userMessage = null)
     {
         try
         {
@@ -670,8 +715,8 @@ public class CatalogAgent
                 case "get_deployment_state":
                 {
                     var rawProduct = args.TryGetProperty("product", out var pp) ? pp.GetString() : null;
-                    var service = args.TryGetProperty("service", out var ss) ? ss.GetString() : null;
-                    var product = string.IsNullOrWhiteSpace(rawProduct) ? null : await ResolveProductSlug(rawProduct);
+                    var rawService = args.TryGetProperty("service", out var ss) ? ss.GetString() : null;
+                    var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
 
                     if (string.IsNullOrWhiteSpace(product) && string.IsNullOrWhiteSpace(service))
                         return ("Provide at least a product or a service to look up deployment state.", null, null, null);
@@ -697,8 +742,8 @@ public class CatalogAgent
                 case "query_deployments":
                 {
                     var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
-                    var product = rawProduct is null ? null : await ResolveProductSlug(rawProduct);
-                    var service = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
+                    var rawService = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
+                    var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
                     var environment = args.TryGetProperty("environment", out var env) ? env.GetString() : null;
                     var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd

@@ -283,6 +283,15 @@ public class PlatformQueryService
             .ToListAsync(ct);
     }
 
+    public async Task<List<string>> GetServices(CancellationToken ct = default)
+    {
+        return await _db.DeployEvents
+            .Select(e => e.Service)
+            .Distinct()
+            .OrderBy(s => s)
+            .ToListAsync(ct);
+    }
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
