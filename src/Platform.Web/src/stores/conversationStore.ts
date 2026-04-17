@@ -29,6 +29,8 @@ interface ConversationState {
   messages: ChatMessage[];
   context: ConversationContext;
   sidebarOpen: boolean;
+  /** When true the chat takes over the full content area (main view is hidden). */
+  sidebarExpanded: boolean;
 
   // Actions
   addMessage: (msg: Omit<ChatMessage, 'timestamp'>) => void;
@@ -37,6 +39,7 @@ interface ConversationState {
   updateFormData: (key: string, value: unknown) => void;
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
+  toggleSidebarExpanded: () => void;
   startNewThread: () => void;
   getHistoryForAgent: () => Array<{ role: string; content: string }>;
 }
@@ -57,6 +60,7 @@ export const useConversationStore = create<ConversationState>()(
       ],
       context: {},
       sidebarOpen: false,
+      sidebarExpanded: false,
 
       addMessage: (msg) =>
         set((state) => ({
@@ -86,6 +90,7 @@ export const useConversationStore = create<ConversationState>()(
 
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+      toggleSidebarExpanded: () => set((state) => ({ sidebarExpanded: !state.sidebarExpanded })),
 
       startNewThread: () =>
         set({
@@ -115,6 +120,7 @@ export const useConversationStore = create<ConversationState>()(
         threadId: state.threadId,
         messages: state.messages.filter((m) => !m.isLoading).slice(-50), // keep last 50
         context: state.context,
+        sidebarExpanded: state.sidebarExpanded,
       }),
     }
   )
