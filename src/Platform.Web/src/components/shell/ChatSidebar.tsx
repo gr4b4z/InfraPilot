@@ -39,9 +39,17 @@ export function ChatSidebar() {
     }
   }, [sidebarOpen]);
 
-  // Detect current page context
+  // Clear catalog-specific context when the user navigates away from a catalog form.
+  // Without this, a stale catalogSlug leaks into subsequent requests on other pages.
   const slugMatch = location.pathname.match(/^\/catalog\/([^/]+)$/);
-  const currentSlug = slugMatch?.[1] || context.catalogSlug;
+  useEffect(() => {
+    if (!slugMatch) {
+      setContext({ catalogSlug: undefined, formData: undefined, step: undefined });
+    }
+  }, [location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Derive current slug from the URL only — never fall back to stale store value.
+  const currentSlug = slugMatch?.[1];
 
   const sendMessage = async (overrideMessage?: string) => {
     const msg = overrideMessage || input.trim();
@@ -62,8 +70,11 @@ export function ChatSidebar() {
         body: JSON.stringify({
           threadId,
           message: msg,
-          catalogSlug: currentSlug || undefined,
-          formData: context.formData || undefined,
+          pageContext: {
+            currentPath: location.pathname,
+            currentSlug: currentSlug || undefined,
+            formData: currentSlug ? (context.formData || undefined) : undefined,
+          },
           history: getHistoryForAgent(),
         }),
       });
