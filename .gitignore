@@ -45,3 +45,6 @@ llm_docs/
 # Local infrastructure experiments — may contain secrets
 local_tf/
 local/
+
+# Legacy /site directory — contents moved to /docs
+site/
