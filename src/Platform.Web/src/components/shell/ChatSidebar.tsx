@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell } from 'lucide-react';
+import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell, Maximize2, Minimize2 } from 'lucide-react';
 import { useConversationStore } from '@/stores/conversationStore';
 import { ChatCard } from '@/components/chat/ChatCard';
 import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
@@ -12,10 +12,12 @@ export function ChatSidebar() {
     messages,
     context,
     sidebarOpen,
+    sidebarExpanded,
     addMessage,
     replaceLoading,
     setContext,
     setSidebarOpen,
+    toggleSidebarExpanded,
     startNewThread,
     getHistoryForAgent,
   } = useConversationStore();
@@ -137,8 +139,9 @@ export function ChatSidebar() {
     <div
       className="flex flex-col border-l h-full"
       style={{
-        width: 380,
-        minWidth: 380,
+        ...(sidebarExpanded
+          ? { flex: 1, minWidth: 0 }
+          : { width: 380, minWidth: 380, flex: 'none' }),
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
       }}
@@ -169,6 +172,14 @@ export function ChatSidebar() {
             title="New conversation"
           >
             <RotateCcw size={14} />
+          </button>
+          <button
+            onClick={toggleSidebarExpanded}
+            className="p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
+            style={{ color: 'var(--text-muted)' }}
+            title={sidebarExpanded ? 'Collapse to sidebar' : 'Expand to full view'}
+          >
+            {sidebarExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
           <button
             onClick={() => setSidebarOpen(false)}
