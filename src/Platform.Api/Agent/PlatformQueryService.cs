@@ -292,6 +292,12 @@ public class PlatformQueryService
             .ToListAsync(ct);
     }
 
+    public async Task<bool> ProductContainsService(string product, string service, CancellationToken ct = default)
+    {
+        return await _db.DeployEvents
+            .AnyAsync(e => e.Product == product && e.Service == service, ct);
+    }
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

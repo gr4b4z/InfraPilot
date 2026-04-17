@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, CheckCircle2, AlertCircle, ArrowRight } from 'lucide-react';
 import { A2UIRenderer } from '@/components/a2ui/A2UIRenderer';
@@ -51,6 +51,7 @@ export function ChatInlineForm({ surfaceJson, initialValues }: Props) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [validating, setValidating] = useState(false);
   const [validated, setValidated] = useState(false);
+  const validatingRef = useRef(false);
 
   if (!surface) {
     return (
@@ -59,6 +60,17 @@ export function ChatInlineForm({ surfaceJson, initialValues }: Props) {
         style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
       >
         Failed to render form.
+      </div>
+    );
+  }
+
+  if (!surface.slug) {
+    return (
+      <div
+        className="mt-2 mr-2 p-3 rounded-lg text-xs flex items-center gap-1.5"
+        style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+      >
+        <AlertCircle size={12} /> This form is missing a service identifier and can't be validated.
       </div>
     );
   }
@@ -74,7 +86,8 @@ export function ChatInlineForm({ surfaceJson, initialValues }: Props) {
   };
 
   const handleValidate = async () => {
-    if (!surface.slug || validating) return;
+    if (validatingRef.current) return;
+    validatingRef.current = true;
     setValidating(true);
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
@@ -87,25 +100,31 @@ export function ChatInlineForm({ surfaceJson, initialValues }: Props) {
           action: 'validate',
         }),
       });
+      if (!res.ok) {
+        setErrors({ __root: `Validation request failed (HTTP ${res.status}).` });
+        return;
+      }
       const data = await res.json();
       const result: ValidationResult | undefined = data.validationResults;
-      if (result) {
-        const newErrors: Record<string, string> = {};
-        for (const r of result.results) {
-          if (!r.passed) newErrors[r.fieldId] = r.message;
-        }
-        setErrors(newErrors);
-        setValidated(result.isValid);
+      if (!result) {
+        setErrors({ __root: 'Validation service returned no results. Please try again.' });
+        return;
       }
+      const newErrors: Record<string, string> = {};
+      for (const r of result.results) {
+        if (!r.passed) newErrors[r.fieldId] = r.message;
+      }
+      setErrors(newErrors);
+      setValidated(result.isValid);
     } catch {
       setErrors({ __root: 'Could not reach the validation service.' });
     } finally {
+      validatingRef.current = false;
       setValidating(false);
     }
   };
 
   const handleContinue = () => {
-    if (!surface.slug) return;
     setContext({ catalogSlug: surface.slug, formData: values, step: 'review' });
     navigate(`/catalog/${surface.slug}`);
   };

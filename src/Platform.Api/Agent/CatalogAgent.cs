@@ -407,23 +407,22 @@ public class CatalogAgent
         }
 
         // Safety net: the model often guesses a plausible product ignoring the user's
-        // message. If the user clearly named a known service but the model didn't pass
-        // one, override to use service filtering.
+        // message. If the user clearly named exactly one known service but the model
+        // didn't pass one, override to use service filtering. Skip when the message
+        // names multiple services — we can't pick one fairly, let the model decide.
         if (string.IsNullOrWhiteSpace(service) && !string.IsNullOrWhiteSpace(userMessage))
         {
             var lowerMsg = userMessage.ToLowerInvariant();
-            var mentioned = services.FirstOrDefault(s =>
+            var mentioned = services.Where(s =>
                 System.Text.RegularExpressions.Regex.IsMatch(
-                    lowerMsg, $@"(?<![a-z0-9-]){System.Text.RegularExpressions.Regex.Escape(s.ToLowerInvariant())}(?![a-z0-9-])"));
-            if (mentioned is not null)
+                    lowerMsg, $@"(?<![a-z0-9-]){System.Text.RegularExpressions.Regex.Escape(s.ToLowerInvariant())}(?![a-z0-9-])"))
+                .ToList();
+            if (mentioned.Count == 1)
             {
-                service = mentioned;
+                service = mentioned[0];
                 // If the model's guessed product doesn't actually contain this service, drop it.
-                if (product is not null)
-                {
-                    var state = await _queryService.GetDeploymentState(product, mentioned);
-                    if (state.Cells.Count == 0) product = null;
-                }
+                if (product is not null && !await _queryService.ProductContainsService(product, service))
+                    product = null;
             }
         }
 
