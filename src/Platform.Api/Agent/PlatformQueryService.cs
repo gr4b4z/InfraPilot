@@ -176,9 +176,9 @@ public class PlatformQueryService
 
     // ─── Deployment queries ───
 
-    public async Task<DeploymentStateCardData> GetDeploymentState(string product, CancellationToken ct = default)
+    public async Task<DeploymentStateCardData> GetDeploymentState(string? product, string? service = null, CancellationToken ct = default)
     {
-        var state = await _deployments.GetState(product, environment: null, serviceName: null, ct);
+        var state = await _deployments.GetState(product, environment: null, serviceName: service, ct);
 
         var services = state.Select(s => s.Service).Distinct().OrderBy(s => s).ToList();
         var environments = state.Select(s => s.Environment).Distinct().OrderBy(e => e).ToList();
@@ -194,7 +194,7 @@ public class PlatformQueryService
 
         return new DeploymentStateCardData
         {
-            Product = product,
+            Product = string.IsNullOrWhiteSpace(product) ? null : product,
             Services = services,
             Environments = environments,
             Cells = cells,
@@ -203,7 +203,7 @@ public class PlatformQueryService
 
     public async Task<DeploymentActivityCardData> GetRecentDeployments(
         string? product, string? environment, DateTimeOffset since,
-        int limit = 50, CancellationToken ct = default)
+        int limit = 50, string? service = null, CancellationToken ct = default)
     {
         var query = _db.DeployEvents
             .Where(e => e.DeployedAt >= since);
@@ -212,6 +212,8 @@ public class PlatformQueryService
             query = query.Where(e => e.Product == product);
         if (!string.IsNullOrWhiteSpace(environment))
             query = query.Where(e => e.Environment == environment);
+        if (!string.IsNullOrWhiteSpace(service))
+            query = query.Where(e => e.Service == service);
 
         var events = await query
             .OrderByDescending(e => e.DeployedAt)
@@ -279,6 +281,21 @@ public class PlatformQueryService
             .Distinct()
             .OrderBy(p => p)
             .ToListAsync(ct);
+    }
+
+    public async Task<List<string>> GetServices(CancellationToken ct = default)
+    {
+        return await _db.DeployEvents
+            .Select(e => e.Service)
+            .Distinct()
+            .OrderBy(s => s)
+            .ToListAsync(ct);
+    }
+
+    public async Task<bool> ProductContainsService(string product, string service, CancellationToken ct = default)
+    {
+        return await _db.DeployEvents
+            .AnyAsync(e => e.Product == product && e.Service == service, ct);
     }
 
     private static readonly JsonSerializerOptions JsonOpts = new()
