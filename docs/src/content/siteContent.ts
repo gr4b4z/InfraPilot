@@ -806,26 +806,26 @@ export const deploymentApiFullPayload = `{
   "references": [
     {
       "type": "repository",
-      "url": "https://github.com/Acme/order-api",
+      "url": "https://github.com/Acmetrix/order-api",
       "provider": "github",
-      "key": "Acme/order-api",
+      "key": "Acmetrix/order-api",
       "revision": "a1b2c3d4e5f6"
     },
     {
       "type": "pipeline",
-      "url": "https://github.com/Acme/order-api/actions/runs/87654",
+      "url": "https://github.com/Acmetrix/order-api/actions/runs/87654",
       "provider": "github",
       "key": "87654"
     },
     {
       "type": "pull-request",
-      "url": "https://github.com/Acme/order-api/pull/312",
+      "url": "https://github.com/Acmetrix/order-api/pull/312",
       "provider": "github",
       "key": "312"
     },
     {
       "type": "work-item",
-      "url": "https://acme.atlassian.net/browse/PLT-1234",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
       "provider": "jira",
       "key": "PLT-1234"
     }
@@ -834,17 +834,17 @@ export const deploymentApiFullPayload = `{
     {
       "role": "PR Author",
       "displayName": "Jan Kowalski",
-      "email": "jan.kowalski@acme.com"
+      "email": "jan.kowalski@acmetrix.com"
     },
     {
       "role": "PR Reviewer",
       "displayName": "Anna Kowalska",
-      "email": "anna.kowalska@acme.com"
+      "email": "anna.kowalska@acmetrix.com"
     },
     {
       "role": "QA",
       "displayName": "Piotr Nowak",
-      "email": "piotr.nowak@acme.com"
+      "email": "piotr.nowak@acmetrix.com"
     }
   ],
   "metadata": {

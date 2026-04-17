@@ -22,22 +22,22 @@ public static class DeploymentSeedData
     // 40 services total, grouped by product.
     private static readonly ProductCatalog[] Catalog =
     [
-        new("ticketing-platform", "https://dev.azure.com/acme/MPT", SourceStyle.AzureDevOps,
+        new("ticketing-platform", "https://dev.azure.com/acmetrix-pc/MPT", SourceStyle.AzureDevOps,
             [
                 "orders", "schedule", "billing", "checkout", "inventory",
                 "pricing", "promotions", "reviews", "notifications", "search",
             ]),
-        new("marketplace", "https://github.com/acme", SourceStyle.GitHub,
+        new("marketplace", "https://github.com/acmetrix", SourceStyle.GitHub,
             [
                 "marketplace-api", "marketplace-ui", "vendor-portal", "catalog-sync", "payment-gateway",
                 "shipping", "tax-engine", "reports", "admin-console", "mobile-app",
             ]),
-        new("identity-platform", "https://dev.azure.com/acme/IDP", SourceStyle.AzureDevOps,
+        new("identity-platform", "https://dev.azure.com/acmetrix-pc/IDP", SourceStyle.AzureDevOps,
             [
                 "auth-api", "sso-bridge", "user-service", "token-issuer", "session-manager",
                 "mfa-service", "audit-log", "policy-engine", "role-admin", "profile-api",
             ]),
-        new("observability", "https://github.com/acme", SourceStyle.GitHub,
+        new("observability", "https://github.com/acmetrix", SourceStyle.GitHub,
             [
                 "metrics-collector", "log-aggregator", "trace-pipeline", "dashboard-api", "alert-engine",
                 "anomaly-detector", "synthetic-probe", "uptime-checker", "capacity-planner", "cost-tracker",
@@ -56,16 +56,16 @@ public static class DeploymentSeedData
 
     private static readonly Person[] People =
     [
-        new("Jan Kowalski", "jan.kowalski@acme.com"),
-        new("Anna Kowalska", "anna.kowalska@acme.com"),
-        new("Piotr Nowak", "piotr.nowak@acme.com"),
-        new("Marta Wiśniewska", "marta.wisniewska@acme.com"),
-        new("Sylwester Grabowski", "sylwester.grabowski@acme.com"),
-        new("Tomasz Wójcik", "tomasz.wojcik@acme.com"),
-        new("Katarzyna Lewandowska", "katarzyna.lewandowska@acme.com"),
-        new("Michał Zieliński", "michal.zielinski@acme.com"),
-        new("Agnieszka Kamińska", "agnieszka.kaminska@acme.com"),
-        new("Paweł Szymański", "pawel.szymanski@acme.com"),
+        new("Jan Kowalski", "jan.kowalski@acmetrix.com"),
+        new("Anna Kowalska", "anna.kowalska@acmetrix.com"),
+        new("Piotr Nowak", "piotr.nowak@acmetrix.com"),
+        new("Marta Wiśniewska", "marta.wisniewska@acmetrix.com"),
+        new("Sylwester Grabowski", "sylwester.grabowski@acmetrix.com"),
+        new("Tomasz Wójcik", "tomasz.wojcik@acmetrix.com"),
+        new("Katarzyna Lewandowska", "katarzyna.lewandowska@acmetrix.com"),
+        new("Michał Zieliński", "michal.zielinski@acmetrix.com"),
+        new("Agnieszka Kamińska", "agnieszka.kaminska@acmetrix.com"),
+        new("Paweł Szymański", "pawel.szymanski@acmetrix.com"),
     ];
 
     private static readonly string[] WorkItemTitles =
@@ -217,7 +217,7 @@ public static class DeploymentSeedData
         if (rand.NextDouble() < 0.8)
         {
             refs.Add(new ReferenceDto("work-item",
-                $"https://acme.atlassian.net/browse/{wiKey}", "jira", wiKey));
+                $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey));
         }
 
         if (rand.NextDouble() < 0.4)
@@ -233,7 +233,7 @@ public static class DeploymentSeedData
             {
                 refs.Add(new ReferenceDto("repository",
                     $"{product.BaseUrl}/{service}", "github",
-                    $"acme/{service}", revision));
+                    $"acmetrix/{service}", revision));
             }
         }
 
