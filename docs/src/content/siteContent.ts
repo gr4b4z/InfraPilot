@@ -825,7 +825,7 @@ export const deploymentApiFullPayload = `{
     },
     {
       "type": "work-item",
-      "url": "https://somedomain.atlassian.net/browse/PLT-1234",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
       "provider": "jira",
       "key": "PLT-1234"
     }
@@ -834,17 +834,17 @@ export const deploymentApiFullPayload = `{
     {
       "role": "PR Author",
       "displayName": "Jan Kowalski",
-      "email": "jan.kowalski@somedomain.com"
+      "email": "jan.kowalski@acmetrix.com"
     },
     {
       "role": "PR Reviewer",
       "displayName": "Anna Kowalska",
-      "email": "anna.kowalska@somedomain.com"
+      "email": "anna.kowalska@acmetrix.com"
     },
     {
       "role": "QA",
       "displayName": "Piotr Nowak",
-      "email": "piotr.nowak@somedomain.com"
+      "email": "piotr.nowak@acmetrix.com"
     }
   ],
   "metadata": {
