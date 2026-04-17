@@ -41,14 +41,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: site/package-lock.json
+          cache-dependency-path: docs/package-lock.json
 
       - name: Install site dependencies
-        working-directory: site
+        working-directory: docs
         run: npm ci
 
       - name: Build site
-        working-directory: site
+        working-directory: docs
         env:
           PAGES_BASE_PATH: /infraPilot/
         run: npm run build
