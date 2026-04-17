@@ -24,14 +24,14 @@ public static class PromotionSeedData
     // Reuse the same people pool from DeploymentSeedData for consistency.
     private static readonly (string Name, string Email)[] Approvers =
     [
-        ("Jan Kowalski", "jan.kowalski@softwareone.com"),
-        ("Anna Kowalska", "anna.kowalska@softwareone.com"),
-        ("Piotr Nowak", "piotr.nowak@softwareone.com"),
-        ("Marta Wiśniewska", "marta.wisniewska@softwareone.com"),
-        ("Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-        ("Tomasz Wójcik", "tomasz.wojcik@softwareone.com"),
-        ("Katarzyna Lewandowska", "katarzyna.lewandowska@softwareone.com"),
-        ("Michał Zieliński", "michal.zielinski@softwareone.com"),
+        ("Jan Kowalski", "jan.kowalski@acme.com"),
+        ("Anna Kowalska", "anna.kowalska@acme.com"),
+        ("Piotr Nowak", "piotr.nowak@acme.com"),
+        ("Marta Wiśniewska", "marta.wisniewska@acme.com"),
+        ("Sylwester Grabowski", "sylwester.grabowski@acme.com"),
+        ("Tomasz Wójcik", "tomasz.wojcik@acme.com"),
+        ("Katarzyna Lewandowska", "katarzyna.lewandowska@acme.com"),
+        ("Michał Zieliński", "michal.zielinski@acme.com"),
     ];
 
     private static readonly string[] ApprovalComments =
@@ -217,7 +217,7 @@ public static class PromotionSeedData
                 PolicyId = policy.Id,
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
                 ExternalRunUrl = status is PromotionStatus.Deploying or PromotionStatus.Deployed
-                    ? $"https://ci.softwareone.com/runs/{rand.Next(10000, 99999)}"
+                    ? $"https://ci.acme.com/runs/{rand.Next(10000, 99999)}"
                     : null,
                 CreatedAt = deploy.DeployedAt.AddMinutes(rand.Next(1, 30)),
                 ApprovedAt = approvedAt,

@@ -22,22 +22,22 @@ public static class DeploymentSeedData
     // 40 services total, grouped by product.
     private static readonly ProductCatalog[] Catalog =
     [
-        new("ticketing-platform", "https://dev.azure.com/softwareone-pc/MPT", SourceStyle.AzureDevOps,
+        new("ticketing-platform", "https://dev.azure.com/acme/MPT", SourceStyle.AzureDevOps,
             [
                 "orders", "schedule", "billing", "checkout", "inventory",
                 "pricing", "promotions", "reviews", "notifications", "search",
             ]),
-        new("marketplace", "https://github.com/softwareone", SourceStyle.GitHub,
+        new("marketplace", "https://github.com/acme", SourceStyle.GitHub,
             [
                 "marketplace-api", "marketplace-ui", "vendor-portal", "catalog-sync", "payment-gateway",
                 "shipping", "tax-engine", "reports", "admin-console", "mobile-app",
             ]),
-        new("identity-platform", "https://dev.azure.com/softwareone-pc/IDP", SourceStyle.AzureDevOps,
+        new("identity-platform", "https://dev.azure.com/acme/IDP", SourceStyle.AzureDevOps,
             [
                 "auth-api", "sso-bridge", "user-service", "token-issuer", "session-manager",
                 "mfa-service", "audit-log", "policy-engine", "role-admin", "profile-api",
             ]),
-        new("observability", "https://github.com/softwareone", SourceStyle.GitHub,
+        new("observability", "https://github.com/acme", SourceStyle.GitHub,
             [
                 "metrics-collector", "log-aggregator", "trace-pipeline", "dashboard-api", "alert-engine",
                 "anomaly-detector", "synthetic-probe", "uptime-checker", "capacity-planner", "cost-tracker",
@@ -56,16 +56,16 @@ public static class DeploymentSeedData
 
     private static readonly Person[] People =
     [
-        new("Jan Kowalski", "jan.kowalski@softwareone.com"),
-        new("Anna Kowalska", "anna.kowalska@softwareone.com"),
-        new("Piotr Nowak", "piotr.nowak@softwareone.com"),
-        new("Marta Wiśniewska", "marta.wisniewska@softwareone.com"),
-        new("Sylwester Grabowski", "sylwester.grabowski@softwareone.com"),
-        new("Tomasz Wójcik", "tomasz.wojcik@softwareone.com"),
-        new("Katarzyna Lewandowska", "katarzyna.lewandowska@softwareone.com"),
-        new("Michał Zieliński", "michal.zielinski@softwareone.com"),
-        new("Agnieszka Kamińska", "agnieszka.kaminska@softwareone.com"),
-        new("Paweł Szymański", "pawel.szymanski@softwareone.com"),
+        new("Jan Kowalski", "jan.kowalski@acme.com"),
+        new("Anna Kowalska", "anna.kowalska@acme.com"),
+        new("Piotr Nowak", "piotr.nowak@acme.com"),
+        new("Marta Wiśniewska", "marta.wisniewska@acme.com"),
+        new("Sylwester Grabowski", "sylwester.grabowski@acme.com"),
+        new("Tomasz Wójcik", "tomasz.wojcik@acme.com"),
+        new("Katarzyna Lewandowska", "katarzyna.lewandowska@acme.com"),
+        new("Michał Zieliński", "michal.zielinski@acme.com"),
+        new("Agnieszka Kamińska", "agnieszka.kaminska@acme.com"),
+        new("Paweł Szymański", "pawel.szymanski@acme.com"),
     ];
 
     private static readonly string[] WorkItemTitles =
@@ -217,7 +217,7 @@ public static class DeploymentSeedData
         if (rand.NextDouble() < 0.8)
         {
             refs.Add(new ReferenceDto("work-item",
-                $"https://softwareone.atlassian.net/browse/{wiKey}", "jira", wiKey));
+                $"https://acme.atlassian.net/browse/{wiKey}", "jira", wiKey));
         }
 
         if (rand.NextDouble() < 0.4)
@@ -233,7 +233,7 @@ public static class DeploymentSeedData
             {
                 refs.Add(new ReferenceDto("repository",
                     $"{product.BaseUrl}/{service}", "github",
-                    $"softwareone/{service}", revision));
+                    $"acme/{service}", revision));
             }
         }
 
