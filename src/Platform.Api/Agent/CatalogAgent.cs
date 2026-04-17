@@ -29,7 +29,7 @@ public class CatalogAgent
 
         When a user selects a service or describes what they need:
         1. Identify the matching catalog item using SearchCatalog
-        2. Call GenerateForm to render the request form
+        2. Call generate_form to render the request form in the chat
         3. Wait for the user to fill the form and click Validate
         4. When you receive form data, call ValidateRequest
         5. For failed validations: explain what's wrong, suggest corrections
@@ -62,8 +62,8 @@ public class CatalogAgent
         - When showing deployment data, always mention the navigation link so the user can explore further
         """;
 
-    // Azure OpenAI tool definitions for function calling
-    private static readonly object[] ToolDefinitions =
+    // Azure OpenAI tool definitions — available in every conversational turn regardless of page.
+    private static readonly object[] BaseToolDefinitions =
     [
         new
         {
@@ -178,6 +178,24 @@ public class CatalogAgent
                 },
             },
         },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "generate_form",
+                description = "Render the request form for a catalog service inline in the chat. Call this when the user explicitly asks to start or open a request for a specific service.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["slug"] = new { type = "string", description = "The catalog service slug, e.g. 'create-repo', 'request-dns-record'" },
+                    },
+                    required = new[] { "slug" },
+                },
+            },
+        },
     ];
 
     public CatalogAgent(
@@ -202,26 +220,12 @@ public class CatalogAgent
     {
         var history = request.History ?? [];
 
-        // Route 1: catalogSlug provided, no formData -> generate form
-        if (!string.IsNullOrWhiteSpace(request.CatalogSlug) && request.FormData is null)
-        {
-            return await HandleGenerateForm(request.CatalogSlug, request.Message);
-        }
-
-        // Route 2: explicit validate action + formData -> run validation
+        // Explicit validation action — triggered by the Validate button in the form UI.
         if (request.Action == "validate" && request.FormData is not null && !string.IsNullOrWhiteSpace(request.CatalogSlug))
-        {
             return await HandleValidation(request.CatalogSlug, request.FormData, request.Message);
-        }
 
-        // Route 3: on a form page with context -> form-aware chat (help filling fields)
-        if (!string.IsNullOrWhiteSpace(request.CatalogSlug) && request.FormData is not null && !string.IsNullOrWhiteSpace(request.Message))
-        {
-            return await HandleFormChat(request.CatalogSlug, request.FormData, request.Message, history);
-        }
-
-        // Route 4: conversational chat with full history + function calling
-        return await HandleChat(request.Message, history);
+        // All conversational messages go through the unified chat handler regardless of page.
+        return await HandleChat(request.Message, history, request.PageContext);
     }
 
     private async Task<CatalogAgentResponse> HandleGenerateForm(string catalogSlug, string? userMessage)
@@ -290,76 +294,123 @@ public class CatalogAgent
     }
 
     /// <summary>
-    /// Form-aware chat: the user is on a form page and asking for help with specific fields.
-    /// The agent can see all field definitions + current values and suggest/fill fields.
+    /// Unified conversational handler. Always has access to all tools (deployment, requests,
+    /// generate_form). When the user is on a catalog form page, form context and fill_fields
+    /// are injected via page context — the model decides when to use them.
     /// </summary>
-    private async Task<CatalogAgentResponse> HandleFormChat(
-        string catalogSlug,
-        Dictionary<string, JsonElement> formData,
-        string userMessage,
-        List<HistoryMessage> history)
+    private async Task<CatalogAgentResponse> HandleChat(
+        string? userMessage,
+        List<HistoryMessage> history,
+        ChatPageContext? pageContext = null)
     {
-        var item = await _catalogService.GetBySlug(catalogSlug, includeInactive: true);
-        if (item is null)
+        if (string.IsNullOrWhiteSpace(userMessage))
         {
             return new CatalogAgentResponse
             {
-                Reply = $"I couldn't find a catalog item with ID '{catalogSlug}'.",
+                Reply = "Hello! I'm your service catalog assistant. I can help you request infrastructure services or answer questions about recent deployments and requests. What would you like to do?",
             };
         }
 
-        var definition = CatalogDefinition.FromEntity(item);
+        var dbItems = await _catalogService.GetAll();
+        var catalogItems = dbItems.Select(CatalogDefinition.FromEntity).ToList();
+        var catalogContext = BuildCatalogContext(catalogItems);
 
-        // Build field context: definitions + current values
-        var fieldContext = new StringBuilder();
-        var converted = new Dictionary<string, object?>();
-        foreach (var (key, value) in formData)
-        {
-            converted[key] = ConvertJsonElement(value);
-        }
+        var pageHint = pageContext is not null ? BuildPageContextHint(pageContext) : "";
 
-        foreach (var input in definition.Inputs)
-        {
-            converted.TryGetValue(input.Id, out var currentValue);
-            var valueStr = currentValue?.ToString() ?? "(empty)";
-            var optionsStr = input.Options?.Count > 0
-                ? $" [options: {string.Join(", ", input.Options.Select(o => $"{o.Id}={o.Label}"))}]"
-                : "";
-            var requiredStr = input.Required ? " (REQUIRED)" : "";
-            var validationStr = !string.IsNullOrWhiteSpace(input.Validation) ? $" [validation: {input.Validation}]" : "";
+        var systemPrompt = $"""
+            {SystemPrompt}
 
-            fieldContext.AppendLine($"- **{input.Label}** (id: `{input.Id}`, type: {input.Component}){requiredStr}{optionsStr}{validationStr}");
-            fieldContext.AppendLine($"  Current value: {valueStr}");
-        }
+            Available catalog items:
+            {catalogContext}
 
-        var formSystemPrompt = $"""
-            You are a helpful assistant guiding the user through filling out a service request form.
-            You have DIRECT ACCESS to update form fields via the `fill_fields` tool. When you call it, the form is updated instantly on the user's screen.
+            Today's date is {DateTimeOffset.UtcNow:yyyy-MM-dd}.
+            {pageHint}
+            IMPORTANT: If the user's request matches one of the catalog items above, you MUST include this exact tag at the END of your reply:
+            [SERVICE:slug-here]
 
-            Service: **{definition.Name}**
-            Description: {definition.Description}
-            Category: {definition.Category}
-
-            Form fields and current values:
-            {fieldContext}
-
-            CRITICAL RULES FOR FILLING FIELDS:
-            1. When the user provides a value (e.g. "set it to X", "use 10.13.1.10", "I enter X", "put X there"), you MUST call `fill_fields` immediately. Do NOT tell the user to enter it manually — you can do it for them.
-            2. When the user asks what to put in a field, explain briefly then call `fill_fields` with your suggested value.
-            3. When the user says "fill everything" or "fill the form", determine reasonable values for all fields you can and call `fill_fields`.
-            4. After calling `fill_fields`, confirm what you filled in a brief message like "Done! I've set [field] to [value]."
-            5. NEVER say "I'm unable to update the field" or "please enter it manually" — you CAN update fields, always use the tool.
-
-            Other rules:
-            - Always respond in the same language the user uses
-            - Be concise
-            - For select/multi-select fields, only use values from the options list
-            - Respect validation patterns when suggesting values
-            - If you truly can't determine what value the user wants, ask — but if they gave you the value, just fill it
+            For example, if the user wants a repository, end with [SERVICE:create-repo]
+            If the user wants DNS changes, end with [SERVICE:request-dns-record]
+            If the user is just asking a general question or querying data, do NOT include the tag.
             """;
 
-        // Build tool definition dynamically from actual catalog fields
-        // Each field becomes an explicit parameter so the LLM sees them clearly
+        var (tools, formDefinition) = await BuildToolList(pageContext);
+        var (reply, cards, a2uiSurface, fieldSuggestions) =
+            await CallWithFunctionCalling(userMessage, systemPrompt, history, tools, formDefinition);
+
+        // Extract [SERVICE:slug] tag from reply
+        string? suggestedSlug = null;
+        var tagMatch = System.Text.RegularExpressions.Regex.Match(reply, @"\[SERVICE:([a-z0-9-]+)\]");
+        if (tagMatch.Success)
+        {
+            suggestedSlug = tagMatch.Groups[1].Value;
+            if (!catalogItems.Any(c => c.Id == suggestedSlug))
+                suggestedSlug = null;
+            reply = reply.Replace(tagMatch.Value, "").Trim();
+
+            if (suggestedSlug is not null && fieldSuggestions is null)
+                fieldSuggestions = await ExtractFieldSuggestions(suggestedSlug, userMessage, history);
+        }
+
+        return new CatalogAgentResponse
+        {
+            Reply = reply,
+            SuggestedSlug = suggestedSlug,
+            FieldSuggestions = fieldSuggestions?.Count > 0 ? fieldSuggestions : null,
+            Cards = cards.Count > 0 ? cards : null,
+            A2uiSurface = a2uiSurface,
+        };
+    }
+
+    private static string BuildPageContextHint(ChatPageContext ctx)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"\nCurrent page: {ctx.CurrentPath}");
+
+        if (!string.IsNullOrWhiteSpace(ctx.CurrentSlug))
+        {
+            sb.AppendLine($"The user is on the request form for catalog service: '{ctx.CurrentSlug}'.");
+            sb.AppendLine("You have access to fill_fields to update form values directly on the user's screen.");
+            if (ctx.FormData is { Count: > 0 })
+            {
+                sb.AppendLine("Current form values:");
+                foreach (var (k, v) in ctx.FormData)
+                    sb.AppendLine($"  {k}: {v}");
+            }
+            sb.AppendLine("Use fill_fields to set values when the user provides them, or answer their questions about what to put in each field.");
+        }
+        else if (ctx.CurrentPath?.StartsWith("/deployments") == true)
+        {
+            sb.AppendLine("The user is on the Deployments page — they are likely asking about deployment data.");
+        }
+        else if (ctx.CurrentPath?.StartsWith("/requests") == true)
+        {
+            sb.AppendLine("The user is on the Requests page — they are likely asking about service requests.");
+        }
+
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Returns the tool list for this turn. Always includes BaseToolDefinitions.
+    /// When the user is on a catalog form, also adds a fill_fields tool with field-specific parameters.
+    /// </summary>
+    private async Task<(object[] Tools, CatalogDefinition? FormDefinition)> BuildToolList(ChatPageContext? pageContext)
+    {
+        if (string.IsNullOrWhiteSpace(pageContext?.CurrentSlug))
+            return (BaseToolDefinitions, null);
+
+        var item = await _catalogService.GetBySlug(pageContext.CurrentSlug, includeInactive: true);
+        if (item is null)
+            return (BaseToolDefinitions, null);
+
+        var definition = CatalogDefinition.FromEntity(item);
+        var fillFieldsTool = BuildFillFieldsTool(definition);
+        return ([.. BaseToolDefinitions, fillFieldsTool], definition);
+    }
+
+    private static object BuildFillFieldsTool(CatalogDefinition definition)
+    {
         var fieldProperties = new Dictionary<string, object>();
         foreach (var input in definition.Inputs)
         {
@@ -381,217 +432,33 @@ public class CatalogAgent
             fieldProperties[input.Id] = new { type = propType, description = desc };
         }
 
-        var formTools = new object[]
+        return new
         {
-            new
+            type = "function",
+            function = new
             {
-                type = "function",
-                function = new
+                name = "fill_fields",
+                description = "Set one or more field values in the request form. Call this to fill or update any fields for the user. Only include the fields you want to set.",
+                parameters = new
                 {
-                    name = "fill_fields",
-                    description = "Set one or more field values in the request form. Call this to fill or update any fields for the user. Only include the fields you want to set.",
-                    parameters = new
-                    {
-                        type = "object",
-                        properties = fieldProperties,
-                    },
+                    type = "object",
+                    properties = fieldProperties,
                 },
             },
         };
-
-        // Call Azure OpenAI with form-aware tools
-        var (reply, fieldSuggestions) = await CallWithFormTools(userMessage, formSystemPrompt, history, formTools, definition);
-
-        return new CatalogAgentResponse
-        {
-            Reply = reply,
-            FieldSuggestions = fieldSuggestions,
-        };
     }
 
     /// <summary>
-    /// Azure OpenAI call with form field-filling tool support.
-    /// Returns the text reply and any field values the LLM chose to fill.
+    /// Azure OpenAI function calling loop. Handles all tools including generate_form and fill_fields.
+    /// Returns reply text, data cards, an optional inline form surface, and optional field suggestions.
     /// </summary>
-    private async Task<(string Reply, Dictionary<string, object>? FieldSuggestions)> CallWithFormTools(
-        string userMessage, string systemPrompt, List<HistoryMessage> history,
-        object[] tools, CatalogDefinition definition)
-    {
-        var endpoint = _configuration["AzureOpenAI:Endpoint"]!;
-        var apiKey = _configuration["AzureOpenAI:ApiKey"]!;
-        var deploymentName = _configuration["AzureOpenAI:DeploymentName"]!;
-        var url = $"{endpoint.TrimEnd('/')}/openai/deployments/{deploymentName}/chat/completions?api-version=2024-10-21";
-
-        var messages = new List<object> { new { role = "system", content = systemPrompt } };
-        foreach (var h in history)
-        {
-            if (!string.IsNullOrWhiteSpace(h.Content))
-                messages.Add(new { role = h.Role, content = h.Content });
-        }
-        var lastHistory = history.LastOrDefault();
-        if (lastHistory is null || lastHistory.Content != userMessage)
-            messages.Add(new { role = "user", content = userMessage });
-
-        Dictionary<string, object>? allSuggestions = null;
-
-        for (var iteration = 0; iteration < 3; iteration++)
-        {
-            var body = new { messages, tools, temperature = 0.3, max_tokens = 1024 };
-            var json = JsonSerializer.Serialize(body, JsonOptions);
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, url);
-            httpRequest.Content = new StringContent(json, Encoding.UTF8, "application/json");
-            httpRequest.Headers.Add("api-key", apiKey);
-
-            try
-            {
-                using var httpResponse = await _httpClient.SendAsync(httpRequest);
-                var responseBody = await httpResponse.Content.ReadAsStringAsync();
-
-                if (!httpResponse.IsSuccessStatusCode)
-                {
-                    _logger.LogError("Azure OpenAI returned {StatusCode}: {Body}", httpResponse.StatusCode, responseBody);
-                    return ("I'm having trouble connecting to the AI service. Please try again.", null);
-                }
-
-                var responseDoc = JsonDocument.Parse(responseBody);
-                var choice = responseDoc.RootElement.GetProperty("choices")[0];
-                var message = choice.GetProperty("message");
-                var finishReason = choice.GetProperty("finish_reason").GetString();
-
-                if (finishReason == "tool_calls" && message.TryGetProperty("tool_calls", out var toolCalls))
-                {
-                    messages.Add(JsonSerializer.Deserialize<object>(message.GetRawText(), JsonOptions)!);
-
-                    foreach (var toolCall in toolCalls.EnumerateArray())
-                    {
-                        var toolId = toolCall.GetProperty("id").GetString()!;
-                        var functionName = toolCall.GetProperty("function").GetProperty("name").GetString()!;
-                        var arguments = toolCall.GetProperty("function").GetProperty("arguments").GetString()!;
-
-                        if (functionName == "fill_fields")
-                        {
-                            // Fields are now top-level params (e.g. {"hostname": "aaa.wp.pl", "ttl": 300})
-                            var args = JsonDocument.Parse(arguments).RootElement;
-                            allSuggestions ??= new Dictionary<string, object>();
-                            var validFields = definition.Inputs.Select(i => i.Id).ToHashSet();
-
-                            foreach (var prop in args.EnumerateObject())
-                            {
-                                if (validFields.Contains(prop.Name))
-                                {
-                                    allSuggestions[prop.Name] = prop.Value.ValueKind switch
-                                    {
-                                        JsonValueKind.String => prop.Value.GetString()!,
-                                        JsonValueKind.Number => prop.Value.TryGetInt64(out var l) ? l : prop.Value.GetDouble(),
-                                        JsonValueKind.True => true,
-                                        JsonValueKind.False => false,
-                                        _ => prop.Value.GetRawText(),
-                                    };
-                                }
-                            }
-
-                            var updatedSummary = allSuggestions.Count > 0
-                                ? string.Join(", ", allSuggestions.Select(kvp => $"{kvp.Key} = \"{kvp.Value}\""))
-                                : "none";
-
-                            messages.Add(new
-                            {
-                                role = "tool",
-                                tool_call_id = toolId,
-                                content = allSuggestions.Count > 0
-                                    ? $"SUCCESS: Form fields updated on the user's screen: {updatedSummary}. Tell the user what you filled."
-                                    : "No valid fields matched. Check field IDs and try again.",
-                            });
-                        }
-                        else
-                        {
-                            messages.Add(new { role = "tool", tool_call_id = toolId, content = "Unknown tool" });
-                        }
-                    }
-                    continue;
-                }
-
-                var content = message.TryGetProperty("content", out var contentProp) ? contentProp.GetString() ?? "" : "";
-                return (content, allSuggestions);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to call Azure OpenAI for form chat");
-                return ("I encountered an error. Please try again.", null);
-            }
-        }
-
-        return ("I've reached the maximum number of steps. Please try rephrasing.", allSuggestions);
-    }
-
-    private async Task<CatalogAgentResponse> HandleChat(string? userMessage, List<HistoryMessage> history)
-    {
-        if (string.IsNullOrWhiteSpace(userMessage))
-        {
-            return new CatalogAgentResponse
-            {
-                Reply = "Hello! I'm your service catalog assistant. I can help you request infrastructure services or answer questions about recent deployments and requests. What would you like to do?",
-            };
-        }
-
-        var dbItems = await _catalogService.GetAll();
-        var catalogItems = dbItems.Select(CatalogDefinition.FromEntity).ToList();
-        var catalogContext = BuildCatalogContext(catalogItems);
-
-        var systemPrompt = $"""
-            {SystemPrompt}
-
-            Available catalog items:
-            {catalogContext}
-
-            Today's date is {DateTimeOffset.UtcNow:yyyy-MM-dd}.
-
-            IMPORTANT: If the user's request matches one of the catalog items above, you MUST include this exact tag at the END of your reply:
-            [SERVICE:slug-here]
-
-            For example, if the user wants a repository, end with [SERVICE:create-repo]
-            If the user wants DNS changes, end with [SERVICE:request-dns-record]
-            If the user is just asking a general question or querying data, do NOT include the tag.
-            """;
-
-        // Call Azure OpenAI with function calling loop
-        var (reply, cards) = await CallWithFunctionCalling(userMessage, systemPrompt, history);
-
-        // Extract [SERVICE:slug] tag from reply
-        string? suggestedSlug = null;
-        Dictionary<string, object>? fieldSuggestions = null;
-        var tagMatch = System.Text.RegularExpressions.Regex.Match(reply, @"\[SERVICE:([a-z0-9-]+)\]");
-        if (tagMatch.Success)
-        {
-            suggestedSlug = tagMatch.Groups[1].Value;
-            if (!catalogItems.Any(c => c.Id == suggestedSlug))
-            {
-                suggestedSlug = null;
-            }
-            reply = reply.Replace(tagMatch.Value, "").Trim();
-
-            // Phase 2: Extract field suggestions from conversation when service is identified
-            if (suggestedSlug is not null)
-            {
-                fieldSuggestions = await ExtractFieldSuggestions(suggestedSlug, userMessage, history);
-            }
-        }
-
-        return new CatalogAgentResponse
-        {
-            Reply = reply,
-            SuggestedSlug = suggestedSlug,
-            FieldSuggestions = fieldSuggestions,
-            Cards = cards.Count > 0 ? cards : null,
-        };
-    }
-
-    /// <summary>
-    /// Azure OpenAI function calling loop: send messages, check for tool_calls,
-    /// execute tools, send results back, repeat until we get a final text response.
-    /// </summary>
-    private async Task<(string Reply, List<AgentCard> Cards)> CallWithFunctionCalling(
-        string userMessage, string systemPromptOverride, List<HistoryMessage>? history)
+    private async Task<(string Reply, List<AgentCard> Cards, string? A2uiSurface, Dictionary<string, object>? FieldSuggestions)>
+        CallWithFunctionCalling(
+            string userMessage,
+            string systemPromptOverride,
+            List<HistoryMessage>? history,
+            object[] tools,
+            CatalogDefinition? formDefinition = null)
     {
         var endpoint = _configuration["AzureOpenAI:Endpoint"]
             ?? throw new InvalidOperationException("AzureOpenAI:Endpoint is not configured");
@@ -602,7 +469,6 @@ public class CatalogAgent
 
         var url = $"{endpoint.TrimEnd('/')}/openai/deployments/{deploymentName}/chat/completions?api-version=2024-10-21";
 
-        // Build messages array
         var messages = new List<object> { new { role = "system", content = systemPromptOverride } };
 
         if (history is not null)
@@ -616,19 +482,19 @@ public class CatalogAgent
 
         var lastHistory = history?.LastOrDefault();
         if (lastHistory is null || lastHistory.Content != userMessage)
-        {
             messages.Add(new { role = "user", content = userMessage });
-        }
 
         var cards = new List<AgentCard>();
-        const int maxIterations = 5; // safety limit
+        string? a2uiSurface = null;
+        Dictionary<string, object>? allFieldSuggestions = null;
+        const int maxIterations = 5;
 
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
             var body = new
             {
                 messages,
-                tools = ToolDefinitions,
+                tools,
                 temperature = 0.3,
                 max_tokens = 1024,
             };
@@ -646,7 +512,7 @@ public class CatalogAgent
                 if (!httpResponse.IsSuccessStatusCode)
                 {
                     _logger.LogError("Azure OpenAI returned {StatusCode}: {Body}", httpResponse.StatusCode, responseBody);
-                    return ("I'm sorry, I'm having trouble connecting to the AI service right now. Please try again later.", cards);
+                    return ("I'm sorry, I'm having trouble connecting to the AI service right now. Please try again later.", cards, a2uiSurface, allFieldSuggestions);
                 }
 
                 var responseDoc = JsonDocument.Parse(responseBody);
@@ -654,10 +520,8 @@ public class CatalogAgent
                 var message = choice.GetProperty("message");
                 var finishReason = choice.GetProperty("finish_reason").GetString();
 
-                // If finish_reason is "tool_calls", execute the tools and loop
                 if (finishReason == "tool_calls" && message.TryGetProperty("tool_calls", out var toolCalls))
                 {
-                    // Add the assistant's tool_calls message to history
                     messages.Add(JsonSerializer.Deserialize<object>(message.GetRawText(), JsonOptions)!);
 
                     foreach (var toolCall in toolCalls.EnumerateArray())
@@ -668,12 +532,22 @@ public class CatalogAgent
 
                         _logger.LogInformation("Agent calling tool: {Tool} with args: {Args}", functionName, arguments);
 
-                        var (toolResult, card) = await ExecuteTool(functionName, arguments);
+                        var (toolResult, card, formSurface, fieldSuggestions) =
+                            await ExecuteTool(functionName, arguments, formDefinition);
 
                         if (card is not null)
                             cards.Add(card);
 
-                        // Add tool result to messages
+                        if (formSurface is not null)
+                            a2uiSurface = formSurface;
+
+                        if (fieldSuggestions is not null)
+                        {
+                            allFieldSuggestions ??= new Dictionary<string, object>();
+                            foreach (var kvp in fieldSuggestions)
+                                allFieldSuggestions[kvp.Key] = kvp.Value;
+                        }
+
                         messages.Add(new
                         {
                             role = "tool",
@@ -682,30 +556,31 @@ public class CatalogAgent
                         });
                     }
 
-                    continue; // loop to get final response
+                    continue;
                 }
 
-                // Normal text response — we're done
                 var content = message.TryGetProperty("content", out var contentProp)
                     ? contentProp.GetString() ?? ""
                     : "";
 
-                return (content, cards);
+                return (content, cards, a2uiSurface, allFieldSuggestions);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to call Azure OpenAI (iteration {Iteration})", iteration);
-                return ("I'm sorry, I encountered an error while processing your request. Please try again later.", cards);
+                return ("I'm sorry, I encountered an error while processing your request. Please try again later.", cards, a2uiSurface, allFieldSuggestions);
             }
         }
 
-        return ("I've reached the maximum number of steps. Please try rephrasing your question.", cards);
+        return ("I've reached the maximum number of steps. Please try rephrasing your question.", cards, a2uiSurface, allFieldSuggestions);
     }
 
     /// <summary>
-    /// Execute a tool call from Azure OpenAI and return (resultJson, optionalCard).
+    /// Execute a tool call from Azure OpenAI.
+    /// Returns (resultText, optionalCard, optionalA2uiSurface, optionalFieldSuggestions).
     /// </summary>
-    private async Task<(string Result, AgentCard? Card)> ExecuteTool(string functionName, string arguments)
+    private async Task<(string Result, AgentCard? Card, string? A2uiSurface, Dictionary<string, object>? FieldSuggestions)>
+        ExecuteTool(string functionName, string arguments, CatalogDefinition? formDefinition = null)
     {
         try
         {
@@ -725,27 +600,24 @@ public class CatalogAgent
                     var results = await _queryService.QueryRequests(status, requester, catalogSlug, from, to, search);
                     var resultJson = JsonSerializer.Serialize(results, JsonOptions);
 
-                    var card = new AgentCard
+                    return (resultJson, new AgentCard
                     {
                         Type = "deployment-list",
                         Title = "Matching Requests",
                         Data = results,
-                    };
-
-                    return (resultJson, card);
+                    }, null, null);
                 }
 
                 case "get_request_timeline":
                 {
                     var requestId = args.GetProperty("request_id").GetString()!;
                     if (!Guid.TryParse(requestId, out var id))
-                        return ("Invalid request ID format", null);
+                        return ("Invalid request ID format", null, null, null);
 
                     var timeline = await _queryService.GetRequestTimeline(id);
                     var detail = await _queryService.GetRequestDetail(id);
                     var resultJson = JsonSerializer.Serialize(new { detail, timeline }, JsonOptions);
 
-                    var cards = new List<AgentCard>();
                     if (detail is not null)
                     {
                         return (resultJson, new AgentCard
@@ -753,7 +625,7 @@ public class CatalogAgent
                             Type = "timeline",
                             Title = $"Timeline for {detail.ServiceName}",
                             Data = new { detail, timeline },
-                        });
+                        }, null, null);
                     }
 
                     return (resultJson, new AgentCard
@@ -761,7 +633,7 @@ public class CatalogAgent
                         Type = "timeline",
                         Title = "Request Timeline",
                         Data = new { timeline },
-                    });
+                    }, null, null);
                 }
 
                 case "get_summary":
@@ -777,7 +649,7 @@ public class CatalogAgent
                         Type = "summary",
                         Title = "Request Summary",
                         Data = summary,
-                    });
+                    }, null, null);
                 }
 
                 case "get_deployment_state":
@@ -791,7 +663,7 @@ public class CatalogAgent
                         Type = "deployment-state",
                         Title = $"Deployment State — {product}",
                         Data = stateData,
-                    });
+                    }, null, null);
                 }
 
                 case "query_deployments":
@@ -810,24 +682,72 @@ public class CatalogAgent
                         Type = "deployment-activity",
                         Title = $"Recent Deployments{(product != null ? $" — {product}" : "")}",
                         Data = activityData,
-                    });
+                    }, null, null);
                 }
 
                 case "list_products":
                 {
                     var products = await _queryService.GetProducts();
                     var resultJson = JsonSerializer.Serialize(products, JsonOptions);
-                    return (resultJson, null);
+                    return (resultJson, null, null, null);
+                }
+
+                case "generate_form":
+                {
+                    var slug = args.GetProperty("slug").GetString()!;
+                    var item = await _catalogService.GetBySlug(slug, includeInactive: true);
+                    if (item is null)
+                        return ($"No catalog item found with slug '{slug}'.", null, null, null);
+
+                    var definition = CatalogDefinition.FromEntity(item);
+                    var formJson = _formGenerator.Generate(definition);
+                    return (
+                        $"Form for '{definition.Name}' is now shown to the user. Tell them to fill in the required fields and click Validate when ready.",
+                        null,
+                        formJson,
+                        null);
+                }
+
+                case "fill_fields":
+                {
+                    var validFields = formDefinition?.Inputs.Select(i => i.Id).ToHashSet()
+                        ?? new HashSet<string>();
+
+                    var suggestions = new Dictionary<string, object>();
+                    foreach (var prop in args.EnumerateObject())
+                    {
+                        if (validFields.Count == 0 || validFields.Contains(prop.Name))
+                        {
+                            suggestions[prop.Name] = prop.Value.ValueKind switch
+                            {
+                                JsonValueKind.String => prop.Value.GetString()!,
+                                JsonValueKind.Number => prop.Value.TryGetInt64(out var l) ? l : prop.Value.GetDouble(),
+                                JsonValueKind.True => true,
+                                JsonValueKind.False => false,
+                                _ => prop.Value.GetRawText(),
+                            };
+                        }
+                    }
+
+                    var updatedSummary = suggestions.Count > 0
+                        ? string.Join(", ", suggestions.Select(kvp => $"{kvp.Key} = \"{kvp.Value}\""))
+                        : "none";
+
+                    var resultMsg = suggestions.Count > 0
+                        ? $"SUCCESS: Form fields updated on the user's screen: {updatedSummary}. Tell the user what you filled."
+                        : "No valid fields matched. Check field IDs and try again.";
+
+                    return (resultMsg, null, null, suggestions.Count > 0 ? suggestions : null);
                 }
 
                 default:
-                    return ($"Unknown tool: {functionName}", null);
+                    return ($"Unknown tool: {functionName}", null, null, null);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to execute tool {Tool}", functionName);
-            return ($"Error executing {functionName}: {ex.Message}", null);
+            return ($"Error executing {functionName}: {ex.Message}", null, null, null);
         }
     }
 
@@ -857,14 +777,11 @@ public class CatalogAgent
             Do not include explanations, just the JSON object.
             """;
 
-        // Build a minimal conversation context
         var conversationContext = new StringBuilder();
         if (history is not null)
         {
             foreach (var h in history.TakeLast(10))
-            {
                 conversationContext.AppendLine($"{h.Role}: {h.Content}");
-            }
         }
         conversationContext.AppendLine($"user: {userMessage}");
 
@@ -872,17 +789,13 @@ public class CatalogAgent
 
         try
         {
-            // Try to parse as JSON
             var cleaned = reply.Trim();
             if (cleaned.StartsWith("```"))
-            {
                 cleaned = cleaned.Split('\n').Skip(1).TakeWhile(l => !l.StartsWith("```")).Aggregate((a, b) => a + "\n" + b);
-            }
 
             var suggestions = JsonSerializer.Deserialize<Dictionary<string, object>>(cleaned);
             if (suggestions is not null && suggestions.Count > 0)
             {
-                // Only keep fields that actually exist in the definition
                 var validFields = definition.Inputs.Select(i => i.Id).ToHashSet();
                 return suggestions
                     .Where(kvp => validFields.Contains(kvp.Key))
@@ -944,9 +857,7 @@ public class CatalogAgent
     {
         var sb = new StringBuilder();
         foreach (var item in items)
-        {
             sb.AppendLine($"- **{item.Name}** (slug: `{item.Id}`, category: {item.Category}): {item.Description}");
-        }
         return sb.ToString();
     }
 
@@ -988,24 +899,54 @@ public class CatalogAgentRequest
 {
     public string? Message { get; set; }
 
+    /// <summary>Catalog slug — used only for the explicit validate action.</summary>
     [JsonPropertyName("catalogSlug")]
     public string? CatalogSlug { get; set; }
 
+    /// <summary>Form data — used only for the explicit validate action.</summary>
     [JsonPropertyName("formData")]
     public Dictionary<string, JsonElement>? FormData { get; set; }
 
     [JsonPropertyName("threadId")]
     public string? ThreadId { get; set; }
 
-    /// <summary>Last N messages for multi-turn context</summary>
+    /// <summary>Last N messages for multi-turn context.</summary>
     [JsonPropertyName("history")]
     public List<HistoryMessage>? History { get; set; }
 
     /// <summary>
-    /// Explicit action: "validate" triggers validation, anything else is conversational.
+    /// Explicit action: "validate" triggers validation from the Validate button click.
+    /// All other conversational messages omit this field.
     /// </summary>
     [JsonPropertyName("action")]
     public string? Action { get; set; }
+
+    /// <summary>
+    /// Page context from the frontend — used as a hint in the system prompt, not as a
+    /// routing gate. Tells the model where the user is so it can answer appropriately
+    /// without the caller needing to know which backend handler to invoke.
+    /// </summary>
+    [JsonPropertyName("pageContext")]
+    public ChatPageContext? PageContext { get; set; }
+}
+
+/// <summary>
+/// Describes where the user is in the UI. Passed as a context hint to the model —
+/// never used for hard routing decisions.
+/// </summary>
+public class ChatPageContext
+{
+    /// <summary>e.g. "/deployments", "/catalog/create-repo", "/requests"</summary>
+    [JsonPropertyName("currentPath")]
+    public string? CurrentPath { get; set; }
+
+    /// <summary>Set only when the user is on a catalog form page.</summary>
+    [JsonPropertyName("currentSlug")]
+    public string? CurrentSlug { get; set; }
+
+    /// <summary>Current form field values — only present when currentSlug is set.</summary>
+    [JsonPropertyName("formData")]
+    public Dictionary<string, JsonElement>? FormData { get; set; }
 }
 
 public class HistoryMessage
@@ -1030,7 +971,7 @@ public class CatalogAgentResponse
     public string? SuggestedSlug { get; set; }
 
     /// <summary>
-    /// Pre-filled field values extracted from conversation context.
+    /// Pre-filled field values extracted from conversation context or set via fill_fields.
     /// </summary>
     public Dictionary<string, object>? FieldSuggestions { get; set; }
 
