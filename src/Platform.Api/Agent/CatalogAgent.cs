@@ -9,6 +9,7 @@ namespace Platform.Api.Agent;
 public class CatalogAgent
 {
     private readonly CatalogService _catalogService;
+    private readonly A2UIFormGenerator _formGenerator;
     private readonly ValidationRunner _validationRunner;
     private readonly PlatformQueryService _queryService;
     private readonly HttpClient _httpClient;
@@ -28,9 +29,10 @@ public class CatalogAgent
 
         When a user describes what they want or picks a service:
         1. Identify the matching catalog item from the list provided below.
-        2. End your reply with the tag [SERVICE:slug] so the UI can navigate the user to the request form.
-        3. On the request form page, the user fills fields and clicks Validate — that button triggers validation directly (you do not call a validation tool).
-        4. While the user is on the form page, you can call fill_fields to populate values they describe in chat.
+        2. Call generate_form with its slug to render the request form inline in the chat.
+        3. Also end your reply with the tag [SERVICE:slug] so the UI can offer a link to open the full request page.
+        4. The user fills the form and clicks Validate — that button triggers validation directly (you do not call a validation tool).
+        5. While the user is on a form (inline or on the form page), you can call fill_fields to populate values they describe in chat.
 
         When a user asks about service requests (catalog requests, approvals, etc.):
         - Use query_requests to find specific service requests or list recent ones
@@ -175,10 +177,29 @@ public class CatalogAgent
                 },
             },
         },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "generate_form",
+                description = "Render the request form for a catalog service inline in the chat so the user can fill it without leaving the conversation. Call this when the user explicitly asks to start or open a request for a specific catalog service.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["slug"] = new { type = "string", description = "The catalog service slug, e.g. 'create-repo', 'request-dns-record'" },
+                    },
+                    required = new[] { "slug" },
+                },
+            },
+        },
     ];
 
     public CatalogAgent(
         CatalogService catalogService,
+        A2UIFormGenerator formGenerator,
         ValidationRunner validationRunner,
         PlatformQueryService queryService,
         HttpClient httpClient,
@@ -186,6 +207,7 @@ public class CatalogAgent
         ILogger<CatalogAgent> logger)
     {
         _catalogService = catalogService;
+        _formGenerator = formGenerator;
         _validationRunner = validationRunner;
         _queryService = queryService;
         _httpClient = httpClient;
@@ -663,6 +685,22 @@ public class CatalogAgent
                     var products = await _queryService.GetProducts();
                     var resultJson = JsonSerializer.Serialize(products, JsonOptions);
                     return (resultJson, null, null, null);
+                }
+
+                case "generate_form":
+                {
+                    var slug = args.GetProperty("slug").GetString()!;
+                    var item = await _catalogService.GetBySlug(slug, includeInactive: true);
+                    if (item is null)
+                        return ($"No catalog item found with slug '{slug}'.", null, null, null);
+
+                    var definition = CatalogDefinition.FromEntity(item);
+                    var formJson = _formGenerator.Generate(definition);
+                    return (
+                        $"Form for '{definition.Name}' is now shown to the user. Tell them to fill in the required fields and click Validate when ready.",
+                        null,
+                        formJson,
+                        null);
                 }
 
                 case "fill_fields":
