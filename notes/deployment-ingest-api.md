@@ -48,7 +48,7 @@ Rate limiting is applied per key.
     {
       "role":        "PR Author",        // Required
       "displayName": "Jan Kowalski",
-      "email":       "jan.kowalski@softwareone.com"
+      "email":       "jan.kowalski@acmetrix.com"
     }
   ],
 
@@ -179,26 +179,26 @@ Returned when the API key is scoped to specific products and the `product` in th
   "references": [
     {
       "type": "repository",
-      "url": "https://github.com/SoftwareOne/order-api",
+      "url": "https://github.com/Acmetrix/order-api",
       "provider": "github",
-      "key": "SoftwareOne/order-api",
+      "key": "Acmetrix/order-api",
       "revision": "a1b2c3d4e5f6"
     },
     {
       "type": "pipeline",
-      "url": "https://github.com/SoftwareOne/order-api/actions/runs/87654",
+      "url": "https://github.com/Acmetrix/order-api/actions/runs/87654",
       "provider": "github",
       "key": "87654"
     },
     {
       "type": "pull-request",
-      "url": "https://github.com/SoftwareOne/order-api/pull/312",
+      "url": "https://github.com/Acmetrix/order-api/pull/312",
       "provider": "github",
       "key": "312"
     },
     {
       "type": "work-item",
-      "url": "https://softwareone.atlassian.net/browse/PLT-1234",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
       "provider": "jira",
       "key": "PLT-1234"
     }
@@ -207,17 +207,17 @@ Returned when the API key is scoped to specific products and the `product` in th
     {
       "role": "PR Author",
       "displayName": "Jan Kowalski",
-      "email": "jan.kowalski@softwareone.com"
+      "email": "jan.kowalski@acmetrix.com"
     },
     {
       "role": "PR Reviewer",
       "displayName": "Anna Kowalska",
-      "email": "anna.kowalska@softwareone.com"
+      "email": "anna.kowalska@acmetrix.com"
     },
     {
       "role": "QA",
       "displayName": "Piotr Nowak",
-      "email": "piotr.nowak@softwareone.com"
+      "email": "piotr.nowak@acmetrix.com"
     }
   ],
   "metadata": {
@@ -242,20 +242,20 @@ Returned when the API key is scoped to specific products and the `product` in th
   "references": [
     {
       "type": "repository",
-      "url": "https://dev.azure.com/SoftwareOne/Identity/_git/auth-service",
+      "url": "https://dev.azure.com/Acmetrix/Identity/_git/auth-service",
       "provider": "azure-devops",
       "key": "auth-service",
       "revision": "f9e8d7c6b5a4"
     },
     {
       "type": "pipeline",
-      "url": "https://dev.azure.com/SoftwareOne/Identity/_build/results?buildId=45678",
+      "url": "https://dev.azure.com/Acmetrix/Identity/_build/results?buildId=45678",
       "provider": "azure-devops",
       "key": "45678"
     },
     {
       "type": "pull-request",
-      "url": "https://dev.azure.com/SoftwareOne/Identity/_git/auth-service/pullrequest/89",
+      "url": "https://dev.azure.com/Acmetrix/Identity/_git/auth-service/pullrequest/89",
       "provider": "azure-devops",
       "key": "89"
     }
@@ -264,12 +264,12 @@ Returned when the API key is scoped to specific products and the `product` in th
     {
       "role": "PR Author",
       "displayName": "Marta Wisniewska",
-      "email": "marta.wisniewska@softwareone.com"
+      "email": "marta.wisniewska@acmetrix.com"
     },
     {
       "role": "PR Reviewer",
       "displayName": "Tomasz Wojcik",
-      "email": "tomasz.wojcik@softwareone.com"
+      "email": "tomasz.wojcik@acmetrix.com"
     }
   ]
 }
