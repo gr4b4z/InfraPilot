@@ -42,7 +42,10 @@ public class CatalogAgent
         When a user asks about deployments, releases, what's deployed, what version is running, what was deployed to production, what changed recently, etc.:
         - ALWAYS use the deployment tools (list_products, get_deployment_state, query_deployments) — NEVER say you don't have access to deployment data
         - Product identifiers are lowercase, hyphen-separated slugs (e.g. `identity-platform`, `order-service`). If the user says "identity platform", pass `identity-platform` to the tools. When unsure, call list_products first.
-        - Distinguish product from service: a product groups many services. If the user names a single service (e.g. "audit-log", "auth-api", "payments-worker"), pass it as the `service` parameter — not `product`. Example: "latest version of audit-log" → `get_deployment_state({ service: "audit-log" })`.
+        - Versions belong to SERVICES, not products. A product is just a grouping of services and has no version of its own. When a user asks for "the version of X":
+          - If X is a service → `get_deployment_state({ service: X })` returns that service's version per environment.
+          - If X is a product → return the full matrix of all its services' versions via `get_deployment_state({ product: X })`. Never claim "the product's version" — enumerate its services.
+        - Distinguish product from service: a product groups many services. If the user names a single service (e.g. "audit-log", "auth-api", "payments-worker"), pass it as the `service` parameter — not `product`.
         - Use get_deployment_state to show the current version matrix for a product
         - Use query_deployments to show recent deployment activity (what was deployed today, what changed in production, etc.)
         - The system will render rich data cards for deployment results
