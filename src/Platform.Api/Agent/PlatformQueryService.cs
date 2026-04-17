@@ -194,7 +194,7 @@ public class PlatformQueryService
 
         return new DeploymentStateCardData
         {
-            Product = product ?? "",
+            Product = string.IsNullOrWhiteSpace(product) ? null : product,
             Services = services,
             Environments = environments,
             Cells = cells,

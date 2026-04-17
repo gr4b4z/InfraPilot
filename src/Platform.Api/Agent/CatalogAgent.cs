@@ -32,7 +32,7 @@ public class CatalogAgent
         2. Call generate_form with its slug to render the request form inline in the chat.
         3. Also end your reply with the tag [SERVICE:slug] so the UI can offer a link to open the full request page.
         4. The user fills the form and clicks Validate — that button triggers validation directly (you do not call a validation tool).
-        5. While the user is on a form (inline or on the form page), you can call fill_fields to populate values they describe in chat.
+        5. The fill_fields tool is only available when the user is on the full request form page (`/catalog/:slug`). Do not attempt to call it for the inline chat form.
 
         When a user asks about service requests (catalog requests, approvals, etc.):
         - Use query_requests to find specific service requests or list recent ones
@@ -388,12 +388,27 @@ public class CatalogAgent
     /// is actually a service. This returns (product, service) so the caller can pick
     /// whichever axis matches real data.
     /// </summary>
+    // Per-instance cache for product/service lists. PlatformQueryService and
+    // CatalogAgent are request-scoped, so this lives only for one HTTP request —
+    // which may fan out into several tool calls.
+    private List<string>? _cachedProducts;
+    private List<string>? _cachedServices;
+
+    private async Task<(List<string> Products, List<string> Services)> LoadDeploymentIndex()
+    {
+        _cachedProducts ??= await _queryService.GetProducts();
+        _cachedServices ??= await _queryService.GetServices();
+        return (_cachedProducts, _cachedServices);
+    }
+
     private async Task<(string? Product, string? Service)> ResolveProductOrService(
         string? rawProduct, string? rawService, string? userMessage = null)
     {
-        string? product = null, service = rawService;
-        var products = await _queryService.GetProducts();
-        var services = await _queryService.GetServices();
+        var (products, services) = await LoadDeploymentIndex();
+        string? product = null, service = null;
+
+        if (!string.IsNullOrWhiteSpace(rawService))
+            service = FuzzyMatch(rawService, services) ?? rawService;
 
         if (!string.IsNullOrWhiteSpace(rawProduct))
         {
@@ -429,8 +444,8 @@ public class CatalogAgent
         if (product is null && !string.IsNullOrWhiteSpace(rawProduct) && string.IsNullOrWhiteSpace(service))
             product = rawProduct; // let downstream query report empty naturally
 
-        _logger.LogInformation("Resolved deployment filter: rawProduct={RawProduct} rawService={RawService} → product={Product} service={Service} (userMsg='{Msg}')",
-            rawProduct, rawService, product, service, userMessage);
+        _logger.LogInformation("Resolved deployment filter: rawProduct={RawProduct} rawService={RawService} → product={Product} service={Service}",
+            SanitizeInline(rawProduct, 120), SanitizeInline(rawService, 120), product, service);
         return (product, service);
     }
 
