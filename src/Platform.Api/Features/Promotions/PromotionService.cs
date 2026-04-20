@@ -128,6 +128,21 @@ public class PromotionService
         await SupersedeStalePendingAsync(candidate, ct);
 
         _db.PromotionCandidates.Add(candidate);
+
+        // Auto-approve: record a synthetic approval row so the UI's approval trail renders it.
+        if (snapshot.IsAutoApprove)
+        {
+            _db.PromotionApprovals.Add(new PromotionApproval
+            {
+                Id = Guid.NewGuid(),
+                CandidateId = candidate.Id,
+                ApproverEmail = "system",
+                ApproverName = "System (auto-approve)",
+                Decision = PromotionDecision.Approved,
+                CreatedAt = now,
+            });
+        }
+
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -153,7 +168,15 @@ public class PromotionService
         // Done *after* the initial SaveChangesAsync so the candidate is visible to queries even if
         // dispatch transiently fails.
         if (candidate.Status == PromotionStatus.Approved)
+        {
+            await _audit.Log(
+                "promotions", "promotion.approved",
+                "system", "System", "system",
+                "PromotionCandidate", candidate.Id, null,
+                new { autoApprove = true });
+
             await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+        }
 
         return candidate;
     }
