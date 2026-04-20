@@ -62,7 +62,7 @@ else
 var authMode = (builder.Configuration["Auth:Mode"] ?? "Local").Trim();
 if (authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase))
 {
-    builder.Services.AddAuthentication()
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
 }
 else
