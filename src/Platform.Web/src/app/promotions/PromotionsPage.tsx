@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
+import { roleDisplay } from '@/lib/roleLabel';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowRight,
@@ -11,7 +12,28 @@ import {
   Rocket,
   ArrowUpRight,
   GitPullRequest,
+  GitBranch,
+  Ticket,
+  Workflow,
+  ExternalLink,
 } from 'lucide-react';
+
+const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
+  pipeline: Workflow,
+  repository: GitBranch,
+  'pull-request': GitPullRequest,
+  'work-item': Ticket,
+};
+
+function referenceChipLabel(type: string, key: string | null | undefined): string {
+  if (!key) return type;
+  switch (type) {
+    case 'pull-request':
+      return `#${key}`;
+    default:
+      return key;
+  }
+}
 
 const STATUS_CONFIG: Record<
   PromotionStatus,
@@ -39,7 +61,9 @@ export function PromotionsPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [productFilter, setProductFilter] = useState('');
+  const [serviceFilter, setServiceFilter] = useState('');
   const [targetEnvFilter, setTargetEnvFilter] = useState('');
+  const [referenceFilter, setReferenceFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const navigate = useNavigate();
@@ -49,7 +73,9 @@ export function PromotionsPage() {
     const params: Record<string, string> = {};
     if (statusFilter) params.status = statusFilter;
     if (productFilter) params.product = productFilter;
+    if (serviceFilter) params.service = serviceFilter;
     if (targetEnvFilter) params.targetEnv = targetEnvFilter;
+    if (referenceFilter) params.reference = referenceFilter;
     api
       .listPromotions(params)
       .then((data) => setCandidates(data.candidates || []))
@@ -59,10 +85,26 @@ export function PromotionsPage() {
 
   useEffect(() => {
     fetchData();
-  }, [statusFilter, productFilter, targetEnvFilter]);
+  }, [statusFilter, productFilter, serviceFilter, targetEnvFilter, referenceFilter]);
 
   const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
   const nonPending = useMemo(() => candidates.filter((c) => c.status !== 'Pending'), [candidates]);
+
+  // Known target envs from the currently-loaded candidate set, for the dropdown. Keeping the
+  // current filter selection in the list even if nothing matches so the user can clear it.
+  const targetEnvOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of candidates) if (c.targetEnv) set.add(c.targetEnv);
+    if (targetEnvFilter) set.add(targetEnvFilter);
+    return Array.from(set).sort();
+  }, [candidates, targetEnvFilter]);
+
+  const productOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of candidates) if (c.product) set.add(c.product);
+    if (productFilter) set.add(productFilter);
+    return Array.from(set).sort();
+  }, [candidates, productFilter]);
 
   const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
   const allApprovableSelected =
@@ -174,9 +216,7 @@ export function PromotionsPage() {
             </option>
           ))}
         </select>
-        <input
-          type="text"
-          placeholder="Product..."
+        <select
           value={productFilter}
           onChange={(e) => setProductFilter(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px]"
@@ -185,13 +225,49 @@ export function PromotionsPage() {
             backgroundColor: 'var(--bg-primary)',
             color: 'var(--text-primary)',
           }}
-        />
+        >
+          <option value="">All products</option>
+          {productOptions.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
         <input
           type="text"
-          placeholder="Target env..."
+          placeholder="Service search..."
+          value={serviceFilter}
+          onChange={(e) => setServiceFilter(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px]"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        <select
           value={targetEnvFilter}
           onChange={(e) => setTargetEnvFilter(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px]"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
+        >
+          <option value="">All target envs</option>
+          {targetEnvOptions.map((env) => (
+            <option key={env} value={env}>
+              {env}
+            </option>
+          ))}
+        </select>
+        <input
+          type="text"
+          placeholder="Reference (PR, work item, commit...)"
+          value={referenceFilter}
+          onChange={(e) => setReferenceFilter(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px] min-w-[240px]"
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
@@ -271,6 +347,7 @@ export function PromotionsPage() {
                     selectable={c.canApprove}
                     selected={selected.has(c.id)}
                     onToggleSelect={() => toggleSelect(c.id)}
+                    onFilterByReference={setReferenceFilter}
                   />
                 ))}
               </div>
@@ -288,7 +365,11 @@ export function PromotionsPage() {
               </h2>
               <div className="space-y-2">
                 {nonPending.map((c) => (
-                  <CandidateCard key={c.id} candidate={c} />
+                  <CandidateCard
+                    key={c.id}
+                    candidate={c}
+                    onFilterByReference={setReferenceFilter}
+                  />
                 ))}
               </div>
             </div>
@@ -305,12 +386,14 @@ function CandidateCard({
   selectable,
   selected,
   onToggleSelect,
+  onFilterByReference,
 }: {
   candidate: PromotionCandidate;
   urgent?: boolean;
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
+  onFilterByReference?: (key: string) => void;
 }) {
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
@@ -357,12 +440,90 @@ function CandidateCard({
           </span>
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          {candidate.sourceDeployerEmail && <span>{candidate.sourceDeployerEmail}</span>}
           <span className="flex items-center gap-1">
             <Clock size={10} />
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
         </div>
+        {candidate.sourceEventReferences && candidate.sourceEventReferences.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap mt-2">
+            {candidate.sourceEventReferences.map((ref, i) => {
+              const Icon = REFERENCE_ICONS[ref.type] ?? ExternalLink;
+              const label = referenceChipLabel(ref.type, ref.key);
+              const filterKey = ref.key || ref.revision || '';
+              return (
+                <span
+                  key={`ref-${i}`}
+                  className="inline-flex items-center gap-1 text-[10px]"
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (filterKey && onFilterByReference) onFilterByReference(filterKey);
+                    }}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                    style={{
+                      backgroundColor: 'var(--bg-secondary)',
+                      color: 'var(--text-secondary)',
+                      cursor: filterKey ? 'pointer' : 'default',
+                    }}
+                    title={filterKey ? `Filter by ${filterKey}` : label}
+                  >
+                    <Icon size={10} style={{ color: 'var(--text-muted)' }} />
+                    <span className="font-medium">{label}</span>
+                  </button>
+                  {ref.url && (
+                    <a
+                      href={ref.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ color: 'var(--text-muted)' }}
+                      className="transition-opacity hover:opacity-80"
+                      title="Open"
+                    >
+                      <ExternalLink size={10} />
+                    </a>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {(() => {
+          // Merge deploy-event people + promotion-level people; promotion roles win by role.
+          const promotionRoles = new Set(
+            (candidate.participants ?? []).map((p) => p.role.toLowerCase()),
+          );
+          const merged = [
+            ...(candidate.sourceEventParticipants ?? []).filter(
+              (p) => !promotionRoles.has(p.role.toLowerCase()),
+            ),
+            ...(candidate.participants ?? []),
+          ];
+          if (merged.length === 0) return null;
+          return (
+            <div className="flex items-center gap-1.5 flex-wrap mt-2">
+              {merged.map((p, i) => (
+                <span
+                  key={`${p.role}-${i}`}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
+                  style={{
+                    backgroundColor: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                  }}
+                  title={p.email ?? undefined}
+                >
+                  <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
+                  <span className="font-medium">
+                    {p.displayName ?? p.email ?? '—'}
+                  </span>
+                </span>
+              ))}
+            </div>
+          );
+        })()}
       </div>
       <ArrowUpRight size={16} style={{ color: 'var(--text-muted)' }} className="shrink-0 mt-1" />
     </div>

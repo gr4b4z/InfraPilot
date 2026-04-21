@@ -56,7 +56,7 @@ public static class PromotionAdminEndpoints
                 ApproverGroup = string.IsNullOrWhiteSpace(request.ApproverGroup) ? null : request.ApproverGroup,
                 Strategy = request.Strategy,
                 MinApprovers = Math.Max(1, request.MinApprovers),
-                ExcludeDeployer = request.ExcludeDeployer,
+                ExcludeRole = string.IsNullOrWhiteSpace(request.ExcludeRole) ? null : request.ExcludeRole,
                 TimeoutHours = Math.Max(0, request.TimeoutHours),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
                 CreatedAt = now,
@@ -83,7 +83,7 @@ public static class PromotionAdminEndpoints
             policy.ApproverGroup = string.IsNullOrWhiteSpace(request.ApproverGroup) ? null : request.ApproverGroup;
             policy.Strategy = request.Strategy;
             policy.MinApprovers = Math.Max(1, request.MinApprovers);
-            policy.ExcludeDeployer = request.ExcludeDeployer;
+            policy.ExcludeRole = string.IsNullOrWhiteSpace(request.ExcludeRole) ? null : request.ExcludeRole;
             policy.TimeoutHours = Math.Max(0, request.TimeoutHours);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
@@ -135,7 +135,7 @@ public static class PromotionAdminEndpoints
         approverGroup = p.ApproverGroup,
         strategy = p.Strategy.ToString(),
         minApprovers = p.MinApprovers,
-        excludeDeployer = p.ExcludeDeployer,
+        excludeRole = p.ExcludeRole,
         timeoutHours = p.TimeoutHours,
         escalationGroup = p.EscalationGroup,
         createdAt = p.CreatedAt,
@@ -163,6 +163,6 @@ public record UpsertPolicyRequest(
     string? ApproverGroup,
     PromotionStrategy Strategy,
     int MinApprovers,
-    bool ExcludeDeployer,
+    string? ExcludeRole,
     int TimeoutHours,
     string? EscalationGroup);

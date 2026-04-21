@@ -15,7 +15,7 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   approverGroup: null,
   strategy: 'Any',
   minApprovers: 1,
-  excludeDeployer: false,
+  excludeRole: null,
   timeoutHours: 24,
   escalationGroup: null,
 };
@@ -128,7 +128,7 @@ export function PromotionSettings() {
       approverGroup: p.approverGroup,
       strategy: p.strategy,
       minApprovers: p.minApprovers,
-      excludeDeployer: p.excludeDeployer,
+      excludeRole: p.excludeRole,
       timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
     });
@@ -565,17 +565,31 @@ export function PromotionSettings() {
                     />
                   </div>
 
-                  {/* Exclude Deployer */}
-                  <div className="space-y-1 flex items-end gap-2 pb-1">
-                    <label className="flex items-center gap-2 text-[13px] cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+                  {/* Exclude role from approving */}
+                  <div className="space-y-1">
+                    <label className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider cursor-pointer" style={{ color: 'var(--text-muted)' }}>
                       <input
                         type="checkbox"
-                        checked={form.excludeDeployer}
-                        onChange={(e) => setField('excludeDeployer', e.target.checked)}
+                        checked={form.excludeRole !== null}
+                        onChange={(e) =>
+                          setField('excludeRole', e.target.checked ? (form.excludeRole || 'triggered-by') : null)
+                        }
                         className="rounded"
                       />
-                      Exclude Deployer
+                      Restrict a role from approving
                     </label>
+                    <input
+                      type="text"
+                      value={form.excludeRole ?? ''}
+                      onChange={(e) => setField('excludeRole', e.target.value || null)}
+                      placeholder="triggered-by"
+                      disabled={form.excludeRole === null}
+                      className={`${inputClass} w-full`}
+                      style={{
+                        ...inputStyle,
+                        opacity: form.excludeRole === null ? 0.5 : 1,
+                      }}
+                    />
                   </div>
 
                   {/* Escalation Group */}

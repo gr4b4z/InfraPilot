@@ -2,7 +2,14 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Catalog;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure;
+using Platform.Api.Infrastructure.Identity;
+using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Agent;
 
@@ -12,6 +19,9 @@ public class CatalogAgent
     private readonly A2UIFormGenerator _formGenerator;
     private readonly ValidationRunner _validationRunner;
     private readonly PlatformQueryService _queryService;
+    private readonly PromotionService _promotionService;
+    private readonly IIdentityService _identity;
+    private readonly PlatformDbContext _db;
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
     private readonly ILogger<CatalogAgent> _logger;
@@ -55,6 +65,13 @@ public class CatalogAgent
           - Activity with time filter: /deployments/{product}?tab=activity&atime=today
           - Activity with environment: /deployments/{product}?tab=activity&env=production
           - Combined filters: /deployments/{product}?tab=activity&atime=24h&env=staging
+
+        When a user asks about promotions (who needs to approve, pending promotions, assigning QA, leaving a note on a promotion, etc.):
+        - Use list_promotions to find candidates — filter by status, product, service, target_env, or a reference (PR number, work item key).
+        - Use get_promotion for detail: source deploy event references (PR, work item, commit), people (author/reviewer/triggered-by plus promotion-level assignments like QA), approvals, and comments.
+        - Use assign_promotion_participant when the user wants to add someone to a promotion. Role is free-form — the platform canonicalises it ("QA", "Triggered By", "release manager" are all fine). If the user gives a name but no email, call search_directory_users first to resolve.
+        - Use add_promotion_comment to leave a note on a promotion.
+        - Confirm destructive actions (removing participants) before calling remove_promotion_participant.
 
         Rules:
         - Always respond in the same language the user uses
@@ -161,7 +178,7 @@ public class CatalogAgent
                     {
                         ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional — omit to query across all products." },
                         ["service"] = new { type = "string", description = "Service name, e.g. 'auth-api'. Optional — use when the user asks about a specific service." },
-                        ["environment"] = new { type = "string", description = "Environment name, e.g. 'production', 'staging'. Optional." },
+                        ["environment"] = new { type = "string", description = "Environment name, e.g. 'production', 'staging'. Case-insensitive — 'Production' or 'Staging' also work. Optional." },
                         ["since"] = new { type = "string", description = "ISO8601 datetime — only return deployments after this time. Defaults to start of today if omitted." },
                     },
                     required = Array.Empty<string>(),
@@ -180,6 +197,123 @@ public class CatalogAgent
                     type = "object",
                     properties = new Dictionary<string, object>(),
                     required = Array.Empty<string>(),
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "list_promotions",
+                description = "Search promotion candidates (version promotions waiting for approval or already resolved). Use when the user asks about promotions, who needs to approve, pending approvals per environment, or 'what's waiting to be promoted'.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["status"] = new { type = "string", description = "Filter by status: Pending, Approved, Deploying, Deployed, Superseded, Rejected. Omit to see all pending plus recent resolved." },
+                        ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional." },
+                        ["service"] = new { type = "string", description = "Service substring — case-insensitive partial match, e.g. 'auth'. Optional." },
+                        ["target_env"] = new { type = "string", description = "Target environment, e.g. 'production'. Case-insensitive — 'Production' also works. Optional." },
+                        ["reference"] = new { type = "string", description = "Filter by any reference key/revision/url substring — useful for 'promotions tied to JIRA-123' or a PR number. Optional." },
+                    },
+                    required = Array.Empty<string>(),
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "get_promotion",
+                description = "Get full detail for a single promotion candidate — status, source deploy event, references (PR, work item, commit), people (author/reviewer/triggered-by plus promotion-level assignments like QA), approvals trail, and comments.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["candidate_id"] = new { type = "string", description = "The GUID of the promotion candidate." },
+                    },
+                    required = new[] { "candidate_id" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "assign_promotion_participant",
+                description = "Assign or replace a participant on a promotion (e.g. 'add QA Alice to this promotion'). The role string is free-form — the platform canonicalises it to lower-kebab on write, so you can pass 'QA', 'Release Manager', 'Triggered By', etc. and they'll be stored as 'qa', 'release-manager', 'triggered-by'. Display names are controlled by the admin-managed role dictionary. Use search_directory_users first when the user gives a name but no email.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["candidate_id"] = new { type = "string", description = "The GUID of the promotion candidate." },
+                        ["role"] = new { type = "string", description = "Role name — free-form, will be canonicalised server-side." },
+                        ["display_name"] = new { type = "string", description = "Human-readable name of the person. Optional." },
+                        ["email"] = new { type = "string", description = "Email address. Strongly preferred so downstream systems (Jira, Slack) can match the user." },
+                    },
+                    required = new[] { "candidate_id", "role" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "remove_promotion_participant",
+                description = "Remove a participant from a promotion by role. Role matching is case-insensitive and canonicalised — 'QA' and 'qa' both remove the same entry.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["candidate_id"] = new { type = "string", description = "The GUID of the promotion candidate." },
+                        ["role"] = new { type = "string", description = "Role to remove." },
+                    },
+                    required = new[] { "candidate_id", "role" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "add_promotion_comment",
+                description = "Post a comment on a promotion candidate. Use when the user says 'leave a note on this promotion' or similar.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["candidate_id"] = new { type = "string", description = "The GUID of the promotion candidate." },
+                        ["body"] = new { type = "string", description = "Comment text." },
+                    },
+                    required = new[] { "candidate_id", "body" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "search_directory_users",
+                description = "Search the directory (Entra ID / Microsoft Graph when configured, local user list otherwise) for a person by name or email. Use this to resolve a person before calling assign_promotion_participant when the user only provided a name.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["query"] = new { type = "string", description = "Name or email fragment — at least 2 characters." },
+                    },
+                    required = new[] { "query" },
                 },
             },
         },
@@ -208,6 +342,9 @@ public class CatalogAgent
         A2UIFormGenerator formGenerator,
         ValidationRunner validationRunner,
         PlatformQueryService queryService,
+        PromotionService promotionService,
+        IIdentityService identity,
+        PlatformDbContext db,
         HttpClient httpClient,
         IConfiguration configuration,
         ILogger<CatalogAgent> logger)
@@ -216,6 +353,9 @@ public class CatalogAgent
         _formGenerator = formGenerator;
         _validationRunner = validationRunner;
         _queryService = queryService;
+        _promotionService = promotionService;
+        _identity = identity;
+        _db = db;
         _httpClient = httpClient;
         _configuration = configuration;
         _logger = logger;
@@ -761,7 +901,9 @@ public class CatalogAgent
                     var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
                     var rawService = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
                     var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
-                    var environment = args.TryGetProperty("environment", out var env) ? env.GetString() : null;
+                    // Users naturally say "Production" / "Staging" (display-name form); the DB
+                    // stores canonical kebab-case by default. Normalise the filter before querying.
+                    var environment = NormalizeEnvFilter(args.TryGetProperty("environment", out var env) ? env.GetString() : null);
                     var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd
                         : DateTimeOffset.UtcNow.Date;
@@ -790,6 +932,229 @@ public class CatalogAgent
                     var products = await _queryService.GetProducts();
                     var resultJson = JsonSerializer.Serialize(products, JsonOptions);
                     return (resultJson, null, null, null);
+                }
+
+                case "list_promotions":
+                {
+                    PromotionStatus? status = null;
+                    if (args.TryGetProperty("status", out var st) && st.GetString() is { } statusStr &&
+                        Enum.TryParse<PromotionStatus>(statusStr, ignoreCase: true, out var parsedStatus))
+                    {
+                        status = parsedStatus;
+                    }
+
+                    var product = args.TryGetProperty("product", out var pr) ? pr.GetString() : null;
+                    var service = args.TryGetProperty("service", out var sv) ? sv.GetString() : null;
+                    // Env in display-name form ("Production") still lands on the canonical key.
+                    var targetEnv = NormalizeEnvFilter(args.TryGetProperty("target_env", out var te) ? te.GetString() : null);
+                    var reference = args.TryGetProperty("reference", out var rf) ? rf.GetString() : null;
+
+                    var query = new PromotionQuery(
+                        Status: status,
+                        Product: product,
+                        Service: service,
+                        TargetEnv: targetEnv,
+                        Limit: status is null ? 25 : 200);
+
+                    var candidates = await _promotionService.GetAsync(query);
+
+                    // Optional reference filter — applied in-memory because references live in
+                    // the source deploy event's JSON. Matches key/revision/provider/url substring.
+                    if (!string.IsNullOrWhiteSpace(reference))
+                    {
+                        var needle = reference.Trim();
+                        var sourceIds = candidates.Select(c => c.SourceDeployEventId).Distinct().ToList();
+                        var events = await _db.DeployEvents.AsNoTracking()
+                            .Where(e => sourceIds.Contains(e.Id))
+                            .Select(e => new { e.Id, e.ReferencesJson })
+                            .ToListAsync();
+                        var refMap = events.ToDictionary(e => e.Id, e => e.ReferencesJson);
+                        candidates = candidates.Where(c =>
+                        {
+                            var json = refMap.GetValueOrDefault(c.SourceDeployEventId);
+                            if (string.IsNullOrWhiteSpace(json)) return false;
+                            return json.Contains(needle, StringComparison.OrdinalIgnoreCase);
+                        }).ToList();
+                    }
+
+                    var projected = candidates.Select(c => new
+                    {
+                        id = c.Id,
+                        product = c.Product,
+                        service = c.Service,
+                        sourceEnv = c.SourceEnv,
+                        targetEnv = c.TargetEnv,
+                        version = c.Version,
+                        status = c.Status.ToString(),
+                        sourceDeployerEmail = c.SourceDeployerEmail,
+                        participants = c.Participants,
+                        createdAt = c.CreatedAt,
+                    }).ToList();
+
+                    var resultJson = JsonSerializer.Serialize(projected, JsonOptions);
+                    return (resultJson, null, null, null);
+                }
+
+                case "get_promotion":
+                {
+                    if (!Guid.TryParse(args.GetProperty("candidate_id").GetString(), out var cid))
+                        return ("Invalid candidate_id — must be a GUID.", null, null, null);
+
+                    var candidate = await _promotionService.GetByIdAsync(cid);
+                    if (candidate is null)
+                        return ($"No promotion candidate found with id {cid}.", null, null, null);
+
+                    var approvals = await _promotionService.GetApprovalsAsync(cid);
+                    var comments = await _promotionService.GetCommentsAsync(cid);
+                    var sourceEvent = await _db.DeployEvents.AsNoTracking()
+                        .FirstOrDefaultAsync(e => e.Id == candidate.SourceDeployEventId);
+
+                    object? sourceEventData = null;
+                    if (sourceEvent is not null)
+                    {
+                        var refs = SafeDeserialize<List<ReferenceDto>>(sourceEvent.ReferencesJson) ?? new();
+                        var srcParts = SafeDeserialize<List<ParticipantDto>>(sourceEvent.ParticipantsJson) ?? new();
+                        sourceEventData = new
+                        {
+                            id = sourceEvent.Id,
+                            deployedAt = sourceEvent.DeployedAt,
+                            source = sourceEvent.Source,
+                            references = refs,
+                            participants = srcParts,
+                        };
+                    }
+
+                    var resultJson = JsonSerializer.Serialize(new
+                    {
+                        candidate = new
+                        {
+                            candidate.Id,
+                            candidate.Product,
+                            candidate.Service,
+                            candidate.SourceEnv,
+                            candidate.TargetEnv,
+                            candidate.Version,
+                            status = candidate.Status.ToString(),
+                            candidate.SourceDeployerName,
+                            candidate.SourceDeployerEmail,
+                            candidate.ExternalRunUrl,
+                            candidate.CreatedAt,
+                            candidate.ApprovedAt,
+                            candidate.DeployedAt,
+                            participants = candidate.Participants,
+                        },
+                        sourceEvent = sourceEventData,
+                        approvals = approvals.Select(a => new
+                        {
+                            a.ApproverEmail,
+                            a.ApproverName,
+                            a.Comment,
+                            decision = a.Decision.ToString(),
+                            a.CreatedAt,
+                        }),
+                        comments = comments.Select(c => new
+                        {
+                            c.AuthorEmail,
+                            c.AuthorName,
+                            c.Body,
+                            c.CreatedAt,
+                            c.UpdatedAt,
+                        }),
+                    }, JsonOptions);
+
+                    return (resultJson, null, null, null);
+                }
+
+                case "assign_promotion_participant":
+                {
+                    if (!Guid.TryParse(args.GetProperty("candidate_id").GetString(), out var cid))
+                        return ("Invalid candidate_id — must be a GUID.", null, null, null);
+
+                    var role = args.GetProperty("role").GetString() ?? "";
+                    var displayName = args.TryGetProperty("display_name", out var dn) ? dn.GetString() : null;
+                    var email = args.TryGetProperty("email", out var em) ? em.GetString() : null;
+
+                    try
+                    {
+                        var updated = await _promotionService.UpsertParticipantAsync(cid,
+                            new PromotionParticipant(role, displayName, email));
+                        var resultJson = JsonSerializer.Serialize(new
+                        {
+                            ok = true,
+                            participants = updated.Participants,
+                        }, JsonOptions);
+                        return (resultJson, null, null, null);
+                    }
+                    catch (KeyNotFoundException) { return ($"No promotion candidate found with id {cid}.", null, null, null); }
+                    catch (InvalidOperationException ex) { return ($"Could not assign participant: {ex.Message}", null, null, null); }
+                }
+
+                case "remove_promotion_participant":
+                {
+                    if (!Guid.TryParse(args.GetProperty("candidate_id").GetString(), out var cid))
+                        return ("Invalid candidate_id — must be a GUID.", null, null, null);
+
+                    var role = args.GetProperty("role").GetString() ?? "";
+                    try
+                    {
+                        var updated = await _promotionService.RemoveParticipantAsync(cid, role);
+                        var resultJson = JsonSerializer.Serialize(new
+                        {
+                            ok = true,
+                            participants = updated.Participants,
+                        }, JsonOptions);
+                        return (resultJson, null, null, null);
+                    }
+                    catch (KeyNotFoundException) { return ($"No promotion candidate found with id {cid}.", null, null, null); }
+                }
+
+                case "add_promotion_comment":
+                {
+                    if (!Guid.TryParse(args.GetProperty("candidate_id").GetString(), out var cid))
+                        return ("Invalid candidate_id — must be a GUID.", null, null, null);
+
+                    var body = args.GetProperty("body").GetString() ?? "";
+                    try
+                    {
+                        var comment = await _promotionService.AddCommentAsync(cid, body);
+                        var resultJson = JsonSerializer.Serialize(new
+                        {
+                            ok = true,
+                            comment.Id,
+                            comment.AuthorEmail,
+                            comment.AuthorName,
+                            comment.Body,
+                            comment.CreatedAt,
+                        }, JsonOptions);
+                        return (resultJson, null, null, null);
+                    }
+                    catch (KeyNotFoundException) { return ($"No promotion candidate found with id {cid}.", null, null, null); }
+                    catch (InvalidOperationException ex) { return ($"Could not add comment: {ex.Message}", null, null, null); }
+                }
+
+                case "search_directory_users":
+                {
+                    var q = args.GetProperty("query").GetString() ?? "";
+                    if (q.Trim().Length < 2)
+                        return ("Query must be at least 2 characters.", null, null, null);
+
+                    try
+                    {
+                        var users = await _identity.SearchUsers(q.Trim());
+                        var resultJson = JsonSerializer.Serialize(users.Select(u => new
+                        {
+                            id = u.Id,
+                            displayName = u.DisplayName,
+                            email = u.Email,
+                        }), JsonOptions);
+                        return (resultJson, null, null, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Graph unreachable / misconfigured — return empty so the model keeps going.
+                        _logger.LogWarning(ex, "Directory search failed for query '{Query}'", q);
+                        return ("[]", null, null, null);
+                    }
                 }
 
                 case "generate_form":
@@ -849,6 +1214,27 @@ public class CatalogAgent
             _logger.LogError(ex, "Failed to execute tool {Tool}", functionName);
             return ($"Error executing {functionName}: {ex.Message}", null, null, null);
         }
+    }
+
+    // Best-effort deserializer used by the promotion tools to crack open JSON-column payloads
+    // (references, participants) stored on DeployEvent. Returns default on bad input rather
+    // than throwing so a malformed legacy row doesn't break the whole tool call.
+    private static T? SafeDeserialize<T>(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return default;
+        try { return JsonSerializer.Deserialize<T>(json, JsonOptions); }
+        catch { return default; }
+    }
+
+    // Normalise an environment filter string to the stored form. Accepts display-name casing
+    // ("Production", "Staging") and converts to canonical lower-kebab ("production", "staging").
+    // Safe to call when the backend normalisation policy is disabled too — the extra work is
+    // only the difference between "staging" and "staging", i.e. a no-op.
+    private static string? NormalizeEnvFilter(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var canonical = RoleNormalizer.Normalize(input);
+        return string.IsNullOrEmpty(canonical) ? input.Trim() : canonical;
     }
 
     /// <summary>

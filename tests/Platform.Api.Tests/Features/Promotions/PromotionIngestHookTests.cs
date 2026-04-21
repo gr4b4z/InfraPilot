@@ -47,7 +47,8 @@ public class PromotionIngestHookTests : IDisposable
         _promotions = new PromotionService(
             _db, resolver, identity, currentUser, audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>());
+            Substitute.For<IWebhookDispatcher>(),
+            TestOptions.Normalization());
 
         _sut = new PromotionIngestHook(
             _flags, _topology, _promotions, _db,

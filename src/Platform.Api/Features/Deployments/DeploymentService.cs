@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Webhooks;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Deployments;
@@ -12,6 +14,7 @@ public class DeploymentService
     private readonly PlatformDbContext _db;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IPromotionIngestHook _promotionHook;
+    private readonly IOptionsMonitor<NormalizationOptions> _normalization;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -24,19 +27,27 @@ public class DeploymentService
         PlatformDbContext db,
         IWebhookDispatcher webhookDispatcher,
         IPromotionIngestHook promotionHook,
+        IOptionsMonitor<NormalizationOptions> normalization,
         ILogger<DeploymentService> logger)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
         _promotionHook = promotionHook;
+        _normalization = normalization;
         _logger = logger;
     }
 
     public async Task<DeployEvent> IngestEvent(CreateDeployEventDto dto, CancellationToken ct = default)
     {
+        var norm = _normalization.CurrentValue;
+
+        // Optional canonicalisation — controlled by appsettings `Normalization:*`. Off by
+        // default, so senders' original casing is preserved unless an admin opts in.
+        var environment = norm.ApplyEnvironment(dto.Environment);
+
         // Look up previous version for same product+service+environment
         var previousEvent = await _db.DeployEvents
-            .Where(e => e.Product == dto.Product && e.Service == dto.Service && e.Environment == dto.Environment)
+            .Where(e => e.Product == dto.Product && e.Service == dto.Service && e.Environment == environment)
             .OrderByDescending(e => e.DeployedAt)
             .Select(e => new { e.Version })
             .FirstOrDefaultAsync(ct);
@@ -47,7 +58,7 @@ public class DeploymentService
             Id = Guid.NewGuid(),
             Product = dto.Product,
             Service = dto.Service,
-            Environment = dto.Environment,
+            Environment = environment,
             Version = dto.Version,
             PreviousVersion = previousEvent?.Version,
             IsRollback = dto.IsRollback,
@@ -55,7 +66,12 @@ public class DeploymentService
             Source = dto.Source,
             DeployedAt = dto.DeployedAt,
             ReferencesJson = JsonSerializer.Serialize(dto.References ?? [], JsonOptions),
-            ParticipantsJson = JsonSerializer.Serialize(dto.Participants ?? [], JsonOptions),
+            ParticipantsJson = JsonSerializer.Serialize(
+                (dto.Participants ?? []).Select(p => new ParticipantDto(
+                    Role: norm.ApplyRole(p.Role),
+                    DisplayName: p.DisplayName,
+                    Email: p.Email)).ToList(),
+                JsonOptions),
             MetadataJson = JsonSerializer.Serialize(dto.Metadata ?? new Dictionary<string, object>(), JsonOptions),
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -147,8 +163,10 @@ public class DeploymentService
                 try
                 {
                     var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(e.ParticipantsJson, JsonOptions);
+                    // Match after normalization so this works whether or not ingest-time
+                    // canonicalisation is enabled.
                     deployer = parts?.FirstOrDefault(p =>
-                        string.Equals(p.Role, "deployer", StringComparison.OrdinalIgnoreCase))?.Email;
+                        RoleNormalizer.Normalize(p.Role) == "triggered-by")?.Email;
                 }
                 catch { /* best-effort */ }
             }

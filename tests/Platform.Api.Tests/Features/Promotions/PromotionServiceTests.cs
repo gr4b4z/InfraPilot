@@ -46,7 +46,8 @@ public class PromotionServiceTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, _identity, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>());
+            Substitute.For<IWebhookDispatcher>(),
+            TestOptions.Normalization());
     }
 
     public void Dispose() => _db.Dispose();
@@ -64,7 +65,7 @@ public class PromotionServiceTests : IDisposable
     {
         var participants = deployerEmail is null
             ? "[]"
-            : JsonSerializer.Serialize(new[] { new { role = "deployer", email = deployerEmail } });
+            : JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = deployerEmail } });
 
         var e = new DeployEvent
         {
@@ -89,7 +90,7 @@ public class PromotionServiceTests : IDisposable
         string approverGroup = "ops",
         PromotionStrategy strategy = PromotionStrategy.Any,
         int minApprovers = 1,
-        bool excludeDeployer = true,
+        string? excludeRole = "triggered-by",
         string? service = null)
     {
         var p = new PromotionPolicy
@@ -101,7 +102,7 @@ public class PromotionServiceTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = strategy,
             MinApprovers = minApprovers,
-            ExcludeDeployer = excludeDeployer,
+            ExcludeRole = excludeRole,
         };
         _db.PromotionPolicies.Add(p);
         _db.SaveChanges();
@@ -142,7 +143,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Create_AutoApprovePolicy_ApprovedImmediately()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
@@ -222,7 +223,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Approve_Deployer_RejectedByExcludeDeployer()
     {
-        SeedPolicy(excludeDeployer: true);
+        SeedPolicy(excludeRole: "triggered-by");
         var e = SeedDeploy(deployerEmail: "alice@example.com"); // Alice is the deployer
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
@@ -287,7 +288,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeploying_FromApproved_Works()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false); // auto-approve policy
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null); // auto-approve policy
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
@@ -310,7 +311,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeployed_FromDeploying_Works()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         await _sut.MarkDeployingAsync(c!.Id, null);
@@ -337,7 +338,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_AutoApprove_False()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         Assert.False(await _sut.CanUserApproveAsync(c!));
@@ -346,7 +347,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_NotPending_False()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         c!.Status = PromotionStatus.Rejected;
@@ -377,14 +378,14 @@ public class PromotionServiceTests : IDisposable
         {
             Id = Guid.NewGuid(), Product = "acme", Service = "api", Environment = "staging",
             Version = "v1", Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "deployer", email = "bob@example.com" } }),
+            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = "bob@example.com" } }),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         var e2 = new DeployEvent
         {
             Id = Guid.NewGuid(), Product = "acme", Service = "web", Environment = "staging",
             Version = "v1", Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "deployer", email = "alice@example.com" } }),
+            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = "alice@example.com" } }),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.DeployEvents.AddRange(e1, e2);

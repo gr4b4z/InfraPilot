@@ -17,7 +17,7 @@ namespace Platform.Api.Migrations.Postgres
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.5")
+                .HasAnnotation("ProductVersion", "10.0.6")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -347,6 +347,12 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)");
 
+                    b.Property<string>("ParticipantsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
+
                     b.Property<Guid?>("PolicyId")
                         .HasColumnType("uuid");
 
@@ -408,6 +414,43 @@ namespace Platform.Api.Migrations.Postgres
                     b.ToTable("promotion_candidates", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionComment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AuthorEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("AuthorName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidateId", "CreatedAt");
+
+                    b.ToTable("promotion_comments", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionPolicy", b =>
                 {
                     b.Property<Guid>("Id")
@@ -425,8 +468,8 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(400)
                         .HasColumnType("character varying(400)");
 
-                    b.Property<bool>("ExcludeDeployer")
-                        .HasColumnType("boolean");
+                    b.Property<string>("ExcludeRole")
+                        .HasColumnType("text");
 
                     b.Property<int>("MinApprovers")
                         .HasColumnType("integer");
@@ -894,6 +937,15 @@ namespace Platform.Api.Migrations.Postgres
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
+                        .WithMany()
+                        .HasForeignKey("CandidateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionComment", b =>
                 {
                     b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
                         .WithMany()

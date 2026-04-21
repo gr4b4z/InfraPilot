@@ -255,6 +255,7 @@ class ApiClient {
     product?: string;
     service?: string;
     targetEnv?: string;
+    reference?: string;
     limit?: number;
   }) {
     const entries: [string, string][] = [];
@@ -262,15 +263,72 @@ class ApiClient {
     if (params?.product) entries.push(['product', params.product]);
     if (params?.service) entries.push(['service', params.service]);
     if (params?.targetEnv) entries.push(['targetEnv', params.targetEnv]);
+    if (params?.reference) entries.push(['reference', params.reference]);
     if (params?.limit) entries.push(['limit', String(params.limit)]);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<{ candidates: PromotionCandidate[] }>(`/promotions/${query}`);
   }
 
   getPromotion(id: string) {
-    return this.request<{ candidate: PromotionCandidate; approvals: PromotionApprovalEntry[] }>(
-      `/promotions/${id}`,
+    return this.request<{
+      candidate: PromotionCandidate;
+      approvals: PromotionApprovalEntry[];
+      sourceEvent: PromotionSourceEvent | null;
+      comments: PromotionComment[];
+    }>(`/promotions/${id}`);
+  }
+
+  listPromotionRoles() {
+    return this.request<{ roles: string[] }>(`/promotions/roles`);
+  }
+
+  searchPromotionUsers(q: string) {
+    return this.request<{
+      users: Array<{ id: string; displayName: string; email: string }>;
+    }>(`/promotions/users/search?q=${encodeURIComponent(q)}`);
+  }
+
+  upsertPromotionParticipant(
+    id: string,
+    body: {
+      role: string;
+      displayName?: string | null;
+      email?: string | null;
+    },
+  ) {
+    return this.request<{ participants: PromotionParticipant[] }>(
+      `/promotions/${id}/participants`,
+      { method: 'POST', body: JSON.stringify(body) },
     );
+  }
+
+  removePromotionParticipant(id: string, role: string) {
+    return this.request<{ participants: PromotionParticipant[] }>(
+      `/promotions/${id}/participants/${encodeURIComponent(role)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  listPromotionComments(id: string) {
+    return this.request<{ comments: PromotionComment[] }>(`/promotions/${id}/comments`);
+  }
+
+  addPromotionComment(id: string, body: string) {
+    return this.request<PromotionComment>(`/promotions/${id}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  updatePromotionComment(commentId: string, body: string) {
+    return this.request<PromotionComment>(`/promotions/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  deletePromotionComment(commentId: string) {
+    return this.request<void>(`/promotions/comments/${commentId}`, { method: 'DELETE' });
   }
 
   approvePromotion(id: string, comment?: string) {
@@ -452,7 +510,55 @@ export interface PromotionCandidate {
   approvedAt: string | null;
   deployedAt: string | null;
   supersededById: string | null;
+  participants: PromotionParticipant[];
+  sourceEventParticipants: PromotionParticipant[];
+  sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+}
+
+export interface PromotionParticipant {
+  role: string;
+  displayName: string | null;
+  email: string | null;
+}
+
+export interface PromotionComment {
+  id: string;
+  candidateId: string;
+  authorEmail: string;
+  authorName: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface PromotionSourceEventReference {
+  type: string;
+  url?: string | null;
+  provider?: string | null;
+  key?: string | null;
+  revision?: string | null;
+}
+
+export interface PromotionSourceEventParticipant {
+  role: string;
+  displayName?: string | null;
+  email?: string | null;
+}
+
+export interface PromotionSourceEventEnrichment {
+  labels: Record<string, string>;
+  participants: PromotionSourceEventParticipant[];
+  enrichedAt: string;
+}
+
+export interface PromotionSourceEvent {
+  id: string;
+  deployedAt: string;
+  source: string;
+  references: PromotionSourceEventReference[];
+  participants: PromotionSourceEventParticipant[];
+  enrichment: PromotionSourceEventEnrichment | null;
 }
 
 export interface PromotionApprovalEntry {
@@ -472,7 +578,7 @@ export interface PromotionPolicy {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
-  excludeDeployer: boolean;
+  excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
   createdAt: string;
@@ -486,7 +592,7 @@ export interface UpsertPromotionPolicyPayload {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
-  excludeDeployer: boolean;
+  excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
 }
