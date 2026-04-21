@@ -1,7 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PromotionCandidate, PromotionApprovalEntry, PromotionStatus } from '@/lib/api';
+import type {
+  PromotionCandidate,
+  PromotionApprovalEntry,
+  PromotionStatus,
+  PromotionSourceEvent,
+  PromotionSourceEventReference,
+  PromotionSourceEventParticipant,
+  PromotionParticipant,
+  PromotionComment,
+} from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { roleDisplay } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
   ArrowLeft,
@@ -12,7 +23,15 @@ import {
   Rocket,
   ExternalLink,
   GitPullRequest,
-  User,
+  GitBranch,
+  Ticket,
+  Workflow,
+  Users,
+  Plus,
+  X,
+  MessageSquare,
+  Edit2,
+  Trash2,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 
@@ -28,10 +47,20 @@ const STATUS_CONFIG: Record<
   Rejected: { icon: XCircle, color: 'var(--danger)', bg: 'var(--danger-bg)' },
 };
 
+const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
+  pipeline: Workflow,
+  repository: GitBranch,
+  'pull-request': GitPullRequest,
+  'work-item': Ticket,
+};
+
 export function PromotionDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
   const [candidate, setCandidate] = useState<PromotionCandidate | null>(null);
   const [approvals, setApprovals] = useState<PromotionApprovalEntry[]>([]);
+  const [sourceEvent, setSourceEvent] = useState<PromotionSourceEvent | null>(null);
+  const [comments, setComments] = useState<PromotionComment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
@@ -44,6 +73,8 @@ export function PromotionDetailPage() {
       .then((data) => {
         setCandidate(data.candidate);
         setApprovals(data.approvals || []);
+        setSourceEvent(data.sourceEvent ?? null);
+        setComments(data.comments || []);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -283,6 +314,14 @@ export function PromotionDetailPage() {
               </div>
             </div>
           )}
+
+          {/* Comments */}
+          <CommentsCard
+            candidateId={candidate.id}
+            comments={comments}
+            currentUserEmail={currentUserEmail}
+            onChange={setComments}
+          />
         </div>
 
         {/* Right column */}
@@ -313,16 +352,6 @@ export function PromotionDetailPage() {
                   {candidate.service}
                 </span>
               </div>
-              {(candidate.sourceDeployerName || candidate.sourceDeployerEmail) && (
-                <div className="flex items-center gap-2">
-                  <User size={14} style={{ color: 'var(--text-muted)' }} />
-                  <span style={{ color: 'var(--text-muted)' }}>Deployer:</span>
-                  <span className="inline-flex items-center gap-1.5 font-medium" style={{ color: 'var(--text-primary)' }}>
-                    {candidate.sourceDeployerName ?? candidate.sourceDeployerEmail}
-                    <CopyEmailButton email={candidate.sourceDeployerEmail} />
-                  </span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -372,6 +401,37 @@ export function PromotionDetailPage() {
             </div>
           </div>
 
+          {/* References (from source deploy event) */}
+          {sourceEvent && sourceEvent.references.length > 0 && (
+            <div
+              className="rounded-xl border p-5"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+            >
+              <h2
+                className="text-[11px] font-semibold uppercase tracking-wider mb-4"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                References
+              </h2>
+              <div className="space-y-2">
+                {sourceEvent.references.map((ref, i) => (
+                  <ReferenceItem
+                    key={i}
+                    reference={ref}
+                    labels={sourceEvent.enrichment?.labels ?? {}}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* People — merges source-event participants (read-only) + promotion-level (editable) */}
+          <PeopleCard
+            candidate={candidate}
+            sourceEvent={sourceEvent}
+            onChange={(next) => setCandidate({ ...candidate, participants: next })}
+          />
+
           {/* External run link */}
           {candidate.externalRunUrl && (
             <a
@@ -389,6 +449,592 @@ export function PromotionDetailPage() {
               View CI run
             </a>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReferenceItem({
+  reference,
+  labels,
+}: {
+  reference: PromotionSourceEventReference;
+  labels: Record<string, string>;
+}) {
+  const Icon = REFERENCE_ICONS[reference.type] ?? ExternalLink;
+  const label = buildReferenceLabel(reference, labels);
+
+  return (
+    <div className="flex items-center gap-2 text-[13px] min-w-0">
+      <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+      {reference.url ? (
+        <a
+          href={reference.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:underline truncate"
+          title={label}
+          style={{ color: 'var(--accent)' }}
+        >
+          {label}
+        </a>
+      ) : (
+        <span className="truncate" title={label} style={{ color: 'var(--text-secondary)' }}>
+          {label}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function buildReferenceLabel(
+  ref: PromotionSourceEventReference,
+  labels: Record<string, string>,
+): string {
+  switch (ref.type) {
+    case 'work-item': {
+      const key = ref.key ?? 'work-item';
+      return labels.workItemTitle ? `${key} \u2014 ${labels.workItemTitle}` : key;
+    }
+    case 'pull-request': {
+      const num = ref.key ? `#${ref.key}` : 'Pull Request';
+      return labels.prTitle ? `${num} \u2014 ${labels.prTitle}` : num;
+    }
+    case 'repository': {
+      if (ref.key) return ref.revision ? `${ref.key} @ ${ref.revision.slice(0, 8)}` : ref.key;
+      if (ref.revision) return ref.revision.slice(0, 8);
+      return 'repository';
+    }
+    case 'pipeline':
+      return ref.key ?? ref.provider ?? 'pipeline';
+    default:
+      return ref.key ?? ref.type;
+  }
+}
+
+function PeopleCard({
+  candidate,
+  sourceEvent,
+  onChange,
+}: {
+  candidate: PromotionCandidate;
+  sourceEvent: PromotionSourceEvent | null;
+  onChange: (participants: PromotionParticipant[]) => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [role, setRole] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [userQuery, setUserQuery] = useState('');
+  const [userResults, setUserResults] = useState<
+    Array<{ id: string; displayName: string; email: string }>
+  >([]);
+  const [userSearchOpen, setUserSearchOpen] = useState(false);
+  const [userSearchLoading, setUserSearchLoading] = useState(false);
+
+  useEffect(() => {
+    if (!showForm || roles.length > 0) return;
+    api
+      .listPromotionRoles()
+      .then((d) => setRoles(d.roles || []))
+      .catch(() => setRoles([]));
+  }, [showForm, roles.length]);
+
+  // Debounced directory search (Entra / local users via IIdentityService).
+  useEffect(() => {
+    if (!showForm) return;
+    const q = userQuery.trim();
+    if (q.length < 2) {
+      setUserResults([]);
+      return;
+    }
+    setUserSearchLoading(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await api.searchPromotionUsers(q);
+        setUserResults(res.users || []);
+      } catch {
+        setUserResults([]);
+      } finally {
+        setUserSearchLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [userQuery, showForm]);
+
+  const sourceParticipants: PromotionSourceEventParticipant[] = sourceEvent
+    ? [...sourceEvent.participants, ...(sourceEvent.enrichment?.participants ?? [])]
+    : [];
+
+  // Promotion-level roles override same-role source-event entries (case-insensitive).
+  const promotionRoleSet = new Set(
+    candidate.participants.map((p) => p.role.toLowerCase()),
+  );
+  const filteredSource = sourceParticipants.filter(
+    (p) => !promotionRoleSet.has(p.role.toLowerCase()),
+  );
+
+  const hasAny = filteredSource.length > 0 || candidate.participants.length > 0;
+
+  const reset = () => {
+    setRole('');
+    setDisplayName('');
+    setEmail('');
+    setErr(null);
+    setShowForm(false);
+    setUserQuery('');
+    setUserResults([]);
+    setUserSearchOpen(false);
+  };
+
+  const pickUser = (u: { displayName: string; email: string }) => {
+    setDisplayName(u.displayName);
+    setEmail(u.email);
+    setUserQuery(`${u.displayName} (${u.email})`);
+    setUserSearchOpen(false);
+  };
+
+  const handleSave = async () => {
+    if (!role.trim()) {
+      setErr('Role is required');
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await api.upsertPromotionParticipant(candidate.id, {
+        role: role.trim(),
+        displayName: displayName.trim() || null,
+        email: email.trim() || null,
+      });
+      onChange(res.participants);
+      reset();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async (removeRole: string) => {
+    try {
+      const res = await api.removePromotionParticipant(candidate.id, removeRole);
+      onChange(res.participants);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to remove');
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <div className="flex items-center justify-between mb-4">
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Users size={12} /> People
+        </h2>
+        {!showForm && (
+          <button
+            onClick={() => setShowForm(true)}
+            className="inline-flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
+            style={{ color: 'var(--accent)' }}
+          >
+            <Plus size={12} /> Assign
+          </button>
+        )}
+      </div>
+
+      {!hasAny && !showForm && (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          No participants yet. Assign a QA, reviewer, or other role.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {filteredSource.map((p, i) => (
+          <div key={`src-${i}`} className="flex items-center justify-between text-[13px]">
+            <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}</span>
+            <span
+              className="inline-flex items-center gap-1.5"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              {p.displayName ?? p.email ?? '—'}
+              <CopyEmailButton email={p.email ?? null} />
+            </span>
+          </div>
+        ))}
+        {candidate.participants.map((p) => (
+          <div key={`prm-${p.role}`} className="flex items-center justify-between text-[13px]">
+            <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}</span>
+            <span
+              className="inline-flex items-center gap-1.5"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              {p.displayName ?? p.email ?? '—'}
+              <CopyEmailButton email={p.email ?? null} />
+              <button
+                onClick={() => handleRemove(p.role)}
+                className="transition-opacity hover:opacity-80"
+                style={{ color: 'var(--text-muted)' }}
+                title="Remove"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {showForm && (
+        <div
+          className="mt-4 pt-4 space-y-2 border-t"
+          style={{ borderColor: 'var(--border-color)' }}
+        >
+          <input
+            list="promotion-roles"
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            placeholder="Role (e.g. QA, reviewer)"
+            className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <div className="relative">
+            <input
+              value={userQuery}
+              onChange={(e) => {
+                setUserQuery(e.target.value);
+                setUserSearchOpen(true);
+              }}
+              onFocus={() => setUserSearchOpen(true)}
+              placeholder="Search directory (name or email)..."
+              className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+            {userSearchOpen && userQuery.trim().length >= 2 && (
+              <div
+                className="absolute left-0 right-0 mt-1 rounded-lg border shadow-lg max-h-48 overflow-y-auto z-10"
+                style={{
+                  backgroundColor: 'var(--bg-primary)',
+                  borderColor: 'var(--border-color)',
+                }}
+              >
+                {userSearchLoading && (
+                  <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                    Searching...
+                  </div>
+                )}
+                {!userSearchLoading && userResults.length === 0 && (
+                  <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                    No matches — fill in manually below.
+                  </div>
+                )}
+                {!userSearchLoading &&
+                  userResults.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => pickUser(u)}
+                      className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      <span className="font-medium">{u.displayName}</span>
+                      <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        {u.email}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+          <datalist id="promotion-roles">
+            {roles.map((r) => (
+              // Suggest humanised forms ("QA", "Triggered by") so the user's pick is already
+              // how the card will render. The backend canonicalises on write.
+              <option key={r} value={roleDisplay({ role: r })} />
+            ))}
+          </datalist>
+          <input
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Display name"
+            className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          {err && (
+            <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+              {err}
+            </p>
+          )}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+              style={{
+                backgroundColor: 'var(--accent)',
+                color: '#fff',
+                opacity: saving ? 0.6 : 1,
+              }}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+            <button
+              onClick={reset}
+              className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommentsCard({
+  candidateId,
+  comments,
+  currentUserEmail,
+  onChange,
+}: {
+  candidateId: string;
+  comments: PromotionComment[];
+  currentUserEmail: string;
+  onChange: (next: PromotionComment[]) => void;
+}) {
+  const [body, setBody] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState('');
+
+  const sorted = useMemo(
+    () =>
+      [...comments].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+    [comments],
+  );
+
+  const post = async () => {
+    const text = body.trim();
+    if (!text) return;
+    setPosting(true);
+    setErr(null);
+    try {
+      const created = await api.addPromotionComment(candidateId, text);
+      onChange([...comments, created]);
+      setBody('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to post');
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const saveEdit = async (commentId: string) => {
+    const text = editBody.trim();
+    if (!text) return;
+    try {
+      const updated = await api.updatePromotionComment(commentId, text);
+      onChange(comments.map((c) => (c.id === commentId ? updated : c)));
+      setEditingId(null);
+      setEditBody('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to update');
+    }
+  };
+
+  const remove = async (commentId: string) => {
+    try {
+      await api.deletePromotionComment(commentId);
+      onChange(comments.filter((c) => c.id !== commentId));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to delete');
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <MessageSquare size={12} /> Comments ({sorted.length})
+      </h2>
+
+      <div className="space-y-3 mb-4">
+        {sorted.length === 0 && (
+          <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            No comments yet.
+          </p>
+        )}
+        {sorted.map((c) => {
+          const isMine =
+            !!currentUserEmail &&
+            c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
+          const isEditing = editingId === c.id;
+          return (
+            <div
+              key={c.id}
+              className="p-3 rounded-lg border"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-secondary)',
+              }}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span
+                  className="text-[13px] font-medium"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {c.authorName || c.authorEmail}
+                </span>
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {format(new Date(c.createdAt), 'MMM d, HH:mm')}
+                  {c.updatedAt && (
+                    <span className="ml-1" title={`Edited ${format(new Date(c.updatedAt), 'MMM d, HH:mm')}`}>
+                      (edited)
+                    </span>
+                  )}
+                </span>
+              </div>
+              {isEditing ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={editBody}
+                    onChange={(e) => setEditBody(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border px-2 py-1.5 text-[13px] resize-none"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => saveEdit(c.id)}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                      style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingId(null);
+                        setEditBody('');
+                      }}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p
+                    className="text-[13px] whitespace-pre-wrap"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    {c.body}
+                  </p>
+                  {isMine && (
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => {
+                          setEditingId(c.id);
+                          setEditBody(c.body);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] transition-opacity hover:opacity-80"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        <Edit2 size={10} /> Edit
+                      </button>
+                      <button
+                        onClick={() => remove(c.id)}
+                        className="inline-flex items-center gap-1 text-[11px] transition-opacity hover:opacity-80"
+                        style={{ color: 'var(--danger)' }}
+                      >
+                        <Trash2 size={10} /> Delete
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="space-y-2">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="Add a comment..."
+          rows={2}
+          className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {err && (
+          <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+            {err}
+          </p>
+        )}
+        <div className="flex items-center justify-end">
+          <button
+            onClick={post}
+            disabled={posting || !body.trim()}
+            className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+            style={{
+              backgroundColor: 'var(--accent)',
+              color: '#fff',
+              opacity: posting || !body.trim() ? 0.6 : 1,
+            }}
+          >
+            {posting ? 'Posting...' : 'Post'}
+          </button>
         </div>
       </div>
     </div>

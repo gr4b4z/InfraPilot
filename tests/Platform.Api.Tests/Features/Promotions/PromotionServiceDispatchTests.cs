@@ -47,14 +47,15 @@ public class PromotionServiceDispatchTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, _identity, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            _webhookDispatcher);
+            _webhookDispatcher,
+            TestOptions.Normalization());
     }
 
     public void Dispose() => _db.Dispose();
 
     private DeployEvent SeedDeploy(string version = "v1", string deployerEmail = "bob@example.com")
     {
-        var participants = JsonSerializer.Serialize(new[] { new { role = "deployer", email = deployerEmail } });
+        var participants = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = deployerEmail } });
         var e = new DeployEvent
         {
             Id = Guid.NewGuid(),

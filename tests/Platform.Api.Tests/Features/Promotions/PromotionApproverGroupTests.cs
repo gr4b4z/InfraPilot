@@ -51,7 +51,8 @@ public class PromotionApproverGroupTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, _identity, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>());
+            Substitute.For<IWebhookDispatcher>(),
+            TestOptions.Normalization());
     }
 
     public void Dispose() => _db.Dispose();

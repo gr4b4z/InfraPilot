@@ -46,7 +46,8 @@ public class PromotionServiceTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, _identity, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>());
+            Substitute.For<IWebhookDispatcher>(),
+            TestOptions.Normalization());
     }
 
     public void Dispose() => _db.Dispose();
@@ -64,7 +65,7 @@ public class PromotionServiceTests : IDisposable
     {
         var participants = deployerEmail is null
             ? "[]"
-            : JsonSerializer.Serialize(new[] { new { role = "deployer", email = deployerEmail } });
+            : JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = deployerEmail } });
 
         var e = new DeployEvent
         {
@@ -377,14 +378,14 @@ public class PromotionServiceTests : IDisposable
         {
             Id = Guid.NewGuid(), Product = "acme", Service = "api", Environment = "staging",
             Version = "v1", Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "deployer", email = "bob@example.com" } }),
+            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = "bob@example.com" } }),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         var e2 = new DeployEvent
         {
             Id = Guid.NewGuid(), Product = "acme", Service = "web", Environment = "staging",
             Version = "v1", Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "deployer", email = "alice@example.com" } }),
+            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = "alice@example.com" } }),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.DeployEvents.AddRange(e1, e2);

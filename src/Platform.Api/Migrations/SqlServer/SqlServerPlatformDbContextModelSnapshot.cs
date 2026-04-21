@@ -17,7 +17,7 @@ namespace Platform.Api.Migrations.SqlServer
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.5")
+                .HasAnnotation("ProductVersion", "10.0.6")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -347,6 +347,12 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
+                    b.Property<string>("ParticipantsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
                     b.Property<Guid?>("PolicyId")
                         .HasColumnType("uniqueidentifier");
 
@@ -406,6 +412,43 @@ namespace Platform.Api.Migrations.SqlServer
                     b.HasIndex("Product", "Service", "SourceEnv", "TargetEnv");
 
                     b.ToTable("promotion_candidates", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionComment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AuthorEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("AuthorName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidateId", "CreatedAt");
+
+                    b.ToTable("promotion_comments", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionPolicy", b =>
@@ -895,6 +938,15 @@ namespace Platform.Api.Migrations.SqlServer
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
+                        .WithMany()
+                        .HasForeignKey("CandidateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionComment", b =>
                 {
                     b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
                         .WithMany()

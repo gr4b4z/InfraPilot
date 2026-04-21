@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
@@ -41,7 +43,33 @@ public class PromotionCandidate
 
     // Set when a newer version creates a candidate on the same edge and supersedes this one.
     public Guid? SupersededById { get; set; }
+
+    // Free-form participants attached at the promotion level (not from the source deploy event).
+    // Shape: [{ role, displayName, email }] — same as DeployEvent.Participants so UI and downstream
+    // integrations (Jira, Slack) can treat both sources uniformly. Roles are user-defined strings;
+    // the platform doesn't enforce a fixed taxonomy.
+    public string ParticipantsJson { get; set; } = "[]";
+
+    public List<PromotionParticipant> Participants
+    {
+        get => string.IsNullOrEmpty(ParticipantsJson)
+            ? new()
+            : JsonSerializer.Deserialize<List<PromotionParticipant>>(ParticipantsJson, JsonOpts) ?? new();
+        set => ParticipantsJson = JsonSerializer.Serialize(value, JsonOpts);
+    }
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+    };
 }
+
+/// <summary>
+/// Promotion-level participant. <c>Role</c> is the canonical lower-kebab-case key used for
+/// dedupe and downstream mapping; display is controlled by the admin-managed role dictionary.
+/// </summary>
+public record PromotionParticipant(string Role, string? DisplayName, string? Email);
 
 public enum PromotionStatus
 {

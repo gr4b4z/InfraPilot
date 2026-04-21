@@ -110,15 +110,31 @@ Common `type` values:
 |-------|------|----------|-------------|
 | `role` | string | **yes** | Role in the deployment process. |
 | `displayName` | string | no | Human-readable name. |
-| `email` | string | no | Email address. Used for deployer identification in the promotions system. |
+| `email` | string | no | Email address. Used for identifying the pipeline trigger in the promotions system. |
 
-Common `role` values:
+`role` is a free-form string — the platform doesn't enforce a fixed taxonomy, so senders can add new roles without schema changes. Canonical roles recognized by the platform:
 
 | Role | Usage |
 |------|-------|
-| `PR Author` | Person who authored the pull request. Used by the promotions system to identify the deployer (for exclude-deployer approval rules). |
-| `PR Reviewer` | Person who reviewed/approved the PR. |
-| `QA` | QA engineer who validated the change. |
+| `triggered-by` | **Canonical.** Person or service principal that initiated the pipeline run. Used by the promotions system to populate `sourceDeployerEmail` and to enforce the "exclude deployer" approval rule (same person can't approve their own promotion). |
+| `author` | Git commit author on the deployed revision. |
+| `reviewer` | Person who reviewed/approved the PR. |
+| `qa` | QA engineer who validated the change. |
+
+Senders can emit additional custom roles (e.g. `release-manager`, `on-call`) — they'll surface in the UI as-is alongside the canonical ones.
+
+### Canonicalisation on write
+
+By default the platform canonicalises role and environment strings to **kebab-case** on write, so `"Triggered By"`, `"triggeredBy"`, `"triggered_by"`, and `"TRIGGERED-BY"` all become `triggered-by`; `"Production"` becomes `production`. Controlled in `appsettings.json`:
+
+```json
+"Normalization": {
+  "Roles": "kebab-case",
+  "Environments": "kebab-case"
+}
+```
+
+Set either field to `null` to preserve sender casing exactly as sent. Read-time matching (e.g. the `triggered-by` lookup for the "exclude deployer" rule) always normalises before comparing, so the feature works regardless of the policy.
 
 ## Response
 
@@ -298,7 +314,7 @@ Returned when the API key is scoped to specific products and the `product` in th
 
 When a `succeeded` deployment event is ingested, the system automatically checks for matching promotion topology edges. If the deployment's environment is a source in the promotion graph (e.g. `development` or `staging`), a **promotion candidate** is created for the next environment in the chain.
 
-The `PR Author` participant is used as the deployer identity for the "exclude deployer" approval rule, which prevents the person who deployed from also approving the promotion to the next environment.
+The `triggered-by` participant is used as the deployer identity for the "exclude deployer" approval rule, which prevents the person who triggered the deploy from also approving the promotion to the next environment.
 
 ## cURL example
 

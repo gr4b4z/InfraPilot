@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Microsoft.Extensions.Options;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
@@ -30,6 +32,7 @@ public class PromotionService
     private readonly ICurrentUser _currentUser;
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
+    private readonly IOptionsMonitor<NormalizationOptions> _normalization;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -45,7 +48,8 @@ public class PromotionService
         ICurrentUser currentUser,
         IAuditLogger audit,
         ILogger<PromotionService> logger,
-        IWebhookDispatcher webhookDispatcher)
+        IWebhookDispatcher webhookDispatcher,
+        IOptionsMonitor<NormalizationOptions> normalization)
     {
         _db = db;
         _resolver = resolver;
@@ -53,6 +57,7 @@ public class PromotionService
         _currentUser = currentUser;
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
+        _normalization = normalization;
         _logger = logger;
     }
 
@@ -205,17 +210,24 @@ public class PromotionService
 
     private record DeployerInfo(string? Name, string? Email);
 
+    // Canonical role name CI senders use to identify who/what kicked off a pipeline run.
+    // Named "triggered-by" because it's the run initiator (human, service principal, scheduler),
+    // not necessarily the person who authored the code or approved the deploy.
+    private const string TriggeredByRole = "triggered-by";
+
     private static DeployerInfo? ExtractDeployer(DeployEvent source)
     {
-        // Participants JSON is a serialised List<ParticipantDto>. The deployer (if present)
-        // is the participant whose role/kind is "deployer". Best-effort parse — return null
-        // when the payload is malformed or absent rather than fail candidate creation.
+        // Participants JSON is a serialised List<ParticipantDto>. We look for the participant
+        // tagged as the run initiator. Normalise each role at read time so the match works
+        // whether or not ingest-time canonicalisation is enabled (senders may post "TriggeredBy",
+        // "triggered_by", etc.). Best-effort parse — return null when the payload is malformed
+        // or absent rather than fail candidate creation.
         if (string.IsNullOrWhiteSpace(source.ParticipantsJson)) return null;
         try
         {
             var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(source.ParticipantsJson, JsonOptions);
             var deployer = parts?.FirstOrDefault(p =>
-                string.Equals(p.Role, "deployer", StringComparison.OrdinalIgnoreCase));
+                RoleNormalizer.Normalize(p.Role) == TriggeredByRole);
             if (deployer is null) return null;
             return new DeployerInfo(deployer.DisplayName, deployer.Email);
         }
@@ -232,6 +244,12 @@ public class PromotionService
     /// <summary>
     /// Lists candidates with optional filters. Results are ordered newest-first so the UI can
     /// render "what needs attention now" at the top.
+    /// <para>
+    /// When no explicit status filter is provided, returns **all Pending** candidates plus up to
+    /// <see cref="PromotionQuery.Limit"/> most-recent non-Pending ones — Pending is actionable
+    /// work that should never be clipped; the resolved tail is just for context and grows without
+    /// bound as the system runs, so we cap it.
+    /// </para>
     /// </summary>
     public async Task<List<PromotionCandidate>> GetAsync(PromotionQuery query, CancellationToken ct = default)
     {
@@ -239,9 +257,33 @@ public class PromotionService
         if (query.Status is { } s) q = q.Where(c => c.Status == s);
         if (!string.IsNullOrEmpty(query.Product)) q = q.Where(c => c.Product == query.Product);
         if (!string.IsNullOrEmpty(query.TargetEnv)) q = q.Where(c => c.TargetEnv == query.TargetEnv);
-        if (!string.IsNullOrEmpty(query.Service)) q = q.Where(c => c.Service == query.Service);
+        // Service filter is a substring match (case-insensitive) — services-per-product can be
+        // large and users typically remember a fragment ("auth-api"), not the full name.
+        if (!string.IsNullOrEmpty(query.Service))
+        {
+            var needle = query.Service.ToLower();
+            q = q.Where(c => c.Service.ToLower().Contains(needle));
+        }
 
-        return await q.OrderByDescending(c => c.CreatedAt).Take(query.Limit).ToListAsync(ct);
+        if (query.Status is not null)
+        {
+            // Explicit status → straight newest-first, honoring Limit as a safety cap.
+            return await q.OrderByDescending(c => c.CreatedAt).Take(query.Limit).ToListAsync(ct);
+        }
+
+        // No status filter: load all Pending (never clipped) + newest N non-Pending.
+        var pending = await q.Where(c => c.Status == PromotionStatus.Pending)
+            .OrderByDescending(c => c.CreatedAt)
+            .ToListAsync(ct);
+
+        var resolved = await q.Where(c => c.Status != PromotionStatus.Pending)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(query.Limit)
+            .ToListAsync(ct);
+
+        return pending.Concat(resolved)
+            .OrderByDescending(c => c.CreatedAt)
+            .ToList();
     }
 
     public async Task<PromotionCandidate?> GetByIdAsync(Guid id, CancellationToken ct = default)
@@ -255,6 +297,222 @@ public class PromotionService
             .Where(a => a.CandidateId == candidateId)
             .OrderBy(a => a.CreatedAt)
             .ToListAsync(ct);
+    }
+
+    // ---------------------------------------------------------------------
+    // Participants (promotion-level, free-form roles)
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Adds or replaces a participant on the candidate keyed by role (case-insensitive). Raises
+    /// <c>promotion.updated</c>. Role is trimmed; display casing is preserved on the stored record.
+    /// </summary>
+    public async Task<PromotionCandidate> UpsertParticipantAsync(
+        Guid candidateId, PromotionParticipant participant, CancellationToken ct = default)
+    {
+        // Storage-time canonicalisation is opt-in via `Normalization:Roles` in appsettings.
+        // Dedupe, however, is always done on the normalised key so that "QA" and "qa" don't
+        // end up as two participants on the same candidate regardless of the policy.
+        var storedRole = _normalization.CurrentValue.ApplyRole(participant.Role);
+        if (string.IsNullOrEmpty(storedRole))
+            throw new InvalidOperationException("Participant role is required");
+        var canonicalKey = RoleNormalizer.Normalize(storedRole);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var list = candidate.Participants;
+        var idx = list.FindIndex(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        var entry = new PromotionParticipant(storedRole, participant.DisplayName, participant.Email);
+        if (idx >= 0) list[idx] = entry; else list.Add(entry);
+        candidate.Participants = list;
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.participant.upserted",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { role = storedRole, canonicalKey, entry.DisplayName, entry.Email });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new { changeType = "participant.upserted", role = storedRole, canonicalKey, entry.DisplayName, entry.Email });
+
+        return candidate;
+    }
+
+    /// <summary>Removes a participant by role (case-insensitive). No-op if the role isn't present.</summary>
+    public async Task<PromotionCandidate> RemoveParticipantAsync(
+        Guid candidateId, string role, CancellationToken ct = default)
+    {
+        // Match on the normalised key regardless of how roles are stored so the caller can
+        // pass "QA", "qa", or "qa-lead" interchangeably.
+        var canonicalKey = RoleNormalizer.Normalize(role);
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var list = candidate.Participants;
+        var before = list.Count;
+        list.RemoveAll(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        if (list.Count == before) return candidate;
+
+        candidate.Participants = list;
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.participant.removed",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null, new { role });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new { changeType = "participant.removed", role });
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// Returns distinct participant roles observed across deploy events and promotion candidates,
+    /// ordered by frequency so the UI autocomplete surfaces the most common first.
+    /// </summary>
+    public async Task<List<string>> GetKnownRolesAsync(CancellationToken ct = default)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // Deploy events carry role in ParticipantsJson as [{role,...}]. JSON query support varies by
+        // provider — simplest and good enough: scan recent events and parse.
+        var recentEvents = await _db.DeployEvents.AsNoTracking()
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => e.ParticipantsJson)
+            .Take(500)
+            .ToListAsync(ct);
+
+        foreach (var json in recentEvents) AccumulateRoles(json, counts);
+
+        var promotionJson = await _db.PromotionCandidates.AsNoTracking()
+            .OrderByDescending(c => c.CreatedAt)
+            .Select(c => c.ParticipantsJson)
+            .Take(500)
+            .ToListAsync(ct);
+
+        foreach (var json in promotionJson) AccumulateRoles(json, counts);
+
+        return counts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => kv.Key)
+            .ToList();
+    }
+
+    private static void AccumulateRoles(string? json, Dictionary<string, int> counts)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return;
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (!item.TryGetProperty("role", out var roleProp)) continue;
+                var canonical = RoleNormalizer.Normalize(roleProp.GetString());
+                if (string.IsNullOrEmpty(canonical)) continue;
+                counts[canonical] = counts.GetValueOrDefault(canonical) + 1;
+            }
+        }
+        catch { /* ignore malformed entries */ }
+    }
+
+    // ---------------------------------------------------------------------
+    // Comments
+    // ---------------------------------------------------------------------
+
+    public async Task<List<PromotionComment>> GetCommentsAsync(Guid candidateId, CancellationToken ct = default)
+    {
+        return await _db.PromotionComments.AsNoTracking()
+            .Where(c => c.CandidateId == candidateId)
+            .OrderBy(c => c.CreatedAt)
+            .ToListAsync(ct);
+    }
+
+    public async Task<PromotionComment> AddCommentAsync(Guid candidateId, string body, CancellationToken ct = default)
+    {
+        var trimmed = (body ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            throw new InvalidOperationException("Comment body is required");
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var comment = new PromotionComment
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = candidateId,
+            AuthorEmail = _currentUser.Email,
+            AuthorName = _currentUser.Name,
+            Body = trimmed,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        _db.PromotionComments.Add(comment);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.comment.added",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidateId, null,
+            new { comment.Id });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new { changeType = "comment.added", commentId = comment.Id, comment.AuthorEmail });
+
+        return comment;
+    }
+
+    public async Task<PromotionComment> UpdateCommentAsync(Guid commentId, string body, CancellationToken ct = default)
+    {
+        var trimmed = (body ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            throw new InvalidOperationException("Comment body is required");
+
+        var comment = await _db.PromotionComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
+            ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+
+        if (!string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)
+            && !_currentUser.IsAdmin)
+        {
+            throw new UnauthorizedAccessException("Only the author (or an admin) can edit this comment");
+        }
+
+        comment.Body = trimmed;
+        comment.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == comment.CandidateId, ct);
+        if (candidate is not null)
+            await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+                new { changeType = "comment.updated", commentId = comment.Id });
+
+        return comment;
+    }
+
+    public async Task DeleteCommentAsync(Guid commentId, CancellationToken ct = default)
+    {
+        var comment = await _db.PromotionComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
+            ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+
+        if (!string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)
+            && !_currentUser.IsAdmin)
+        {
+            throw new UnauthorizedAccessException("Only the author (or an admin) can delete this comment");
+        }
+
+        var candidateId = comment.CandidateId;
+        _db.PromotionComments.Remove(comment);
+        await _db.SaveChangesAsync(ct);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct);
+        if (candidate is not null)
+            await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+                new { changeType = "comment.deleted", commentId });
     }
 
     // ---------------------------------------------------------------------
@@ -425,7 +683,7 @@ public class PromotionService
     /// failure but never throws — the state transition has already been persisted.
     /// </summary>
     private async Task DispatchWebhookAsync(
-        PromotionCandidate candidate, string eventType, CancellationToken ct)
+        PromotionCandidate candidate, string eventType, CancellationToken ct, object? change = null)
     {
         try
         {
@@ -441,6 +699,8 @@ public class PromotionService
                 candidate.SourceDeployerEmail,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
+                participants = candidate.Participants,
+                change,
             };
 
             var filters = new WebhookEventFilters(Product: candidate.Product, Environment: candidate.TargetEnv);
