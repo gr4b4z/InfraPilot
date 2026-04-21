@@ -144,22 +144,25 @@ public static class PromotionEndpoints
         {
             var log = loggerFactory.CreateLogger("PromotionEndpoints.UserSearch");
             var query = (q ?? "").Trim();
+            // Sanitise any user-provided value before logging — strips CR/LF and other control
+            // characters so a crafted query string can't inject fake log lines (log forging).
+            var loggableQuery = SanitizeForLog(query);
             if (query.Length < 2)
             {
-                log.LogInformation("User search skipped (query too short): '{Query}'", query);
+                log.LogInformation("User search skipped (query too short, length={Length})", query.Length);
                 return Results.Ok(new { users = Array.Empty<object>() });
             }
 
             log.LogInformation(
                 "User search started (provider={Provider}, query='{Query}')",
-                identity.GetType().Name, query);
+                identity.GetType().Name, loggableQuery);
 
             try
             {
                 var users = await identity.SearchUsers(query, ct);
                 log.LogInformation(
                     "User search returned {Count} result(s) for query '{Query}' via {Provider}",
-                    users.Count, query, identity.GetType().Name);
+                    users.Count, loggableQuery, identity.GetType().Name);
 
                 return Results.Ok(new
                 {
@@ -177,7 +180,7 @@ public static class PromotionEndpoints
                 // silently falls back to manual entry. Log loudly so dev can see why.
                 log.LogWarning(ex,
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
-                    query, identity.GetType().Name);
+                    loggableQuery, identity.GetType().Name);
                 return Results.Ok(new { users = Array.Empty<object>() });
             }
         });
@@ -383,6 +386,23 @@ public static class PromotionEndpoints
     private static bool ContainsIgnoreCase(string? haystack, string needle)
         => !string.IsNullOrEmpty(haystack)
            && haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+    // Scrubs user-provided strings before they land in a log line. Drops ASCII control
+    // characters (including CR/LF) so a crafted query can't inject fake log entries
+    // (CWE-117, log forging). Also caps length so a huge value can't blow up log storage.
+    private static string SanitizeForLog(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        var trimmed = value.Length > 200 ? value[..200] : value;
+        var sb = new System.Text.StringBuilder(trimmed.Length);
+        foreach (var ch in trimmed)
+        {
+            // Skip C0 controls (0x00-0x1F) and DEL (0x7F); keep ordinary printable characters.
+            if (ch < 0x20 || ch == 0x7F) continue;
+            sb.Append(ch);
+        }
+        return sb.ToString();
+    }
 
     // Flattens direct + enrichment participants from a deploy event's JSON into a single list.
     private static IReadOnlyList<ParticipantDto> ExtractSourceParticipants(
