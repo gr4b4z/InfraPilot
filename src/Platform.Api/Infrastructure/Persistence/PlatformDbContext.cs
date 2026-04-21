@@ -35,6 +35,7 @@ public class PlatformDbContext : DbContext
     public DbSet<PromotionPolicy> PromotionPolicies => Set<PromotionPolicy>();
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
+    public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -312,6 +313,10 @@ public class PlatformDbContext : DbContext
             var resolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
             if (jsonType != null) resolvedPolicyJson.HasColumnType(jsonType);
 
+            var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
+            if (jsonType != null) participantsJson.HasColumnType(jsonType);
+            e.Ignore(x => x.Participants);
+
             e.HasIndex(x => x.Status);
             e.HasIndex(x => new { x.Product, x.Service, x.SourceEnv, x.TargetEnv });
             e.HasIndex(x => x.SourceDeployEventId);
@@ -328,6 +333,21 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
             // DB-level guard against double approval from the same user.
             e.HasIndex(x => new { x.CandidateId, x.ApproverEmail }).IsUnique();
+            e.HasOne<PromotionCandidate>()
+                .WithMany()
+                .HasForeignKey(x => x.CandidateId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Promotion Comments
+        modelBuilder.Entity<PromotionComment>(e =>
+        {
+            e.ToTable("promotion_comments");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.AuthorEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.AuthorName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Body).HasMaxLength(4000).IsRequired();
+            e.HasIndex(x => new { x.CandidateId, x.CreatedAt });
             e.HasOne<PromotionCandidate>()
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)

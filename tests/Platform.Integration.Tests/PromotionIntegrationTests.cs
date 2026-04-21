@@ -108,7 +108,7 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
             approverGroup = "release-approvers",
             strategy = "Any",
             minApprovers = 1,
-            excludeDeployer = true,
+            excludeRole = "triggered-by",
             timeoutHours = 48,
             escalationGroup = (string?)null,
         };
@@ -122,7 +122,7 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         Assert.Equal("prod", body.GetProperty("targetEnv").GetString());
         Assert.Equal("Any", body.GetProperty("strategy").GetString());
         Assert.Equal(1, body.GetProperty("minApprovers").GetInt32());
-        Assert.True(body.GetProperty("excludeDeployer").GetBoolean());
+        Assert.Equal("triggered-by", body.GetProperty("excludeRole").GetString());
         Assert.Equal(48, body.GetProperty("timeoutHours").GetInt32());
 
         // Id should be a valid GUID.

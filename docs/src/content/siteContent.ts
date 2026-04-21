@@ -438,7 +438,7 @@ executor:
     summary: 'Deployment ingest and promotions are most useful when configured as one operational path instead of separate features.',
     paragraphs: [
       'The deployment ingest API should be wired into the CI/CD systems that already know when deployments happen. Once those events are arriving, InfraPilot can build current state, rollback target history, and promotion candidates from them.',
-      'Promotion setup then adds the environment topology and policy layer on top of that event stream. This is where teams define target environments, approval strategy, minimum approvers, deployer exclusion, and escalation behavior.',
+      'Promotion setup then adds the environment topology and policy layer on top of that event stream. This is where teams define target environments, approval strategy, minimum approvers, whether the pipeline triggerer is excluded from approving their own promotion, and escalation behavior.',
     ],
     bullets: [
       'Send deployment events from CI/CD to `/api/deployments/events`',
@@ -617,9 +617,12 @@ X-Api-Key: <your-api-key>
     slug: 'promotions-api',
     group: 'API',
     title: 'Promotions API',
-    summary: 'Promotions endpoints expose promotion candidates, detail views, decision actions, and admin configuration for promotion policies and topology.',
+    summary: 'Promotions endpoints expose promotion candidates, detail views, decision actions, free-form participants, comments, directory search, and admin configuration for promotion policies and topology.',
     paragraphs: [
       'Promotion candidates are created from deployment ingest and then processed through approval and deployment flows. The non-admin endpoints focus on queue operations and review actions.',
+      'Each candidate carries deploy-event references (pull requests, work items, commits) and participants (author, reviewer, `triggered-by`) pulled from its source deploy event, plus promotion-level participants added in the portal (QA, release manager, or any custom role) and a free-text comment thread. Role strings are canonicalised on write; display names are controlled by an admin-managed role dictionary in Settings — the same pattern used for environment display names.',
+      'Listing supports filtering by status, product, target environment, substring service search, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped.',
+      'A directory-search endpoint proxies Entra ID (via Microsoft Graph) when configured and falls back to local users otherwise, so the portal can resolve real people when assigning participants.',
       'Admin endpoints configure the policy and topology model that drives the promotion machinery.',
     ],
   },
@@ -629,7 +632,8 @@ X-Api-Key: <your-api-key>
     title: 'Webhooks API',
     summary: 'Webhook endpoints manage outbound subscriptions, delivery history, retries, and test deliveries.',
     paragraphs: [
-      'Webhooks are an operational integration surface for emitting deployment and other events to downstream systems.',
+      'Webhooks are an operational integration surface for emitting deployment and promotion events to downstream systems — useful for pushing Jira/ServiceNow updates, Slack notifications, or triggering Logic Apps.',
+      'Promotion-related events include `promotion.approved`, `promotion.rejected`, `promotion.deployed`, and `promotion.updated`. The `promotion.updated` event fires for editorial changes (participant added/removed, comment added/edited/deleted) and carries a `change.changeType` discriminator plus the full current candidate state, so subscribers can act without re-fetching.',
       'The create endpoint generates a secret once and returns it only in the creation response, which is important to capture at subscription creation time.',
     ],
   },
@@ -1031,7 +1035,7 @@ export const deploymentApiParticipantRows: TableRow[] = [
     type: 'string',
     required: 'Yes',
     default: '—',
-    description: 'Role in the deployment process.',
+    description: 'Role in the deployment process. Canonicalised on write to lower-kebab-case (so `TriggeredBy`, `triggered_by`, and `Triggered By` all collapse to `triggered-by`). Display names are controlled by an admin-managed dictionary in Settings.',
   },
   {
     field: '`displayName`',
@@ -1045,21 +1049,25 @@ export const deploymentApiParticipantRows: TableRow[] = [
     type: 'string',
     required: 'No',
     default: 'null',
-    description: 'Email address. This is used by the promotions system when identifying deployers.',
+    description: 'Email address. Used by the promotions system to populate the pipeline trigger identity (canonical role `triggered-by`).',
   },
 ];
 
 export const deploymentApiParticipantTypeRows: TableRow[] = [
   {
-    type: '`PR Author`',
-    usage: 'Person who authored the pull request. Used by the promotions system to identify the deployer for exclude-deployer rules.',
+    type: '`triggered-by`',
+    usage: 'Canonical. Person or service principal that initiated the pipeline run. Used by the promotions system for the "exclude deployer" approval rule (same person cannot approve their own promotion).',
   },
   {
-    type: '`PR Reviewer`',
+    type: '`author`',
+    usage: 'Git commit author on the deployed revision.',
+  },
+  {
+    type: '`reviewer`',
     usage: 'Person who reviewed or approved the pull request.',
   },
   {
-    type: '`QA`',
+    type: '`qa`',
     usage: 'QA engineer or tester who validated the change.',
   },
 ];
@@ -1352,7 +1360,7 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
         { field: '`approverGroup`', type: 'string', required: 'No', description: 'Optional approver group name.' },
         { field: '`strategy`', type: 'enum', required: 'Yes', description: 'Promotion strategy enum. NOfM requires minApprovers >= 1.' },
         { field: '`minApprovers`', type: 'integer', required: 'Yes', description: 'Minimum approver count. Clamped to at least 1.' },
-        { field: '`excludeDeployer`', type: 'boolean', required: 'Yes', description: 'Whether the deployer is excluded from approving.' },
+        { field: '`excludeRole`', type: 'string \\| null', required: 'No', description: 'When set, anyone tagged with this role on the source deploy event cannot approve. Typically `triggered-by`. Null disables the rule.' },
         { field: '`timeoutHours`', type: 'integer', required: 'Yes', description: 'Timeout in hours. Clamped to 0 or higher.' },
         { field: '`escalationGroup`', type: 'string', required: 'No', description: 'Optional escalation group.' },
       ],

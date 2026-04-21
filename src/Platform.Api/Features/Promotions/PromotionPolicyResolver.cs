@@ -55,7 +55,7 @@ public class PromotionPolicyResolver
                 ApproverGroup: null,
                 Strategy: PromotionStrategy.Any,
                 MinApprovers: 0,
-                ExcludeDeployer: false,
+                ExcludeRole: null,
                 TimeoutHours: 0,
                 EscalationGroup: null);
         }
@@ -65,7 +65,7 @@ public class PromotionPolicyResolver
             ApproverGroup: policy.ApproverGroup,
             Strategy: policy.Strategy,
             MinApprovers: policy.MinApprovers,
-            ExcludeDeployer: policy.ExcludeDeployer,
+            ExcludeRole: policy.ExcludeRole,
             TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup);
     }

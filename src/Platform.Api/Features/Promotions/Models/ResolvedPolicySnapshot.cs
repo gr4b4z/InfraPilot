@@ -15,7 +15,7 @@ public record ResolvedPolicySnapshot(
     string? ApproverGroup,
     PromotionStrategy Strategy,
     int MinApprovers,
-    bool ExcludeDeployer,
+    string? ExcludeRole,
     int TimeoutHours,
     string? EscalationGroup)
 {

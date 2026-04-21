@@ -21,7 +21,13 @@ public class PromotionPolicy
     public string? ApproverGroup { get; set; }
     public PromotionStrategy Strategy { get; set; } = PromotionStrategy.Any;
     public int MinApprovers { get; set; } = 1;
-    public bool ExcludeDeployer { get; set; } = true;
+
+    // When set to a non-empty role name, anyone listed on the source deploy event with that
+    // role (compared after normalisation) cannot approve. Null/empty means no exclusion.
+    // Replaces the old bool `ExcludeDeployer` — the role is now explicit so installations that
+    // call the pipeline initiator something other than "triggered-by" can opt in without code
+    // changes.
+    public string? ExcludeRole { get; set; } = "triggered-by";
 
     // Timeouts / escalation
     public int TimeoutHours { get; set; } = 24;

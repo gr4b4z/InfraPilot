@@ -51,7 +51,8 @@ public class PromotionApproverGroupTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, _identity, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>());
+            Substitute.For<IWebhookDispatcher>(),
+            TestOptions.Normalization());
     }
 
     public void Dispose() => _db.Dispose();
@@ -69,7 +70,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = PromotionStrategy.Any,
             MinApprovers = 1,
-            ExcludeDeployer = false,
+            ExcludeRole = null,
         };
         _db.PromotionPolicies.Add(policy);
 
@@ -78,7 +79,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup: approverGroup,
             Strategy: PromotionStrategy.Any,
             MinApprovers: 1,
-            ExcludeDeployer: false,
+            ExcludeRole: null,
             TimeoutHours: 0,
             EscalationGroup: null);
 
@@ -114,7 +115,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = PromotionStrategy.NOfM,
             MinApprovers = minApprovers,
-            ExcludeDeployer = false,
+            ExcludeRole = null,
         };
         _db.PromotionPolicies.Add(policy);
 
@@ -123,7 +124,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup: approverGroup,
             Strategy: PromotionStrategy.NOfM,
             MinApprovers: minApprovers,
-            ExcludeDeployer: false,
+            ExcludeRole: null,
             TimeoutHours: 0,
             EscalationGroup: null);
 

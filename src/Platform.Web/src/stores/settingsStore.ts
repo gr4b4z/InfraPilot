@@ -8,6 +8,13 @@ export interface EnvironmentConfig {
   displayName: string;
 }
 
+export interface RoleConfig {
+  // Canonical lower-kebab key (e.g. "triggered-by"). Matched case-sensitively — the
+  // backend normalises on write so this lookup is deterministic.
+  key: string;
+  displayName: string;
+}
+
 export interface ActivityTemplateLine {
   template: string;
   style: 'primary' | 'secondary' | 'muted';
@@ -16,11 +23,18 @@ export interface ActivityTemplateLine {
 interface SettingsState {
   /** Globally configured environments (shared across all products) */
   environments: EnvironmentConfig[];
+  /** Admin-curated participant role display names. Canonical keys come from deploy-event
+   * ingest or promotion-level assignment; this dictionary maps them to human-friendly
+   * labels shown in the UI. Unknown keys fall back to the sender's `label` (if any),
+   * then to a humanised form of the key. */
+  roles: RoleConfig[];
   activityTemplate: ActivityTemplateLine[];
 
   setEnvironments: (envs: EnvironmentConfig[]) => void;
+  setRoles: (roles: RoleConfig[]) => void;
   setActivityTemplate: (lines: ActivityTemplateLine[]) => void;
   getDisplayName: (key: string) => string;
+  getRoleDisplayName: (key: string) => string;
   getOrderedEnvironments: (keys: string[]) => string[];
 }
 
@@ -29,6 +43,30 @@ const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
   { key: 'staging', displayName: 'Staging' },
   { key: 'production', displayName: 'Production' },
 ];
+
+const DEFAULT_ROLES: RoleConfig[] = [
+  { key: 'triggered-by', displayName: 'Triggered by' },
+  { key: 'author', displayName: 'Author' },
+  { key: 'reviewer', displayName: 'Reviewer' },
+  { key: 'qa', displayName: 'QA' },
+];
+
+// Acronyms that should render uppercase rather than title-cased when humanising an
+// unmapped role key. Keep this small; bias toward letting admins add explicit mappings.
+const ACRONYMS = new Set(['qa', 'po', 'pm', 'sre', 'it', 'ui', 'ux', 'api', 'cto', 'cio', 'vp']);
+
+function humaniseRoleKey(key: string): string {
+  if (!key) return '';
+  const parts = key.split('-').filter(Boolean);
+  if (parts.length === 0) return key;
+  return parts
+    .map((part, i) => {
+      if (ACRONYMS.has(part)) return part.toUpperCase();
+      if (i === 0) return part.charAt(0).toUpperCase() + part.slice(1);
+      return part;
+    })
+    .join(' ');
+}
 
 export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
   { template: '{ref:work-item:key} \u2014 {label:workItemTitle}', style: 'secondary' },
@@ -39,15 +77,25 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       environments: DEFAULT_ENVIRONMENTS,
+      roles: DEFAULT_ROLES,
       activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
 
       setEnvironments: (envs) => set({ environments: envs }),
+
+      setRoles: (roles) => set({ roles }),
 
       setActivityTemplate: (lines) => set({ activityTemplate: lines }),
 
       getDisplayName: (key) => {
         const env = get().environments.find((e) => e.key === key);
         return env?.displayName ?? key;
+      },
+
+      getRoleDisplayName: (key) => {
+        if (!key) return '';
+        const role = get().roles.find((r) => r.key === key);
+        if (role) return role.displayName;
+        return humaniseRoleKey(key);
       },
 
       getOrderedEnvironments: (keys) => {
@@ -72,9 +120,12 @@ export const useSettingsStore = create<SettingsState>()(
         }
         delete state.defaultEnvironments;
         delete state.productEnvironments;
+        if (!Array.isArray(state.roles)) {
+          state.roles = DEFAULT_ROLES;
+        }
         return state as SettingsState;
       },
-      version: 2,
+      version: 3,
     }
   )
 );

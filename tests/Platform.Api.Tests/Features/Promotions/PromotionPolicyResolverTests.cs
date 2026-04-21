@@ -100,7 +100,7 @@ public class PromotionPolicyResolverTests : IDisposable
             ApproverGroup = "ops",
             Strategy = PromotionStrategy.NOfM,
             MinApprovers = 2,
-            ExcludeDeployer = true,
+            ExcludeRole = "triggered-by",
             TimeoutHours = 48,
             EscalationGroup = "leads",
         };
@@ -112,7 +112,7 @@ public class PromotionPolicyResolverTests : IDisposable
         Assert.Equal("ops", snap.ApproverGroup);
         Assert.Equal(PromotionStrategy.NOfM, snap.Strategy);
         Assert.Equal(2, snap.MinApprovers);
-        Assert.True(snap.ExcludeDeployer);
+        Assert.Equal("triggered-by", snap.ExcludeRole);
         Assert.Equal(48, snap.TimeoutHours);
         Assert.Equal("leads", snap.EscalationGroup);
         Assert.False(snap.IsAutoApprove);

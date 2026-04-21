@@ -25,6 +25,7 @@ public class DeploymentServiceVersionsTests : IDisposable
             _db,
             Substitute.For<IWebhookDispatcher>(),
             Substitute.For<IPromotionIngestHook>(),
+            TestOptions.Normalization(),
             Substitute.For<ILogger<DeploymentService>>());
     }
 
@@ -42,7 +43,7 @@ public class DeploymentServiceVersionsTests : IDisposable
     {
         var participants = deployerEmail is null
             ? "[]"
-            : JsonSerializer.Serialize(new[] { new { role = "deployer", email = deployerEmail } });
+            : JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = deployerEmail } });
 
         var e = new DeployEvent
         {

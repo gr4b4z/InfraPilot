@@ -11,6 +11,7 @@ using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.FileStorage;
@@ -129,6 +130,7 @@ else
 
 // Azure DevOps
 builder.Services.Configure<AzureDevOpsOptions>(builder.Configuration.GetSection(AzureDevOpsOptions.SectionName));
+builder.Services.Configure<NormalizationOptions>(builder.Configuration.GetSection(NormalizationOptions.SectionName));
 builder.Services.AddHttpClient<AzureDevOpsClient>();
 
 // Jira

@@ -23,7 +23,7 @@ public class DeploymentServiceDedupTests : IDisposable
 
         var webhooks = Substitute.For<IWebhookDispatcher>();
         var hook = Substitute.For<IPromotionIngestHook>();
-        _sut = new DeploymentService(_db, webhooks, hook, Substitute.For<ILogger<DeploymentService>>());
+        _sut = new DeploymentService(_db, webhooks, hook, TestOptions.Normalization(), Substitute.For<ILogger<DeploymentService>>());
     }
 
     public void Dispose() => _db.Dispose();
