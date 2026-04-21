@@ -7,6 +7,7 @@ using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -177,7 +178,7 @@ public class CatalogAgent
                     {
                         ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional — omit to query across all products." },
                         ["service"] = new { type = "string", description = "Service name, e.g. 'auth-api'. Optional — use when the user asks about a specific service." },
-                        ["environment"] = new { type = "string", description = "Environment name, e.g. 'production', 'staging'. Optional." },
+                        ["environment"] = new { type = "string", description = "Environment name, e.g. 'production', 'staging'. Case-insensitive — 'Production' or 'Staging' also work. Optional." },
                         ["since"] = new { type = "string", description = "ISO8601 datetime — only return deployments after this time. Defaults to start of today if omitted." },
                     },
                     required = Array.Empty<string>(),
@@ -214,7 +215,7 @@ public class CatalogAgent
                         ["status"] = new { type = "string", description = "Filter by status: Pending, Approved, Deploying, Deployed, Superseded, Rejected. Omit to see all pending plus recent resolved." },
                         ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional." },
                         ["service"] = new { type = "string", description = "Service substring — case-insensitive partial match, e.g. 'auth'. Optional." },
-                        ["target_env"] = new { type = "string", description = "Target environment, e.g. 'production'. Optional." },
+                        ["target_env"] = new { type = "string", description = "Target environment, e.g. 'production'. Case-insensitive — 'Production' also works. Optional." },
                         ["reference"] = new { type = "string", description = "Filter by any reference key/revision/url substring — useful for 'promotions tied to JIRA-123' or a PR number. Optional." },
                     },
                     required = Array.Empty<string>(),
@@ -900,7 +901,9 @@ public class CatalogAgent
                     var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
                     var rawService = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
                     var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
-                    var environment = args.TryGetProperty("environment", out var env) ? env.GetString() : null;
+                    // Users naturally say "Production" / "Staging" (display-name form); the DB
+                    // stores canonical kebab-case by default. Normalise the filter before querying.
+                    var environment = NormalizeEnvFilter(args.TryGetProperty("environment", out var env) ? env.GetString() : null);
                     var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd
                         : DateTimeOffset.UtcNow.Date;
@@ -942,7 +945,8 @@ public class CatalogAgent
 
                     var product = args.TryGetProperty("product", out var pr) ? pr.GetString() : null;
                     var service = args.TryGetProperty("service", out var sv) ? sv.GetString() : null;
-                    var targetEnv = args.TryGetProperty("target_env", out var te) ? te.GetString() : null;
+                    // Env in display-name form ("Production") still lands on the canonical key.
+                    var targetEnv = NormalizeEnvFilter(args.TryGetProperty("target_env", out var te) ? te.GetString() : null);
                     var reference = args.TryGetProperty("reference", out var rf) ? rf.GetString() : null;
 
                     var query = new PromotionQuery(
@@ -1220,6 +1224,17 @@ public class CatalogAgent
         if (string.IsNullOrWhiteSpace(json)) return default;
         try { return JsonSerializer.Deserialize<T>(json, JsonOptions); }
         catch { return default; }
+    }
+
+    // Normalise an environment filter string to the stored form. Accepts display-name casing
+    // ("Production", "Staging") and converts to canonical lower-kebab ("production", "staging").
+    // Safe to call when the backend normalisation policy is disabled too — the extra work is
+    // only the difference between "staging" and "staging", i.e. a no-op.
+    private static string? NormalizeEnvFilter(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var canonical = RoleNormalizer.Normalize(input);
+        return string.IsNullOrEmpty(canonical) ? input.Trim() : canonical;
     }
 
     /// <summary>
