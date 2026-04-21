@@ -578,7 +578,7 @@ export interface PromotionPolicy {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
-  excludeDeployer: boolean;
+  excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
   createdAt: string;
@@ -592,7 +592,7 @@ export interface UpsertPromotionPolicyPayload {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
-  excludeDeployer: boolean;
+  excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
 }

@@ -123,7 +123,7 @@ public static class PromotionSeedData
                 ApproverGroup = null, // auto-approve
                 Strategy = PromotionStrategy.Any,
                 MinApprovers = 0,
-                ExcludeDeployer = false,
+                ExcludeRole = null,
                 TimeoutHours = 24,
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-28),
@@ -138,7 +138,7 @@ public static class PromotionSeedData
                 ApproverGroup = "InfraPortal.Admin",
                 Strategy = PromotionStrategy.NOfM,
                 MinApprovers = 2,
-                ExcludeDeployer = true,
+                ExcludeRole = "triggered-by",
                 TimeoutHours = 48,
                 EscalationGroup = "SWO-PLT-TeamLeads",
                 CreatedAt = now.AddDays(-28),
@@ -340,13 +340,14 @@ public static class PromotionSeedData
             ApproverGroup: policy.ApproverGroup,
             Strategy: policy.Strategy,
             MinApprovers: policy.MinApprovers,
-            ExcludeDeployer: policy.ExcludeDeployer,
+            ExcludeRole: policy.ExcludeRole,
             TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup);
 
     /// <summary>
-    /// Picks an approver that is NOT the deployer (to respect ExcludeDeployer),
-    /// and not already in the <paramref name="exclude"/> set (to avoid duplicate approvals).
+    /// Picks an approver that is NOT the deployer (to respect the policy's ExcludeRole
+    /// semantics), and not already in the <paramref name="exclude"/> set (to avoid duplicate
+    /// approvals).
     /// </summary>
     private static (string Name, string Email) PickApprover(
         Random rand, string? deployerEmail, HashSet<string>? exclude = null)

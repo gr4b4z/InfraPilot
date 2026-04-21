@@ -90,7 +90,7 @@ public class PromotionServiceTests : IDisposable
         string approverGroup = "ops",
         PromotionStrategy strategy = PromotionStrategy.Any,
         int minApprovers = 1,
-        bool excludeDeployer = true,
+        string? excludeRole = "triggered-by",
         string? service = null)
     {
         var p = new PromotionPolicy
@@ -102,7 +102,7 @@ public class PromotionServiceTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = strategy,
             MinApprovers = minApprovers,
-            ExcludeDeployer = excludeDeployer,
+            ExcludeRole = excludeRole,
         };
         _db.PromotionPolicies.Add(p);
         _db.SaveChanges();
@@ -143,7 +143,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Create_AutoApprovePolicy_ApprovedImmediately()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
@@ -223,7 +223,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Approve_Deployer_RejectedByExcludeDeployer()
     {
-        SeedPolicy(excludeDeployer: true);
+        SeedPolicy(excludeRole: "triggered-by");
         var e = SeedDeploy(deployerEmail: "alice@example.com"); // Alice is the deployer
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
@@ -288,7 +288,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeploying_FromApproved_Works()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false); // auto-approve policy
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null); // auto-approve policy
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
 
@@ -311,7 +311,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeployed_FromDeploying_Works()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         await _sut.MarkDeployingAsync(c!.Id, null);
@@ -338,7 +338,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_AutoApprove_False()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         Assert.False(await _sut.CanUserApproveAsync(c!));
@@ -347,7 +347,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_NotPending_False()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeDeployer: false);
+        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
         var e = SeedDeploy();
         var c = await _sut.CreateCandidateAsync(e, "prod");
         c!.Status = PromotionStatus.Rejected;

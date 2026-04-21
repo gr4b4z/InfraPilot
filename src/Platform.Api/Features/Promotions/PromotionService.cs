@@ -522,7 +522,7 @@ public class PromotionService
     /// <summary>
     /// Records an approval from the current user. Enforces all gating rules:
     /// candidate must still be Pending, user must be in the approver group, user must not be the
-    /// source deployer when <c>ExcludeDeployer</c> is set, and the same user may not approve twice
+    /// participant matching the policy's <c>ExcludeRole</c>, and the same user may not approve twice
     /// (also enforced by a DB-level unique index as belt-and-suspenders).
     ///
     /// <para>If the strategy threshold is met after this decision, transitions the candidate to
@@ -730,12 +730,8 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove) return false; // nothing to approve
 
-        if (snapshot.ExcludeDeployer
-            && !string.IsNullOrEmpty(candidate.SourceDeployerEmail)
-            && string.Equals(candidate.SourceDeployerEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase))
-        {
+        if (await IsCurrentUserExcludedByRoleAsync(candidate, snapshot, ct))
             return false;
-        }
 
         // Already decided? Can't approve again.
         var already = await _db.PromotionApprovals.AsNoTracking()
@@ -764,6 +760,13 @@ public class PromotionService
             .ToListAsync(ct);
         var decidedSet = alreadyDecided.ToHashSet();
 
+        // Batch-load source deploy event participants for role-based exclusion. One query
+        // instead of N — important when the UI is rendering a long list of candidates.
+        var eventIds = list.Select(c => c.SourceDeployEventId).Distinct().ToList();
+        var sourceParticipantsByEvent = await _db.DeployEvents.AsNoTracking()
+            .Where(e => eventIds.Contains(e.Id))
+            .ToDictionaryAsync(e => e.Id, e => e.ParticipantsJson, ct);
+
         // Cache group membership lookups: one call per unique approver group.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
@@ -773,11 +776,14 @@ public class PromotionService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) { result[c.Id] = false; continue; }
             if (decidedSet.Contains(c.Id)) { result[c.Id] = false; continue; }
-            if (snapshot.ExcludeDeployer
-                && !string.IsNullOrEmpty(c.SourceDeployerEmail)
-                && string.Equals(c.SourceDeployerEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase))
+
+            if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
-                result[c.Id] = false; continue;
+                var json = sourceParticipantsByEvent.GetValueOrDefault(c.SourceDeployEventId);
+                if (EmailMatchesExcludedRole(json, snapshot.ExcludeRole, _currentUser.Email))
+                {
+                    result[c.Id] = false; continue;
+                }
             }
 
             var group = snapshot.ApproverGroup!;
@@ -822,15 +828,55 @@ public class PromotionService
         if (snapshot.IsAutoApprove)
             throw new InvalidOperationException("This candidate does not require approval");
 
-        if (snapshot.ExcludeDeployer
-            && !string.IsNullOrEmpty(candidate.SourceDeployerEmail)
-            && string.Equals(candidate.SourceDeployerEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase))
+        if (await IsCurrentUserExcludedByRoleAsync(candidate, snapshot, ct))
         {
-            throw new UnauthorizedAccessException("Deployer cannot approve their own promotion");
+            throw new UnauthorizedAccessException(
+                $"You cannot approve — the '{snapshot.ExcludeRole}' role is excluded from approving this promotion.");
         }
 
         if (!await IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
             throw new UnauthorizedAccessException("You are not in the approver group for this promotion");
+    }
+
+    /// <summary>
+    /// True when the policy specifies an excluded role and the current user appears on the source
+    /// deploy event with that role (after normalisation). Returns false when no exclusion is
+    /// configured, the source event is missing, or the current user is not in the list.
+    /// </summary>
+    private async Task<bool> IsCurrentUserExcludedByRoleAsync(
+        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(snapshot.ExcludeRole)) return false;
+        if (string.IsNullOrEmpty(_currentUser.Email)) return false;
+
+        var participantsJson = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Id == candidate.SourceDeployEventId)
+            .Select(e => e.ParticipantsJson)
+            .FirstOrDefaultAsync(ct);
+
+        return EmailMatchesExcludedRole(participantsJson, snapshot.ExcludeRole, _currentUser.Email);
+    }
+
+    private static bool EmailMatchesExcludedRole(string? participantsJson, string excludedRole, string email)
+    {
+        if (string.IsNullOrWhiteSpace(participantsJson)) return false;
+        try
+        {
+            var canonical = RoleNormalizer.Normalize(excludedRole);
+            if (canonical.Length == 0) return false;
+
+            var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(participantsJson, JsonOptions);
+            if (parts is null) return false;
+
+            return parts.Any(p =>
+                RoleNormalizer.Normalize(p.Role) == canonical &&
+                !string.IsNullOrEmpty(p.Email) &&
+                string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)

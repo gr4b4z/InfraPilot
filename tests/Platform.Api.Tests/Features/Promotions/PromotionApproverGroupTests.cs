@@ -70,7 +70,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = PromotionStrategy.Any,
             MinApprovers = 1,
-            ExcludeDeployer = false,
+            ExcludeRole = null,
         };
         _db.PromotionPolicies.Add(policy);
 
@@ -79,7 +79,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup: approverGroup,
             Strategy: PromotionStrategy.Any,
             MinApprovers: 1,
-            ExcludeDeployer: false,
+            ExcludeRole: null,
             TimeoutHours: 0,
             EscalationGroup: null);
 
@@ -115,7 +115,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = PromotionStrategy.NOfM,
             MinApprovers = minApprovers,
-            ExcludeDeployer = false,
+            ExcludeRole = null,
         };
         _db.PromotionPolicies.Add(policy);
 
@@ -124,7 +124,7 @@ public class PromotionApproverGroupTests : IDisposable
             ApproverGroup: approverGroup,
             Strategy: PromotionStrategy.NOfM,
             MinApprovers: minApprovers,
-            ExcludeDeployer: false,
+            ExcludeRole: null,
             TimeoutHours: 0,
             EscalationGroup: null);
 

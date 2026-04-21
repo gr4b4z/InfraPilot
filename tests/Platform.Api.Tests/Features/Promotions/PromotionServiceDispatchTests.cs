@@ -85,7 +85,7 @@ public class PromotionServiceDispatchTests : IDisposable
             ApproverGroup = approverGroup,
             Strategy = PromotionStrategy.Any,
             MinApprovers = 1,
-            ExcludeDeployer = false,
+            ExcludeRole = null,
         });
         _db.SaveChanges();
     }

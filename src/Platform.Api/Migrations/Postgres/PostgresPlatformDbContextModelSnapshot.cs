@@ -468,8 +468,8 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(400)
                         .HasColumnType("character varying(400)");
 
-                    b.Property<bool>("ExcludeDeployer")
-                        .HasColumnType("boolean");
+                    b.Property<string>("ExcludeRole")
+                        .HasColumnType("text");
 
                     b.Property<int>("MinApprovers")
                         .HasColumnType("integer");

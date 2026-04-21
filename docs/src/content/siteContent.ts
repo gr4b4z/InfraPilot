@@ -1360,7 +1360,7 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
         { field: '`approverGroup`', type: 'string', required: 'No', description: 'Optional approver group name.' },
         { field: '`strategy`', type: 'enum', required: 'Yes', description: 'Promotion strategy enum. NOfM requires minApprovers >= 1.' },
         { field: '`minApprovers`', type: 'integer', required: 'Yes', description: 'Minimum approver count. Clamped to at least 1.' },
-        { field: '`excludeDeployer`', type: 'boolean', required: 'Yes', description: 'Whether the deployer is excluded from approving.' },
+        { field: '`excludeRole`', type: 'string \\| null', required: 'No', description: 'When set, anyone tagged with this role on the source deploy event cannot approve. Typically `triggered-by`. Null disables the rule.' },
         { field: '`timeoutHours`', type: 'integer', required: 'Yes', description: 'Timeout in hours. Clamped to 0 or higher.' },
         { field: '`escalationGroup`', type: 'string', required: 'No', description: 'Optional escalation group.' },
       ],
