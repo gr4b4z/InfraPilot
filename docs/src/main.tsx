@@ -1,10 +1,13 @@
 import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
+import { hydrateRoot } from 'react-dom/client';
+import App, { readRouteFromPath } from './App';
 import './styles.css';
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+const initialRoute = readRouteFromPath(window.location.pathname);
+
+hydrateRoot(
+  document.getElementById('root')!,
   <React.StrictMode>
-    <App />
+    <App initialRoute={initialRoute} />
   </React.StrictMode>,
 );

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   apiDocs,
   docsSections,
@@ -20,22 +20,34 @@ import {
   workflowSteps,
 } from './content/siteContent';
 
-type AppRoute =
+export type AppRoute =
   | { kind: 'home' }
   | { kind: 'docs'; slug: string };
 
-function readRoute(): AppRoute {
-  const hash = window.location.hash || '';
+const BASE = import.meta.env.BASE_URL;
 
-  if (hash.startsWith('#/docs/')) {
-    return { kind: 'docs', slug: hash.replace('#/docs/', '') || 'introduction' };
+export function readRouteFromPath(pathname: string): AppRoute {
+  let path = pathname;
+  if (path.startsWith(BASE)) path = path.slice(BASE.length);
+  path = path.replace(/^\/+|\/+$/g, '');
+
+  if (path === 'docs' || path === '') {
+    if (path === 'docs') return { kind: 'docs', slug: 'introduction' };
+    return { kind: 'home' };
   }
-
-  if (hash === '#/docs') {
-    return { kind: 'docs', slug: 'introduction' };
+  if (path.startsWith('docs/')) {
+    const slug = path.slice(5).replace(/\/+$/, '');
+    return { kind: 'docs', slug: slug || 'introduction' };
   }
-
   return { kind: 'home' };
+}
+
+function resolveHref(href: string): string {
+  if (href === '#home') return BASE;
+  if (href === '#/docs' || href === '#/docs/') return `${BASE}docs/introduction/`;
+  if (href.startsWith('#/docs/')) return `${BASE}docs/${href.slice('#/docs/'.length)}/`;
+  if (href.startsWith('#')) return `${BASE}${href}`;
+  return href;
 }
 
 function groupedDocs() {
@@ -53,16 +65,12 @@ function groupedDocs() {
   }, {});
 }
 
-function App() {
-  const [route, setRoute] = useState<AppRoute>(() =>
-    typeof window === 'undefined' ? { kind: 'home' } : readRoute(),
-  );
-
-  useEffect(() => {
-    const handleHashChange = () => setRoute(readRoute());
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
+function App({ initialRoute }: { initialRoute?: AppRoute } = {}) {
+  const [route] = useState<AppRoute>(() => {
+    if (initialRoute) return initialRoute;
+    if (typeof window === 'undefined') return { kind: 'home' };
+    return readRouteFromPath(window.location.pathname);
+  });
 
   const docsByGroup = useMemo(() => groupedDocs(), []);
 
@@ -98,7 +106,7 @@ function App() {
                     <a
                       key={section.slug}
                       className={section.slug === currentSection.slug ? 'docs-link active' : 'docs-link'}
-                      href={`#/docs/${section.slug}`}
+                      href={resolveHref(`#/docs/${section.slug}`)}
                     >
                       {section.title}
                     </a>
@@ -110,7 +118,7 @@ function App() {
 
           <section className="docs-content">
             <div className="docs-breadcrumbs">
-              <a href="#home">Home</a>
+              <a href={resolveHref('#home')}>Home</a>
               <span>/</span>
               <span>{currentSection.group}</span>
               <span>/</span>
@@ -165,7 +173,7 @@ function App() {
             <div className="docs-pagination">
               <div className="docs-pagination-row">
                 {previousInGroup ? (
-                  <a className="docs-pagination-link" href={`#/docs/${previousInGroup.slug}`}>
+                  <a className="docs-pagination-link" href={resolveHref(`#/docs/${previousInGroup.slug}`)}>
                     <span>Previous in {currentSection.group}</span>
                     <strong>{previousInGroup.title}</strong>
                   </a>
@@ -174,7 +182,7 @@ function App() {
                 )}
 
                 {nextInGroup ? (
-                  <a className="docs-pagination-link align-right" href={`#/docs/${nextInGroup.slug}`}>
+                  <a className="docs-pagination-link align-right" href={resolveHref(`#/docs/${nextInGroup.slug}`)}>
                     <span>Next in {currentSection.group}</span>
                     <strong>{nextInGroup.title}</strong>
                   </a>
@@ -186,12 +194,12 @@ function App() {
               {(previousSection || nextSection) ? (
                 <div className="docs-pagination-meta">
                   {previousSection ? (
-                    <a href={`#/docs/${previousSection.slug}`}>
+                    <a href={resolveHref(`#/docs/${previousSection.slug}`)}>
                       Global previous: <strong>{previousSection.title}</strong>
                     </a>
                   ) : <span />}
                   {nextSection ? (
-                    <a className="align-right" href={`#/docs/${nextSection.slug}`}>
+                    <a className="align-right" href={resolveHref(`#/docs/${nextSection.slug}`)}>
                       Global next: <strong>{nextSection.title}</strong>
                     </a>
                   ) : <span />}
@@ -220,13 +228,13 @@ function App() {
             </p>
 
             <div className="hero-actions">
-              <a className="button button-primary" href="#/docs/introduction">
+              <a className="button button-primary" href={resolveHref('#/docs/introduction')}>
                 Read docs
               </a>
-              <a className="button button-secondary" href="#/docs/quick-start">
+              <a className="button button-secondary" href={resolveHref('#/docs/quick-start')}>
                 Quick start
               </a>
-              <a className="button button-secondary" href="#use-cases">
+              <a className="button button-secondary" href={resolveHref('#use-cases')}>
                 Explore use cases
               </a>
             </div>
@@ -238,7 +246,7 @@ function App() {
               <a className="text-link" href={imageUrl} target="_blank" rel="noreferrer">
                 Container image
               </a>
-              <a className="text-link" href="#/docs/evaluation-guide">
+              <a className="text-link" href={resolveHref('#/docs/evaluation-guide')}>
                 Evaluation guide
               </a>
             </div>
@@ -377,10 +385,10 @@ function App() {
               </p>
             </div>
             <div className="docs-teaser-actions">
-              <a className="button button-primary" href="#/docs/introduction">
+              <a className="button button-primary" href={resolveHref('#/docs/introduction')}>
                 Open docs
               </a>
-              <a className="button button-secondary" href="#/docs/integration-setup">
+              <a className="button button-secondary" href={resolveHref('#/docs/integration-setup')}>
                 Integration setup
               </a>
             </div>
@@ -404,7 +412,7 @@ function App() {
                 <span>{useCase.audience}</span>
                 <h3>{useCase.title}</h3>
                 <p>{useCase.summary}</p>
-                <a className="text-link" href={useCase.href}>
+                <a className="text-link" href={resolveHref(useCase.href)}>
                   Read use case
                 </a>
               </article>
@@ -494,11 +502,11 @@ function App() {
         </div>
         <div className="footer-links">
           <a href={repositoryUrl} target="_blank" rel="noreferrer">GitHub</a>
-          <a href="#/docs/quick-start">Quick start</a>
-          <a href="#/docs/integration-setup">Integration setup</a>
-          <a href="#/docs/introduction">Docs</a>
-          <a href="#use-cases">Use cases</a>
-          <a href="#examples">Examples</a>
+          <a href={resolveHref('#/docs/quick-start')}>Quick start</a>
+          <a href={resolveHref('#/docs/integration-setup')}>Integration setup</a>
+          <a href={resolveHref('#/docs/introduction')}>Docs</a>
+          <a href={resolveHref('#use-cases')}>Use cases</a>
+          <a href={resolveHref('#examples')}>Examples</a>
         </div>
       </footer>
     </div>
@@ -508,7 +516,7 @@ function App() {
 function Header() {
   return (
     <header className="topbar">
-      <a className="brand" href="#home" aria-label="InfraPilot home">
+      <a className="brand" href={resolveHref('#home')} aria-label="InfraPilot home">
         <span className="brand-mark">IP</span>
         <span>
           <strong>InfraPilot</strong>
@@ -518,7 +526,7 @@ function Header() {
 
       <nav className="nav" aria-label="Primary">
         {navItems.map((item) => (
-          <a key={item.href} href={item.href}>
+          <a key={item.href} href={resolveHref(item.href)}>
             {item.label}
           </a>
         ))}
