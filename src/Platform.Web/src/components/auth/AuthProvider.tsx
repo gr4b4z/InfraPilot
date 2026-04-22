@@ -3,6 +3,7 @@ import { MsalProvider, useMsal, useMsalAuthentication } from '@azure/msal-react'
 import { InteractionType } from '@azure/msal-browser';
 import { getMsalInstance, isMsalEnabled, getLoginRequest } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { getStoredToken, fetchCurrentUser } from '@/lib/localAuth';
 import { LoginPage } from '@/app/login/LoginPage';
@@ -22,6 +23,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [msalReady, setMsalReady] = useState(!msalEnabled);
   const [localAuthChecked, setLocalAuthChecked] = useState(!localAuth);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      useFeatureFlagsStore.getState().load();
+    }
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (msalEnabled) {

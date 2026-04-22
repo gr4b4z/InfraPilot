@@ -13,6 +13,7 @@ import {
   GitPullRequest,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
+import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { getAppName, getAppSubtitle, getEnvironmentLabel } from '@/lib/runtimeConfig';
 
 interface NavItem {
@@ -22,14 +23,15 @@ interface NavItem {
   badge?: number;
   section?: string;
   adminOnly?: boolean;
+  featureFlag?: string;
 }
 
 const navItems: NavItem[] = [
-  { to: '/catalog', label: 'Service Catalog', icon: LayoutGrid, section: 'main' },
-  { to: '/requests', label: 'My Requests', icon: FileText, section: 'main' },
-  { to: '/approvals', label: 'Approvals', icon: CheckCircle, badge: 0, section: 'main' },
+  { to: '/catalog', label: 'Service Catalog', icon: LayoutGrid, section: 'main', featureFlag: FeatureFlag.ServiceCatalog },
+  { to: '/requests', label: 'My Requests', icon: FileText, section: 'main', featureFlag: FeatureFlag.ServiceCatalog },
+  { to: '/approvals', label: 'Approvals', icon: CheckCircle, badge: 0, section: 'main', featureFlag: FeatureFlag.Approvals },
   { to: '/deployments', label: 'Deployments', icon: Rocket, section: 'main' },
-  { to: '/promotions', label: 'Promotions', icon: GitPullRequest, section: 'main' },
+  { to: '/promotions', label: 'Promotions', icon: GitPullRequest, section: 'main', featureFlag: FeatureFlag.Promotions },
   { to: '/webhooks', label: 'Webhooks', icon: Webhook, section: 'main', adminOnly: true },
   { to: '/settings', label: 'Settings', icon: Settings, section: 'main', adminOnly: true },
 ];
@@ -40,8 +42,13 @@ export function Sidebar() {
   const appName = getAppName();
   const appSubtitle = getAppSubtitle();
   const isAdmin = user?.isAdmin ?? false;
+  const flags = useFeatureFlagsStore((s) => s.flags);
 
-  const visibleNavItems = navItems.filter((item) => !item.adminOnly || isAdmin);
+  const visibleNavItems = navItems.filter((item) => {
+    if (item.adminOnly && !isAdmin) return false;
+    if (item.featureFlag && flags[item.featureFlag] === false) return false;
+    return true;
+  });
 
   return (
     <aside
