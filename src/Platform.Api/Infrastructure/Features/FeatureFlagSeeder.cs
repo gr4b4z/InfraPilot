@@ -13,9 +13,11 @@ public static class FeatureFlagSeeder
     public static async Task SeedDefaults(PlatformDbContext db, IConfiguration config, CancellationToken ct = default)
     {
         // Map: flag key → configuration path supplying its install-time default.
-        var defaults = new (string Key, string ConfigPath)[]
+        var defaults = new (string Key, string ConfigPath, bool FallbackDefault)[]
         {
-            (FeatureFlagKeys.Promotions, "Features:Promotions:DefaultEnabled"),
+            (FeatureFlagKeys.Promotions, "Features:Promotions:DefaultEnabled", false),
+            (FeatureFlagKeys.ServiceCatalog, "Features:ServiceCatalog:DefaultEnabled", true),
+            (FeatureFlagKeys.Approvals, "Features:Approvals:DefaultEnabled", true),
         };
 
         var existingKeys = await db.PlatformSettings
@@ -26,11 +28,11 @@ public static class FeatureFlagSeeder
         var now = DateTimeOffset.UtcNow;
         var added = false;
 
-        foreach (var (key, path) in defaults)
+        foreach (var (key, path, fallback) in defaults)
         {
             if (existingKeys.Contains(key)) continue;
 
-            var enabled = config.GetValue<bool>(path, defaultValue: false);
+            var enabled = config.GetValue<bool>(path, defaultValue: fallback);
             db.PlatformSettings.Add(new PlatformSetting
             {
                 Key = key,
