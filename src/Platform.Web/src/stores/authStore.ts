@@ -21,6 +21,11 @@ interface AuthState {
   logout: () => void;
 }
 
+function hasRole(roles: string[], role: string): boolean {
+  const target = role.toLowerCase();
+  return roles.some((r) => r.toLowerCase() === target);
+}
+
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) {
@@ -41,8 +46,8 @@ export function createAuthUser(
     email,
     initials: getInitials(name),
     roles,
-    isAdmin: roles.includes('InfraPortal.Admin'),
-    isQA: roles.includes('InfraPortal.QA'),
+    isAdmin: hasRole(roles, 'InfraPortal.Admin'),
+    isQA: hasRole(roles, 'InfraPortal.QA'),
   };
 }
 

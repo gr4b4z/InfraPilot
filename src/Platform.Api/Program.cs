@@ -65,6 +65,15 @@ if (authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
+
+    // Keep claim names as-issued so CurrentUser (and the rest of the app) can read the
+    // literal "roles" claim the same way across MSAL, Local JWT, and API key auth.
+    builder.Services.Configure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters.RoleClaimType = "roles";
+        options.TokenValidationParameters.NameClaimType = "name";
+    });
 }
 else
 {

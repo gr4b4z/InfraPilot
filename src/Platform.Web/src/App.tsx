@@ -22,6 +22,8 @@ import { DeploymentMaintenanceSettings } from '@/app/settings/DeploymentMaintena
 import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
 import { AdminRoute } from '@/components/auth/AdminRoute';
+import { FeatureRoute } from '@/components/auth/FeatureRoute';
+import { FeatureFlag } from '@/stores/featureFlagsStore';
 
 function App() {
   return (
@@ -29,17 +31,17 @@ function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<Navigate to="/catalog" replace />} />
-          <Route path="/catalog" element={<CatalogPage />} />
-          <Route path="/catalog/:slug" element={<RequestPage />} />
-          <Route path="/requests" element={<RequestsPage />} />
-          <Route path="/requests/:id" element={<RequestDetailPage />} />
-          <Route path="/approvals" element={<ApprovalsPage />} />
-          <Route path="/approvals/:id" element={<ApprovalDetailPage />} />
+          <Route path="/catalog" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><CatalogPage /></FeatureRoute>} />
+          <Route path="/catalog/:slug" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestPage /></FeatureRoute>} />
+          <Route path="/requests" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestsPage /></FeatureRoute>} />
+          <Route path="/requests/:id" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestDetailPage /></FeatureRoute>} />
+          <Route path="/approvals" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalsPage /></FeatureRoute>} />
+          <Route path="/approvals/:id" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalDetailPage /></FeatureRoute>} />
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
-          <Route path="/promotions" element={<PromotionsPage />} />
-          <Route path="/promotions/:id" element={<PromotionDetailPage />} />
+          <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
+          <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>}>

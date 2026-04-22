@@ -25,8 +25,8 @@ public class CurrentUser : ICurrentUser
         User?.FindAll("roles").Select(c => c.Value).ToList().AsReadOnly()
         ?? new List<string>().AsReadOnly();
 
-    public bool IsAdmin => Roles.Contains("InfraPortal.Admin");
-    public bool IsQA => Roles.Contains("InfraPortal.QA");
+    public bool IsAdmin => Roles.Contains("InfraPortal.Admin", StringComparer.OrdinalIgnoreCase);
+    public bool IsQA => Roles.Contains("InfraPortal.QA", StringComparer.OrdinalIgnoreCase);
 
-    public bool IsInGroup(string groupId) => Groups.Contains(groupId);
+    public bool IsInGroup(string groupId) => Groups.Contains(groupId, StringComparer.OrdinalIgnoreCase);
 }

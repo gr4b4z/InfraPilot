@@ -44,5 +44,7 @@ public static class AuthorizationPolicies
     /// and ClaimTypes.Role (Microsoft.Identity.Web default JWT mapping).
     /// </summary>
     private static bool HasRole(ClaimsPrincipal user, string role) =>
-        user.HasClaim("roles", role) || user.IsInRole(role);
+        user.Claims.Any(c =>
+            (c.Type == "roles" || c.Type == ClaimTypes.Role) &&
+            string.Equals(c.Value, role, StringComparison.OrdinalIgnoreCase));
 }
