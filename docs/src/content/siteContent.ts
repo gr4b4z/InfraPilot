@@ -831,7 +831,8 @@ export const deploymentApiFullPayload = `{
       "type": "work-item",
       "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
       "provider": "jira",
-      "key": "PLT-1234"
+      "key": "PLT-1234",
+      "title": "Add idempotency key to checkout endpoint"
     }
   ],
   "participants": [
@@ -1015,6 +1016,13 @@ export const deploymentApiReferenceRows: TableRow[] = [
     default: 'null',
     description: 'Git revision or commit SHA when available.',
   },
+  {
+    field: '`title`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Human-readable title (work-item summary, PR title). When supplied for a work-item reference, the server uses it directly and skips the Jira lookup.',
+  },
 ];
 
 export const deploymentApiReferenceTypeColumns: TableColumn[] = [
@@ -1027,6 +1035,18 @@ export const deploymentApiReferenceTypeRows: TableRow[] = [
   { type: '`pipeline`', usage: 'Link to the CI/CD build or workflow run.' },
   { type: '`pull-request`', usage: 'Link to the merged pull request that triggered the deploy.' },
   { type: '`work-item`', usage: 'Link to a Jira issue, Azure DevOps work item, or similar tracking record.' },
+];
+
+export const deploymentApiCommitLinkColumns: TableColumn[] = [
+  { key: 'provider', label: 'Provider' },
+  { key: 'url', label: 'Resolved URL' },
+];
+
+export const deploymentApiCommitLinkRows: TableRow[] = [
+  { provider: '`github`, `azure-devops`', url: '`{url}/commit/{revision}`' },
+  { provider: '`gitlab`', url: '`{url}/-/commit/{revision}`' },
+  { provider: '`bitbucket`', url: '`{url}/commits/{revision}`' },
+  { provider: '_other / omitted_', url: 'falls back to `url`' },
 ];
 
 export const deploymentApiParticipantRows: TableRow[] = [
@@ -1166,6 +1186,12 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       title: 'Common reference types',
       columns: deploymentApiReferenceTypeColumns,
       rows: deploymentApiReferenceTypeRows,
+    },
+    {
+      title: 'Commit deep-linking',
+      description: 'A `repository` reference that includes both `url` and `revision` is rendered as a link directly to that commit, derived from the `provider`. The URL is built purely from the inbound `url` (with any trailing `.git` or `/` stripped) — no org/repo names are hardcoded.',
+      columns: deploymentApiCommitLinkColumns,
+      rows: deploymentApiCommitLinkRows,
     },
     {
       title: '`participants[]` fields',
