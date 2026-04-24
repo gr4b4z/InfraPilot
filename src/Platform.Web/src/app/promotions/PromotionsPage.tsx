@@ -505,6 +505,19 @@ function CandidateCard({
                 </span>
               );
             })}
+            {candidate.inheritedCount > 0 && (
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                style={{
+                  backgroundColor: 'var(--bg-secondary)',
+                  color: 'var(--text-muted)',
+                  border: '1px dashed var(--border-color)',
+                }}
+                title={`${candidate.inheritedCount} refs/people inherited from superseded predecessors — open details to view`}
+              >
+                +{candidate.inheritedCount} inherited
+              </span>
+            )}
           </div>
         )}
         {(() => {

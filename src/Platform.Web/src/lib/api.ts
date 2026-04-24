@@ -506,6 +506,8 @@ export interface PromotionCandidate {
   version: string;
   /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
   targetCurrentVersion: string | null;
+  /** Count of refs/participants inherited from superseded predecessors. 0 when the candidate didn't displace anything. */
+  inheritedCount: number;
   status: PromotionStatus;
   sourceDeployerName: string | null;
   sourceDeployerEmail: string | null;

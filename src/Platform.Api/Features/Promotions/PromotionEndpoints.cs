@@ -50,9 +50,12 @@ public static class PromotionEndpoints
 
             var candidates = await svc.GetAsync(query);
 
-            // Batch-load source deploy events so the list card can render deploy-event people and
-            // references (PR, work-item, pipeline, ...) alongside promotion-level data. One query.
-            var eventIds = candidates.Select(c => c.SourceDeployEventId).Distinct().ToList();
+            // Batch-load source deploy events plus any events inherited from superseded
+            // predecessors so the list card can render refs/people and the reference filter
+            // can search both the candidate's own refs and inherited ones. One query.
+            var ownEventIds = candidates.Select(c => c.SourceDeployEventId);
+            var inheritedEventIds = candidates.SelectMany(c => c.SupersededSourceEventIds);
+            var eventIds = ownEventIds.Concat(inheritedEventIds).Distinct().ToList();
             var eventData = await db.DeployEvents
                 .AsNoTracking()
                 .Where(e => eventIds.Contains(e.Id))
@@ -60,20 +63,29 @@ public static class PromotionEndpoints
                 .ToDictionaryAsync(e => e.Id, e => e);
 
             // Optional reference filter — matches any reference whose key, revision, provider, or
-            // URL contains the search string (case-insensitive). Applied after load because the
-            // references live inside a JSON column; the candidate set is already bounded.
+            // URL contains the search string (case-insensitive). Searches across the candidate's
+            // own source event AND any inherited events so a ticket/PR that landed on a
+            // superseded predecessor still surfaces the current candidate.
             var needle = (reference ?? "").Trim();
             if (needle.Length > 0)
             {
+                bool RefMatches(ReferenceDto r) =>
+                    ContainsIgnoreCase(r.Key, needle) ||
+                    ContainsIgnoreCase(r.Revision, needle) ||
+                    ContainsIgnoreCase(r.Provider, needle) ||
+                    ContainsIgnoreCase(r.Url, needle) ||
+                    ContainsIgnoreCase(r.Title, needle);
+
                 candidates = candidates.Where(c =>
                 {
-                    var src = eventData.GetValueOrDefault(c.SourceDeployEventId);
-                    var refs = ExtractSourceReferences(src?.ReferencesJson);
-                    return refs.Any(r =>
-                        ContainsIgnoreCase(r.Key, needle) ||
-                        ContainsIgnoreCase(r.Revision, needle) ||
-                        ContainsIgnoreCase(r.Provider, needle) ||
-                        ContainsIgnoreCase(r.Url, needle));
+                    var eventIdsToCheck = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
+                    foreach (var eid in eventIdsToCheck)
+                    {
+                        var ev = eventData.GetValueOrDefault(eid);
+                        if (ev is null) continue;
+                        if (ExtractSourceReferences(ev.ReferencesJson).Any(RefMatches)) return true;
+                    }
+                    return false;
                 }).ToList();
             }
 
@@ -413,6 +425,9 @@ public static class PromotionEndpoints
         approvedAt = c.ApprovedAt,
         deployedAt = c.DeployedAt,
         supersededById = c.SupersededById,
+        // Count of source deploy events inherited from superseded predecessors.
+        // Non-empty on candidates that displaced earlier Pending ones on the same edge.
+        inheritedCount = c.SupersededSourceEventIds.Count,
         participants = c.Participants,
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
