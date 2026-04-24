@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@azure/msal-browser": "^5.7.0",
-    "@azure/msal-react": "^5.2.1",
+    "@azure/msal-react": "^5.3.1",
     "@copilotkit/react-core": "^1.56.2",
     "@copilotkit/react-ui": "^1.56.2",
     "@tailwindcss/vite": "^4.2.2",
