@@ -436,8 +436,15 @@ function CandidateCard({
           <span
             className="ml-2 px-1.5 py-0.5 rounded text-[11px] font-mono"
             style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+            title={
+              candidate.targetCurrentVersion
+                ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
+                : `First deploy to ${candidate.targetEnv}`
+            }
           >
-            {candidate.version}
+            {candidate.targetCurrentVersion
+              ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
+              : candidate.version}
           </span>
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>

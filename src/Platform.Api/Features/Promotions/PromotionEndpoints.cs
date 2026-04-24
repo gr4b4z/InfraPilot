@@ -78,6 +78,7 @@ public static class PromotionEndpoints
             }
 
             var capability = await svc.CanUserApproveManyAsync(candidates);
+            var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
 
             return Results.Ok(new
             {
@@ -86,7 +87,8 @@ public static class PromotionEndpoints
                     var source = eventData.GetValueOrDefault(c.SourceDeployEventId);
                     var sourceParticipants = ExtractSourceParticipants(source?.ParticipantsJson, source?.EnrichmentJson);
                     var sourceReferences = ExtractSourceReferences(source?.ReferencesJson);
-                    return ToDto(c, capability.GetValueOrDefault(c.Id), sourceParticipants, sourceReferences);
+                    targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
+                    return ToDto(c, capability.GetValueOrDefault(c.Id), sourceParticipants, sourceReferences, targetCurrent);
                 }),
             });
         });
@@ -107,11 +109,18 @@ public static class PromotionEndpoints
                 .AsNoTracking()
                 .FirstOrDefaultAsync(e => e.Id == c.SourceDeployEventId);
 
+            var targetCurrent = await db.DeployEvents
+                .AsNoTracking()
+                .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv)
+                .OrderByDescending(e => e.DeployedAt)
+                .Select(e => e.Version)
+                .FirstOrDefaultAsync();
+
             var comments = await svc.GetCommentsAsync(id);
 
             return Results.Ok(new
             {
-                candidate = ToDto(c, canApprove),
+                candidate = ToDto(c, canApprove, targetCurrentVersion: targetCurrent),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -358,7 +367,8 @@ public static class PromotionEndpoints
         PromotionCandidate c,
         bool canApprove,
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
-        IReadOnlyList<ReferenceDto>? sourceEventReferences = null) => new
+        IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
+        string? targetCurrentVersion = null) => new
     {
         id = c.Id,
         product = c.Product,
@@ -366,6 +376,9 @@ public static class PromotionEndpoints
         sourceEnv = c.SourceEnv,
         targetEnv = c.TargetEnv,
         version = c.Version,
+        // Version currently deployed in the target environment (what this promotion
+        // would replace). Null when the target has no prior deploy for this service.
+        targetCurrentVersion,
         status = c.Status.ToString(),
         sourceDeployerName = c.SourceDeployerName,
         sourceDeployerEmail = c.SourceDeployerEmail,
@@ -379,6 +392,40 @@ public static class PromotionEndpoints
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
     };
+
+    // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)
+    // triple across the candidate set. Single query; returns a dictionary keyed by the triple.
+    private static async Task<Dictionary<(string Product, string Service, string TargetEnv), string>> LoadTargetCurrentVersionsAsync(
+        PlatformDbContext db,
+        IReadOnlyCollection<PromotionCandidate> candidates,
+        CancellationToken ct = default)
+    {
+        var triples = candidates
+            .Select(c => new { c.Product, c.Service, c.TargetEnv })
+            .Distinct()
+            .ToList();
+        if (triples.Count == 0) return new();
+
+        var products = triples.Select(t => t.Product).Distinct().ToList();
+        var services = triples.Select(t => t.Service).Distinct().ToList();
+        var envs = triples.Select(t => t.TargetEnv).Distinct().ToList();
+
+        // Over-fetch candidates with a coarse product/service/env IN filter, then
+        // reduce in-memory to (product, service, env) -> latest version.
+        var events = await db.DeployEvents
+            .AsNoTracking()
+            .Where(e => products.Contains(e.Product)
+                     && services.Contains(e.Service)
+                     && envs.Contains(e.Environment))
+            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt })
+            .ToListAsync(ct);
+
+        var wanted = triples.Select(t => (t.Product, t.Service, t.TargetEnv)).ToHashSet();
+        return events
+            .Where(e => wanted.Contains((e.Product, e.Service, e.Environment)))
+            .GroupBy(e => (e.Product, e.Service, e.Environment))
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.DeployedAt).First().Version);
+    }
 
     private static IReadOnlyList<ReferenceDto> ExtractSourceReferences(string? referencesJson)
         => Deserialize<List<ReferenceDto>>(referencesJson) ?? new();

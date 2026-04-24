@@ -502,6 +502,8 @@ export interface PromotionCandidate {
   sourceEnv: string;
   targetEnv: string;
   version: string;
+  /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
+  targetCurrentVersion: string | null;
   status: PromotionStatus;
   sourceDeployerName: string | null;
   sourceDeployerEmail: string | null;

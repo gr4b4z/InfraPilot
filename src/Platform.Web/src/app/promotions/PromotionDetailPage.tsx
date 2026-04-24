@@ -153,8 +153,15 @@ export function PromotionDetailPage() {
             <span
               className="px-1.5 py-0.5 rounded text-[12px] font-mono"
               style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              title={
+                candidate.targetCurrentVersion
+                  ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
+                  : `First deploy to ${candidate.targetEnv}`
+              }
             >
-              {candidate.version}
+              {candidate.targetCurrentVersion
+                ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
+                : candidate.version}
             </span>
           </div>
         </div>
