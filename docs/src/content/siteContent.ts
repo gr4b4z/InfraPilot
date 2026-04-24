@@ -960,6 +960,13 @@ export const deploymentApiFieldRows: TableRow[] = [
     default: '`false`',
     description: 'Marks the deployment as a rollback to a previously shipped version.',
   },
+  {
+    field: '`previousVersion`',
+    type: 'string',
+    required: 'No',
+    default: '_server-derived_',
+    description: "The predecessor version the caller observed. When omitted the server derives it from the most recent event for the same product/service/environment. Supplying this lets integrators assert the predecessor they saw and detect drift vs. the server's history.",
+  },
 ];
 
 export const deploymentApiStatusColumns: TableColumn[] = [

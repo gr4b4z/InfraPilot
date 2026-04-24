@@ -44,6 +44,21 @@ public class PromotionCandidate
     // Set when a newer version creates a candidate on the same edge and supersedes this one.
     public Guid? SupersededById { get; set; }
 
+    // Deploy-event IDs inherited from superseded predecessors on the same edge. Union of
+    // each predecessor's own list plus its SourceDeployEventId — so a chain
+    // C1→C2→C3 accumulates correctly. Enables the UI to surface work items, PRs, and
+    // participants that were part of prior Pending candidates before this one replaced them,
+    // preserving audit context when multiple dev deploys stack up without approval.
+    public string SupersededSourceEventIdsJson { get; set; } = "[]";
+
+    public List<Guid> SupersededSourceEventIds
+    {
+        get => string.IsNullOrEmpty(SupersededSourceEventIdsJson)
+            ? new()
+            : JsonSerializer.Deserialize<List<Guid>>(SupersededSourceEventIdsJson, JsonOpts) ?? new();
+        set => SupersededSourceEventIdsJson = JsonSerializer.Serialize(value, JsonOpts);
+    }
+
     // Free-form participants attached at the promotion level (not from the source deploy event).
     // Shape: [{ role, displayName, email }] — same as DeployEvent.Participants so UI and downstream
     // integrations (Jira, Slack) can treat both sources uniformly. Roles are user-defined strings;

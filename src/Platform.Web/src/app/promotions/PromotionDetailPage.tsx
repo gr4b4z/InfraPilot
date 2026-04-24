@@ -10,6 +10,8 @@ import type {
   PromotionSourceEventParticipant,
   PromotionParticipant,
   PromotionComment,
+  PromotionInheritedReference,
+  PromotionInheritedParticipant,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { roleDisplay } from '@/lib/roleLabel';
@@ -62,6 +64,9 @@ export function PromotionDetailPage() {
   const [approvals, setApprovals] = useState<PromotionApprovalEntry[]>([]);
   const [sourceEvent, setSourceEvent] = useState<PromotionSourceEvent | null>(null);
   const [comments, setComments] = useState<PromotionComment[]>([]);
+  const [inheritedRefs, setInheritedRefs] = useState<PromotionInheritedReference[]>([]);
+  const [inheritedParticipants, setInheritedParticipants] = useState<PromotionInheritedParticipant[]>([]);
+  const [inheritedOpen, setInheritedOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
@@ -76,6 +81,8 @@ export function PromotionDetailPage() {
         setApprovals(data.approvals || []);
         setSourceEvent(data.sourceEvent ?? null);
         setComments(data.comments || []);
+        setInheritedRefs(data.inheritedReferences || []);
+        setInheritedParticipants(data.inheritedParticipants || []);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -153,8 +160,15 @@ export function PromotionDetailPage() {
             <span
               className="px-1.5 py-0.5 rounded text-[12px] font-mono"
               style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              title={
+                candidate.targetCurrentVersion
+                  ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
+                  : `First deploy to ${candidate.targetEnv}`
+              }
             >
-              {candidate.version}
+              {candidate.targetCurrentVersion
+                ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
+                : candidate.version}
             </span>
           </div>
         </div>
@@ -423,6 +437,69 @@ export function PromotionDetailPage() {
                   />
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Inherited from superseded predecessors — refs and participants carried forward */}
+          {(inheritedRefs.length > 0 || inheritedParticipants.length > 0) && (
+            <div
+              className="rounded-xl border p-5"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+            >
+              <button
+                type="button"
+                onClick={() => setInheritedOpen((v) => !v)}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2
+                  className="text-[11px] font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Inherited from superseded candidates
+                  <span className="ml-2 normal-case font-normal" style={{ color: 'var(--text-muted)' }}>
+                    ({inheritedRefs.length} refs, {inheritedParticipants.length} people)
+                  </span>
+                </h2>
+                <span style={{ color: 'var(--text-muted)' }}>{inheritedOpen ? '−' : '+'}</span>
+              </button>
+              {inheritedOpen && (
+                <div className="mt-4 space-y-3">
+                  {inheritedRefs.length > 0 && (
+                    <div className="space-y-2">
+                      {inheritedRefs.map((ir, i) => (
+                        <div key={`ir-${i}`} className="flex items-center gap-2">
+                          <ReferenceItem reference={ir.reference} labels={{}} />
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                            title={`Carried from v${ir.fromVersion}`}
+                          >
+                            v{ir.fromVersion}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {inheritedParticipants.length > 0 && (
+                    <div className="space-y-1 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                      {inheritedParticipants.map((ip, i) => (
+                        <div key={`ip-${i}`} className="flex items-center gap-2">
+                          <span style={{ color: 'var(--text-muted)' }}>{roleDisplay({ role: ip.participant.role })}</span>
+                          <span>{ip.participant.displayName ?? ip.participant.email ?? '—'}</span>
+                          <CopyEmailButton email={ip.participant.email} />
+                          <span
+                            className="ml-auto text-[10px] px-1.5 py-0.5 rounded font-mono"
+                            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                            title={`Carried from v${ip.fromVersion}`}
+                          >
+                            v{ip.fromVersion}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

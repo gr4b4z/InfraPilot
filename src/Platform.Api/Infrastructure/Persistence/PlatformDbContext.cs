@@ -317,6 +317,10 @@ public class PlatformDbContext : DbContext
             if (jsonType != null) participantsJson.HasColumnType(jsonType);
             e.Ignore(x => x.Participants);
 
+            var supersededIdsJson = e.Property(x => x.SupersededSourceEventIdsJson).HasDefaultValue("[]");
+            if (jsonType != null) supersededIdsJson.HasColumnType(jsonType);
+            e.Ignore(x => x.SupersededSourceEventIds);
+
             e.HasIndex(x => x.Status);
             e.HasIndex(x => new { x.Product, x.Service, x.SourceEnv, x.TargetEnv });
             e.HasIndex(x => x.SourceDeployEventId);

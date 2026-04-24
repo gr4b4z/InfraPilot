@@ -275,6 +275,8 @@ class ApiClient {
       approvals: PromotionApprovalEntry[];
       sourceEvent: PromotionSourceEvent | null;
       comments: PromotionComment[];
+      inheritedReferences: PromotionInheritedReference[];
+      inheritedParticipants: PromotionInheritedParticipant[];
     }>(`/promotions/${id}`);
   }
 
@@ -502,6 +504,10 @@ export interface PromotionCandidate {
   sourceEnv: string;
   targetEnv: string;
   version: string;
+  /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
+  targetCurrentVersion: string | null;
+  /** Count of refs/participants inherited from superseded predecessors. 0 when the candidate didn't displace anything. */
+  inheritedCount: number;
   status: PromotionStatus;
   sourceDeployerName: string | null;
   sourceDeployerEmail: string | null;
@@ -545,6 +551,18 @@ export interface PromotionSourceEventParticipant {
   role: string;
   displayName?: string | null;
   email?: string | null;
+}
+
+export interface PromotionInheritedReference {
+  reference: PromotionSourceEventReference;
+  fromVersion: string;
+  fromDeployedAt: string;
+}
+
+export interface PromotionInheritedParticipant {
+  participant: PromotionSourceEventParticipant;
+  fromVersion: string;
+  fromDeployedAt: string;
 }
 
 export interface PromotionSourceEventEnrichment {

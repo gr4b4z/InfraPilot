@@ -13,7 +13,8 @@ public record CreateDeployEventDto(
     List<ParticipantDto>? Participants,
     Dictionary<string, object>? Metadata,
     string? Status = null,
-    bool IsRollback = false);
+    bool IsRollback = false,
+    string? PreviousVersion = null);
 
 public record ReferenceDto(
     string Type,
