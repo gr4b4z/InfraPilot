@@ -116,11 +116,37 @@ public static class PromotionEndpoints
                 .Select(e => e.Version)
                 .FirstOrDefaultAsync();
 
+            // Deploy events inherited from superseded predecessors — their refs and participants
+            // surface on the current candidate so the audit trail survives the supersede chain.
+            var inheritedIds = c.SupersededSourceEventIds;
+            var inheritedEvents = inheritedIds.Count == 0
+                ? new List<DeployEvent>()
+                : await db.DeployEvents
+                    .AsNoTracking()
+                    .Where(e => inheritedIds.Contains(e.Id))
+                    .ToListAsync();
+
+            var inheritedRefs = new List<object>();
+            var inheritedParticipants = new List<object>();
+            foreach (var ev in inheritedEvents)
+            {
+                foreach (var r in ExtractSourceReferences(ev.ReferencesJson))
+                {
+                    inheritedRefs.Add(new { reference = r, fromVersion = ev.Version, fromDeployedAt = ev.DeployedAt });
+                }
+                foreach (var p in ExtractSourceParticipants(ev.ParticipantsJson, ev.EnrichmentJson))
+                {
+                    inheritedParticipants.Add(new { participant = p, fromVersion = ev.Version, fromDeployedAt = ev.DeployedAt });
+                }
+            }
+
             var comments = await svc.GetCommentsAsync(id);
 
             return Results.Ok(new
             {
                 candidate = ToDto(c, canApprove, targetCurrentVersion: targetCurrent),
+                inheritedReferences = inheritedRefs,
+                inheritedParticipants,
                 approvals = approvals.Select(a => new
                 {
                     a.Id,

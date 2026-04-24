@@ -275,6 +275,8 @@ class ApiClient {
       approvals: PromotionApprovalEntry[];
       sourceEvent: PromotionSourceEvent | null;
       comments: PromotionComment[];
+      inheritedReferences: PromotionInheritedReference[];
+      inheritedParticipants: PromotionInheritedParticipant[];
     }>(`/promotions/${id}`);
   }
 
@@ -547,6 +549,18 @@ export interface PromotionSourceEventParticipant {
   role: string;
   displayName?: string | null;
   email?: string | null;
+}
+
+export interface PromotionInheritedReference {
+  reference: PromotionSourceEventReference;
+  fromVersion: string;
+  fromDeployedAt: string;
+}
+
+export interface PromotionInheritedParticipant {
+  participant: PromotionSourceEventParticipant;
+  fromVersion: string;
+  fromDeployedAt: string;
 }
 
 export interface PromotionSourceEventEnrichment {
