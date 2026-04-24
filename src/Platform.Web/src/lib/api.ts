@@ -538,6 +538,7 @@ export interface PromotionSourceEventReference {
   provider?: string | null;
   key?: string | null;
   revision?: string | null;
+  title?: string | null;
 }
 
 export interface PromotionSourceEventParticipant {

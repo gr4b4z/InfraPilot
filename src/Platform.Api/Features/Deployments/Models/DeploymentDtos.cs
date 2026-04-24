@@ -20,7 +20,8 @@ public record ReferenceDto(
     string? Url = null,
     string? Provider = null,
     string? Key = null,
-    string? Revision = null);
+    string? Revision = null,
+    string? Title = null);
 
 public record ParticipantDto(
     string Role,

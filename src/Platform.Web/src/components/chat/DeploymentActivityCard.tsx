@@ -117,18 +117,16 @@ export function DeploymentActivityCard({ title, data }: Props) {
                 </span>
               </div>
 
-              {/* Row 2: work item */}
+              {/* Row 2: work item — title shown on hover */}
               {(item.workItemKey || item.workItemTitle) && (
                 <div
                   className="mt-1 flex items-center gap-1.5 truncate"
                   style={{ color: 'var(--text-secondary)' }}
+                  title={item.workItemTitle}
                 >
                   <Ticket size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                   {item.workItemKey && (
                     <span className="font-medium">{item.workItemKey}</span>
-                  )}
-                  {item.workItemTitle && (
-                    <span className="truncate">— {item.workItemTitle}</span>
                   )}
                 </div>
               )}
