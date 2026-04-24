@@ -372,6 +372,17 @@ Reference types the UI recognises with a dedicated icon and label:
 
 Unknown types render with a generic external-link icon. Always include `url` when you have it — the UI turns the label into a link.
 
+**Commit deep-linking.** A `repository` reference that includes both `url` and `revision` is rendered as a link directly to that commit, derived from the `provider`:
+
+| Provider | Resolved URL |
+|---|---|
+| `github`, `azure-devops` | `{url}/commit/{revision}` |
+| `gitlab` | `{url}/-/commit/{revision}` |
+| `bitbucket` | `{url}/commits/{revision}` |
+| _other / omitted_ | falls back to `url` |
+
+So a payload like `{ "type": "repository", "provider": "github", "url": "https://github.com/acme/platform-api", "revision": "a1b2c3d4" }` deep-links to `https://github.com/acme/platform-api/commit/a1b2c3d4`. No org/repo names are hardcoded — the URL is derived purely from the inbound `url`.
+
 **Minimal curl example:**
 
 ```bash

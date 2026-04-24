@@ -105,6 +105,17 @@ Common `type` values:
 | `pull-request` | Link to the merged PR that triggered the deploy. |
 | `work-item` | Link to a Jira ticket, Azure DevOps work item, etc. |
 
+**Commit deep-linking.** When a `repository` reference includes both `url` and `revision`, the UI renders a link to the specific commit, derived from `provider`:
+
+| Provider | Resolved URL |
+|---|---|
+| `github`, `azure-devops` | `{url}/commit/{revision}` |
+| `gitlab` | `{url}/-/commit/{revision}` |
+| `bitbucket` | `{url}/commits/{revision}` |
+| _other / omitted_ | falls back to `url` |
+
+The URL is derived purely from the inbound `url` (with any trailing `.git` or `/` stripped) — no org/repo names are hardcoded.
+
 ### `participants[]` object
 
 | Field | Type | Required | Description |
