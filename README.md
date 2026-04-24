@@ -347,8 +347,8 @@ A deployment event is a small JSON document. Only `product`, `service`, `environ
   "status": "succeeded",                  // "succeeded" | "failed" | "in_progress"
   "isRollback": false,                    // set true when this deploy reverted to a prior version
   "references": [
-    { "type": "pull-request", "url": "https://github.com/acme/platform-api/pull/482", "provider": "github", "key": "482" },
-    { "type": "work-item",    "url": "https://acme.atlassian.net/browse/PLAT-1234",   "provider": "jira",   "key": "PLAT-1234" },
+    { "type": "pull-request", "url": "https://github.com/acme/platform-api/pull/482", "provider": "github", "key": "482", "title": "Add idempotency key to checkout" },
+    { "type": "work-item",    "url": "https://acme.atlassian.net/browse/PLAT-1234",   "provider": "jira",   "key": "PLAT-1234", "title": "Add idempotency key to checkout endpoint" },
     { "type": "repository",   "url": "https://github.com/acme/platform-api",           "provider": "github", "key": "acme/platform-api", "revision": "a1b2c3d4" },
     { "type": "pipeline",     "url": "https://dev.azure.com/acme/_build/results?buildId=98765", "provider": "azure-devops", "key": "98765" }
   ],
@@ -365,12 +365,23 @@ Reference types the UI recognises with a dedicated icon and label:
 
 | `type` | Icon | Label preference |
 |---|---|---|
-| `work-item` | ticket | `key` (e.g. `PLAT-1234`) — shows Jira title when present |
+| `work-item` | ticket | `key` (e.g. `PLAT-1234`) — shows the inbound `title` when supplied, otherwise the Jira title fetched server-side |
 | `pull-request` | PR | `labels.prTitle` → `key` |
 | `repository` | branch | `key` (e.g. `acme/platform-api`) → parsed from `url` → short `revision` |
 | `pipeline` | workflow | `key` → `provider` |
 
 Unknown types render with a generic external-link icon. Always include `url` when you have it — the UI turns the label into a link.
+
+**Commit deep-linking.** A `repository` reference that includes both `url` and `revision` is rendered as a link directly to that commit, derived from the `provider`:
+
+| Provider | Resolved URL |
+|---|---|
+| `github`, `azure-devops` | `{url}/commit/{revision}` |
+| `gitlab` | `{url}/-/commit/{revision}` |
+| `bitbucket` | `{url}/commits/{revision}` |
+| _other / omitted_ | falls back to `url` |
+
+So a payload like `{ "type": "repository", "provider": "github", "url": "https://github.com/acme/platform-api", "revision": "a1b2c3d4" }` deep-links to `https://github.com/acme/platform-api/commit/a1b2c3d4`. No org/repo names are hardcoded — the URL is derived purely from the inbound `url`.
 
 **Minimal curl example:**
 

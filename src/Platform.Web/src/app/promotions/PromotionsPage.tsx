@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
+import { resolveReferenceHref } from '@/lib/refUrl';
 import { roleDisplay } from '@/lib/roleLabel';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -451,6 +452,14 @@ function CandidateCard({
               const Icon = REFERENCE_ICONS[ref.type] ?? ExternalLink;
               const label = referenceChipLabel(ref.type, ref.key);
               const filterKey = ref.key || ref.revision || '';
+              const titleParts = [ref.title, filterKey ? `Filter by ${filterKey}` : null].filter(Boolean);
+              const buttonTitle = titleParts.join(' — ') || label;
+              const href = resolveReferenceHref({
+                type: ref.type,
+                url: ref.url ?? undefined,
+                provider: ref.provider ?? undefined,
+                revision: ref.revision ?? undefined,
+              });
               return (
                 <span
                   key={`ref-${i}`}
@@ -468,20 +477,20 @@ function CandidateCard({
                       color: 'var(--text-secondary)',
                       cursor: filterKey ? 'pointer' : 'default',
                     }}
-                    title={filterKey ? `Filter by ${filterKey}` : label}
+                    title={buttonTitle}
                   >
                     <Icon size={10} style={{ color: 'var(--text-muted)' }} />
                     <span className="font-medium">{label}</span>
                   </button>
-                  {ref.url && (
+                  {href && (
                     <a
-                      href={ref.url}
+                      href={href}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
                       style={{ color: 'var(--text-muted)' }}
                       className="transition-opacity hover:opacity-80"
-                      title="Open"
+                      title={ref.title ?? 'Open'}
                     >
                       <ExternalLink size={10} />
                     </a>

@@ -100,6 +100,13 @@ public class DeploymentEnrichmentService : BackgroundService
         {
             try
             {
+                // Caller-supplied title wins — skip the remote lookup.
+                if (reference.Type == "work-item" && !string.IsNullOrEmpty(reference.Title))
+                {
+                    labels["workItemTitle"] = reference.Title;
+                    continue;
+                }
+
                 if (reference.Type == "work-item" && reference.Provider == "jira" && !string.IsNullOrEmpty(reference.Key))
                 {
                     await EnrichFromJira(jira, reference.Key, labels, ct);

@@ -159,6 +159,7 @@ export interface DeployReference {
   provider?: string;
   key?: string;
   revision?: string;
+  title?: string;
 }
 
 export interface DeployParticipant {

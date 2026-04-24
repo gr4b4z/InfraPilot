@@ -20,6 +20,7 @@ import {
   ChevronsUpDown,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import { resolveReferenceHref } from '@/lib/refUrl';
 
 type ViewTab = 'state' | 'activity' | 'compare';
 type TimeFilter = 'all' | 'today' | '24h' | '7d' | 'custom';
@@ -1276,16 +1277,22 @@ function ActivityCard({
               .filter((ref) => ref.url)
               .map((ref, i) => {
                 const Icon = REF_ICONS[ref.type] ?? ExternalLink;
+                const labels = evt.enrichment?.labels ?? {};
+                const enrichedTitle =
+                  ref.type === 'work-item' ? labels.workItemTitle :
+                  ref.type === 'pull-request' ? labels.prTitle : undefined;
+                const tip = [ref.key, ref.title ?? enrichedTitle].filter(Boolean).join(' — ') || ref.type;
+                const href = resolveReferenceHref(ref) ?? ref.url;
                 return (
                   <a
                     key={i}
-                    href={ref.url}
+                    href={href}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="hover:opacity-80 transition-opacity"
                     style={{ color: 'var(--accent)' }}
                     onClick={(e) => e.stopPropagation()}
-                    title={ref.type}
+                    title={tip}
                   >
                     <Icon size={13} />
                   </a>
