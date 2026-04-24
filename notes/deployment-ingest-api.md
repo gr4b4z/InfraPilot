@@ -73,6 +73,7 @@ Rate limiting is applied per key.
 | `deployedAt` | DateTimeOffset | **yes** | — | UTC timestamp of the deployment. Must not be the zero value. |
 | `status` | string | no | `"succeeded"` | One of: `succeeded`, `failed`, `in_progress`. Case-insensitive. |
 | `isRollback` | boolean | no | `false` | Whether this deployment is a rollback to a previous version. |
+| `previousVersion` | string | no | _server-derived_ | The predecessor version the caller observed. When omitted, the server derives it from the most recent event for the same product/service/environment. Supplying this lets integrators assert the predecessor they saw and detect drift vs. the server's history. |
 | `references` | array | no | `[]` | Links to external resources (repos, pipelines, PRs, tickets). |
 | `participants` | array | no | `[]` | People involved in the deployment. |
 | `metadata` | object | no | `{}` | Free-form key-value pairs for custom data. |
