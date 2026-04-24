@@ -819,13 +819,15 @@ export const deploymentApiFullPayload = `{
       "type": "pipeline",
       "url": "https://github.com/Acmetrix/order-api/actions/runs/87654",
       "provider": "github",
-      "key": "87654"
+      "key": "87654",
+      "title": "Release 2.14.0"
     },
     {
       "type": "pull-request",
       "url": "https://github.com/Acmetrix/order-api/pull/312",
       "provider": "github",
-      "key": "312"
+      "key": "312",
+      "title": "Add idempotency key to checkout"
     },
     {
       "type": "work-item",
