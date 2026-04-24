@@ -45,12 +45,19 @@ public class DeploymentService
         // default, so senders' original casing is preserved unless an admin opts in.
         var environment = norm.ApplyEnvironment(dto.Environment);
 
-        // Look up previous version for same product+service+environment
-        var previousEvent = await _db.DeployEvents
-            .Where(e => e.Product == dto.Product && e.Service == dto.Service && e.Environment == environment)
-            .OrderByDescending(e => e.DeployedAt)
-            .Select(e => new { e.Version })
-            .FirstOrDefaultAsync(ct);
+        // Use caller-supplied previousVersion when present (lets integrators assert the
+        // predecessor they observed and detect drift vs. the server's history). Otherwise
+        // derive it from the most recent event for the same product+service+environment.
+        string? previousVersion = dto.PreviousVersion;
+        if (previousVersion is null)
+        {
+            var previousEvent = await _db.DeployEvents
+                .Where(e => e.Product == dto.Product && e.Service == dto.Service && e.Environment == environment)
+                .OrderByDescending(e => e.DeployedAt)
+                .Select(e => new { e.Version })
+                .FirstOrDefaultAsync(ct);
+            previousVersion = previousEvent?.Version;
+        }
 
         var status = dto.Status ?? "succeeded";
         var deployEvent = new DeployEvent
@@ -60,7 +67,7 @@ public class DeploymentService
             Service = dto.Service,
             Environment = environment,
             Version = dto.Version,
-            PreviousVersion = previousEvent?.Version,
+            PreviousVersion = previousVersion,
             IsRollback = dto.IsRollback,
             Status = status,
             Source = dto.Source,

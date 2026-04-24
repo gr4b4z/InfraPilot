@@ -130,7 +130,9 @@ public class PromotionService
         };
 
         // Supersede any still-pending candidate for the same service+edge — a newer version wins.
-        await SupersedeStalePendingAsync(candidate, ct);
+        // The fresh candidate inherits their source deploy-event IDs so the UI can surface work
+        // items, PRs, and participants that were part of superseded predecessors.
+        candidate.SupersededSourceEventIds = await SupersedeStalePendingAsync(candidate, ct);
 
         _db.PromotionCandidates.Add(candidate);
 
@@ -186,7 +188,7 @@ public class PromotionService
         return candidate;
     }
 
-    private async Task SupersedeStalePendingAsync(PromotionCandidate fresh, CancellationToken ct)
+    private async Task<List<Guid>> SupersedeStalePendingAsync(PromotionCandidate fresh, CancellationToken ct)
     {
         var stale = await _db.PromotionCandidates
             .Where(c => c.Product == fresh.Product
@@ -196,16 +198,25 @@ public class PromotionService
                      && c.Status == PromotionStatus.Pending)
             .ToListAsync(ct);
 
+        // Accumulated inheritance: each superseded candidate contributes its own source event
+        // plus whatever it had already inherited. Deduplicate and exclude the fresh candidate's
+        // own SourceDeployEventId (inheritance is for *other* events in the chain).
+        var inherited = new HashSet<Guid>();
         foreach (var old in stale)
         {
             old.Status = PromotionStatus.Superseded;
             old.SupersededById = fresh.Id;
+            inherited.Add(old.SourceDeployEventId);
+            foreach (var id in old.SupersededSourceEventIds) inherited.Add(id);
         }
+        inherited.Remove(fresh.SourceDeployEventId);
 
         if (stale.Count > 0)
             _logger.LogInformation(
-                "Superseded {Count} pending candidates in favour of {CandidateId}",
-                stale.Count, fresh.Id);
+                "Superseded {Count} pending candidates in favour of {CandidateId} (inherited {InheritedCount} events)",
+                stale.Count, fresh.Id, inherited.Count);
+
+        return inherited.ToList();
     }
 
     private record DeployerInfo(string? Name, string? Email);

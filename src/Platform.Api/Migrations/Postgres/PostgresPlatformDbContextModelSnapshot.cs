@@ -393,6 +393,12 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<Guid?>("SupersededById")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("SupersededSourceEventIdsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
