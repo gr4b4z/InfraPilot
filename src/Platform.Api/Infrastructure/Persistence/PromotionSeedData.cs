@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Features;
@@ -330,8 +331,90 @@ public static class PromotionSeedData
             // Auto-approve means no PromotionApproval rows — the system approved it.
         }
 
+        // ── supersede chain (demo): 3 predecessors superseded by a fresh Pending ──
+        // Picks one service with ≥4 succeeded staging deploys at distinct versions and
+        // constructs a chain on the staging→production edge. The final candidate is
+        // Pending and inherits all prior source-event IDs, so the "Inherited from
+        // superseded candidates" section on the detail page has something to show.
+        SeedSupersedeChain(db, policies, stagingDeploys, candidates, now);
+
         db.PromotionCandidates.AddRange(candidates);
         db.PromotionApprovals.AddRange(approvals);
+    }
+
+    private static void SeedSupersedeChain(
+        PlatformDbContext db,
+        List<PromotionPolicy> policies,
+        List<DeployEvent> stagingDeploys,
+        List<PromotionCandidate> candidates,
+        DateTimeOffset now)
+    {
+        // Group staging deploys by (product, service), pick the first group with ≥4 distinct
+        // versions and a matching staging→production policy.
+        var group = stagingDeploys
+            .GroupBy(d => (d.Product, d.Service))
+            .Select(g => g
+                .GroupBy(d => d.Version) // dedupe same-version redeploys
+                .Select(vg => vg.OrderByDescending(d => d.DeployedAt).First())
+                .OrderByDescending(d => d.DeployedAt)
+                .Take(4)
+                .ToList())
+            .FirstOrDefault(list => list.Count == 4
+                && policies.Any(p => p.Product == list[0].Product && p.TargetEnv == "production"));
+
+        if (group is null) return;
+
+        var policy = policies.First(p => p.Product == group[0].Product && p.TargetEnv == "production");
+        var snapshot = MakeSnapshot(policy);
+
+        // group[0] is newest → becomes the Pending "winner"; group[1..3] are older → Superseded.
+        var fresh = group[0];
+        var older = group.Skip(1).OrderBy(d => d.DeployedAt).ToList(); // oldest-first
+
+        var freshId = Guid.NewGuid();
+        var freshDeployer = ExtractDeployer(fresh.ParticipantsJson);
+
+        var predecessorIds = new List<Guid>();
+        foreach (var ev in older)
+        {
+            var deployer = ExtractDeployer(ev.ParticipantsJson);
+            candidates.Add(new PromotionCandidate
+            {
+                Id = Guid.NewGuid(),
+                Product = ev.Product,
+                Service = ev.Service,
+                SourceEnv = "staging",
+                TargetEnv = "production",
+                Version = ev.Version,
+                SourceDeployEventId = ev.Id,
+                SourceDeployerName = deployer?.Name,
+                SourceDeployerEmail = deployer?.Email,
+                Status = PromotionStatus.Superseded,
+                SupersededById = freshId,
+                PolicyId = policy.Id,
+                ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
+                CreatedAt = ev.DeployedAt.AddMinutes(5),
+            });
+            predecessorIds.Add(ev.Id);
+        }
+
+        candidates.Add(new PromotionCandidate
+        {
+            Id = freshId,
+            Product = fresh.Product,
+            Service = fresh.Service,
+            SourceEnv = "staging",
+            TargetEnv = "production",
+            Version = fresh.Version,
+            SourceDeployEventId = fresh.Id,
+            SourceDeployerName = freshDeployer?.Name,
+            SourceDeployerEmail = freshDeployer?.Email,
+            Status = PromotionStatus.Pending,
+            PolicyId = policy.Id,
+            ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
+            CreatedAt = fresh.DeployedAt.AddMinutes(5),
+            SupersededSourceEventIds = predecessorIds,
+        });
     }
 
     private static ResolvedPolicySnapshot MakeSnapshot(PromotionPolicy policy) =>
