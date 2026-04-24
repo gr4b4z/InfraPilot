@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useAuthStore } from '@/stores/authStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
+import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -208,9 +209,16 @@ export function Topbar() {
                   {user?.email}
                 </p>
               </div>
-              {isLocalAuthEnabled() && (
+              {(isLocalAuthEnabled() || isMsalEnabled()) && (
                 <button
-                  onClick={() => { setUserMenuOpen(false); logout(); }}
+                  onClick={() => {
+                    setUserMenuOpen(false);
+                    if (isMsalEnabled()) {
+                      void msalLogout();
+                    } else {
+                      logout();
+                    }
+                  }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-[var(--bg-primary)]"
                   style={{ color: 'var(--text-secondary)' }}
                 >
