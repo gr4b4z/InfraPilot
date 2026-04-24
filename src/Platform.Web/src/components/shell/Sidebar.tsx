@@ -161,37 +161,6 @@ export function Sidebar() {
 
       {/* Bottom section */}
       <div className="border-t px-2 py-2" style={{ borderColor: 'var(--border-color)' }}>
-        {!collapsed && (
-          <div
-            className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg mb-1"
-            style={{ backgroundColor: 'var(--accent-muted)' }}
-          >
-            <div
-              className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-              style={{ backgroundColor: 'var(--accent)' }}
-            >
-              {user?.initials ?? 'DU'}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <p className="text-[12px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                  {user?.name ?? 'Dev User'}
-                </p>
-                {user?.isAdmin && (
-                  <span
-                    className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full uppercase"
-                    style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
-                  >
-                    Admin
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
-                {user?.email ?? ''}
-              </p>
-            </div>
-          </div>
-        )}
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-full flex items-center justify-center h-8 rounded-lg transition-colors hover:bg-[var(--accent-muted)]"
@@ -199,6 +168,15 @@ export function Sidebar() {
         >
           {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
         </button>
+        {!collapsed && (
+          <p
+            className="text-[10px] text-center mt-1 font-mono"
+            style={{ color: 'var(--text-muted)' }}
+            title="Build version"
+          >
+            {__APP_VERSION__}
+          </p>
+        )}
       </div>
     </aside>
   );
