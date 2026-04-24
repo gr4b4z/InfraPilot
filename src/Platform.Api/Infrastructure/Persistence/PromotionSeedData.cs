@@ -345,22 +345,36 @@ public static class PromotionSeedData
     private static void SeedSupersedeChain(
         PlatformDbContext db,
         List<PromotionPolicy> policies,
-        List<DeployEvent> stagingDeploys,
+        List<DeployEvent> _unused,
         List<PromotionCandidate> candidates,
         DateTimeOffset now)
     {
-        // Group staging deploys by (product, service), pick the first group with ≥4 distinct
+        // Load the full set of succeeded staging deploys (not just the top-60 slice used for
+        // other candidate seeding) so we have enough depth to find a service with 4 distinct
         // versions and a matching staging→production policy.
-        var group = stagingDeploys
+        var allStaging = db.DeployEvents
+            .Where(e => e.Environment == "staging" && e.Status == "succeeded")
+            .OrderByDescending(e => e.DeployedAt)
+            .ToList();
+
+        var productsWithProdPolicy = policies
+            .Where(p => p.TargetEnv == "production")
+            .Select(p => p.Product)
+            .ToHashSet();
+
+        var reservedIds = candidates.Select(c => c.SourceDeployEventId).ToHashSet();
+
+        var group = allStaging
+            .Where(d => productsWithProdPolicy.Contains(d.Product))
             .GroupBy(d => (d.Product, d.Service))
             .Select(g => g
                 .GroupBy(d => d.Version) // dedupe same-version redeploys
                 .Select(vg => vg.OrderByDescending(d => d.DeployedAt).First())
+                .Where(d => !reservedIds.Contains(d.Id)) // avoid events already consumed elsewhere
                 .OrderByDescending(d => d.DeployedAt)
                 .Take(4)
                 .ToList())
-            .FirstOrDefault(list => list.Count == 4
-                && policies.Any(p => p.Product == list[0].Product && p.TargetEnv == "production"));
+            .FirstOrDefault(list => list.Count == 4);
 
         if (group is null) return;
 
