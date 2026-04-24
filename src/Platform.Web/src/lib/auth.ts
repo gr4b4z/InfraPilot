@@ -62,6 +62,16 @@ export function getLoginRequest(): PopupRequest {
   return init().loginRequest;
 }
 
+export async function logout(): Promise<void> {
+  const { enabled, instance } = init();
+  if (!enabled || !instance) return;
+  const account = instance.getAllAccounts()[0];
+  await instance.logoutRedirect({
+    account,
+    postLogoutRedirectUri: window.location.origin,
+  });
+}
+
 export async function acquireToken(): Promise<string | null> {
   const { enabled, instance, loginRequest } = init();
   if (!enabled || !instance) return null;

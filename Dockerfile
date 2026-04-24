@@ -11,6 +11,9 @@ RUN dotnet publish src/Platform.Api/Platform.Api.csproj -c Release -o /app/api /
 FROM node:25-alpine AS web-build
 WORKDIR /app
 
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
 COPY src/Platform.Web/package.json src/Platform.Web/package-lock.json ./
 RUN npm ci
 
