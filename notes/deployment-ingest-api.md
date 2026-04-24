@@ -94,6 +94,7 @@ Rate limiting is applied per key.
 | `provider` | string | no | Provider name (e.g. `github`, `azure-devops`, `gitlab`, `jira`). |
 | `key` | string | no | Unique identifier in that system (commit SHA, PR number, ticket key). |
 | `revision` | string | no | Git revision / commit SHA. Can be omitted if not available. |
+| `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. |
 
 Common `type` values:
 
@@ -103,6 +104,17 @@ Common `type` values:
 | `pipeline` | Link to the CI/CD build or workflow run. |
 | `pull-request` | Link to the merged PR that triggered the deploy. |
 | `work-item` | Link to a Jira ticket, Azure DevOps work item, etc. |
+
+**Commit deep-linking.** When a `repository` reference includes both `url` and `revision`, the UI renders a link to the specific commit, derived from `provider`:
+
+| Provider | Resolved URL |
+|---|---|
+| `github`, `azure-devops` | `{url}/commit/{revision}` |
+| `gitlab` | `{url}/-/commit/{revision}` |
+| `bitbucket` | `{url}/commits/{revision}` |
+| _other / omitted_ | falls back to `url` |
+
+The URL is derived purely from the inbound `url` (with any trailing `.git` or `/` stripped) — no org/repo names are hardcoded.
 
 ### `participants[]` object
 
@@ -216,7 +228,8 @@ Returned when the API key is scoped to specific products and the `product` in th
       "type": "work-item",
       "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
       "provider": "jira",
-      "key": "PLT-1234"
+      "key": "PLT-1234",
+      "title": "Add idempotency key to checkout endpoint"
     }
   ],
   "participants": [

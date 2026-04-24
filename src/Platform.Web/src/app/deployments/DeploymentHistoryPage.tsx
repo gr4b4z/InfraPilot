@@ -39,11 +39,11 @@ function referenceLabel(ref: DeployReference): string {
 function referenceTooltip(ref: DeployReference, labels: Record<string, string>): string {
   switch (ref.type) {
     case 'work-item':
-      return labels.workItemTitle ?? ref.type;
+      return ref.title ?? labels.workItemTitle ?? ref.type;
     case 'pull-request':
-      return labels.prTitle ?? ref.type;
+      return ref.title ?? labels.prTitle ?? ref.type;
     default:
-      return ref.type;
+      return ref.title ?? ref.type;
   }
 }
 
@@ -222,9 +222,12 @@ function HistoryRow({ event: evt, isExpanded, onToggle }: { event: DeployEvent; 
         </span>
 
         {workItem?.key && (
-          <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          <span
+            className="text-[12px]"
+            style={{ color: 'var(--text-secondary)' }}
+            title={workItem.title ?? labels.workItemTitle}
+          >
             {workItem.key}
-            {labels.workItemTitle && ` — ${labels.workItemTitle}`}
           </span>
         )}
 

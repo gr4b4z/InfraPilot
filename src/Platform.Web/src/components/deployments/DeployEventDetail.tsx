@@ -4,6 +4,7 @@ import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Cl
 import { useSettingsStore } from '@/stores/settingsStore';
 import { CopyEmailButton } from './CopyEmailButton';
 import type { DeploymentStateEntry, DeployReference, DeployParticipant } from '@/lib/types';
+import { resolveReferenceHref } from '@/lib/refUrl';
 
 interface Props {
   entry: DeploymentStateEntry;
@@ -120,13 +121,14 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
 function ReferenceItem({ reference, labels }: { reference: DeployReference; labels: Record<string, string> }) {
   const Icon = REFERENCE_ICONS[reference.type] ?? ExternalLink;
   const label = buildReferenceLabel(reference, labels);
+  const href = resolveReferenceHref(reference);
 
   return (
     <div className="flex items-center gap-2 text-[13px] min-w-0">
       <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-      {reference.url ? (
+      {href ? (
         <a
-          href={reference.url}
+          href={href}
           target="_blank"
           rel="noopener noreferrer"
           className="hover:underline truncate"
@@ -146,11 +148,13 @@ function buildReferenceLabel(ref: DeployReference, labels: Record<string, string
   switch (ref.type) {
     case 'work-item': {
       const key = ref.key ?? 'work-item';
-      return labels.workItemTitle ? `${key} \u2014 ${labels.workItemTitle}` : key;
+      const title = ref.title ?? labels.workItemTitle;
+      return title ? `${key} \u2014 ${title}` : key;
     }
     case 'pull-request': {
       const num = ref.key ? `#${ref.key}` : 'Pull Request';
-      return labels.prTitle ? `${num} \u2014 ${labels.prTitle}` : num;
+      const title = ref.title ?? labels.prTitle;
+      return title ? `${num} \u2014 ${title}` : num;
     }
     case 'repository': {
       if (ref.key) return ref.revision ? `${ref.key} @ ${ref.revision.slice(0, 8)}` : ref.key;
