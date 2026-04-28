@@ -96,6 +96,39 @@ Rate limiting is applied per key.
 | `key` | string | no | Unique identifier in that system (commit SHA, PR number, ticket key). |
 | `revision` | string | no | Git revision / commit SHA. Can be omitted if not available. |
 | `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. |
+| `participants` | array | no | Reference-scoped participants. Same shape as the top-level `participants[]` (see below) — a PR has its author/reviewer, a ticket has its QA/assignee, a commit has its author. Optional and may be omitted entirely on legacy senders. |
+
+#### `references[].participants[]` — reference-scoped participants
+
+A reference may carry its own `participants[]` array. Same shape as the event-level participants block — `role` is required, `displayName` and `email` are optional — but scoped to the specific PR/ticket/commit instead of the deploy as a whole. This is the natural place to put a ticket's QA, a PR's reviewer, or a commit's author.
+
+```jsonc
+"references": [
+  {
+    "type": "work-item",
+    "provider": "jira",
+    "key": "PLT-1234",
+    "title": "Add idempotency key to checkout endpoint",
+    "participants": [
+      { "role": "qa",       "displayName": "Eve QA",     "email": "eve.qa@acmetrix.com" },
+      { "role": "assignee", "displayName": "Dan Dev",    "email": "dan.dev@acmetrix.com" }
+    ]
+  },
+  {
+    "type": "pull-request",
+    "provider": "github",
+    "key": "312",
+    "participants": [
+      { "role": "author",   "displayName": "Jan Kowalski", "email": "jan@acmetrix.com" },
+      { "role": "reviewer", "displayName": "Anna Kowalska", "email": "anna@acmetrix.com" }
+    ]
+  }
+]
+```
+
+The event-level `participants[]` block is still accepted and is the right place for genuinely event-level roles like `triggered-by` (the deployer / pipeline trigger). When both layers are present and both carry a participant for the same role, **reference-level wins** for read-time lookups — a participant attached directly to a PR/ticket is a more specific signal than the event-level fallback.
+
+The excluded-role rule (`excludeRole` on a promotion policy) checks both layers: the user is blocked from approving if they appear with the excluded role at *either* level.
 
 Common `type` values:
 
@@ -301,6 +334,48 @@ Returned when the API key is scoped to specific products and the `product` in th
       "displayName": "Tomasz Wojcik",
       "email": "tomasz.wojcik@acmetrix.com"
     }
+  ]
+}
+```
+
+### Two-level participants (reference-scoped)
+
+Same deployment as the GitHub Actions example, but with the QA tagged on the ticket and the reviewer tagged on the PR — instead of mixed in to the top-level `participants[]`. The deployer (`triggered-by`) stays at event level because it's not scoped to any one reference.
+
+```json
+{
+  "product": "ticketing-platform",
+  "service": "order-api",
+  "environment": "production",
+  "version": "2.14.0",
+  "source": "github-actions",
+  "deployedAt": "2026-04-16T10:30:00Z",
+  "status": "succeeded",
+  "references": [
+    {
+      "type": "pull-request",
+      "url": "https://github.com/Acmetrix/order-api/pull/312",
+      "provider": "github",
+      "key": "312",
+      "participants": [
+        { "role": "author",   "displayName": "Jan Kowalski",  "email": "jan@acmetrix.com" },
+        { "role": "reviewer", "displayName": "Anna Kowalska", "email": "anna@acmetrix.com" }
+      ]
+    },
+    {
+      "type": "work-item",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
+      "provider": "jira",
+      "key": "PLT-1234",
+      "title": "Add idempotency key to checkout endpoint",
+      "participants": [
+        { "role": "qa",       "displayName": "Piotr Nowak",    "email": "piotr@acmetrix.com" },
+        { "role": "assignee", "displayName": "Marta Wisniewska", "email": "marta@acmetrix.com" }
+      ]
+    }
+  ],
+  "participants": [
+    { "role": "triggered-by", "displayName": "Pipeline Bot", "email": "ci@acmetrix.com" }
   ]
 }
 ```

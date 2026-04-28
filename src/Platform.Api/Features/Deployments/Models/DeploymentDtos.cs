@@ -22,7 +22,12 @@ public record ReferenceDto(
     string? Provider = null,
     string? Key = null,
     string? Revision = null,
-    string? Title = null);
+    string? Title = null,
+    // Optional reference-scoped participants. A PR has its author/reviewer; a ticket has
+    // its QA/assignee. When present these are persisted nested under the reference in
+    // ReferencesJson and are honoured by the excluded-role check (reference-level wins
+    // over event-level when both carry a participant for a given role).
+    IReadOnlyList<ParticipantDto>? Participants = null);
 
 public record ParticipantDto(
     string Role,

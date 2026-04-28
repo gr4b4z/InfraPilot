@@ -941,12 +941,14 @@ public class PromotionService
             .ToListAsync(ct);
         var decidedSet = alreadyDecided.ToHashSet();
 
-        // Batch-load source deploy event participants for role-based exclusion. One query
-        // instead of N — important when the UI is rendering a long list of candidates.
+        // Batch-load source deploy event participants + references for role-based exclusion.
+        // One query instead of N — important when the UI is rendering a long list of candidates.
+        // References are needed for the reference-level participant lookup (two-level model).
         var eventIds = list.Select(c => c.SourceDeployEventId).Distinct().ToList();
-        var sourceParticipantsByEvent = await _db.DeployEvents.AsNoTracking()
+        var sourceJsonByEvent = await _db.DeployEvents.AsNoTracking()
             .Where(e => eventIds.Contains(e.Id))
-            .ToDictionaryAsync(e => e.Id, e => e.ParticipantsJson, ct);
+            .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson })
+            .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson), ct);
 
         // Cache group membership lookups: one call per unique approver group.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -960,8 +962,9 @@ public class PromotionService
 
             if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
-                var json = sourceParticipantsByEvent.GetValueOrDefault(c.SourceDeployEventId);
-                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(json, snapshot.ExcludeRole, _currentUser.Email))
+                var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(c.SourceDeployEventId);
+                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
+                        partsJson, refsJson, snapshot.ExcludeRole, _currentUser.Email))
                 {
                     result[c.Id] = false; continue;
                 }

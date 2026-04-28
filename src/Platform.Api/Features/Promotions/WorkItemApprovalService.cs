@@ -429,10 +429,12 @@ public class WorkItemApprovalService
             .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
             .ToHashSet();
 
-        // Source-event participants for excluded-role checks. Pulled once for all Pending sources.
-        var sourceParticipantsByEvent = await _db.DeployEvents.AsNoTracking()
+        // Source-event participants + references for excluded-role checks (two-level lookup).
+        // Pulled once for all Pending sources to avoid N+1.
+        var sourceJsonByEvent = await _db.DeployEvents.AsNoTracking()
             .Where(e => allEventIds.Contains(e.Id))
-            .ToDictionaryAsync(e => e.Id, e => e.ParticipantsJson, ct);
+            .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson })
+            .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson), ct);
 
         // Cache approver-group membership across distinct groups.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -479,11 +481,13 @@ public class WorkItemApprovalService
             }
             if (!member) continue;
 
-            // Excluded-role: precomputed JSON dict so this is in-memory only.
+            // Excluded-role: precomputed JSON dict so this is in-memory only. Pass both
+            // event-level participants and references so reference-level roles count too.
             if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
-                var json = sourceParticipantsByEvent.GetValueOrDefault(c.SourceDeployEventId);
-                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(json, snapshot.ExcludeRole, _currentUser.Email))
+                var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(c.SourceDeployEventId);
+                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
+                        partsJson, refsJson, snapshot.ExcludeRole, _currentUser.Email))
                     continue;
             }
 

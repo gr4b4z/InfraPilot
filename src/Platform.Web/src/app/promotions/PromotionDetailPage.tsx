@@ -67,6 +67,20 @@ function buildBundleWorkItems(
   return out;
 }
 
+// Compact one-line label for a reference-level participant. Format: "Role: Display <email>",
+// falling back to email-only or just the role label when no human name is available.
+// Display names are truncated client-side so a long full name can't blow the row layout.
+function formatReferenceParticipant(p: PromotionSourceEventParticipant): string {
+  const role = roleDisplay(p.role);
+  const name = (p.displayName ?? '').trim();
+  const truncatedName = name.length > 40 ? `${name.slice(0, 37)}...` : name;
+  const email = (p.email ?? '').trim();
+  if (truncatedName && email) return `${role}: ${truncatedName} <${email}>`;
+  if (truncatedName) return `${role}: ${truncatedName}`;
+  if (email) return `${role}: ${email}`;
+  return role;
+}
+
 const STATUS_CONFIG: Record<
   PromotionStatus,
   { icon: typeof Clock; color: string; bg: string }
@@ -1443,6 +1457,22 @@ function TicketRow({
               {stateLabel}
             </span>
           </div>
+
+          {/* Reference-level participants (e.g. QA on a ticket, author on a PR). Optional —
+              old payloads have none. Compact one-liner under the title; truncated if long. */}
+          {reference.participants && reference.participants.length > 0 && (
+            <div
+              className="mt-0.5 text-[11px] truncate"
+              style={{ color: 'var(--text-muted)' }}
+              title={reference.participants
+                .map((p) => formatReferenceParticipant(p))
+                .join(', ')}
+            >
+              {reference.participants
+                .map((p) => formatReferenceParticipant(p))
+                .join(', ')}
+            </div>
+          )}
 
           {decided && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>

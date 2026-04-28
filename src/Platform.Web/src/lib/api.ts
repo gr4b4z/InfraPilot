@@ -623,6 +623,13 @@ export interface PromotionSourceEventReference {
   key?: string | null;
   revision?: string | null;
   title?: string | null;
+  /**
+   * Reference-scoped participants. Optional and may be absent on legacy payloads —
+   * always treat as `participants ?? []`. Same shape as event-level participants.
+   * The reference-level layer is the more specific signal for excluded-role checks
+   * (a QA on a ticket, an author on a PR, etc.).
+   */
+  participants?: PromotionSourceEventParticipant[];
 }
 
 export interface PromotionSourceEventParticipant {

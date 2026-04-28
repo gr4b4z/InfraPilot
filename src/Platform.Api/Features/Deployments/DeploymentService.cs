@@ -72,7 +72,23 @@ public class DeploymentService
             Status = status,
             Source = dto.Source,
             DeployedAt = dto.DeployedAt,
-            ReferencesJson = JsonSerializer.Serialize(dto.References ?? [], JsonOptions),
+            ReferencesJson = JsonSerializer.Serialize(
+                (dto.References ?? []).Select(r => new ReferenceDto(
+                    Type: r.Type,
+                    Url: r.Url,
+                    Provider: r.Provider,
+                    Key: r.Key,
+                    Revision: r.Revision,
+                    Title: r.Title,
+                    // Apply the same role canonicalisation to nested participants so
+                    // reference-level roles are stored in the same shape as event-level.
+                    Participants: r.Participants is null
+                        ? null
+                        : r.Participants.Select(p => new ParticipantDto(
+                            Role: norm.ApplyRole(p.Role),
+                            DisplayName: p.DisplayName,
+                            Email: p.Email)).ToList())).ToList(),
+                JsonOptions),
             ParticipantsJson = JsonSerializer.Serialize(
                 (dto.Participants ?? []).Select(p => new ParticipantDto(
                     Role: norm.ApplyRole(p.Role),

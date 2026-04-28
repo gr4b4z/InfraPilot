@@ -98,6 +98,21 @@ public static class DeploymentEndpoints
         if (dto.DeployedAt == default) errors.Add("'deployedAt' is required");
         if (dto.Status is not null && !ValidStatuses.Contains(dto.Status))
             errors.Add($"'status' must be one of: {string.Join(", ", ValidStatuses)}");
+
+        // Reference-level participants: same shape as event-level — Role is required.
+        if (dto.References is not null)
+        {
+            for (var i = 0; i < dto.References.Count; i++)
+            {
+                var nested = dto.References[i].Participants;
+                if (nested is null) continue;
+                for (var j = 0; j < nested.Count; j++)
+                {
+                    if (string.IsNullOrWhiteSpace(nested[j].Role))
+                        errors.Add($"'references[{i}].participants[{j}].role' is required");
+                }
+            }
+        }
         return errors;
     }
 }

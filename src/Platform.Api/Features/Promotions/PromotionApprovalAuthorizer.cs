@@ -1,6 +1,4 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Auth;
@@ -26,12 +24,6 @@ public class PromotionApprovalAuthorizer
     private readonly ICurrentUser _currentUser;
     private readonly IIdentityService _identity;
     private readonly ILogger<PromotionApprovalAuthorizer> _logger;
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-    };
 
     public PromotionApprovalAuthorizer(
         PlatformDbContext db,
@@ -85,6 +77,10 @@ public class PromotionApprovalAuthorizer
     /// the snapshot has no exclusion configured, no source event id is supplied, the email is
     /// blank, or the email is not on the event with the excluded role.
     ///
+    /// <para>Walks event-level participants first (so <c>triggered-by</c> and other event-scope
+    /// roles still match) and then reference-level participants nested under
+    /// <c>ReferencesJson</c>. A match at either level returns true.</para>
+    ///
     /// <para>Decoupled from <see cref="PromotionCandidate"/> so ticket-level flows that pick a
     /// candidate dynamically can pass <c>candidate.SourceDeployEventId</c> directly.</para>
     /// </summary>
@@ -98,38 +94,59 @@ public class PromotionApprovalAuthorizer
         if (string.IsNullOrEmpty(email)) return false;
         if (sourceDeployEventId is null) return false;
 
-        var participantsJson = await _db.DeployEvents.AsNoTracking()
+        var row = await _db.DeployEvents.AsNoTracking()
             .Where(e => e.Id == sourceDeployEventId.Value)
-            .Select(e => e.ParticipantsJson)
+            .Select(e => new { e.ParticipantsJson, e.ReferencesJson })
             .FirstOrDefaultAsync(ct);
+        if (row is null) return false;
 
-        return EmailMatchesExcludedRole(participantsJson, snapshot.ExcludeRole, email);
+        return EmailMatchesExcludedRole(row.ParticipantsJson, row.ReferencesJson, snapshot.ExcludeRole, email);
     }
 
     /// <summary>
-    /// Pure helper: checks a participants-JSON blob for an entry matching the role and email.
+    /// Pure helper: checks a participants-JSON blob plus a references-JSON blob (which may
+    /// carry nested per-reference participants) for an entry matching the role and email.
     /// Used both here and from <see cref="PromotionService.CanUserApproveManyAsync"/> where the
-    /// JSON has already been batch-loaded.
+    /// JSONs have already been batch-loaded.
+    /// <para>Event-level is checked first to preserve existing semantics — <c>triggered-by</c>
+    /// is canonically event-level. If neither layer carries a match, returns false.</para>
+    /// </summary>
+    public static bool EmailMatchesExcludedRole(
+        string? participantsJson,
+        string? referencesJson,
+        string excludedRole,
+        string email)
+    {
+        if (string.IsNullOrEmpty(email)) return false;
+        var canonical = RoleNormalizer.Normalize(excludedRole);
+        if (canonical.Length == 0) return false;
+
+        // Event-level first (legacy behaviour, covers triggered-by).
+        foreach (var p in ParticipantResolver.GetEventParticipants(participantsJson))
+        {
+            if (RoleNormalizer.Normalize(p.Role) == canonical
+                && !string.IsNullOrEmpty(p.Email)
+                && string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        // Reference-level second — captures roles attached to a specific PR/ticket/commit.
+        foreach (var (_, p) in ParticipantResolver.GetReferenceParticipants(referencesJson))
+        {
+            if (RoleNormalizer.Normalize(p.Role) == canonical
+                && !string.IsNullOrEmpty(p.Email)
+                && string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Backwards-compatible overload — kept so callers that have only event-level JSON to hand
+    /// (legacy paths, tests pre-dating the two-level model) keep compiling. Equivalent to
+    /// passing <c>null</c> for <c>referencesJson</c>: no reference-level lookup is performed.
     /// </summary>
     public static bool EmailMatchesExcludedRole(string? participantsJson, string excludedRole, string email)
-    {
-        if (string.IsNullOrWhiteSpace(participantsJson)) return false;
-        try
-        {
-            var canonical = RoleNormalizer.Normalize(excludedRole);
-            if (canonical.Length == 0) return false;
-
-            var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(participantsJson, JsonOptions);
-            if (parts is null) return false;
-
-            return parts.Any(p =>
-                RoleNormalizer.Normalize(p.Role) == canonical &&
-                !string.IsNullOrEmpty(p.Email) &&
-                string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase));
-        }
-        catch
-        {
-            return false;
-        }
-    }
+        => EmailMatchesExcludedRole(participantsJson, referencesJson: null, excludedRole, email);
 }
