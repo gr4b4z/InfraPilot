@@ -37,6 +37,7 @@ public class PlatformDbContext : DbContext
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
+    public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -311,6 +312,7 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.ApproverGroup).HasMaxLength(400);
             e.Property(x => x.Strategy).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.Gate).HasMaxLength(30).IsRequired().HasConversion<string>().HasDefaultValue(PromotionGate.PromotionOnly);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
             // Unique per (product, service?, target_env). SQL Server and Postgres both treat
             // NULL as distinct from NULL in unique indexes, which is the semantics we want:
@@ -364,6 +366,25 @@ public class PlatformDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WorkItemApproval>(e =>
+        {
+            e.ToTable("work_item_approvals");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ApproverEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.Comment).HasMaxLength(2000);
+            // One decision per (ticket, product, env, approver). DB-level guard against double-decision.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.ApproverEmail }).IsUnique();
+            // Lookup: "all decisions on FOO-123 for product X in env stage" — for the gate evaluator.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
+            // Lookup: "any decisions in this product+env" — admin queries.
+            e.HasIndex(x => new { x.Product, x.TargetEnv });
         });
 
         // Promotion Comments

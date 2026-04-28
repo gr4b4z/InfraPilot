@@ -9,6 +9,9 @@ namespace Platform.Api.Features.Promotions.Models;
 /// (no matching row at all). <c>ApproverGroup</c> is <c>null</c> when the policy exists but
 /// intentionally has no approver group — also treated as auto-approve.</para>
 ///
+/// <para><c>Gate</c> defaults to <see cref="PromotionGate.PromotionOnly"/>. Old candidates
+/// whose serialised JSON predates this field deserialise with that default — preserving the
+/// legacy promotion-only flow until PR3 starts populating it from the policy.</para>
 /// </summary>
 public record ResolvedPolicySnapshot(
     Guid? PolicyId,
@@ -21,4 +24,11 @@ public record ResolvedPolicySnapshot(
 {
     /// <summary>True when no human approval is required for this edge.</summary>
     public bool IsAutoApprove => string.IsNullOrEmpty(ApproverGroup);
+
+    /// <summary>
+    /// How the candidate's approval is evaluated. Defaults to <see cref="PromotionGate.PromotionOnly"/>
+    /// so JSON payloads written before this field existed (i.e. old candidates) deserialise to the
+    /// pre-PR3 behaviour. Init-only so the snapshot remains effectively immutable.
+    /// </summary>
+    public PromotionGate Gate { get; init; } = PromotionGate.PromotionOnly;
 }

@@ -166,7 +166,9 @@ builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<DeploymentService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionTopologyService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
 // Agent
@@ -294,6 +296,7 @@ app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(A
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)

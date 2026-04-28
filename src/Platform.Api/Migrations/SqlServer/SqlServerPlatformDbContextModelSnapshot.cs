@@ -527,6 +527,13 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<string>("ExcludeRole")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("Gate")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)")
+                        .HasDefaultValue("PromotionOnly");
+
                     b.Property<int>("MinApprovers")
                         .HasColumnType("int");
 
@@ -564,6 +571,61 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasFilter("[Service] IS NOT NULL");
 
                     b.ToTable("promotion_policies", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.WorkItemApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ApproverEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("ApproverName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Comment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("WorkItemKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "TargetEnv");
+
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "ApproverEmail")
+                        .IsUnique();
+
+                    b.ToTable("work_item_approvals", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Requests.Models.ExecutionResult", b =>

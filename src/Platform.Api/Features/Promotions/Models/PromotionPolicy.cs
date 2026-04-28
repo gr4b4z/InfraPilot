@@ -22,6 +22,10 @@ public class PromotionPolicy
     public PromotionStrategy Strategy { get; set; } = PromotionStrategy.Any;
     public int MinApprovers { get; set; } = 1;
 
+    // How approvals are evaluated for candidates resolved against this policy.
+    // Default preserves legacy behaviour; ticket-level modes are read by the PR3 gate evaluator.
+    public PromotionGate Gate { get; set; } = PromotionGate.PromotionOnly;
+
     // When set to a non-empty role name, anyone listed on the source deploy event with that
     // role (compared after normalisation) cannot approve. Null/empty means no exclusion.
     // Replaces the old bool `ExcludeDeployer` — the role is now explicit so installations that
@@ -44,4 +48,19 @@ public enum PromotionStrategy
 
     /// <summary>N distinct authorized approvers required, N = MinApprovers.</summary>
     NOfM,
+}
+
+/// <summary>
+/// Controls how a promotion candidate's approval is evaluated.
+/// PromotionOnly is the legacy/default behaviour and preserves the pre-PR3
+/// flow; the other modes are read by the PR3 gate evaluator.
+/// </summary>
+public enum PromotionGate
+{
+    /// <summary>Today's behaviour: candidate's PromotionApproval rows count toward the strategy threshold.</summary>
+    PromotionOnly,
+    /// <summary>Auto-approve when every work-item in the bundle has an Approved WorkItemApproval row.</summary>
+    TicketsOnly,
+    /// <summary>Tickets approved AND a manual PromotionApproval from the approver group.</summary>
+    TicketsAndManual,
 }

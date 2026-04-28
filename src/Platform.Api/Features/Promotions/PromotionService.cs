@@ -7,7 +7,6 @@ using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
-using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Promotions;
@@ -28,7 +27,7 @@ public class PromotionService
 {
     private readonly PlatformDbContext _db;
     private readonly PromotionPolicyResolver _resolver;
-    private readonly IIdentityService _identity;
+    private readonly PromotionApprovalAuthorizer _auth;
     private readonly ICurrentUser _currentUser;
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
@@ -44,7 +43,7 @@ public class PromotionService
     public PromotionService(
         PlatformDbContext db,
         PromotionPolicyResolver resolver,
-        IIdentityService identity,
+        PromotionApprovalAuthorizer auth,
         ICurrentUser currentUser,
         IAuditLogger audit,
         ILogger<PromotionService> logger,
@@ -53,7 +52,7 @@ public class PromotionService
     {
         _db = db;
         _resolver = resolver;
-        _identity = identity;
+        _auth = auth;
         _currentUser = currentUser;
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
@@ -749,7 +748,7 @@ public class PromotionService
             .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == _currentUser.Email, ct);
         if (already) return false;
 
-        return await IsInApproverGroupAsync(snapshot.ApproverGroup!, ct);
+        return await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct);
     }
 
     /// <summary>
@@ -791,7 +790,7 @@ public class PromotionService
             if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
                 var json = sourceParticipantsByEvent.GetValueOrDefault(c.SourceDeployEventId);
-                if (EmailMatchesExcludedRole(json, snapshot.ExcludeRole, _currentUser.Email))
+                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(json, snapshot.ExcludeRole, _currentUser.Email))
                 {
                     result[c.Id] = false; continue;
                 }
@@ -800,7 +799,7 @@ public class PromotionService
             var group = snapshot.ApproverGroup!;
             if (!groupMembership.TryGetValue(group, out var member))
             {
-                member = await IsInApproverGroupAsync(group, ct);
+                member = await _auth.IsInApproverGroupAsync(group, ct);
                 groupMembership[group] = member;
             }
             result[c.Id] = member;
@@ -845,50 +844,18 @@ public class PromotionService
                 $"You cannot approve — the '{snapshot.ExcludeRole}' role is excluded from approving this promotion.");
         }
 
-        if (!await IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
+        if (!await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
             throw new UnauthorizedAccessException("You are not in the approver group for this promotion");
     }
 
     /// <summary>
-    /// True when the policy specifies an excluded role and the current user appears on the source
-    /// deploy event with that role (after normalisation). Returns false when no exclusion is
-    /// configured, the source event is missing, or the current user is not in the list.
+    /// Thin wrapper over <see cref="PromotionApprovalAuthorizer.IsEmailExcludedByRoleAsync"/>: the
+    /// candidate already knows the source event id and we want the current user's email — pull
+    /// both out and delegate. Kept so existing call-sites read naturally.
     /// </summary>
-    private async Task<bool> IsCurrentUserExcludedByRoleAsync(
+    private Task<bool> IsCurrentUserExcludedByRoleAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(snapshot.ExcludeRole)) return false;
-        if (string.IsNullOrEmpty(_currentUser.Email)) return false;
-
-        var participantsJson = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Id == candidate.SourceDeployEventId)
-            .Select(e => e.ParticipantsJson)
-            .FirstOrDefaultAsync(ct);
-
-        return EmailMatchesExcludedRole(participantsJson, snapshot.ExcludeRole, _currentUser.Email);
-    }
-
-    private static bool EmailMatchesExcludedRole(string? participantsJson, string excludedRole, string email)
-    {
-        if (string.IsNullOrWhiteSpace(participantsJson)) return false;
-        try
-        {
-            var canonical = RoleNormalizer.Normalize(excludedRole);
-            if (canonical.Length == 0) return false;
-
-            var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(participantsJson, JsonOptions);
-            if (parts is null) return false;
-
-            return parts.Any(p =>
-                RoleNormalizer.Normalize(p.Role) == canonical &&
-                !string.IsNullOrEmpty(p.Email) &&
-                string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase));
-        }
-        catch
-        {
-            return false;
-        }
-    }
+        => _auth.IsEmailExcludedByRoleAsync(snapshot, candidate.SourceDeployEventId, _currentUser.Email, ct);
 
     private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)
     {
@@ -896,40 +863,6 @@ public class PromotionService
             .AnyAsync(a => a.CandidateId == candidateId && a.ApproverEmail == email, ct);
         if (dup)
             throw new InvalidOperationException("You have already made a decision on this promotion");
-    }
-
-    /// <summary>
-    /// Checks whether the current user is in <paramref name="approverGroup"/>. Matches against
-    /// (a) their role claims (for policies using a role string like "InfraPortal.Approver"),
-    /// (b) their group claims (for policies using an Entra group object ID), and
-    /// (c) live Graph membership (fallback, via <see cref="IIdentityService"/>).
-    /// </summary>
-    private async Task<bool> IsInApproverGroupAsync(string approverGroup, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(approverGroup)) return false;
-
-        // Admin always qualifies — avoids bootstrapping hell when groups aren't wired up yet.
-        if (_currentUser.IsAdmin) return true;
-
-        // QA role qualifies for all promotions — lightweight alternative to AD groups for small teams.
-        if (_currentUser.IsQA) return true;
-
-        if (_currentUser.Roles.Contains(approverGroup, StringComparer.OrdinalIgnoreCase)) return true;
-        if (_currentUser.IsInGroup(approverGroup)) return true;
-
-        // Fall back to Graph. A stub/local identity service returns an empty list, which is fine.
-        try
-        {
-            var members = await _identity.GetGroupMembers(approverGroup, ct);
-            return members.Any(m =>
-                string.Equals(m.Email, _currentUser.Email, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m.Id, _currentUser.Id, StringComparison.OrdinalIgnoreCase));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Group membership lookup failed for {Group}", approverGroup);
-            return false;
-        }
     }
 }
 
