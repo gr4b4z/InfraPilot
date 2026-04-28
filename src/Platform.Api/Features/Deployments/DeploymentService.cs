@@ -84,6 +84,7 @@ public class DeploymentService
         };
 
         _db.DeployEvents.Add(deployEvent);
+        await SyncWorkItemsAsync(deployEvent, ct);
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
@@ -339,6 +340,106 @@ public class DeploymentService
             stale.Count, groupCount);
 
         return (groupCount, stale.Count);
+    }
+
+    // --- Work-item extraction ---
+
+    /// <summary>
+    /// Extract work-item references from <paramref name="ev"/> and reconcile the
+    /// <see cref="DeployEventWorkItem"/> rows for that event so they match the references
+    /// list 1:1. Idempotent: re-running with the same references is a no-op; re-running
+    /// after enrichment fills in titles will update existing rows in place; references that
+    /// disappeared from the event are removed.
+    ///
+    /// Caller is responsible for the surrounding <c>SaveChangesAsync</c> — this method only
+    /// stages adds/updates/removes on the tracked <see cref="PlatformDbContext"/>.
+    /// </summary>
+    public async Task SyncWorkItemsAsync(DeployEvent ev, CancellationToken ct = default)
+    {
+        // Parse via ReferenceDto so any caller-supplied Title in the input JSON survives
+        // — Reference (the simple model) intentionally omits Title.
+        var rawRefs = Deserialize<List<ReferenceDto>>(ev.ReferencesJson) ?? [];
+
+        var refs = rawRefs
+            .Where(r => string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase)
+                     && !string.IsNullOrWhiteSpace(r.Key))
+            .GroupBy(r => r.Key!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First()) // dedupe within the same event
+            .ToList();
+
+        var existing = await _db.DeployEventWorkItems
+            .Where(w => w.DeployEventId == ev.Id)
+            .ToListAsync(ct);
+
+        var existingByKey = existing.ToDictionary(
+            w => w.WorkItemKey, StringComparer.OrdinalIgnoreCase);
+
+        var changed = 0;
+
+        // Remove rows whose key is no longer in the references list — re-ingest treats
+        // the references list as authoritative.
+        var freshKeys = refs.Select(r => r.Key!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var stale in existing.Where(w => !freshKeys.Contains(w.WorkItemKey)))
+        {
+            _db.DeployEventWorkItems.Remove(stale);
+            changed++;
+        }
+
+        // Title source: best-effort. Prefer caller-supplied per-reference Title; otherwise
+        // fall back to the single enrichment.Labels["workItemTitle"] when there's exactly
+        // one work-item on the event (the Enrichment shape is flat — no per-key titles —
+        // so applying the same label to multiple work-items would be misleading).
+        var enrichment = string.IsNullOrEmpty(ev.EnrichmentJson)
+            ? null
+            : Deserialize<EnrichmentDto>(ev.EnrichmentJson);
+        string? singleEnrichedTitle = null;
+        if (refs.Count == 1 && enrichment?.Labels != null
+            && enrichment.Labels.TryGetValue("workItemTitle", out var t)
+            && !string.IsNullOrWhiteSpace(t))
+        {
+            singleEnrichedTitle = t;
+        }
+
+        foreach (var r in refs)
+        {
+            var title = !string.IsNullOrWhiteSpace(r.Title) ? r.Title : singleEnrichedTitle;
+
+            if (existingByKey.TryGetValue(r.Key!, out var row))
+            {
+                // Update mutable fields in case the source event was edited or enriched.
+                var before = (row.Provider, row.Url, row.Title, row.Revision, row.Product);
+                row.Provider = r.Provider;
+                row.Url = r.Url;
+                row.Title = title;
+                row.Revision = r.Revision;
+                row.Product = ev.Product;
+                if (before != (row.Provider, row.Url, row.Title, row.Revision, row.Product))
+                    changed++;
+            }
+            else
+            {
+                _db.DeployEventWorkItems.Add(new DeployEventWorkItem
+                {
+                    Id = Guid.NewGuid(),
+                    DeployEventId = ev.Id,
+                    WorkItemKey = r.Key!,
+                    Product = ev.Product,
+                    Provider = r.Provider,
+                    Url = r.Url,
+                    Title = title,
+                    Revision = r.Revision,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                changed++;
+            }
+        }
+
+        if (refs.Count > 0 || changed > 0)
+        {
+            _logger.LogInformation(
+                "Extracted {Count} work-items from deploy event {EventId}",
+                refs.Count, ev.Id);
+        }
     }
 
     // --- Mapping helpers ---

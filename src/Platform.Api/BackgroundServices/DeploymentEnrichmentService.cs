@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Infrastructure.Jira;
 using Platform.Api.Infrastructure.Persistence;
@@ -63,6 +64,7 @@ public class DeploymentEnrichmentService : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
         var jira = scope.ServiceProvider.GetRequiredService<JiraClient>();
+        var deployments = scope.ServiceProvider.GetRequiredService<DeploymentService>();
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-lookbackHours);
 
@@ -81,6 +83,10 @@ public class DeploymentEnrichmentService : BackgroundService
             try
             {
                 await EnrichEvent(evt, jira, ct);
+                // Re-sync work-items so any titles enrichment just discovered (e.g. Jira
+                // summary) make it into the relational projection. Idempotent — safe to
+                // call even when enrichment found nothing.
+                await deployments.SyncWorkItemsAsync(evt, ct);
                 await db.SaveChangesAsync(ct);
             }
             catch (Exception ex)

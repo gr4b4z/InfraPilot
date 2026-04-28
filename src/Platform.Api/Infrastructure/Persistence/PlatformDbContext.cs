@@ -28,6 +28,7 @@ public class PlatformDbContext : DbContext
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
+    public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
@@ -218,6 +219,28 @@ public class PlatformDbContext : DbContext
             e.Ignore(x => x.Participants);
             e.Ignore(x => x.Enrichment);
             e.Ignore(x => x.Metadata);
+        });
+
+        modelBuilder.Entity<DeployEventWorkItem>(e =>
+        {
+            e.ToTable("deploy_event_work_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Provider).HasMaxLength(50);
+            e.Property(x => x.Url).HasMaxLength(2000);
+            e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.Revision).HasMaxLength(200);
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Unique per (event, key) so re-ingest of the same event is idempotent.
+            e.HasIndex(x => new { x.DeployEventId, x.WorkItemKey }).IsUnique();
+            // Lookup: "find all builds carrying ticket X in product Y".
+            e.HasIndex(x => new { x.WorkItemKey, x.Product });
+            // Lookup: "tickets in product Y" for inbox queries.
+            e.HasIndex(x => x.Product);
         });
 
         // Webhook Subscriptions

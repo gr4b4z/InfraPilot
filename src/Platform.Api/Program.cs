@@ -196,6 +196,9 @@ if (syncFromDisk)
     builder.Services.AddHostedService<CatalogSyncService>();
 builder.Services.AddHostedService<DeploymentEnrichmentService>();
 builder.Services.AddHostedService<ExecutorWorkerService>();
+// One-shot backfill of DeployEventWorkItem rows for existing deploy events.
+// Idempotent and self-disabling once complete (records a flag in PlatformSettings).
+builder.Services.AddHostedService<DeployEventWorkItemBackfillService>();
 
 // CORS
 builder.Services.AddCors(options =>
