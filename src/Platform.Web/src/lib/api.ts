@@ -354,6 +354,39 @@ class ApiClient {
     );
   }
 
+  // ── Work-item (ticket) approvals ───────────────────────────────────────
+
+  // Authority + decision history for a single (key, product, env). Drives the
+  // TicketsCard row state on the promotion detail page. Returns canApprove +
+  // blockedReason mirroring the throwing decision path so the UI surfaces the
+  // same wording the user would see on a failed POST.
+  getWorkItemContext(key: string, product: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, targetEnv });
+    return this.request<WorkItemContext>(
+      `/work-items/${encodeURIComponent(key)}?${params.toString()}`,
+    );
+  }
+
+  approveWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+    return this.request<WorkItemApproval>(
+      `/work-items/${encodeURIComponent(key)}/approvals`,
+      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+    );
+  }
+
+  rejectWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+    return this.request<WorkItemApproval>(
+      `/work-items/${encodeURIComponent(key)}/rejections`,
+      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+    );
+  }
+
+  // The current user's pending tickets across all (product, targetEnv) pairs.
+  // Powers the /me/tickets queue page.
+  getMyPendingWorkItems() {
+    return this.request<{ tickets: PendingTicket[] }>(`/work-items/me/pending`);
+  }
+
   // ── Promotion admin ────────────────────────────────────────────────────
 
   listPromotionPolicies() {
@@ -497,6 +530,9 @@ export type PromotionStatus =
   | 'Superseded'
   | 'Rejected';
 
+/** Gate mode read from the candidate's resolved policy snapshot. */
+export type PromotionGate = 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
+
 export interface PromotionCandidate {
   id: string;
   product: string;
@@ -520,6 +556,48 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /**
+   * Gate mode from the candidate's resolved policy snapshot. Defaults to
+   * PromotionOnly for old candidates / missing snapshots — matches the API.
+   */
+  gate?: PromotionGate;
+}
+
+export interface WorkItemApproval {
+  id: string;
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  approverEmail: string;
+  approverName: string;
+  decision: 'Approved' | 'Rejected';
+  comment: string | null;
+  createdAt: string;
+}
+
+export interface WorkItemContext {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  pendingCandidateId: string | null;
+  canApprove: boolean;
+  blockedReason: string | null;
+  approvals: WorkItemApproval[];
+}
+
+/** One row from `GET /api/work-items/me/pending`. */
+export interface PendingTicket {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  provider: string | null;
+  url: string | null;
+  title: string | null;
+  candidateId: string;
+  service: string;
+  version: string;
+  sourceEnv: string;
+  blockingPromotions: number;
 }
 
 export interface PromotionParticipant {

@@ -11,6 +11,7 @@ import {
   Rocket,
   Webhook,
   GitPullRequest,
+  Inbox,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -32,6 +33,7 @@ const navItems: NavItem[] = [
   { to: '/approvals', label: 'Approvals', icon: CheckCircle, badge: 0, section: 'main', featureFlag: FeatureFlag.Approvals },
   { to: '/deployments', label: 'Deployments', icon: Rocket, section: 'main' },
   { to: '/promotions', label: 'Promotions', icon: GitPullRequest, section: 'main', featureFlag: FeatureFlag.Promotions },
+  { to: '/me/tickets', label: 'My ticket queue', icon: Inbox, section: 'main', featureFlag: FeatureFlag.Promotions },
   { to: '/webhooks', label: 'Webhooks', icon: Webhook, section: 'main', adminOnly: true },
   { to: '/settings', label: 'Settings', icon: Settings, section: 'main', adminOnly: true },
 ];

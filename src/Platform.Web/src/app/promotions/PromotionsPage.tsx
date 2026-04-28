@@ -19,6 +19,22 @@ import {
   ExternalLink,
 } from 'lucide-react';
 
+/**
+ * Per-candidate ticket signoff progress for the list. Computed lazily for the
+ * pending rows only — non-pending candidates show "—". The list API returns the
+ * candidate's own sourceEventReferences (work-items + others); we filter to
+ * work-items, then call /work-items/{key}?... for each to get approval state.
+ *
+ * Cap at the visible Pending set per render, which is bounded by the page's
+ * filter so this stays well-behaved in practice.
+ */
+interface TicketProgress {
+  total: number;
+  approved: number;
+  rejected: number;
+  loading: boolean;
+}
+
 const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
   pipeline: Workflow,
   repository: GitBranch,
@@ -67,7 +83,7 @@ export function PromotionsPage() {
   const [referenceFilter, setReferenceFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
-  const navigate = useNavigate();
+  const [ticketProgress, setTicketProgress] = useState<Record<string, TicketProgress>>({});
 
   const fetchData = () => {
     setLoading(true);
@@ -90,6 +106,75 @@ export function PromotionsPage() {
 
   const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
   const nonPending = useMemo(() => candidates.filter((c) => c.status !== 'Pending'), [candidates]);
+
+  // Lazy ticket-progress fetch for Pending rows only. Non-pending rows show "—"
+  // so we never spend an HTTP round-trip on them. We fan out concurrently per
+  // candidate and per ticket, capped by the natural Pending bound (small in
+  // practice). A cancellation guard avoids overwriting state when the candidate
+  // list churns mid-flight (e.g. a filter changes).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const c of pending) {
+        const tickets = (c.sourceEventReferences ?? []).filter(
+          (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
+        );
+        if (tickets.length === 0) {
+          setTicketProgress((prev) => ({
+            ...prev,
+            [c.id]: { total: 0, approved: 0, rejected: 0, loading: false },
+          }));
+          continue;
+        }
+        // Mark the row as loading once per candidate so the cell can show a hint.
+        setTicketProgress((prev) => ({
+          ...prev,
+          [c.id]: prev[c.id] ?? {
+            total: tickets.length,
+            approved: 0,
+            rejected: 0,
+            loading: true,
+          },
+        }));
+        try {
+          const ctxs = await Promise.all(
+            tickets.map((t) =>
+              api
+                .getWorkItemContext(t.key ?? '', c.product, c.targetEnv)
+                .catch(() => null),
+            ),
+          );
+          if (cancelled) return;
+          let approved = 0;
+          let rejected = 0;
+          for (const ctx of ctxs) {
+            const decision = ctx?.approvals?.[0]?.decision;
+            if (decision === 'Approved') approved++;
+            else if (decision === 'Rejected') rejected++;
+          }
+          setTicketProgress((prev) => ({
+            ...prev,
+            [c.id]: {
+              total: tickets.length,
+              approved,
+              rejected,
+              loading: false,
+            },
+          }));
+        } catch {
+          if (cancelled) return;
+          setTicketProgress((prev) => ({
+            ...prev,
+            [c.id]: { total: tickets.length, approved: 0, rejected: 0, loading: false },
+          }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending.map((c) => c.id).join(',')]);
 
   // Known target envs from the currently-loaded candidate set, for the dropdown. Keeping the
   // current filter selection in the list even if nothing matches so the user can clear it.
@@ -349,6 +434,7 @@ export function PromotionsPage() {
                     selected={selected.has(c.id)}
                     onToggleSelect={() => toggleSelect(c.id)}
                     onFilterByReference={setReferenceFilter}
+                    ticketProgress={ticketProgress[c.id]}
                   />
                 ))}
               </div>
@@ -388,6 +474,7 @@ function CandidateCard({
   selected,
   onToggleSelect,
   onFilterByReference,
+  ticketProgress,
 }: {
   candidate: PromotionCandidate;
   urgent?: boolean;
@@ -395,6 +482,7 @@ function CandidateCard({
   selected?: boolean;
   onToggleSelect?: () => void;
   onFilterByReference?: (key: string) => void;
+  ticketProgress?: TicketProgress;
 }) {
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
@@ -452,6 +540,7 @@ function CandidateCard({
             <Clock size={10} />
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
+          <TicketsBadge candidate={candidate} progress={ticketProgress} />
         </div>
         {candidate.sourceEventReferences && candidate.sourceEventReferences.length > 0 && (
           <div className="flex items-center gap-1.5 flex-wrap mt-2">
@@ -556,5 +645,110 @@ function CandidateCard({
       </div>
       <ArrowUpRight size={16} style={{ color: 'var(--text-muted)' }} className="shrink-0 mt-1" />
     </div>
+  );
+}
+
+/**
+ * Inline ticket-progress indicator for the list. The list response surfaces
+ * the candidate's own work-item refs (sourceEventReferences) but not approval
+ * state, so the parent fetches /work-items/{key}?... lazily for Pending rows
+ * only. Non-pending rows render "—" so historical state isn't fetched.
+ */
+function TicketsBadge({
+  candidate,
+  progress,
+}: {
+  candidate: PromotionCandidate;
+  progress: TicketProgress | undefined;
+}) {
+  const bundleSize = (candidate.sourceEventReferences ?? []).filter(
+    (r) => r.type === 'work-item',
+  ).length;
+  if (bundleSize === 0) {
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        title="No work-items in this candidate's bundle"
+      >
+        <Ticket size={10} />—
+      </span>
+    );
+  }
+  if (candidate.status !== 'Pending' || !progress) {
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        title={`${bundleSize} work-item(s)`}
+      >
+        <Ticket size={10} />
+        {bundleSize}
+      </span>
+    );
+  }
+  if (progress.loading) {
+    return (
+      <span className="inline-flex items-center gap-1" title="Loading ticket state…">
+        <Ticket size={10} />
+        {progress.approved}/{progress.total}
+        <ProgressBar approved={progress.approved} total={progress.total} />
+      </span>
+    );
+  }
+  const label = progress.approved === 0
+    ? 'Awaiting'
+    : `${progress.approved}/${progress.total} approved`;
+  return (
+    <span
+      className="inline-flex items-center gap-1.5"
+      title={
+        progress.rejected > 0
+          ? `${progress.approved} approved, ${progress.rejected} rejected, ${progress.total - progress.approved - progress.rejected} pending`
+          : `${progress.approved} of ${progress.total} approved`
+      }
+    >
+      <Ticket size={10} />
+      {label}
+      <ProgressBar
+        approved={progress.approved}
+        total={progress.total}
+        rejected={progress.rejected}
+      />
+    </span>
+  );
+}
+
+function ProgressBar({
+  approved,
+  total,
+  rejected = 0,
+}: {
+  approved: number;
+  total: number;
+  rejected?: number;
+}) {
+  if (total === 0) return null;
+  const approvedPct = (approved / total) * 100;
+  const rejectedPct = (rejected / total) * 100;
+  return (
+    <span
+      className="inline-block rounded-full overflow-hidden"
+      style={{
+        width: 36,
+        height: 4,
+        backgroundColor: 'var(--bg-secondary)',
+        border: '1px solid var(--border-color)',
+      }}
+    >
+      <span
+        className="inline-block align-top h-full"
+        style={{ width: `${approvedPct}%`, backgroundColor: 'var(--success)' }}
+      />
+      {rejectedPct > 0 && (
+        <span
+          className="inline-block align-top h-full"
+          style={{ width: `${rejectedPct}%`, backgroundColor: 'var(--danger)' }}
+        />
+      )}
+    </span>
   );
 }

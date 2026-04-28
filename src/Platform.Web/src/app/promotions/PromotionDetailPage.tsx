@@ -5,6 +5,7 @@ import type {
   PromotionCandidate,
   PromotionApprovalEntry,
   PromotionStatus,
+  PromotionGate,
   PromotionSourceEvent,
   PromotionSourceEventReference,
   PromotionSourceEventParticipant,
@@ -12,6 +13,7 @@ import type {
   PromotionComment,
   PromotionInheritedReference,
   PromotionInheritedParticipant,
+  WorkItemContext,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { roleDisplay } from '@/lib/roleLabel';
@@ -37,6 +39,33 @@ import {
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { resolveReferenceHref } from '@/lib/refUrl';
+
+const GATE_LABEL: Record<PromotionGate, string> = {
+  PromotionOnly: 'Promotion only',
+  TicketsOnly: 'Tickets only',
+  TicketsAndManual: 'Tickets + manual',
+};
+
+// Distinct work-items in the candidate's bundle. Built from the source event's
+// references plus inherited references (which carry forward when an older
+// pending candidate was superseded). Deduped on key.
+function buildBundleWorkItems(
+  sourceEvent: PromotionSourceEvent | null,
+  inheritedRefs: PromotionInheritedReference[],
+): PromotionSourceEventReference[] {
+  const out: PromotionSourceEventReference[] = [];
+  const seen = new Set<string>();
+  const push = (r: PromotionSourceEventReference) => {
+    if (r.type !== 'work-item') return;
+    const k = (r.key ?? '').trim();
+    if (!k || seen.has(k)) return;
+    seen.add(k);
+    out.push(r);
+  };
+  if (sourceEvent) for (const r of sourceEvent.references) push(r);
+  for (const ir of inheritedRefs) push(ir.reference);
+  return out;
+}
 
 const STATUS_CONFIG: Record<
   PromotionStatus,
@@ -135,6 +164,7 @@ export function PromotionDetailPage() {
 
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
+  const bundleWorkItems = buildBundleWorkItems(sourceEvent, inheritedRefs);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -170,6 +200,16 @@ export function PromotionDetailPage() {
                 ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
                 : candidate.version}
             </span>
+            {candidate.gate && (
+              <span
+                className="badge"
+                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+                title="Promotion gate mode from the resolved policy snapshot"
+              >
+                <Ticket size={10} />
+                {GATE_LABEL[candidate.gate]}
+              </span>
+            )}
           </div>
         </div>
         <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
@@ -211,60 +251,24 @@ export function PromotionDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Approve / Reject actions */}
-          {candidate.canApprove && !actionDone && (
-            <div
-              className="rounded-xl border p-5"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <h2
-                className="text-[11px] font-semibold uppercase tracking-wider mb-4"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                Your Decision
-              </h2>
-              <textarea
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                placeholder="Optional comment..."
-                rows={3}
-                className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-secondary)',
-                  color: 'var(--text-primary)',
-                }}
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleAction('approve')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
-                  style={{
-                    backgroundColor: 'var(--success)',
-                    color: '#fff',
-                    opacity: actionLoading ? 0.6 : 1,
-                  }}
-                >
-                  <CheckCircle size={14} />
-                  Approve
-                </button>
-                <button
-                  onClick={() => handleAction('reject')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
-                  style={{
-                    backgroundColor: 'var(--danger)',
-                    color: '#fff',
-                    opacity: actionLoading ? 0.6 : 1,
-                  }}
-                >
-                  <XCircle size={14} />
-                  Reject
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Tickets card — bundle of work-items keyed (key, product, targetEnv).
+             Per-row Approve / Reject buttons hit the work-item endpoints; after each
+             decision we refetch the candidate so the manual card stays in sync. */}
+          <TicketsCard
+            candidate={candidate}
+            workItems={bundleWorkItems}
+            onChanged={fetchData}
+          />
+
+          {/* Manual promotion-level approval. Behaviour depends on the candidate's gate. */}
+          <PromotionApprovalCard
+            candidate={candidate}
+            actionDone={actionDone}
+            comment={comment}
+            setComment={setComment}
+            actionLoading={actionLoading}
+            onAction={handleAction}
+          />
 
           {/* Approval trail */}
           {approvals.length > 0 && (
@@ -1121,6 +1125,415 @@ function CommentsCard({
           >
             {posting ? 'Posting...' : 'Post'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Promotion approval (manual) card
+//
+// Mirrors the legacy single-block approval UI but adapts to the candidate's
+// gate mode:
+//   - PromotionOnly: as today
+//   - TicketsAndManual: as today, with an explanatory "Manual + Tickets" line
+//   - TicketsOnly: disabled with the same wording the API returns on a 400
+// ─────────────────────────────────────────────────────────────────────────
+function PromotionApprovalCard({
+  candidate,
+  actionDone,
+  comment,
+  setComment,
+  actionLoading,
+  onAction,
+}: {
+  candidate: PromotionCandidate;
+  actionDone: string | null;
+  comment: string;
+  setComment: (v: string) => void;
+  actionLoading: boolean;
+  onAction: (action: 'approve' | 'reject') => void;
+}) {
+  const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
+  const ticketsOnly = gate === 'TicketsOnly';
+  const showActions = candidate.canApprove && !actionDone;
+
+  // Hide the card entirely when there's nothing actionable: not your decision
+  // and not a TicketsOnly candidate (where we want to surface the explainer
+  // even for non-approvers so the gating is discoverable).
+  if (!showActions && !ticketsOnly) return null;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Promotion approval
+        </h2>
+        {gate !== 'PromotionOnly' && (
+          <span
+            className="badge"
+            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+            title="Gate mode"
+          >
+            {GATE_LABEL[gate]}
+          </span>
+        )}
+      </div>
+
+      {ticketsOnly && (
+        <p
+          className="text-[12px] mb-3 p-3 rounded-lg"
+          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+        >
+          This candidate auto-promotes when all tickets are signed off — approve the
+          tickets, not the promotion.
+        </p>
+      )}
+
+      {showActions && (
+        <>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Optional comment..."
+            rows={3}
+            disabled={ticketsOnly}
+            className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              opacity: ticketsOnly ? 0.6 : 1,
+            }}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onAction('approve')}
+              disabled={actionLoading || ticketsOnly}
+              title={ticketsOnly ? 'Disabled under TicketsOnly gate' : undefined}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
+              style={{
+                backgroundColor: 'var(--success)',
+                color: '#fff',
+                opacity: actionLoading || ticketsOnly ? 0.5 : 1,
+                cursor: ticketsOnly ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <CheckCircle size={14} />
+              Approve
+            </button>
+            <button
+              onClick={() => onAction('reject')}
+              disabled={actionLoading || ticketsOnly}
+              title={ticketsOnly ? 'Disabled under TicketsOnly gate' : undefined}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
+              style={{
+                backgroundColor: 'var(--danger)',
+                color: '#fff',
+                opacity: actionLoading || ticketsOnly ? 0.5 : 1,
+                cursor: ticketsOnly ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <XCircle size={14} />
+              Reject
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Tickets (work-item) card
+//
+// Lists every work-item in the candidate's bundle (own source-event refs +
+// inherited from superseded predecessors, deduped on key). Per-row buttons
+// drive POST /api/work-items/{key}/approvals|rejections. Authority is decided
+// by GET /api/work-items/{key}?product=&targetEnv= so we surface the same
+// blockedReason wording the API would return on a failed POST.
+//
+// Empty bundle: explicit message, plus a hint about the TicketsOnly fallback.
+// ─────────────────────────────────────────────────────────────────────────
+function TicketsCard({
+  candidate,
+  workItems,
+  onChanged,
+}: {
+  candidate: PromotionCandidate;
+  workItems: PromotionSourceEventReference[];
+  onChanged: () => void;
+}) {
+  const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <div className="flex items-center justify-between mb-4">
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Ticket size={12} /> Tickets ({workItems.length})
+        </h2>
+      </div>
+
+      {workItems.length === 0 ? (
+        <div
+          className="p-3 rounded-lg text-[12px]"
+          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+        >
+          No work-items on this candidate.
+          {gate === 'TicketsOnly' && (
+            <span className="block mt-1" style={{ color: 'var(--text-muted)' }}>
+              Under the TicketsOnly gate the candidate falls back to manual signoff — see the
+              promotion approval card.
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {workItems.map((wi, i) => (
+            <TicketRow
+              key={wi.key ?? wi.url ?? `wi-${i}`}
+              candidate={candidate}
+              reference={wi}
+              onChanged={onChanged}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TicketRow({
+  candidate,
+  reference,
+  onChanged,
+}: {
+  candidate: PromotionCandidate;
+  reference: PromotionSourceEventReference;
+  onChanged: () => void;
+}) {
+  const key = reference.key ?? '';
+  const [ctx, setCtx] = useState<WorkItemContext | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [comment, setComment] = useState('');
+  const [showCommentBox, setShowCommentBox] = useState(false);
+
+  const refresh = async () => {
+    if (!key) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const next = await api.getWorkItemContext(key, candidate.product, candidate.targetEnv);
+      setCtx(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load ticket state');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, candidate.product, candidate.targetEnv, candidate.id]);
+
+  const decide = async (decision: 'approve' | 'reject') => {
+    if (!key) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (decision === 'approve') {
+        await api.approveWorkItem(key, candidate.product, candidate.targetEnv, comment || undefined);
+      } else {
+        await api.rejectWorkItem(key, candidate.product, candidate.targetEnv, comment || undefined);
+      }
+      setComment('');
+      setShowCommentBox(false);
+      // Refetch this row's context AND the parent candidate (the latter so the
+      // promotion-level card mirrors any cascade — auto-promote on full approve,
+      // veto-cascade on reject).
+      await refresh();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const Icon = REFERENCE_ICONS[reference.type] ?? Ticket;
+  const href = resolveReferenceHref({
+    type: reference.type,
+    url: reference.url ?? undefined,
+    provider: reference.provider ?? undefined,
+    revision: reference.revision ?? undefined,
+  });
+
+  // Pick a single decision (Approved / Rejected) to render — first decision wins.
+  // The unique index in the API guarantees one row per (key, product, env, approver),
+  // and the blocked-reason path guarantees no second user can decide if any decision
+  // is already present. So the first row is canonical.
+  const decided = ctx?.approvals[0] ?? null;
+  const stateLabel = decided
+    ? decided.decision
+    : ctx?.canApprove
+      ? 'Pending — your turn'
+      : 'Pending';
+  const stateColor = decided
+    ? decided.decision === 'Approved'
+      ? 'var(--success)'
+      : 'var(--danger)'
+    : 'var(--warning)';
+  const stateBg = decided
+    ? decided.decision === 'Approved'
+      ? 'var(--success-bg)'
+      : 'var(--danger-bg)'
+    : 'var(--warning-bg)';
+
+  return (
+    <div
+      className="p-3 rounded-lg border"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div className="flex items-start gap-3">
+        <Icon size={14} style={{ color: 'var(--text-muted)', marginTop: 2 }} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            {href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[13px] font-medium hover:underline"
+                style={{ color: 'var(--accent)' }}
+                title={reference.title ?? undefined}
+              >
+                {key || 'work-item'}
+              </a>
+            ) : (
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                {key || 'work-item'}
+              </span>
+            )}
+            {reference.title && (
+              <span className="text-[12px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                {reference.title}
+              </span>
+            )}
+            <span
+              className="badge ml-auto"
+              style={{ backgroundColor: stateBg, color: stateColor }}
+            >
+              {stateLabel}
+            </span>
+          </div>
+
+          {decided && (
+            <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {decided.decision} by{' '}
+              <span style={{ color: 'var(--text-secondary)' }}>{decided.approverEmail}</span>
+              {' · '}
+              {format(new Date(decided.createdAt), 'MMM d, HH:mm')}
+              {decided.comment && (
+                <span
+                  className="block mt-1 italic"
+                  style={{ color: 'var(--text-secondary)' }}
+                  title={decided.comment}
+                >
+                  &ldquo;{decided.comment}&rdquo;
+                </span>
+              )}
+            </div>
+          )}
+
+          {!decided && ctx && !ctx.canApprove && ctx.blockedReason && (
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {ctx.blockedReason}
+            </p>
+          )}
+
+          {loading && (
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              Loading…
+            </p>
+          )}
+
+          {error && (
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--danger)' }}>
+              {error}
+            </p>
+          )}
+
+          {!decided && ctx?.canApprove && (
+            <div className="mt-2">
+              {showCommentBox && (
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Optional comment..."
+                  rows={2}
+                  className="w-full rounded-lg border px-2 py-1.5 text-[12px] resize-none mb-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                  }}
+                />
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => decide('approve')}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-opacity"
+                  style={{
+                    backgroundColor: 'var(--success)',
+                    color: '#fff',
+                    opacity: busy ? 0.6 : 1,
+                  }}
+                >
+                  <CheckCircle size={11} />
+                  Approve
+                </button>
+                <button
+                  onClick={() => decide('reject')}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-opacity"
+                  style={{
+                    backgroundColor: 'var(--danger)',
+                    color: '#fff',
+                    opacity: busy ? 0.6 : 1,
+                  }}
+                >
+                  <XCircle size={11} />
+                  Reject
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCommentBox((v) => !v)}
+                  className="text-[11px] transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {showCommentBox ? 'Hide comment' : 'Add comment'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

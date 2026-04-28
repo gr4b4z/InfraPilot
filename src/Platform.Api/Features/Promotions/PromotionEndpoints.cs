@@ -432,7 +432,31 @@ public static class PromotionEndpoints
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
+        // Gate mode from the candidate's resolved policy snapshot. Surfaces "PromotionOnly"
+        // (legacy), "TicketsOnly", or "TicketsAndManual". Defaults to PromotionOnly when the
+        // candidate has no snapshot or the snapshot can't be deserialised — matches the
+        // ResolvedPolicySnapshot.Gate default and keeps the legacy flow intact for old data.
+        gate = ReadGate(c).ToString(),
     };
+
+    // Best-effort read of the candidate's gate mode from its policy snapshot. Returns the
+    // PromotionOnly default when the snapshot is missing or malformed; the candidate's actual
+    // approval flow ultimately depends on the snapshot read deeper in the service layer, so
+    // this is purely a UI hint and a hard read failure here doesn't break anything.
+    private static PromotionGate ReadGate(PromotionCandidate c)
+    {
+        if (string.IsNullOrEmpty(c.ResolvedPolicyJson)) return PromotionGate.PromotionOnly;
+        try
+        {
+            var snap = JsonSerializer.Deserialize<ResolvedPolicySnapshot>(
+                c.ResolvedPolicyJson, SourceEventJsonOptions);
+            return snap?.Gate ?? PromotionGate.PromotionOnly;
+        }
+        catch
+        {
+            return PromotionGate.PromotionOnly;
+        }
+    }
 
     // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)
     // triple across the candidate set. Single query; returns a dictionary keyed by the triple.
