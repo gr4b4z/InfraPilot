@@ -535,14 +535,28 @@ public class PromotionService
     /// participant matching the policy's <c>ExcludeRole</c>, and the same user may not approve twice
     /// (also enforced by a DB-level unique index as belt-and-suspenders).
     ///
-    /// <para>If the strategy threshold is met after this decision, transitions the candidate to
-    /// <see cref="PromotionStatus.Approved"/> atomically.</para>
+    /// <para>After persisting the approval row, delegates to <see cref="ReevaluateAsync"/> which
+    /// runs the gate evaluator and transitions the candidate to <see cref="PromotionStatus.Approved"/>
+    /// when satisfied. The split keeps the row-recording concerns here (granular audit, dup checks)
+    /// separate from the candidate-level transition concerns owned by re-evaluation, which Phase 3B
+    /// will also drive from the ticket-approval flow.</para>
+    ///
+    /// <para>For <see cref="PromotionGate.TicketsOnly"/> the candidate is not approvable through
+    /// this flow at all — the only path forward is approving the underlying tickets — so we reject
+    /// with a 400-friendly <see cref="InvalidOperationException"/>.</para>
     /// </summary>
     public async Task<PromotionCandidate> ApproveAsync(
         Guid candidateId, string? comment, CancellationToken ct = default)
     {
         var candidate = await LoadPendingAsync(candidateId, ct);
         var snapshot = ReadSnapshot(candidate);
+
+        // TicketsOnly candidates auto-promote from ticket approvals; the manual approval surface
+        // is intentionally inert — UNLESS the bundle has no tickets to gate on, in which case the
+        // gate falls back to PromotionOnly evaluation and a manual signoff is the only way forward.
+        if (snapshot.Gate == PromotionGate.TicketsOnly && await CandidateHasTicketsAsync(candidate, ct))
+            throw new InvalidOperationException(
+                "This candidate auto-promotes from ticket approvals; approve the tickets, not the promotion.");
 
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
         await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
@@ -558,43 +572,200 @@ public class PromotionService
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.PromotionApprovals.Add(decision);
+        await _db.SaveChangesAsync(ct);
 
-        // Evaluate threshold with the new decision included in-memory.
-        var approvedCount = await _db.PromotionApprovals
-            .CountAsync(a => a.CandidateId == candidateId && a.Decision == PromotionDecision.Approved, ct) + 1;
+        // Granular per-row event: "this user signed off on the candidate". Coarse candidate-level
+        // transition is emitted from ReevaluateAsync so a system-driven gate satisfaction (Phase 3B)
+        // looks identical to one triggered directly by this user.
+        await _audit.Log(
+            "promotions", "promotion.approval.recorded",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { approvalId = decision.Id, comment });
 
-        var thresholdMet = snapshot.Strategy switch
-        {
-            PromotionStrategy.Any => true,
-            PromotionStrategy.NOfM => approvedCount >= Math.Max(1, snapshot.MinApprovers),
-            _ => true,
-        };
+        _logger.LogInformation(
+            "Approval recorded on candidate {Id} by {Email}", candidate.Id, _currentUser.Email);
 
-        if (thresholdMet)
-        {
-            candidate.Status = PromotionStatus.Approved;
-            candidate.ApprovedAt = DateTimeOffset.UtcNow;
-        }
+        // Re-evaluate the gate now that the new row is persisted. This may flip the candidate to
+        // Approved (and emit the candidate-level audit + webhook) or leave it Pending if the
+        // strategy threshold or ticket gates aren't yet satisfied.
+        return await ReevaluateAsync(candidateId, ct);
+    }
 
+    /// <summary>
+    /// Re-evaluates a Pending candidate against its policy gate and transitions it to
+    /// <see cref="PromotionStatus.Approved"/> when the gate is satisfied. Idempotent and a no-op
+    /// for candidates that are no longer Pending — safe to call from any path that may have
+    /// affected gate satisfaction (a new <see cref="PromotionApproval"/> from
+    /// <see cref="ApproveAsync"/>, or, in Phase 3B, a new <see cref="WorkItemApproval"/>).
+    ///
+    /// <para>The candidate-level audit entry is written with a <c>system</c> actor and a
+    /// <c>trigger=gate-evaluator</c> marker so logs disambiguate "user X explicitly approved" from
+    /// "the last ticket signoff caused the gate to satisfy and the system promoted the candidate".
+    /// The granular per-user signoff (when present) lives on the corresponding
+    /// <c>promotion.approval.recorded</c> entry written by the caller.</para>
+    /// </summary>
+    public async Task<PromotionCandidate> ReevaluateAsync(Guid candidateId, CancellationToken ct = default)
+    {
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        // Re-evaluation is only meaningful for Pending candidates; everything else is a terminal
+        // or in-flight state and must not be re-transitioned.
+        if (candidate.Status != PromotionStatus.Pending) return candidate;
+
+        var snapshot = ReadSnapshot(candidate);
+        var gate = await EvaluateGateAsync(candidate, snapshot, ct);
+        if (!gate.Satisfied) return candidate;
+
+        candidate.Status = PromotionStatus.Approved;
+        candidate.ApprovedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
             "promotions", "promotion.approved",
-            _currentUser.Id, _currentUser.Name, "user",
+            "system", "System (gate satisfied)", "system",
             "PromotionCandidate", candidate.Id, null,
-            new { approvedCount, thresholdMet, comment });
+            new { trigger = "gate-evaluator", mode = snapshot.Gate.ToString() });
 
         _logger.LogInformation(
-            "Approval recorded on candidate {Id} by {Email}; threshold met: {ThresholdMet}",
-            candidate.Id, _currentUser.Email, thresholdMet);
+            "Candidate {Id} → Approved via gate evaluator (mode={Mode})", candidate.Id, snapshot.Gate);
 
-        // Threshold met → hand off to the executor so the target-env deploy starts without
-        // another round-trip. Dispatch failures don't roll back the approval: the candidate
-        // simply stays Approved and can be manually re-dispatched.
-        if (thresholdMet)
-            await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+        await DispatchWebhookAsync(candidate, "promotion.approved", ct);
 
         return candidate;
+    }
+
+    /// <summary>
+    /// Evaluates whether a Pending candidate's policy gate is satisfied. Pure(ish): reads
+    /// <see cref="PromotionApproval"/> / <see cref="WorkItemApproval"/> / <see cref="DeployEventWorkItem"/>
+    /// rows but never mutates state. Returned blockers are human-readable strings the UI can render
+    /// directly when surfacing "what's missing on this candidate".
+    /// </summary>
+    /// <remarks>
+    /// Behaviour by gate mode:
+    /// <list type="bullet">
+    ///   <item><see cref="PromotionGate.PromotionOnly"/> — counts <see cref="PromotionApproval"/>
+    ///         rows with <see cref="PromotionDecision.Approved"/>; satisfied per the policy
+    ///         <see cref="PromotionStrategy"/>.</item>
+    ///   <item><see cref="PromotionGate.TicketsOnly"/> — every distinct work-item key in the
+    ///         candidate's bundle (source event ∪ inherited superseded events) must have at least
+    ///         one Approved <see cref="WorkItemApproval"/> row for
+    ///         <c>(WorkItemKey, Product, TargetEnv)</c> and zero Rejected rows. A bundle with zero
+    ///         work-items falls back to the <see cref="PromotionGate.PromotionOnly"/> rules — there's
+    ///         nothing to gate on, so the only way forward is a manual signoff.</item>
+    ///   <item><see cref="PromotionGate.TicketsAndManual"/> — TicketsOnly rules AND ≥1 Approved
+    ///         <see cref="PromotionApproval"/> row.</item>
+    /// </list>
+    /// Auto-approve policies (no approver group) short-circuit to satisfied — though such candidates
+    /// are never created Pending so this branch rarely runs.
+    /// </remarks>
+    internal async Task<GateResult> EvaluateGateAsync(
+        PromotionCandidate candidate,
+        ResolvedPolicySnapshot snapshot,
+        CancellationToken ct)
+    {
+        if (snapshot.IsAutoApprove)
+            return new GateResult(true, Array.Empty<string>());
+
+        return snapshot.Gate switch
+        {
+            PromotionGate.TicketsOnly => await EvaluateTicketsGateAsync(candidate, snapshot, requireManual: false, ct),
+            PromotionGate.TicketsAndManual => await EvaluateTicketsGateAsync(candidate, snapshot, requireManual: true, ct),
+            _ => await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct),
+        };
+    }
+
+    private async Task<GateResult> EvaluatePromotionOnlyGateAsync(
+        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
+    {
+        var approvedCount = await _db.PromotionApprovals
+            .CountAsync(a => a.CandidateId == candidate.Id && a.Decision == PromotionDecision.Approved, ct);
+
+        var required = snapshot.Strategy switch
+        {
+            PromotionStrategy.Any => 1,
+            PromotionStrategy.NOfM => Math.Max(1, snapshot.MinApprovers),
+            _ => 1,
+        };
+
+        if (approvedCount >= required)
+            return new GateResult(true, Array.Empty<string>());
+
+        var missing = required - approvedCount;
+        return new GateResult(false, new[] { $"{missing} more approval(s) required" });
+    }
+
+    private async Task<bool> CandidateHasTicketsAsync(PromotionCandidate candidate, CancellationToken ct)
+    {
+        var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
+        return await _db.DeployEventWorkItems.AsNoTracking()
+            .AnyAsync(w => bundleEventIds.Contains(w.DeployEventId), ct);
+    }
+
+    private async Task<GateResult> EvaluateTicketsGateAsync(
+        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, bool requireManual, CancellationToken ct)
+    {
+        // Bundle = the candidate's own source event plus everything it inherited from superseded
+        // predecessors on the same edge. Ticket signoffs are scoped to (key, product, target_env)
+        // so they survive a supersede chain.
+        var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
+
+        var ticketKeys = await _db.DeployEventWorkItems.AsNoTracking()
+            .Where(w => bundleEventIds.Contains(w.DeployEventId))
+            .Select(w => w.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+
+        // Empty bundle → no tickets to gate on. Per design we fall back to PromotionOnly so a
+        // human signoff (in TicketsAndManual or as a one-off in TicketsOnly) remains a viable
+        // path forward; otherwise the candidate would be permanently un-promotable.
+        if (ticketKeys.Count == 0)
+            return await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct);
+
+        var approvals = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => ticketKeys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.TargetEnv == candidate.TargetEnv)
+            .ToListAsync(ct);
+
+        var blockers = new List<string>();
+        var pendingTickets = new List<string>();
+
+        foreach (var key in ticketKeys)
+        {
+            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
+            if (rows.Any(a => a.Decision == PromotionDecision.Rejected))
+            {
+                // A rejected ticket vetoes the candidate. Phase 3B turns this into a candidate
+                // rejection cascade; for the evaluator alone, it's just an unsatisfiable blocker.
+                blockers.Add($"Ticket {key} was rejected");
+                continue;
+            }
+            if (!rows.Any(a => a.Decision == PromotionDecision.Approved))
+                pendingTickets.Add(key);
+        }
+
+        // Cap pending-ticket blockers at 5 to keep error payloads bounded; tail collapses to
+        // "...and N more" so callers can still see the magnitude.
+        const int MaxPendingShown = 5;
+        if (pendingTickets.Count > 0)
+        {
+            foreach (var key in pendingTickets.Take(MaxPendingShown))
+                blockers.Add($"Awaiting signoff on {key}");
+            if (pendingTickets.Count > MaxPendingShown)
+                blockers.Add($"...and {pendingTickets.Count - MaxPendingShown} more");
+        }
+
+        if (requireManual)
+        {
+            var manualApproved = await _db.PromotionApprovals
+                .AnyAsync(a => a.CandidateId == candidate.Id && a.Decision == PromotionDecision.Approved, ct);
+            if (!manualApproved)
+                blockers.Add("Manual release-manager approval required");
+        }
+
+        return new GateResult(blockers.Count == 0, blockers);
     }
 
     /// <summary>
@@ -876,3 +1047,11 @@ public record PromotionQuery(
     string? Service = null,
     string? TargetEnv = null,
     int Limit = 200);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.EvaluateGateAsync"/>: whether the gate is currently
+/// satisfied for a Pending candidate, plus a list of human-readable blockers when it isn't.
+/// Blockers are intended for surfacing in error responses or the UI's "what's missing" panel —
+/// not a structured machine-consumable shape.
+/// </summary>
+public record GateResult(bool Satisfied, IReadOnlyList<string> Blockers);
