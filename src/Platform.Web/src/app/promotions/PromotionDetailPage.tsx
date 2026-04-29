@@ -1577,17 +1577,11 @@ function TicketRow({
   );
 }
 
-// Roles that *can* be assigned via the override flow, even if the reference doesn't
-// currently have an entry for them. Kept tight — these are the slots an operator
-// realistically wants to fill / route. Existing roles on the reference are always
-// rendered too, even if they're not in this list.
-const ASSIGNABLE_ROLES = ['qa', 'assignee', 'reviewer', 'deployer'];
-
 // One row of role chips for a single reference. Each chip is a participant slot:
 //  - filled  → "Role: Display <email>" with a popover containing Reassign / Clear.
-//  - empty   → "+ Role" button that opens the inline picker.
-// Empty slots are derived from ASSIGNABLE_ROLES minus already-present roles, so the
-// operator always has a route to fill in QA/Assignee/etc when Jira didn't supply them.
+// A single "+ Assign" button at the end opens a picker where the operator chooses
+// both the role (free-form, with directory-suggested values) and the person —
+// mirroring PeopleCard's add-form so the two flows feel like one thing.
 function ParticipantChips({
   participants,
   deployEventId,
@@ -1599,13 +1593,11 @@ function ParticipantChips({
   referenceKey: string;
   onChanged: () => void;
 }) {
-  // Editing state keyed by canonicalised role; only one slot is open at a time.
+  // editingRole === '' means "new assign" (role chosen inside picker).
+  // editingRole === <role> means reassigning that specific chip.
   const [editingRole, setEditingRole] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const presentRoles = new Set(participants.map((p) => (p.role || '').toLowerCase()));
-  const emptySlots = ASSIGNABLE_ROLES.filter((r) => !presentRoles.has(r));
 
   // No event id → can't PATCH (legacy data, no source event link). Render the
   // existing read-only line as a graceful fallback.
@@ -1636,6 +1628,8 @@ function ParticipantChips({
     }
   };
 
+  const newAssignOpen = editingRole === '';
+
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1.5">
       {participants.map((p) => (
@@ -1650,32 +1644,30 @@ function ParticipantChips({
           busy={busy}
         />
       ))}
-      {emptySlots.map((role) => (
-        <span key={`empty-${role}`} className="inline-flex items-center relative">
-          <button
-            type="button"
-            onClick={() => setEditingRole(role)}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
-            style={{
-              borderColor: 'var(--border-color)',
-              color: 'var(--text-muted)',
-              border: '1px dashed var(--border-color)',
-            }}
-            disabled={busy}
-            title={`Assign ${roleDisplay(role)}`}
-          >
-            <Plus size={10} /> {roleDisplay(role)}
-          </button>
-          {editingRole === role && (
-            <InlineUserPicker
-              role={role}
-              onPick={(picked) => submit(role, picked)}
-              onCancel={() => setEditingRole(null)}
-              busy={busy}
-            />
-          )}
-        </span>
-      ))}
+      <span className="inline-flex items-center relative">
+        <button
+          type="button"
+          onClick={() => setEditingRole(newAssignOpen ? null : '')}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+          style={{
+            borderColor: 'var(--border-color)',
+            color: 'var(--text-muted)',
+            border: '1px dashed var(--border-color)',
+          }}
+          disabled={busy}
+          title="Assign a person to this reference"
+        >
+          <Plus size={10} /> Assign
+        </button>
+        {newAssignOpen && (
+          <InlineUserPicker
+            role={null}
+            onPick={(picked) => submit(picked.role, { email: picked.email, displayName: picked.displayName })}
+            onCancel={() => setEditingRole(null)}
+            busy={busy}
+          />
+        )}
+      </span>
       {error && (
         <span className="text-[10px]" style={{ color: 'var(--danger)' }}>
           {error}
@@ -1754,7 +1746,7 @@ function ParticipantChip({
       {editing && (
         <InlineUserPicker
           role={participant.role}
-          onPick={(picked) => onPick(picked)}
+          onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
           onCancel={onCancelEdit}
           busy={busy}
         />
@@ -1767,6 +1759,13 @@ function ParticipantChip({
 // look-and-feel of PeopleCard's add-participant dropdown so the two flows feel like one
 // thing. Anchored absolutely to its parent (which must be `position: relative`); pops
 // out below the chip with a fixed width so the chip itself stays narrow.
+//
+// Two modes via the `role` prop:
+//   - role = string  → reassigning a known role; only the user is selected.
+//   - role = null    → new assignment; operator types/picks the role too. Suggested
+//                      roles come from /api/promotions/roles via a <datalist> (same
+//                      pattern as PeopleCard).
+//
 // Falls back to manual email entry when the directory returns no hits (local-auth dev).
 function InlineUserPicker({
   role,
@@ -1774,14 +1773,29 @@ function InlineUserPicker({
   onCancel,
   busy,
 }: {
-  role: string;
-  onPick: (picked: { email: string; displayName: string }) => void;
+  role: string | null;
+  onPick: (picked: { role: string; email: string; displayName: string }) => void;
   onCancel: () => void;
   busy: boolean;
 }) {
+  const roleEditable = role === null;
+  const [roleInput, setRoleInput] = useState('');
+  const [knownRoles, setKnownRoles] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
   const [searching, setSearching] = useState(false);
+  const datalistId = useMemo(() => `assign-roles-${Math.random().toString(36).slice(2, 8)}`, []);
+
+  // Pre-fetch role suggestions when in role-editable mode.
+  useEffect(() => {
+    if (!roleEditable) return;
+    let cancelled = false;
+    api
+      .listPromotionRoles()
+      .then((d) => { if (!cancelled) setKnownRoles(d.roles || []); })
+      .catch(() => { if (!cancelled) setKnownRoles([]); });
+    return () => { cancelled = true; };
+  }, [roleEditable]);
 
   useEffect(() => {
     const q = query.trim();
@@ -1801,11 +1815,20 @@ function InlineUserPicker({
     return () => { cancelled = true; clearTimeout(timer); };
   }, [query]);
 
+  // Resolve the role to send: either the locked prop or whatever the operator typed.
+  const effectiveRole = (role ?? roleInput).trim();
+  const canSubmit = effectiveRole.length > 0;
+
+  const submitWithUser = (u: { email: string; displayName: string }) => {
+    if (!canSubmit) return;
+    onPick({ role: effectiveRole, email: u.email, displayName: u.displayName });
+  };
+
   const submitManual = () => {
     const q = query.trim();
     // Cheap email-shape check. Server validates again with the same rule.
     if (!q.includes('@') || !q.includes('.')) return;
-    onPick({ email: q, displayName: q });
+    submitWithUser({ email: q, displayName: q });
   };
 
   return (
@@ -1814,10 +1837,34 @@ function InlineUserPicker({
       style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
     >
       <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
-        Assign {roleDisplay(role)}
+        {roleEditable ? 'Assign person' : `Assign ${roleDisplay(role)}`}
       </div>
+      {roleEditable && (
+        <>
+          <input
+            autoFocus
+            list={datalistId}
+            value={roleInput}
+            onChange={(e) => setRoleInput(e.target.value)}
+            placeholder="Role (e.g. QA, reviewer)"
+            className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none mb-1.5"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+            disabled={busy}
+            onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
+          />
+          <datalist id={datalistId}>
+            {knownRoles.map((r) => (
+              <option key={r} value={roleDisplay({ role: r })} />
+            ))}
+          </datalist>
+        </>
+      )}
       <input
-        autoFocus
+        autoFocus={!roleEditable}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search directory (name or email)..."
@@ -1843,7 +1890,8 @@ function InlineUserPicker({
               onClick={submitManual}
               className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
               style={{ color: 'var(--text-primary)' }}
-              disabled={busy}
+              disabled={busy || !canSubmit}
+              title={!canSubmit ? 'Pick a role first' : undefined}
             >
               <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
               <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -1855,10 +1903,11 @@ function InlineUserPicker({
             <button
               key={u.id}
               type="button"
-              onClick={() => onPick({ email: u.email, displayName: u.displayName })}
+              onClick={() => submitWithUser({ email: u.email, displayName: u.displayName })}
               className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
               style={{ color: 'var(--text-primary)' }}
-              disabled={busy}
+              disabled={busy || !canSubmit}
+              title={!canSubmit ? 'Pick a role first' : undefined}
             >
               <span className="font-medium truncate">{u.displayName}</span>
               <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
