@@ -44,8 +44,11 @@ public class PromotionIngestHookTests : IDisposable
             .Returns(new List<UserInfo>());
 
         var resolver = new PromotionPolicyResolver(_db);
+        var auth = new PromotionApprovalAuthorizer(
+            _db, currentUser, identity,
+            Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
         _promotions = new PromotionService(
-            _db, resolver, identity, currentUser, audit,
+            _db, resolver, auth, currentUser, audit,
             Substitute.For<ILogger<PromotionService>>(),
             Substitute.For<IWebhookDispatcher>(),
             TestOptions.Normalization());

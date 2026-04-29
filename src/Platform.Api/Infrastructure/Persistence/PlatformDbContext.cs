@@ -28,6 +28,8 @@ public class PlatformDbContext : DbContext
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
+    public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
+    public DbSet<ReferenceParticipantOverride> ReferenceParticipantOverrides => Set<ReferenceParticipantOverride>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
@@ -36,6 +38,7 @@ public class PlatformDbContext : DbContext
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
+    public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -220,6 +223,49 @@ public class PlatformDbContext : DbContext
             e.Ignore(x => x.Metadata);
         });
 
+        modelBuilder.Entity<DeployEventWorkItem>(e =>
+        {
+            e.ToTable("deploy_event_work_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Provider).HasMaxLength(50);
+            e.Property(x => x.Url).HasMaxLength(2000);
+            e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.Revision).HasMaxLength(200);
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Unique per (event, key) so re-ingest of the same event is idempotent.
+            e.HasIndex(x => new { x.DeployEventId, x.WorkItemKey }).IsUnique();
+            // Lookup: "find all builds carrying ticket X in product Y".
+            e.HasIndex(x => new { x.WorkItemKey, x.Product });
+            // Lookup: "tickets in product Y" for inbox queries.
+            e.HasIndex(x => x.Product);
+        });
+
+        modelBuilder.Entity<ReferenceParticipantOverride>(e =>
+        {
+            e.ToTable("reference_participant_overrides");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ReferenceKey).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Role).HasMaxLength(100).IsRequired();
+            e.Property(x => x.AssigneeEmail).HasMaxLength(300);
+            e.Property(x => x.AssigneeDisplayName).HasMaxLength(300);
+            e.Property(x => x.AssignedById).HasMaxLength(100).IsRequired();
+            e.Property(x => x.AssignedByName).HasMaxLength(300).IsRequired();
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Unique per (event, ref, role) so reassigning the same slot updates in place
+            // (UPSERT semantics — no orphan rows on reassign).
+            e.HasIndex(x => new { x.DeployEventId, x.ReferenceKey, x.Role }).IsUnique();
+            // Lookup: batch-load all overrides for an event when reading the merged list.
+            e.HasIndex(x => x.DeployEventId);
+        });
+
         // Webhook Subscriptions
         modelBuilder.Entity<WebhookSubscription>(e =>
         {
@@ -288,6 +334,10 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.ApproverGroup).HasMaxLength(400);
             e.Property(x => x.Strategy).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.Gate).HasMaxLength(30).IsRequired().HasConversion<string>().HasDefaultValue(PromotionGate.PromotionOnly);
+            e.Property(x => x.RequireAllTicketsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.AutoApproveOnAllTicketsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.AutoApproveWhenNoTickets).IsRequired().HasDefaultValue(false);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
             // Unique per (product, service?, target_env). SQL Server and Postgres both treat
             // NULL as distinct from NULL in unique indexes, which is the semantics we want:
@@ -306,8 +356,6 @@ public class PlatformDbContext : DbContext
             e.Property(x => x.SourceEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.Version).HasMaxLength(200).IsRequired();
-            e.Property(x => x.SourceDeployerName).HasMaxLength(300);
-            e.Property(x => x.SourceDeployerEmail).HasMaxLength(300);
             e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Property(x => x.ExternalRunUrl).HasMaxLength(2000);
             var resolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
@@ -341,6 +389,25 @@ public class PlatformDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WorkItemApproval>(e =>
+        {
+            e.ToTable("work_item_approvals");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ApproverEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.Comment).HasMaxLength(2000);
+            // One decision per (ticket, product, env, approver). DB-level guard against double-decision.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.ApproverEmail }).IsUnique();
+            // Lookup: "all decisions on FOO-123 for product X in env stage" — for the gate evaluator.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
+            // Lookup: "any decisions in this product+env" — admin queries.
+            e.HasIndex(x => new { x.Product, x.TargetEnv });
         });
 
         // Promotion Comments

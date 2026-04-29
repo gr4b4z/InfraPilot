@@ -164,9 +164,14 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<DeploymentService>();
+builder.Services.AddScoped<ReferenceParticipantOverrideService>();
+builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionTopologyService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionAssigneeRoleSettings>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
 // Agent
@@ -196,6 +201,9 @@ if (syncFromDisk)
     builder.Services.AddHostedService<CatalogSyncService>();
 builder.Services.AddHostedService<DeploymentEnrichmentService>();
 builder.Services.AddHostedService<ExecutorWorkerService>();
+// One-shot backfill of DeployEventWorkItem rows for existing deploy events.
+// Idempotent and self-disabling once complete (records a flag in PlatformSettings).
+builder.Services.AddHostedService<DeployEventWorkItemBackfillService>();
 
 // CORS
 builder.Services.AddCors(options =>
@@ -291,6 +299,7 @@ app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(A
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)

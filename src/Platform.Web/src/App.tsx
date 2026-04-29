@@ -11,6 +11,7 @@ import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
+import { MyQueuePage } from '@/app/me/MyQueuePage';
 import { SettingsPage } from '@/app/settings/SettingsPage';
 import { EnvironmentsSettings } from '@/app/settings/EnvironmentsSettings';
 import { RolesSettings } from '@/app/settings/RolesSettings';
@@ -42,6 +43,8 @@ function App() {
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
+          {/* "My queue" — tickets awaiting the current user's signoff across products/envs. */}
+          <Route path="/me/tickets" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>}>

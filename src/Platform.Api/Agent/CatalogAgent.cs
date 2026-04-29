@@ -986,7 +986,6 @@ public class CatalogAgent
                         targetEnv = c.TargetEnv,
                         version = c.Version,
                         status = c.Status.ToString(),
-                        sourceDeployerEmail = c.SourceDeployerEmail,
                         participants = c.Participants,
                         createdAt = c.CreatedAt,
                     }).ToList();
@@ -1035,8 +1034,6 @@ public class CatalogAgent
                             candidate.TargetEnv,
                             candidate.Version,
                             status = candidate.Status.ToString(),
-                            candidate.SourceDeployerName,
-                            candidate.SourceDeployerEmail,
                             candidate.ExternalRunUrl,
                             candidate.CreatedAt,
                             candidate.ApprovedAt,

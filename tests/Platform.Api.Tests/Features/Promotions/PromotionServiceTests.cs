@@ -43,8 +43,11 @@ public class PromotionServiceTests : IDisposable
             .Returns(new List<UserInfo>());
 
         var resolver = new PromotionPolicyResolver(_db);
+        var auth = new PromotionApprovalAuthorizer(
+            _db, _currentUser, _identity,
+            Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
         _sut = new PromotionService(
-            _db, resolver, _identity, _currentUser, _audit,
+            _db, resolver, auth, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
             Substitute.For<IWebhookDispatcher>(),
             TestOptions.Normalization());

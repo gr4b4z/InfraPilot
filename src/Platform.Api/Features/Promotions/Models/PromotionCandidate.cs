@@ -21,11 +21,8 @@ public class PromotionCandidate
     public string TargetEnv { get; set; } = "";
     public string Version { get; set; } = "";
 
-    // Back-reference to the deploy event that spawned this candidate, plus who deployed it
-    // (for separation-of-duties checks on approval).
+    // Back-reference to the deploy event that spawned this candidate.
     public Guid SourceDeployEventId { get; set; }
-    public string? SourceDeployerName { get; set; }
-    public string? SourceDeployerEmail { get; set; }
 
     public PromotionStatus Status { get; set; } = PromotionStatus.Pending;
 

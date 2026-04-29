@@ -165,15 +165,15 @@ public static class DeploymentSeedData
             var statusRoll = rand.NextDouble();
             var status = statusRoll < 0.05 ? "failed" : statusRoll < 0.08 ? "in_progress" : "succeeded";
 
-            var references = BuildReferences(product, service, rand);
-            var participants = BuildParticipants(rand);
+            var shuffled = People.OrderBy(_ => rand.Next()).ToArray();
+            var references = BuildReferences(product, service, rand, shuffled);
             var enrichment = BuildEnrichment(rand);
 
             yield return MakeEvent(
                 product.Name, service, environment, version, previousVersion,
                 SourceLabel(product.SourceStyle), timestamps[i],
                 isRollback, status,
-                references, participants, enrichment);
+                references, enrichment);
 
             // Only update the env tracker for successful / in-progress deploys
             // so rollbacks don't poison the "last known good" pointer.
@@ -194,67 +194,96 @@ public static class DeploymentSeedData
         return Environments[0];
     }
 
-    private static List<ReferenceDto> BuildReferences(ProductCatalog product, string service, Random rand)
+    private static List<ReferenceDto> BuildReferences(ProductCatalog product, string service, Random rand, Person[] people)
     {
         var refs = new List<ReferenceDto>();
 
-        // Pipeline + PR are always present; work-item ~80%; repository ~40%.
-        var buildId = rand.Next(10000, 99999);
-        var prNum = rand.Next(50, 900);
-        var wiKey = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
+        // Pick distinct people for each role so references carry realistic participants.
+        var shuffled = people.OrderBy(_ => rand.Next()).ToArray();
+        var triggeredBy = shuffled[0];
+        var author      = shuffled[1];
+        var reviewer    = shuffled[2];
+        var qa          = shuffled[3];
 
+        var buildRunId  = rand.Next(10000, 99999);
+        var deployRunId = rand.Next(10000, 99999);
+        var prNum       = rand.Next(50, 900);
+        var wiKey       = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
+
+        // Build pipeline — triggered by the PR author merging or a scheduled run.
+        // Deploy pipeline — triggered separately (CD job, release manager, or scheduler).
+        // Each carries its own triggered-by since different people/automation may initiate them.
         if (product.SourceStyle == SourceStyle.AzureDevOps)
         {
-            refs.Add(new ReferenceDto("pipeline", $"{product.BaseUrl}/_build/results?buildId={buildId}", "azure-devops", buildId.ToString()));
-            refs.Add(new ReferenceDto("pull-request", $"{product.BaseUrl}/_git/{service}/pullrequest/{prNum}", "azure-devops", prNum.ToString()));
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/_build/results?buildId={buildRunId}", "azure-devops", $"build-{buildRunId}",
+                Participants: [new("triggered-by", author.Name, author.Email)]));
+
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/_release?releaseId={deployRunId}", "azure-devops", $"deploy-{deployRunId}",
+                Participants: [new("triggered-by", triggeredBy.Name, triggeredBy.Email)]));
+
+            refs.Add(new ReferenceDto("pull-request",
+                $"{product.BaseUrl}/_git/{service}/pullrequest/{prNum}", "azure-devops", prNum.ToString(),
+                Participants: [
+                    new("author",   author.Name,   author.Email),
+                    new("reviewer", reviewer.Name, reviewer.Email),
+                ]));
         }
         else
         {
-            refs.Add(new ReferenceDto("pipeline", $"{product.BaseUrl}/{service}/actions/runs/{buildId}", "github", buildId.ToString()));
-            refs.Add(new ReferenceDto("pull-request", $"{product.BaseUrl}/{service}/pull/{prNum}", "github", prNum.ToString()));
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/{service}/actions/runs/{buildRunId}", "github", $"build-{buildRunId}",
+                Participants: [new("triggered-by", author.Name, author.Email)]));
+
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/{service}/actions/runs/{deployRunId}", "github", $"deploy-{deployRunId}",
+                Participants: [new("triggered-by", triggeredBy.Name, triggeredBy.Email)]));
+
+            refs.Add(new ReferenceDto("pull-request",
+                $"{product.BaseUrl}/{service}/pull/{prNum}", "github", prNum.ToString(),
+                Participants: [
+                    new("author",   author.Name,   author.Email),
+                    new("reviewer", reviewer.Name, reviewer.Email),
+                ]));
         }
 
+        // Work-item ~80% of the time — carries QA and optionally an assignee.
         if (rand.NextDouble() < 0.8)
         {
+            var wiParticipants = new List<ParticipantDto>
+            {
+                new("qa", qa.Name, qa.Email),
+            };
+            if (rand.NextDouble() < 0.5)
+            {
+                // Assignee is someone other than QA
+                var assignee = shuffled.First(p => p.Email != qa.Email);
+                wiParticipants.Add(new("assignee", assignee.Name, assignee.Email));
+            }
+
             refs.Add(new ReferenceDto("work-item",
-                $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey));
+                $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
+                Participants: wiParticipants));
         }
 
+        // Repository ~40% — just a pointer, no participants.
         if (rand.NextDouble() < 0.4)
         {
             var revision = Guid.NewGuid().ToString("N")[..12];
             if (product.SourceStyle == SourceStyle.AzureDevOps)
-            {
                 refs.Add(new ReferenceDto("repository",
                     $"{product.BaseUrl}/_git/{service}", "azure-devops",
                     $"{product.Name}/{service}", revision));
-            }
             else
-            {
                 refs.Add(new ReferenceDto("repository",
                     $"{product.BaseUrl}/{service}", "github",
                     $"acmetrix/{service}", revision));
-            }
         }
 
         return refs;
     }
 
-    private static List<ParticipantDto> BuildParticipants(Random rand)
-    {
-        // Pick 2-3 distinct people; always include PR Author.
-        var shuffled = People.OrderBy(_ => rand.Next()).ToArray();
-        var participants = new List<ParticipantDto>
-        {
-            new("PR Author", shuffled[0].Name, shuffled[0].Email),
-            new("PR Reviewer", shuffled[1].Name, shuffled[1].Email),
-        };
-        if (rand.NextDouble() < 0.6)
-        {
-            participants.Add(new ParticipantDto("QA", shuffled[2].Name, shuffled[2].Email));
-        }
-        return participants;
-    }
 
     private static EnrichmentData BuildEnrichment(Random rand)
     {
@@ -298,7 +327,7 @@ public static class DeploymentSeedData
         string product, string service, string environment, string version, string? previousVersion,
         string source, DateTimeOffset deployedAt,
         bool isRollback, string status,
-        List<ReferenceDto> references, List<ParticipantDto> participants,
+        List<ReferenceDto> references,
         EnrichmentData? enrichment = null)
     {
         string? enrichmentJson = null;
@@ -325,7 +354,7 @@ public static class DeploymentSeedData
             Source = source,
             DeployedAt = deployedAt,
             ReferencesJson = JsonSerializer.Serialize(references, JsonOptions),
-            ParticipantsJson = JsonSerializer.Serialize(participants, JsonOptions),
+            ParticipantsJson = "[]",
             EnrichmentJson = enrichmentJson,
             MetadataJson = "{}",
             CreatedAt = deployedAt,

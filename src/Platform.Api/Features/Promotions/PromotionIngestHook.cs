@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Features;
@@ -36,6 +37,7 @@ public class PromotionIngestHook : IPromotionIngestHook
     private readonly IFeatureFlags _flags;
     private readonly PromotionTopologyService _topology;
     private readonly PromotionService _promotions;
+    private readonly WorkItemSyncService _workItemSync;
     private readonly PlatformDbContext _db;
     private readonly ILogger<PromotionIngestHook> _logger;
 
@@ -43,12 +45,14 @@ public class PromotionIngestHook : IPromotionIngestHook
         IFeatureFlags flags,
         PromotionTopologyService topology,
         PromotionService promotions,
+        WorkItemSyncService workItemSync,
         PlatformDbContext db,
         ILogger<PromotionIngestHook> logger)
     {
         _flags = flags;
         _topology = topology;
         _promotions = promotions;
+        _workItemSync = workItemSync;
         _db = db;
         _logger = logger;
     }
@@ -63,10 +67,14 @@ public class PromotionIngestHook : IPromotionIngestHook
         {
             if (!await _flags.IsEnabled(FeatureFlagKeys.Promotions, ct)) return;
 
-            // 1) Match any in-flight candidate that this event completes.
+            // 1) Project work-item references into the relational index used by the gate evaluator.
+            await _workItemSync.SyncAsync(deployEvent, ct);
+            await _db.SaveChangesAsync(ct);
+
+            // 2) Match any in-flight candidate that this event completes.
             await MatchCompletionAsync(deployEvent, ct);
 
-            // 2) Generate new candidates for downstream environments.
+            // 3) Generate new candidates for downstream environments.
             await GenerateCandidatesAsync(deployEvent, ct);
         }
         catch (Exception ex)

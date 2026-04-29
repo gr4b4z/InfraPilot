@@ -160,6 +160,7 @@ export interface DeployReference {
   key?: string;
   revision?: string;
   title?: string;
+  participants?: DeployParticipant[];
 }
 
 export interface DeployParticipant {
@@ -172,6 +173,20 @@ export interface DeployEnrichment {
   labels: Record<string, string>;
   participants: DeployParticipant[];
   enrichedAt: string;
+}
+
+/**
+ * Collects all participants from a deploy event: reference-level (highest priority,
+ * most specific), event-level, and enrichment. Deduplication is intentionally NOT
+ * performed — callers may want to show the same person in multiple roles across
+ * different references.
+ */
+export function collectParticipants(evt: DeploymentStateEntry): DeployParticipant[] {
+  return [
+    ...evt.references.flatMap(r => r.participants ?? []),
+    ...evt.participants,
+    ...(evt.enrichment?.participants ?? []),
+  ];
 }
 
 // Webhook types

@@ -48,3 +48,6 @@ local/
 
 # Legacy /site directory — contents moved to /docs
 site/
+
+# Test runner output
+**/TestResults/
