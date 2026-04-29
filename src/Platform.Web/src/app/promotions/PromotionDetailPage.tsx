@@ -1651,7 +1651,7 @@ function ParticipantChips({
         />
       ))}
       {emptySlots.map((role) => (
-        <span key={`empty-${role}`} className="inline-flex items-center">
+        <span key={`empty-${role}`} className="inline-flex items-center relative">
           <button
             type="button"
             onClick={() => setEditingRole(role)}
@@ -1668,6 +1668,7 @@ function ParticipantChips({
           </button>
           {editingRole === role && (
             <InlineUserPicker
+              role={role}
               onPick={(picked) => submit(role, picked)}
               onCancel={() => setEditingRole(null)}
               busy={busy}
@@ -1752,6 +1753,7 @@ function ParticipantChip({
       )}
       {editing && (
         <InlineUserPicker
+          role={participant.role}
           onPick={(picked) => onPick(picked)}
           onCancel={onCancelEdit}
           busy={busy}
@@ -1761,14 +1763,18 @@ function ParticipantChip({
   );
 }
 
-// Minimal inline user picker — debounced search against /promotions/users/search.
-// Returns email + displayName via onPick when the operator picks a result. Falls
-// back to manual email entry when Graph returns no hits (e.g. local-auth dev mode).
+// Inline user picker — debounced search against /promotions/users/search. Mirrors the
+// look-and-feel of PeopleCard's add-participant dropdown so the two flows feel like one
+// thing. Anchored absolutely to its parent (which must be `position: relative`); pops
+// out below the chip with a fixed width so the chip itself stays narrow.
+// Falls back to manual email entry when the directory returns no hits (local-auth dev).
 function InlineUserPicker({
+  role,
   onPick,
   onCancel,
   busy,
 }: {
+  role: string;
   onPick: (picked: { email: string; displayName: string }) => void;
   onCancel: () => void;
   busy: boolean;
@@ -1804,57 +1810,69 @@ function InlineUserPicker({
 
   return (
     <div
-      className="absolute z-20 mt-1 top-full left-0 rounded-lg border shadow-lg p-2 w-64"
-      style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+      className="absolute z-20 mt-1 top-full left-0 rounded-lg border shadow-lg p-2 w-72"
+      style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
     >
+      <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
+        Assign {roleDisplay(role)}
+      </div>
       <input
         autoFocus
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search users or enter email…"
-        className="w-full px-2 py-1 text-[11px] rounded border outline-none"
+        placeholder="Search directory (name or email)..."
+        className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none"
         style={{
-          backgroundColor: 'var(--bg-primary)',
           borderColor: 'var(--border-color)',
+          backgroundColor: 'var(--bg-secondary)',
           color: 'var(--text-primary)',
         }}
         disabled={busy}
         onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
       />
-      <div className="mt-1 max-h-40 overflow-y-auto">
-        {searching && (
-          <div className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Searching…</div>
-        )}
-        {!searching && results.length === 0 && query.trim().length >= 2 && (
-          <button
-            type="button"
-            onClick={submitManual}
-            className="w-full text-left px-2 py-1 text-[11px] rounded hover:opacity-80"
-            style={{ color: 'var(--text-primary)' }}
-            disabled={busy}
-          >
-            Use &ldquo;{query.trim()}&rdquo; as email
-          </button>
-        )}
-        {results.map((u) => (
-          <button
-            key={u.id}
-            type="button"
-            onClick={() => onPick({ email: u.email, displayName: u.displayName })}
-            className="block w-full text-left px-2 py-1 text-[11px] rounded hover:opacity-80"
-            style={{ color: 'var(--text-primary)' }}
-            disabled={busy}
-          >
-            <div className="font-medium truncate">{u.displayName}</div>
-            <div className="truncate" style={{ color: 'var(--text-muted)' }}>{u.email}</div>
-          </button>
-        ))}
-      </div>
-      <div className="mt-1 flex justify-end">
+      {query.trim().length >= 2 && (
+        <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
+          {searching && (
+            <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Searching...
+            </div>
+          )}
+          {!searching && results.length === 0 && (
+            <button
+              type="button"
+              onClick={submitManual}
+              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-primary)' }}
+              disabled={busy}
+            >
+              <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                No directory matches — sent as-is.
+              </span>
+            </button>
+          )}
+          {!searching && results.map((u) => (
+            <button
+              key={u.id}
+              type="button"
+              onClick={() => onPick({ email: u.email, displayName: u.displayName })}
+              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-primary)' }}
+              disabled={busy}
+            >
+              <span className="font-medium truncate">{u.displayName}</span>
+              <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+                {u.email}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="mt-2 flex justify-end">
         <button
           type="button"
           onClick={onCancel}
-          className="text-[10px] hover:opacity-80"
+          className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity hover:opacity-80"
           style={{ color: 'var(--text-muted)' }}
           disabled={busy}
         >
