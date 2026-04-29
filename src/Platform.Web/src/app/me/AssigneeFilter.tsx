@@ -1,383 +1,239 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Search, User, Users, UserX } from 'lucide-react';
-import { api } from '@/lib/api';
+import { useMemo } from 'react';
+import { roleDisplay } from '@/lib/roleLabel';
+import type { PendingAssignee } from '@/lib/api';
 
 /**
- * Picker for narrowing the My-queue list by who's assigned to the candidates.
+ * Picker for narrowing the My-queue list by (role, person).
+ *
+ * Two side-by-side native selects:
+ *   - Role: "Any role" + each role from the server-supplied canonical role set.
+ *   - Person: "Anyone" + "Me" + "Unassigned" + each distinct person seen on the user's
+ *     authorized list, filtered by the currently-selected role.
  *
  * Pure display narrowing — server-side authorisation (group membership, excluded role,
- * not-yet-decided) is unchanged. The "assignee role set" is a server-side configurable
- * subset of participant roles (default: qa, reviewer, assignee) — see the backend
- * PromotionAssigneeRoleSettings service.
+ * not-yet-decided) is unchanged. Choices come from the user's queue itself (server returns
+ * the (email, role) rollup pre-narrowing) so the dropdowns never offer a zero-result pick.
  *
- * Self-contained popover; intentionally NOT reusing the a2ui UserPicker. Search input
- * and styling mirror the InlineUserPicker in PromotionDetailPage but with the picker's
- * scope reduced (no role editor — only the user / mode selector).
+ * "Unassigned" and "Me" stay as person values, not separate modes — see
+ * <see cref="MyQueuePage"/> for how the matrix maps to the API call.
  */
-export type AssigneeFilterValue =
-  | { mode: 'all' }
-  | { mode: 'me' }
-  | { mode: 'unassigned' }
-  | { mode: 'person'; email: string; displayName: string };
+export type AssigneeFilterValue = {
+  /** Canonical role from the server's role set, or null for "any role". */
+  role: string | null;
+  /**
+   * Person mode:
+   *   - 'all'        — no person narrowing.
+   *   - 'me'         — match current user's email.
+   *   - 'unassigned' — no participant in the effective role set.
+   *   - 'person'     — specific email + displayName.
+   */
+  mode: 'all' | 'me' | 'unassigned' | 'person';
+  /** Set when mode === 'person'. */
+  email?: string;
+  /** Set when mode === 'person'. */
+  displayName?: string;
+};
+
+const ANY_ROLE = '__any__';
+const ANYONE = '__all__';
+const ME = '__me__';
+const UNASSIGNED = '__unassigned__';
 
 export function AssigneeFilter({
   value,
   onChange,
+  assignees,
+  roles,
 }: {
   value: AssigneeFilterValue;
   onChange: (next: AssigneeFilterValue) => void;
+  /** (email, role) → count rollup from the queue endpoint. Empty when the queue is empty. */
+  assignees: PendingAssignee[];
+  /** Canonical assignee-role set from the server. */
+  roles: string[];
 }) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  // People to show in the person dropdown, filtered by the currently-selected role.
+  // When role is null we dedupe on email and pick the displayName from the row with the
+  // highest count (most representative). When role is set, we just keep the assignees with
+  // that role since each (email, role) pair is already a unique server row.
+  const people = useMemo(() => {
+    if (value.role) {
+      return assignees
+        .filter((a) => a.role === value.role)
+        .map((a) => ({ email: a.email, displayName: a.displayName }));
+    }
+    // Dedupe by email; the input is sorted by count desc so the first hit per email is the
+    // best displayName.
+    const seen = new Set<string>();
+    const out: Array<{ email: string; displayName: string }> = [];
+    for (const a of assignees) {
+      if (seen.has(a.email)) continue;
+      seen.add(a.email);
+      out.push({ email: a.email, displayName: a.displayName });
+    }
+    return out;
+  }, [assignees, value.role]);
 
-  // Close on outside click. Bound only while open so we don't pay for it when not in use.
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [open]);
+  // If the current person pick is no longer available (e.g. role narrowed and they don't
+  // appear in the new set), reset to "Anyone" rather than silently render an invalid value.
+  const personValue = useMemo(() => {
+    if (value.mode === 'all') return ANYONE;
+    if (value.mode === 'me') return ME;
+    if (value.mode === 'unassigned') return UNASSIGNED;
+    if (value.mode === 'person') {
+      const stillVisible = people.some(
+        (p) => p.email.toLowerCase() === (value.email ?? '').toLowerCase(),
+      );
+      return stillVisible ? `email:${value.email}` : ANYONE;
+    }
+    return ANYONE;
+  }, [value, people]);
 
-  const label = useMemo(() => formatLabel(value), [value]);
-  const Icon = useMemo(() => iconFor(value), [value]);
+  const handleRoleChange = (next: string) => {
+    const nextRole = next === ANY_ROLE ? null : next;
+    // If the currently-selected person is no longer available under the new role, reset to
+    // "Anyone". Special modes ('me', 'unassigned', 'all') always remain valid.
+    if (value.mode === 'person' && nextRole) {
+      const stillVisible = assignees.some(
+        (a) => a.role === nextRole && a.email.toLowerCase() === (value.email ?? '').toLowerCase(),
+      );
+      if (!stillVisible) {
+        onChange({ role: nextRole, mode: 'all' });
+        return;
+      }
+    } else if (value.mode === 'person' && !nextRole) {
+      // role=any with a specific person — person stays as-is so long as that email exists at all.
+      const stillVisible = assignees.some(
+        (a) => a.email.toLowerCase() === (value.email ?? '').toLowerCase(),
+      );
+      if (!stillVisible) {
+        onChange({ role: null, mode: 'all' });
+        return;
+      }
+    }
+    onChange({ ...value, role: nextRole });
+  };
 
-  return (
-    <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
-        style={{
-          borderColor: 'var(--border-color)',
-          backgroundColor: 'var(--bg-primary)',
-          color: 'var(--text-primary)',
-        }}
-      >
-        <Icon size={13} style={{ color: 'var(--text-muted)' }} />
-        <span style={{ color: 'var(--text-muted)' }}>Assignee:</span>
-        <span>{label}</span>
-        <ChevronDown size={13} style={{ color: 'var(--text-muted)' }} />
-      </button>
-
-      {open && (
-        <AssigneePopover
-          value={value}
-          onPick={(next) => {
-            onChange(next);
-            setOpen(false);
-          }}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function AssigneePopover({
-  value,
-  onPick,
-  onClose,
-}: {
-  value: AssigneeFilterValue;
-  onPick: (next: AssigneeFilterValue) => void;
-  onClose: () => void;
-}) {
-  const [showPersonInput, setShowPersonInput] = useState(value.mode === 'person');
-
-  return (
-    <div
-      className="absolute z-20 mt-1 top-full left-0 rounded-lg border shadow-lg p-1 w-72"
-      style={{
-        backgroundColor: 'var(--bg-primary)',
-        borderColor: 'var(--border-color)',
-      }}
-    >
-      <RadioRow
-        label="Anyone"
-        sub="No filter."
-        Icon={Users}
-        selected={value.mode === 'all'}
-        onSelect={() => onPick({ mode: 'all' })}
-      />
-      <RadioRow
-        label="Assigned to me"
-        sub="Only candidates where I'm a named QA / reviewer / assignee."
-        Icon={User}
-        selected={value.mode === 'me'}
-        onSelect={() => onPick({ mode: 'me' })}
-      />
-      <RadioRow
-        label="Unassigned"
-        sub="No one is named in any assignee role."
-        Icon={UserX}
-        selected={value.mode === 'unassigned'}
-        onSelect={() => onPick({ mode: 'unassigned' })}
-      />
-
-      <div className="border-t my-1" style={{ borderColor: 'var(--border-color)' }} />
-
-      <button
-        type="button"
-        onClick={() => setShowPersonInput(true)}
-        className="w-full flex items-start gap-2 rounded-md px-2 py-2 text-left transition-opacity hover:opacity-80"
-        style={{
-          backgroundColor:
-            value.mode === 'person' || showPersonInput ? 'var(--bg-secondary)' : 'transparent',
-          color: 'var(--text-primary)',
-        }}
-      >
-        <Search size={13} style={{ color: 'var(--text-muted)', marginTop: 2 }} />
-        <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium">Specific person</div>
-          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            Search the directory.
-          </div>
-        </div>
-      </button>
-
-      {(showPersonInput || value.mode === 'person') && (
-        <div className="px-1 pb-1">
-          <PersonSearch
-            currentValue={value.mode === 'person' ? value : null}
-            onPick={(p) => onPick({ mode: 'person', email: p.email, displayName: p.displayName })}
-          />
-        </div>
-      )}
-
-      <div className="flex justify-end px-1 pb-1">
-        <button
-          type="button"
-          onClick={onClose}
-          className="px-2 py-1 rounded-md text-[11px] font-medium transition-opacity hover:opacity-80"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function RadioRow({
-  label,
-  sub,
-  Icon,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  sub: string;
-  Icon: typeof Users;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className="w-full flex items-start gap-2 rounded-md px-2 py-2 text-left transition-opacity hover:opacity-80"
-      style={{
-        backgroundColor: selected ? 'var(--bg-secondary)' : 'transparent',
-        color: 'var(--text-primary)',
-      }}
-    >
-      <Icon size={13} style={{ color: 'var(--text-muted)', marginTop: 2 }} />
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-medium flex items-center gap-2">
-          <span>{label}</span>
-          {selected && (
-            <span
-              className="text-[10px] px-1.5 py-0.5 rounded-full"
-              style={{ backgroundColor: 'var(--accent-bg)', color: 'var(--accent)' }}
-            >
-              selected
-            </span>
-          )}
-        </div>
-        <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          {sub}
-        </div>
-      </div>
-    </button>
-  );
-}
-
-/**
- * Self-contained directory search. Mirrors the look-and-feel of InlineUserPicker on
- * PromotionDetailPage (debounced search, manual-email fallback for local-auth dev) but
- * trimmed down — no role editor, since the caller of AssigneeFilter only cares about
- * who is assigned, not the role itself.
- */
-function PersonSearch({
-  currentValue,
-  onPick,
-}: {
-  currentValue: { email: string; displayName: string } | null;
-  onPick: (picked: { email: string; displayName: string }) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>(
-    [],
-  );
-  const [searching, setSearching] = useState(false);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
+  const handlePersonChange = (next: string) => {
+    if (next === ANYONE) {
+      onChange({ ...value, mode: 'all', email: undefined, displayName: undefined });
       return;
     }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query]);
-
-  const submitManual = () => {
-    const q = query.trim();
-    if (!q.includes('@') || !q.includes('.')) return;
-    onPick({ email: q, displayName: q });
+    if (next === ME) {
+      onChange({ ...value, mode: 'me', email: undefined, displayName: undefined });
+      return;
+    }
+    if (next === UNASSIGNED) {
+      onChange({ ...value, mode: 'unassigned', email: undefined, displayName: undefined });
+      return;
+    }
+    if (next.startsWith('email:')) {
+      const email = next.slice('email:'.length);
+      const person = people.find((p) => p.email === email);
+      if (!person) return;
+      onChange({
+        ...value,
+        mode: 'person',
+        email: person.email,
+        displayName: person.displayName,
+      });
+    }
   };
 
   return (
-    <div>
-      {currentValue && (
-        <div
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 mb-1.5 text-[12px]"
-          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+    <div className="inline-flex items-center gap-2">
+      <label
+        className="inline-flex items-center gap-1.5 text-[12px]"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <span>Role</span>
+        <select
+          value={value.role ?? ANY_ROLE}
+          onChange={(e) => handleRoleChange(e.target.value)}
+          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
         >
-          <User size={11} style={{ color: 'var(--text-muted)' }} />
-          <span className="font-medium truncate">{currentValue.displayName}</span>
-          <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
-            {currentValue.email}
-          </span>
-        </div>
-      )}
-      <input
-        autoFocus
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search directory (name or email)..."
-        className="w-full rounded-md border px-2 py-1.5 text-[12px] outline-none"
-        style={{
-          borderColor: 'var(--border-color)',
-          backgroundColor: 'var(--bg-secondary)',
-          color: 'var(--text-primary)',
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && results.length === 0) submitManual();
-        }}
-      />
-      {query.trim().length >= 2 && (
-        <div
-          className="mt-1 max-h-40 overflow-y-auto rounded-md border"
-          style={{ borderColor: 'var(--border-color)' }}
+          <option value={ANY_ROLE}>Any role</option>
+          {roles.map((r) => (
+            <option key={r} value={r}>
+              {roleDisplay({ role: r })}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label
+        className="inline-flex items-center gap-1.5 text-[12px]"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <span>Assignee</span>
+        <select
+          value={personValue}
+          onChange={(e) => handlePersonChange(e.target.value)}
+          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: 'var(--text-primary)',
+          }}
         >
-          {searching && (
-            <div className="px-2 py-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              Searching...
-            </div>
+          <option value={ANYONE}>Anyone</option>
+          <option value={ME}>Me</option>
+          <option value={UNASSIGNED}>Unassigned</option>
+          {people.length > 0 && (
+            <optgroup label="On your queue">
+              {people.map((p) => (
+                <option key={p.email} value={`email:${p.email}`}>
+                  {p.displayName}
+                </option>
+              ))}
+            </optgroup>
           )}
-          {!searching && results.length === 0 && (
-            <button
-              type="button"
-              onClick={submitManual}
-              className="w-full text-left px-2 py-1.5 text-[12px] flex flex-col transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
-            >
-              <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
-              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                No directory matches — sent as-is.
-              </span>
-            </button>
-          )}
-          {!searching &&
-            results.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => onPick({ email: u.email, displayName: u.displayName })}
-                className="w-full text-left px-2 py-1.5 text-[12px] flex flex-col transition-opacity hover:opacity-80"
-                style={{ color: 'var(--text-primary)' }}
-              >
-                <span className="font-medium truncate">{u.displayName}</span>
-                <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
-                  {u.email}
-                </span>
-              </button>
-            ))}
-        </div>
-      )}
+        </select>
+      </label>
     </div>
   );
-}
-
-function formatLabel(v: AssigneeFilterValue): string {
-  switch (v.mode) {
-    case 'all':
-      return 'Anyone';
-    case 'me':
-      return 'Me';
-    case 'unassigned':
-      return 'Unassigned';
-    case 'person':
-      return v.displayName || v.email;
-  }
-}
-
-function iconFor(v: AssigneeFilterValue) {
-  switch (v.mode) {
-    case 'all':
-      return Users;
-    case 'me':
-      return User;
-    case 'unassigned':
-      return UserX;
-    case 'person':
-      return User;
-    default:
-      return Users;
-  }
 }
 
 // ── localStorage helpers exported for MyQueuePage to keep persistence colocated ───────────
 export const ASSIGNEE_FILTER_STORAGE_KEY = 'me.queue.assigneeFilter';
 
+const DEFAULT_VALUE: AssigneeFilterValue = { role: null, mode: 'all' };
+
+/**
+ * Loads the persisted filter, or the default ("Any role" + "Anyone") when nothing valid is
+ * stored. Migration of pre-role payloads is intentional: any old shape collapses to default,
+ * since the role-aware shape is a superset and no information is lost from the user's perspective.
+ */
 export function loadAssigneeFilter(): AssigneeFilterValue {
   try {
     const raw = window.localStorage.getItem(ASSIGNEE_FILTER_STORAGE_KEY);
-    if (!raw) return { mode: 'all' };
+    if (!raw) return DEFAULT_VALUE;
     const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return DEFAULT_VALUE;
+    // New shape: must have explicit `role` field (string or null) AND a valid mode.
+    if (!('role' in parsed)) return DEFAULT_VALUE;
+    const role = parsed.role;
+    if (role !== null && typeof role !== 'string') return DEFAULT_VALUE;
+    const mode = parsed.mode;
+    if (mode === 'all' || mode === 'me' || mode === 'unassigned') {
+      return { role, mode };
+    }
     if (
-      parsed &&
-      typeof parsed === 'object' &&
-      (parsed.mode === 'all' ||
-        parsed.mode === 'me' ||
-        parsed.mode === 'unassigned' ||
-        (parsed.mode === 'person' &&
-          typeof parsed.email === 'string' &&
-          typeof parsed.displayName === 'string'))
+      mode === 'person' &&
+      typeof parsed.email === 'string' &&
+      typeof parsed.displayName === 'string'
     ) {
-      return parsed as AssigneeFilterValue;
+      return { role, mode, email: parsed.email, displayName: parsed.displayName };
     }
   } catch {
     // Ignore — corrupted entry; fall through to default.
   }
-  return { mode: 'all' };
+  return DEFAULT_VALUE;
 }
 
 export function saveAssigneeFilter(value: AssigneeFilterValue): void {
@@ -387,4 +243,3 @@ export function saveAssigneeFilter(value: AssigneeFilterValue): void {
     // Ignore — quota or disabled storage; the page just won't persist across reloads.
   }
 }
-

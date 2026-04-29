@@ -21,16 +21,27 @@ public static class WorkItemEndpoints
         // Inbox: tickets the current user could sign off right now. Mounted under the work-items
         // group at /me/pending — see class summary for the route choice.
         //
-        // Optional `assignee` query parameter narrows the list (display only — authorisation is
-        // unchanged). Empty/null = no narrowing. "unassigned" (case-insensitive) = candidates
-        // where no participant in the merged view has a role in the configured assignee-role set.
-        // Anything else is treated as an email — case-insensitive match against participants
-        // whose role is in the assignee-role set. See PromotionAssigneeRoleSettings for the set.
+        // Optional `assignee` and `role` query parameters narrow the list (display only —
+        // authorisation is unchanged). The matrix:
+        //  - both null            → full authorized list (no narrowing).
+        //  - role only            → candidates with at least one participant in that role.
+        //  - assignee=email       → candidates where that email holds a role in the assignee
+        //                           set (or the role-filter when set).
+        //  - assignee=unassigned  → candidates with no participant in the effective role set
+        //                           ("unassigned" is case-insensitive).
+        // Response carries the rendered tickets plus an `assignees` rollup of (email, role) →
+        // count built from the authorized list <i>before</i> role/person narrowing, plus the
+        // canonical `roles` set — both feed the front-end's dropdowns without a second call.
         group.MapGet("/me/pending", async (
-            WorkItemApprovalService svc, string? assignee, CancellationToken ct) =>
+            WorkItemApprovalService svc, string? assignee, string? role, CancellationToken ct) =>
         {
-            var tickets = await svc.GetPendingForCurrentUserAsync(ct, assignee);
-            return Results.Ok(new { tickets });
+            var queue = await svc.GetPendingForCurrentUserAsync(ct, assignee, role);
+            return Results.Ok(new
+            {
+                tickets = queue.Tickets,
+                assignees = queue.Assignees,
+                roles = queue.Roles,
+            });
         });
 
         // Ticket context — authority + decision history for a specific (key, product, env).

@@ -425,7 +425,8 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var pending = await svc.GetPendingForCurrentUserAsync(default);
+            var queue = await svc.GetPendingForCurrentUserAsync(default);
+            var pending = queue.Tickets;
             Assert.Equal(2, pending.Count);
             var keys = pending.Select(p => p.WorkItemKey).OrderBy(k => k).ToList();
             Assert.Equal(new[] { "FOO-1", "FOO-2" }, keys);
@@ -463,7 +464,8 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var pending = await svc.GetPendingForCurrentUserAsync(default);
+            var queue = await svc.GetPendingForCurrentUserAsync(default);
+            var pending = queue.Tickets;
             var keys = pending.Select(p => p.WorkItemKey).OrderBy(k => k).ToList();
             Assert.Equal(new[] { "FOO-1", "FOO-3" }, keys);
         }
@@ -497,7 +499,8 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var pending = await svc.GetPendingForCurrentUserAsync(default);
+            var queue = await svc.GetPendingForCurrentUserAsync(default);
+            var pending = queue.Tickets;
             Assert.Single(pending);
             Assert.Equal("FOO-2", pending[0].WorkItemKey);
         }

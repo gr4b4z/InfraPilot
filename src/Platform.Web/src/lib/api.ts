@@ -406,14 +406,24 @@ class ApiClient {
   // The current user's pending tickets across all (product, targetEnv) pairs.
   // Powers the /me/tickets queue page.
   //
-  // Optional `assignee` narrows the list (display only — server-side authorisation is
-  // unchanged). Pass an email to keep only candidates where that person has an "assignee"
-  // role on the merged participant view, or "unassigned" to keep only candidates where no
-  // one is named in such a role.
-  getMyPendingWorkItems(args?: { assignee?: string }) {
-    const a = args?.assignee?.trim();
-    const suffix = a && a.length > 0 ? `?assignee=${encodeURIComponent(a)}` : '';
-    return this.request<{ tickets: PendingTicket[] }>(`/work-items/me/pending${suffix}`);
+  // Optional `role` and `assignee` narrow the list (display only — server-side authorisation
+  // is unchanged). The matrix:
+  //   - both null            → full authorized list (no narrowing).
+  //   - role only            → at least one participant in that role.
+  //   - assignee=email       → that email holds a role in the assignee set (or the role-filter
+  //                            when set).
+  //   - assignee=unassigned  → no participant in the effective role set.
+  // Response also carries the (email, role) → count rollup and the canonical role set so the
+  // queue page can populate its dropdowns without a second call.
+  getMyPendingWorkItems(args?: { role?: string; assignee?: string }) {
+    const params = new URLSearchParams();
+    const role = args?.role?.trim();
+    const assignee = args?.assignee?.trim();
+    if (role) params.set('role', role);
+    if (assignee) params.set('assignee', assignee);
+    const qs = params.toString();
+    const suffix = qs.length > 0 ? `?${qs}` : '';
+    return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
   }
 
   // ── Promotion admin ────────────────────────────────────────────────────
@@ -627,6 +637,28 @@ export interface PendingTicket {
   version: string;
   sourceEnv: string;
   blockingPromotions: number;
+}
+
+/**
+ * One row of the (email, role) assignee summary returned alongside the queue. Counts come from
+ * the user's authorized list <i>before</i> the role/person filter is applied, so the queue page
+ * can render every choice the user could narrow to. Aggregated server-side per (email, role)
+ * pair — a single person on multiple roles produces multiple rows.
+ */
+export interface PendingAssignee {
+  email: string;
+  displayName: string;
+  role: string;
+  count: number;
+}
+
+/** Full response shape for `GET /api/work-items/me/pending`. */
+export interface MyPendingWorkItemsResponse {
+  tickets: PendingTicket[];
+  /** (email, role) rollup of the unfiltered authorized list. Sorted by count desc, displayName asc. */
+  assignees: PendingAssignee[];
+  /** Canonical assignee-role set from PromotionAssigneeRoleSettings — feeds the role dropdown. */
+  roles: string[];
 }
 
 export interface PromotionParticipant {

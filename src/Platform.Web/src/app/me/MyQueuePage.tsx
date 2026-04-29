@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PendingTicket } from '@/lib/api';
+import type { PendingAssignee, PendingTicket } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import { roleDisplay } from '@/lib/roleLabel';
 import {
   Ticket,
   CheckCircle,
@@ -27,6 +28,11 @@ import {
  */
 export function MyQueuePage() {
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
+  // Server-supplied (email, role) rollup + canonical role set, both feeding the dropdowns.
+  // Computed against the user's authorized list pre-narrowing — the queue itself, not the
+  // org directory — so every choice is one we can actually render results for.
+  const [assignees, setAssignees] = useState<PendingAssignee[]>([]);
+  const [roles, setRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Hydrate the filter from localStorage so the user's pick survives reloads. Only happens
@@ -48,6 +54,8 @@ export function MyQueuePage() {
       const apiArg = toApiArg(filter, currentUserEmail);
       const res = await api.getMyPendingWorkItems(apiArg);
       setTickets(res.tickets ?? []);
+      setAssignees(res.assignees ?? []);
+      setRoles(res.roles ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tickets');
     } finally {
@@ -80,7 +88,12 @@ export function MyQueuePage() {
       </div>
 
       <div className="flex items-center gap-2">
-        <AssigneeFilter value={assigneeFilter} onChange={handleFilterChange} />
+        <AssigneeFilter
+          value={assigneeFilter}
+          onChange={handleFilterChange}
+          assignees={assignees}
+          roles={roles}
+        />
       </div>
 
       {error && (
@@ -142,46 +155,66 @@ export function MyQueuePage() {
 function toApiArg(
   filter: AssigneeFilterValue,
   currentUserEmail: string,
-): { assignee?: string } | undefined {
+): { role?: string; assignee?: string } | undefined {
+  const role = filter.role ?? undefined;
+  let assignee: string | undefined;
   switch (filter.mode) {
     case 'all':
-      return undefined;
+      assignee = undefined;
+      break;
     case 'me':
       // The endpoint always knows who the user is, but it treats `assignee` as the slot
       // we're filtering on — so even "Me" needs the email so the server matches it as a
       // person rather than as the caller. If the auth store hasn't populated the email
-      // yet (rare race during initial mount), fall back to "all" rather than narrow to
+      // yet (rare race during initial mount), fall back to "Anyone" rather than narrow to
       // an empty string and surface no results.
-      if (!currentUserEmail) return undefined;
-      return { assignee: currentUserEmail };
+      assignee = currentUserEmail || undefined;
+      break;
     case 'unassigned':
-      return { assignee: 'unassigned' };
+      assignee = 'unassigned';
+      break;
     case 'person':
-      return { assignee: filter.email };
+      assignee = filter.email;
+      break;
   }
+  if (!role && !assignee) return undefined;
+  return { role, assignee };
 }
 
 function emptyStateTitle(filter: AssigneeFilterValue): string {
+  const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
   switch (filter.mode) {
     case 'all':
-      return 'No tickets awaiting your signoff.';
+      return roleLabel
+        ? `No tickets where someone is ${roleLabel}.`
+        : 'No tickets awaiting your signoff.';
     case 'me':
-      return 'Nothing assigned to you right now.';
+      return roleLabel
+        ? `No tickets where you're the ${roleLabel}.`
+        : 'Nothing assigned to you right now.';
     case 'unassigned':
-      return 'No unassigned tickets in your authorized list.';
+      return roleLabel
+        ? `No tickets without a ${roleLabel} assigned.`
+        : 'No unassigned tickets in your authorized list.';
     case 'person':
-      return `No tickets assigned to ${filter.displayName}.`;
+      return roleLabel
+        ? `No tickets with ${filter.displayName} as ${roleLabel}.`
+        : `No tickets with ${filter.displayName} as any role.`;
   }
 }
 
 function emptyStateBody(filter: AssigneeFilterValue): string {
   switch (filter.mode) {
     case 'all':
-      return 'New tickets will appear here as promotions roll through your environments.';
+      return filter.role
+        ? 'Pick a different role or "Any role" to widen the queue.'
+        : 'New tickets will appear here as promotions roll through your environments.';
     case 'me':
-      return 'Switch to "Anyone" to see the full queue you can sign off on.';
+      return 'Switch the assignee to "Anyone" to see the full queue you can sign off on.';
     case 'unassigned':
-      return 'Tickets without a named QA / reviewer / assignee will show up here.';
+      return filter.role
+        ? 'Tickets where this role is empty will show up here.'
+        : 'Tickets without a named QA / reviewer / assignee will show up here.';
     case 'person':
       return 'Try a different person, or switch to "Anyone".';
   }

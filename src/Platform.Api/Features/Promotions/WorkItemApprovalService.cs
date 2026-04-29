@@ -407,18 +407,36 @@ public class WorkItemApprovalService
     /// Pending candidates × tickets-per-candidate which is small in practice (the Pending queue
     /// is bounded by the number of services × envs, not historical events). The distinct group
     /// cache mirrors <see cref="PromotionService.CanUserApproveManyAsync"/>.</para>
+    ///
+    /// <para>Returns the rendered ticket list along with the (email, role) → count assignee
+    /// summary built from the authorized list <i>before</i> the role/person filter is applied.
+    /// The summary feeds the front-end's role + person dropdowns so the picker only ever
+    /// surfaces choices the user can actually narrow to. Filtering first then collecting would
+    /// hide every alternative — pre-filter is the correct anchor.</para>
     /// </summary>
-    public async Task<List<PendingTicketView>> GetPendingForCurrentUserAsync(
+    public async Task<PendingQueueResult> GetPendingForCurrentUserAsync(
         CancellationToken ct = default,
-        string? assigneeFilter = null)
+        string? assigneeFilter = null,
+        string? roleFilter = null)
     {
         var pending = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Pending)
             .ToListAsync(ct);
-        if (pending.Count == 0) return new();
 
-        // Resolve the assignee-role set up front when a filter is set; skip when null since
-        // the post-filter pass below short-circuits and we'd be doing unnecessary work.
+        // Always resolve the canonical assignee-role set — the response surfaces it directly so
+        // the front-end can populate the role dropdown without an extra round trip, even when
+        // the caller didn't pass a filter.
+        var assigneeRoles = await _assigneeRoles.GetAsync(ct);
+        var assigneeRoleSet = new HashSet<string>(assigneeRoles, StringComparer.OrdinalIgnoreCase);
+
+        if (pending.Count == 0)
+        {
+            return new PendingQueueResult(new(), new(), assigneeRoles);
+        }
+
+        // Filter inputs. `roleFilter` narrows to a single canonicalised role; `assigneeFilter`
+        // narrows to a specific email or to "unassigned". Both are optional and combine per the
+        // matrix documented on WorkItemEndpoints.
         var trimmedAssignee = assigneeFilter?.Trim();
         var assigneeFilterActive = !string.IsNullOrEmpty(trimmedAssignee);
         var assigneeIsUnassigned = assigneeFilterActive
@@ -426,10 +444,17 @@ public class WorkItemApprovalService
         var assigneeEmail = (assigneeFilterActive && !assigneeIsUnassigned)
             ? trimmedAssignee!.ToLowerInvariant()
             : null;
-        IReadOnlyList<string> assigneeRoles = assigneeFilterActive
-            ? await _assigneeRoles.GetAsync(ct)
-            : Array.Empty<string>();
-        var assigneeRoleSet = new HashSet<string>(assigneeRoles, StringComparer.OrdinalIgnoreCase);
+
+        var canonicalRoleFilter = string.IsNullOrWhiteSpace(roleFilter)
+            ? null
+            : RoleNormalizer.Normalize(roleFilter);
+        var roleFilterActive = !string.IsNullOrEmpty(canonicalRoleFilter);
+
+        // Effective role set used for matching — single role when role-filter is active,
+        // otherwise the full assignee-role set (the "any role" semantics).
+        HashSet<string> effectiveRoleSet = roleFilterActive
+            ? new HashSet<string>(new[] { canonicalRoleFilter! }, StringComparer.OrdinalIgnoreCase)
+            : assigneeRoleSet;
 
         // Bundle → all event ids that contribute work-items to a candidate.
         var allEventIds = pending
@@ -440,7 +465,10 @@ public class WorkItemApprovalService
         var workItems = await _db.DeployEventWorkItems.AsNoTracking()
             .Where(w => allEventIds.Contains(w.DeployEventId))
             .ToListAsync(ct);
-        if (workItems.Count == 0) return new();
+        if (workItems.Count == 0)
+        {
+            return new PendingQueueResult(new(), new(), assigneeRoles);
+        }
 
         // Group user's existing decisions: (key, product, env) tuples to skip.
         var decided = await _db.WorkItemApprovals.AsNoTracking()
@@ -495,6 +523,13 @@ public class WorkItemApprovalService
         var result = new List<PendingTicketView>();
         var emitted = new HashSet<(string Key, Guid CandidateId)>();
 
+        // (email, role) → set of candidate ids it appears on, plus best displayName seen.
+        // The set guarantees one increment per distinct candidate even if the same person shows
+        // up across reference + event-level layers within the bundle. Counts feed the assignee
+        // summary; displayName is taken from the first non-empty value seen (a tighter "best
+        // by count" tiebreak isn't worth the bookkeeping).
+        var assigneeAccumulator = new Dictionary<(string Email, string Role), AssigneeAccumulator>();
+
         // Order Pending candidates newest-first so the most recent candidate "owns" the inbox row
         // when the same ticket appears in multiple — keeps the list deterministic and surfaces
         // the freshest version/promotion to the approver.
@@ -540,30 +575,66 @@ public class WorkItemApprovalService
                 .GroupBy(w => w.WorkItemKey)
                 .Select(g => g.First());
 
-            // Build the merged participant view across the candidate's full bundle once per
-            // candidate (only when the assignee filter is active — pure narrowing, doesn't
-            // touch authorisation). Tombstones are honoured via FindByRoleWithOverrides so
-            // suppressed roles don't count as "assigned".
-            List<MergedParticipant>? bundleAssignees = null;
-            if (assigneeFilterActive)
+            // Build the merged participant view across the candidate's full bundle. Always
+            // computed here — this row is in the authorized list, so its merged participants
+            // feed the assignee summary even when no role/person filter is in play.
+            // Tombstones are honoured via FindByRoleWithOverrides so suppressed roles don't
+            // count as "assigned".
+            var bundleAssignees = BuildMergedAssignees(
+                new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds),
+                sourceJsonByEvent, overridesByEvent, assigneeRoleSet);
+
+            // Update the assignee summary BEFORE narrowing — see method-level XML for why this
+            // is computed against the unfiltered authorized list. Dedupe per (email, role) within
+            // a candidate so the same person on event-level + reference-level only counts once.
+            var seenInCandidate = new HashSet<(string Email, string Role)>();
+            foreach (var p in bundleAssignees)
             {
-                bundleAssignees = BuildMergedAssignees(
-                    new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds),
-                    sourceJsonByEvent, overridesByEvent, assigneeRoleSet);
+                var key = (p.Email, p.Role);
+                if (!seenInCandidate.Add(key)) continue;
+                if (!assigneeAccumulator.TryGetValue(key, out var acc))
+                {
+                    acc = new AssigneeAccumulator(p.DisplayName, 0);
+                }
+                else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(p.DisplayName))
+                {
+                    // Prefer the first non-empty displayName we encounter; once set, keep it.
+                    acc = acc with { DisplayName = p.DisplayName };
+                }
+                acc = acc with { Count = acc.Count + 1 };
+                assigneeAccumulator[key] = acc;
+            }
+
+            // Apply role/person matrix narrowing. Empty merged view => "unassigned" by
+            // definition (legacy data, no participants, all tombstoned). The unassigned branch
+            // keys off the merged-view subset matching the effective role set.
+            if (assigneeFilterActive || roleFilterActive)
+            {
+                bool keep;
+                var inEffectiveRole = bundleAssignees
+                    .Where(p => effectiveRoleSet.Contains(p.Role))
+                    .ToList();
 
                 if (assigneeIsUnassigned)
                 {
-                    // No participant in the merged set has a role in the assignee role set.
-                    if (bundleAssignees.Count > 0) continue;
+                    // No participant whose role ∈ effectiveRoleSet exists.
+                    keep = inEffectiveRole.Count == 0;
+                }
+                else if (assigneeFilterActive)
+                {
+                    // Specific email + role narrows.
+                    keep = inEffectiveRole.Any(p =>
+                        !string.IsNullOrEmpty(p.Email)
+                        && string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
                 }
                 else
                 {
-                    // Some participant has email match (case-insensitive) AND role ∈ assigneeRoles.
-                    var anyMatch = bundleAssignees.Any(p =>
-                        !string.IsNullOrEmpty(p.Email)
-                        && string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
-                    if (!anyMatch) continue;
+                    // role only (no person filter) — keep candidates with at least one
+                    // participant in the role.
+                    keep = inEffectiveRole.Count > 0;
                 }
+
+                if (!keep) continue;
             }
 
             foreach (var w in bundleItems)
@@ -587,7 +658,19 @@ public class WorkItemApprovalService
             }
         }
 
-        return result;
+        // Sort: count desc, then displayName asc (case-insensitive). DisplayName falls back to
+        // email when missing so the secondary sort is always meaningful.
+        var assigneeRows = assigneeAccumulator
+            .Select(kv => new PendingAssigneeView(
+                Email: kv.Key.Email,
+                DisplayName: string.IsNullOrEmpty(kv.Value.DisplayName) ? kv.Key.Email : kv.Value.DisplayName!,
+                Role: kv.Key.Role,
+                Count: kv.Value.Count))
+            .OrderByDescending(a => a.Count)
+            .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new PendingQueueResult(result, assigneeRows, assigneeRoles);
     }
 
     // ---------------------------------------------------------------------
@@ -638,6 +721,9 @@ public class WorkItemApprovalService
     /// <para>Only participants whose role canonicalises into <paramref name="assigneeRoleSet"/>
     /// are returned — the filter cares about a specific subset of roles and we don't need to
     /// surface anything else.</para>
+    ///
+    /// <para>DisplayName is preserved alongside the canonicalised role + lower-cased email so
+    /// the queue endpoint can populate the assignee dropdown without a second DB roundtrip.</para>
     /// </summary>
     private static List<MergedParticipant> BuildMergedAssignees(
         IEnumerable<Guid> bundleEventIds,
@@ -678,7 +764,8 @@ public class WorkItemApprovalService
                     {
                         result.Add(new MergedParticipant(
                             Role: RoleNormalizer.Normalize(p.Role),
-                            Email: p.Email!.Trim().ToLowerInvariant()));
+                            Email: p.Email!.Trim().ToLowerInvariant(),
+                            DisplayName: p.DisplayName));
                     }
                 }
             }
@@ -694,14 +781,17 @@ public class WorkItemApprovalService
                 if (string.IsNullOrEmpty(p.Email)) continue;
                 result.Add(new MergedParticipant(
                     Role: canon,
-                    Email: p.Email!.Trim().ToLowerInvariant()));
+                    Email: p.Email!.Trim().ToLowerInvariant(),
+                    DisplayName: p.DisplayName));
             }
         }
 
         return result;
     }
 
-    private readonly record struct MergedParticipant(string Role, string Email);
+    private readonly record struct MergedParticipant(string Role, string Email, string? DisplayName);
+
+    private record struct AssigneeAccumulator(string? DisplayName, int Count);
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)
     {
@@ -745,3 +835,25 @@ public record PendingTicketView(
     string Version,
     string SourceEnv,
     int BlockingPromotions);
+
+/// <summary>
+/// One row of the assignee summary for the My-queue endpoint. Aggregated by (email, role)
+/// across the user's authorized list <i>before</i> the role/person filter is applied, so the
+/// front-end always knows the full set of choices the user can narrow to. <see cref="Count"/>
+/// is the number of distinct candidates the (email, role) pair appears on.
+/// </summary>
+public record PendingAssigneeView(
+    string Email,
+    string DisplayName,
+    string Role,
+    int Count);
+
+/// <summary>
+/// Composite return for <c>GET /api/work-items/me/pending</c>. Carries the rendered ticket
+/// list plus the unfiltered (email, role) summary and the canonical assignee-role set so
+/// the front-end's role + person dropdowns can be populated without a second call.
+/// </summary>
+public record PendingQueueResult(
+    List<PendingTicketView> Tickets,
+    List<PendingAssigneeView> Assignees,
+    IReadOnlyList<string> Roles);
