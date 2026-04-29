@@ -528,10 +528,13 @@ export function PromotionDetailPage() {
             </div>
           )}
 
-          {/* People — merges source-event participants (read-only) + promotion-level (editable) */}
+          {/* People — merges source-event participants (read-only) + ticket / reference
+              participants (read-only, tagged with the ref they came from) + promotion-level
+              (editable). */}
           <PeopleCard
             candidate={candidate}
             sourceEvent={sourceEvent}
+            inheritedReferences={inheritedRefs}
             onChange={(next) => setCandidate({ ...candidate, participants: next })}
           />
 
@@ -627,10 +630,12 @@ function buildReferenceLabel(
 function PeopleCard({
   candidate,
   sourceEvent,
+  inheritedReferences,
   onChange,
 }: {
   candidate: PromotionCandidate;
   sourceEvent: PromotionSourceEvent | null;
+  inheritedReferences: PromotionInheritedReference[];
   onChange: (participants: PromotionParticipant[]) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -681,7 +686,10 @@ function PeopleCard({
     ? [...sourceEvent.participants, ...(sourceEvent.enrichment?.participants ?? [])]
     : [];
 
-  // Promotion-level roles override same-role source-event entries (case-insensitive).
+  // Promotion-level roles override same-role event-level entries (case-insensitive).
+  // Reference-level participants are NOT filtered out here — they're scoped to a specific
+  // ref (a ticket / PR / commit), so a promotion-level "QA = Alice" doesn't shadow a
+  // ticket's "QA on FOO-123 = Bob"; both are legitimate and the operator wants to see them.
   const promotionRoleSet = new Set(
     candidate.participants.map((p) => p.role.toLowerCase()),
   );
@@ -689,7 +697,35 @@ function PeopleCard({
     (p) => !promotionRoleSet.has(p.role.toLowerCase()),
   );
 
-  const hasAny = filteredSource.length > 0 || candidate.participants.length > 0;
+  // Flatten reference-level participants from source-event references + inherited refs.
+  // Each row carries enough context for the operator to see "which ticket / PR routed this".
+  type RefParticipantRow = {
+    participant: PromotionSourceEventParticipant;
+    refLabel: string;
+    fromVersion?: string;
+  };
+  const refParticipants: RefParticipantRow[] = [];
+  if (sourceEvent) {
+    for (const r of sourceEvent.references) {
+      for (const p of r.participants ?? []) {
+        refParticipants.push({ participant: p, refLabel: buildReferenceLabel(r, sourceEvent.enrichment?.labels ?? {}) });
+      }
+    }
+  }
+  for (const ir of inheritedReferences) {
+    for (const p of ir.reference.participants ?? []) {
+      refParticipants.push({
+        participant: p,
+        refLabel: buildReferenceLabel(ir.reference, {}),
+        fromVersion: ir.fromVersion,
+      });
+    }
+  }
+
+  const hasAny =
+    filteredSource.length > 0 ||
+    refParticipants.length > 0 ||
+    candidate.participants.length > 0;
 
   const reset = () => {
     setRole('');
@@ -779,6 +815,28 @@ function PeopleCard({
             >
               {p.displayName ?? p.email ?? '—'}
               <CopyEmailButton email={p.email ?? null} />
+            </span>
+          </div>
+        ))}
+        {refParticipants.map((row, i) => (
+          <div key={`ref-${i}`} className="flex items-center justify-between text-[13px]">
+            <span style={{ color: 'var(--text-muted)' }}>
+              {roleDisplay(row.participant)}
+              <span
+                className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded font-mono"
+                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                title={row.fromVersion ? `via ${row.refLabel} (carried from v${row.fromVersion})` : `via ${row.refLabel}`}
+              >
+                via {row.refLabel}
+                {row.fromVersion && <span> · v{row.fromVersion}</span>}
+              </span>
+            </span>
+            <span
+              className="inline-flex items-center gap-1.5"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              {row.participant.displayName ?? row.participant.email ?? '—'}
+              <CopyEmailButton email={row.participant.email ?? null} />
             </span>
           </div>
         ))}
