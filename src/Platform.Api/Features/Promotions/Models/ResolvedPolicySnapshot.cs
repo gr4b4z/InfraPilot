@@ -31,4 +31,15 @@ public record ResolvedPolicySnapshot(
     /// pre-PR3 behaviour. Init-only so the snapshot remains effectively immutable.
     /// </summary>
     public PromotionGate Gate { get; init; } = PromotionGate.PromotionOnly;
+
+    // ── Ticket-gate options (default false so old snapshot JSON is backward-compatible) ──
+
+    /// <inheritdoc cref="PromotionPolicy.RequireAllTicketsApproved"/>
+    public bool RequireAllTicketsApproved { get; init; } = false;
+
+    /// <inheritdoc cref="PromotionPolicy.AutoApproveOnAllTicketsApproved"/>
+    public bool AutoApproveOnAllTicketsApproved { get; init; } = false;
+
+    /// <inheritdoc cref="PromotionPolicy.AutoApproveWhenNoTickets"/>
+    public bool AutoApproveWhenNoTickets { get; init; } = false;
 }

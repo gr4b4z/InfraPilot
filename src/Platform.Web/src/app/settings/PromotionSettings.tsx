@@ -15,9 +15,13 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   approverGroup: null,
   strategy: 'Any',
   minApprovers: 1,
+  gate: 'PromotionOnly',
   excludeRole: null,
   timeoutHours: 24,
   escalationGroup: null,
+  requireAllTicketsApproved: false,
+  autoApproveOnAllTicketsApproved: false,
+  autoApproveWhenNoTickets: false,
 };
 
 const inputClass =
@@ -128,9 +132,13 @@ export function PromotionSettings() {
       approverGroup: p.approverGroup,
       strategy: p.strategy,
       minApprovers: p.minApprovers,
+      gate: p.gate ?? 'PromotionOnly',
       excludeRole: p.excludeRole,
       timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
+      requireAllTicketsApproved: p.requireAllTicketsApproved ?? false,
+      autoApproveOnAllTicketsApproved: p.autoApproveOnAllTicketsApproved ?? false,
+      autoApproveWhenNoTickets: p.autoApproveWhenNoTickets ?? false,
     });
     setEditingId(p.id);
     setShowForm(true);
@@ -607,6 +615,78 @@ export function PromotionSettings() {
                     />
                   </div>
 
+                  {/* Approval Gate */}
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      Approval Gate
+                    </label>
+                    <select
+                      value={form.gate}
+                      onChange={(e) => setField('gate', e.target.value as UpsertPromotionPolicyPayload['gate'])}
+                      className={`${inputClass} w-full`}
+                      style={inputStyle}
+                    >
+                      <option value="PromotionOnly">Promotion only (manual)</option>
+                      <option value="TicketsOnly">Tickets only (auto when all approved)</option>
+                      <option value="TicketsAndManual">Tickets + manual</option>
+                    </select>
+                  </div>
+
+                </div>
+
+                {/* ── Ticket-gate options ── */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    Ticket-gate options
+                  </p>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.requireAllTicketsApproved}
+                      onChange={(e) => setField('requireAllTicketsApproved', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      All tickets must be approved before promotion can be approved
+                      <span className="block text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        Blocks the Approve button until every work-item ticket has a sign-off.
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.autoApproveOnAllTicketsApproved}
+                      onChange={(e) => setField('autoApproveOnAllTicketsApproved', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      Auto-approve promotion when all tickets are approved
+                      <span className="block text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        Promotion is automatically approved the moment the last ticket gets its sign-off.
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.autoApproveWhenNoTickets}
+                      onChange={(e) => setField('autoApproveWhenNoTickets', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      Auto-approve promotion when no tickets are assigned
+                      <span className="block text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        If the deploy event has no work-item references, skip the approval gate entirely.
+                      </span>
+                    </span>
+                  </label>
                 </div>
 
                 {/* Form actions */}

@@ -472,14 +472,6 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<Guid>("SourceDeployEventId")
                         .HasColumnType("uuid");
 
-                    b.Property<string>("SourceDeployerEmail")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.Property<string>("SourceDeployerName")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
                     b.Property<string>("SourceEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -567,6 +559,16 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(400)
                         .HasColumnType("character varying(400)");
 
+                    b.Property<bool>("AutoApproveOnAllTicketsApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("AutoApproveWhenNoTickets")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -591,6 +593,11 @@ namespace Platform.Api.Migrations.Postgres
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<bool>("RequireAllTicketsApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("Service")
                         .HasMaxLength(200)

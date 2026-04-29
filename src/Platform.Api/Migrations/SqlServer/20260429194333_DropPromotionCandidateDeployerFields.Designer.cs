@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Api.Migrations.SqlServer
 {
     [DbContext(typeof(SqlServerPlatformDbContext))]
-    partial class SqlServerPlatformDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260429194333_DropPromotionCandidateDeployerFields")]
+    partial class DropPromotionCandidateDeployerFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -559,16 +562,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
-                    b.Property<bool>("AutoApproveOnAllTicketsApproved")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
-
-                    b.Property<bool>("AutoApproveWhenNoTickets")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
-
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -593,11 +586,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
-
-                    b.Property<bool>("RequireAllTicketsApproved")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
 
                     b.Property<string>("Service")
                         .HasMaxLength(200)

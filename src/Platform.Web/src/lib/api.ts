@@ -415,12 +415,26 @@ class ApiClient {
   //   - assignee=unassigned  → no participant in the effective role set.
   // Response also carries the (email, role) → count rollup and the canonical role set so the
   // queue page can populate its dropdowns without a second call.
-  getMyPendingWorkItems(args?: { role?: string; assignee?: string }) {
+  getMyPendingWorkItems(args?: {
+    role?: string;
+    assignee?: string;
+    /**
+     * Status mode — "pending" (default, the inbox awaiting decision) or "decided"
+     * (combined approved + rejected history). On "decided" the role/assignee filters are
+     * ignored; pass `since` to narrow the time window (server defaults to last 24h).
+     */
+    status?: 'pending' | 'decided';
+    /** ISO timestamp lower bound on the decision time. Only used when status === 'decided'. */
+    since?: string;
+  }) {
     const params = new URLSearchParams();
     const role = args?.role?.trim();
     const assignee = args?.assignee?.trim();
+    const status = args?.status;
     if (role) params.set('role', role);
     if (assignee) params.set('assignee', assignee);
+    if (status && status !== 'pending') params.set('status', status);
+    if (args?.since) params.set('since', args.since);
     const qs = params.toString();
     const suffix = qs.length > 0 ? `?${qs}` : '';
     return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
@@ -584,8 +598,6 @@ export interface PromotionCandidate {
   /** Count of refs/participants inherited from superseded predecessors. 0 when the candidate didn't displace anything. */
   inheritedCount: number;
   status: PromotionStatus;
-  sourceDeployerName: string | null;
-  sourceDeployerEmail: string | null;
   externalRunUrl: string | null;
   createdAt: string;
   approvedAt: string | null;
@@ -637,6 +649,25 @@ export interface PendingTicket {
   version: string;
   sourceEnv: string;
   blockingPromotions: number;
+  /** Source deploy event id — used to PATCH reference participants. */
+  sourceDeployEventId: string;
+  /** Participants on this specific work-item reference (overrides applied). */
+  participants: PromotionSourceEventParticipant[];
+  /**
+   * Status of the candidate this row represents. "Pending" on the inbox; for decision-history
+   * views the candidate may have moved on (Approved / Deploying / Deployed / Rejected /
+   * Superseded). "Unknown" when no candidate could be linked to the row.
+   */
+  candidateStatus?: string;
+  /**
+   * The decision recorded on this ticket — null on the pending inbox; populated on the
+   * "decided" view. Decisions can come from any approver in the candidate's authorised group.
+   */
+  decision?: 'Approved' | 'Rejected' | null;
+  decidedAt?: string | null;
+  decidedByEmail?: string | null;
+  decidedByName?: string | null;
+  decisionComment?: string | null;
 }
 
 /**
@@ -753,9 +784,13 @@ export interface PromotionPolicy {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
+  gate: 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
   excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
+  requireAllTicketsApproved: boolean;
+  autoApproveOnAllTicketsApproved: boolean;
+  autoApproveWhenNoTickets: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -767,9 +802,13 @@ export interface UpsertPromotionPolicyPayload {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
+  gate: 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
   excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
+  requireAllTicketsApproved: boolean;
+  autoApproveOnAllTicketsApproved: boolean;
+  autoApproveWhenNoTickets: boolean;
 }
 
 export interface FeatureFlag {

@@ -73,6 +73,9 @@ public class PromotionPolicyResolver
             EscalationGroup: policy.EscalationGroup)
         {
             Gate = policy.Gate,
+            RequireAllTicketsApproved = policy.RequireAllTicketsApproved,
+            AutoApproveOnAllTicketsApproved = policy.AutoApproveOnAllTicketsApproved,
+            AutoApproveWhenNoTickets = policy.AutoApproveWhenNoTickets,
         };
     }
 }

@@ -33,9 +33,25 @@ public static class WorkItemEndpoints
         // count built from the authorized list <i>before</i> role/person narrowing, plus the
         // canonical `roles` set — both feed the front-end's dropdowns without a second call.
         group.MapGet("/me/pending", async (
-            WorkItemApprovalService svc, string? assignee, string? role, CancellationToken ct) =>
+            WorkItemApprovalService svc,
+            string? assignee, string? role, string? status, string? since,
+            CancellationToken ct) =>
         {
-            var queue = await svc.GetPendingForCurrentUserAsync(ct, assignee, role);
+            // status: "pending" (default) | "decided" (combined approved + rejected for the user).
+            // For decided views, an optional `since` ISO timestamp narrows to recent decisions —
+            // defaulting to last 24h server-side when the client doesn't pass one.
+            var normalized = status?.Trim().ToLowerInvariant();
+            DateTimeOffset? sinceCutoff = null;
+            if (DateTimeOffset.TryParse(since, out var parsed)) sinceCutoff = parsed;
+
+            var queue = normalized switch
+            {
+                "decided" => await svc.GetDecidedAsync(
+                    decision: null,
+                    since: sinceCutoff ?? DateTimeOffset.UtcNow.AddDays(-1),
+                    ct),
+                _ => await svc.GetPendingForCurrentUserAsync(ct, assignee, role),
+            };
             return Results.Ok(new
             {
                 tickets = queue.Tickets,

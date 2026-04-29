@@ -472,8 +472,6 @@ public static class PromotionEndpoints
         // would replace). Null when the target has no prior deploy for this service.
         targetCurrentVersion,
         status = c.Status.ToString(),
-        sourceDeployerName = c.SourceDeployerName,
-        sourceDeployerEmail = c.SourceDeployerEmail,
         externalRunUrl = c.ExternalRunUrl,
         createdAt = c.CreatedAt,
         approvedAt = c.ApprovedAt,

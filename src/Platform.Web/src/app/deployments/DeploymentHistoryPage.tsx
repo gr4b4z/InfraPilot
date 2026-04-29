@@ -2,10 +2,11 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
 import { format, formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
+import { collectParticipants } from '@/lib/types';
 
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
@@ -19,31 +20,18 @@ function referenceLabel(ref: DeployReference): string {
     case 'work-item':
       return ref.key ?? 'Work Item';
     case 'pull-request':
-      return 'Pull Request';
+      return ref.key ? `#${ref.key}` : 'PR';
     case 'repository':
       if (ref.key) return ref.key;
       if (ref.url) {
-        // Parse "owner/repo" from a URL like https://github.com/owner/repo or .../repo.git
         const m = ref.url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?(?:\/|$|\?|#)/);
         if (m) return m[1];
       }
-      if (ref.revision) return ref.revision.slice(0, 8);
-      return 'Repository';
+      return ref.revision?.slice(0, 8) ?? 'Repo';
     case 'pipeline':
       return ref.key ?? ref.provider ?? 'Pipeline';
     default:
       return ref.key ?? ref.type;
-  }
-}
-
-function referenceTooltip(ref: DeployReference, labels: Record<string, string>): string {
-  switch (ref.type) {
-    case 'work-item':
-      return ref.title ?? labels.workItemTitle ?? ref.type;
-    case 'pull-request':
-      return ref.title ?? labels.prTitle ?? ref.type;
-    default:
-      return ref.title ?? ref.type;
   }
 }
 
@@ -56,55 +44,45 @@ export function DeploymentHistoryPage() {
   const environment = searchParams.get('environment') ?? undefined;
   const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
 
-  // Always fetch full history (no environment filter) so the env list stays stable
   useEffect(() => {
     if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
   }, [product, service, fetchHistory]);
 
-  // Derive unique environments from the full set
   const environments = useMemo(() => {
     const envSet = new Set(allHistory.map((e) => e.environment));
     return Array.from(envSet).sort();
   }, [allHistory]);
 
-  // Client-side filter
   const history = useMemo(
     () => environment ? allHistory.filter((e) => e.environment === environment) : allHistory,
     [allHistory, environment],
   );
 
-  // Reset pagination when the environment filter changes
   useEffect(() => {
     setDisplayCount(PAGE_SIZE);
   }, [environment]);
 
   const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
   const hasMore = displayCount < history.length;
+  const selectedEvent = useMemo(() => history.find((e) => e.id === selectedId) ?? null, [history, selectedId]);
 
   const setEnvironmentFilter = useCallback((env: string | undefined) => {
-    if (env) {
-      setSearchParams({ environment: env });
-    } else {
-      setSearchParams({});
-    }
+    setSearchParams(env ? { environment: env } : {});
   }, [setSearchParams]);
 
   const downloadFile = useCallback((content: string, filename: string, mime: string) => {
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
+    a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
   }, []);
 
   const exportJson = useCallback(() => {
-    const data = history.map(flattenEvent);
-    downloadFile(JSON.stringify(data, null, 2), `${product}-${service}-history.json`, 'application/json');
+    downloadFile(JSON.stringify(history.map(flattenEvent), null, 2), `${product}-${service}-history.json`, 'application/json');
   }, [history, product, service, downloadFile]);
 
   const exportCsv = useCallback(() => {
@@ -157,13 +135,13 @@ export function DeploymentHistoryPage() {
           No deployment history found
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {visibleHistory.map((evt) => (
             <HistoryRow
               key={evt.id}
               event={evt}
-              isExpanded={expanded === evt.id}
-              onToggle={() => setExpanded(expanded === evt.id ? null : evt.id)}
+              isSelected={selectedId === evt.id}
+              onClick={() => setSelectedId(selectedId === evt.id ? null : evt.id)}
             />
           ))}
           {hasMore && (
@@ -183,134 +161,83 @@ export function DeploymentHistoryPage() {
           )}
         </div>
       )}
+
+      {selectedEvent && product && (
+        <DeployEventDetail
+          entry={selectedEvent}
+          product={product}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </div>
   );
 }
 
-function HistoryRow({ event: evt, isExpanded, onToggle }: { event: DeployEvent; isExpanded: boolean; onToggle: () => void; }) {
+function HistoryRow({ event: evt, isSelected, onClick }: {
+  event: DeployEvent;
+  isSelected: boolean;
+  onClick: () => void;
+}) {
   const { getDisplayName } = useSettingsStore();
   const workItem = evt.references.find((r) => r.type === 'work-item');
-  const prAuthor = evt.participants.find((p) => p.role === 'PR Author');
+  const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
 
   return (
     <div
-      className="rounded-lg border p-3"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+      className="rounded-lg border px-3 py-2.5 flex items-center gap-3 cursor-pointer transition-colors hover:opacity-90"
+      style={{
+        borderColor: isSelected ? 'var(--accent)' : 'var(--border-color)',
+        backgroundColor: isSelected ? 'var(--accent-muted)' : 'var(--bg-secondary)',
+      }}
+      onClick={onClick}
     >
-      <div
-        className="flex items-center gap-3 cursor-pointer"
-        onClick={onToggle}
+      <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: statusColor(evt.status) }}>
+        v{evt.version}
+      </span>
+
+      <RollbackIndicator isRollback={evt.isRollback} previousVersion={evt.previousVersion} />
+
+      <StatusBadge status={evt.status} />
+
+      <span
+        className="badge text-[11px]"
+        style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
       >
-        <span style={{ color: 'var(--text-muted)' }}>
-          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        {getDisplayName(evt.environment)}
+      </span>
+
+      {/* Reference chips — work-item key + PR number */}
+      {evt.references
+        .filter((r) => r.type === 'work-item' || r.type === 'pull-request')
+        .map((ref, i) => {
+          const Icon = REF_ICONS[ref.type];
+          const label = referenceLabel(ref);
+          const tooltip = ref.title ?? labels[ref.type === 'work-item' ? 'workItemTitle' : 'prTitle'];
+          return (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 text-[12px]"
+              style={{ color: 'var(--text-secondary)' }}
+              title={tooltip}
+            >
+              <Icon size={11} style={{ color: 'var(--text-muted)' }} />
+              {label}
+            </span>
+          );
+        })}
+
+      <span className="flex-1" />
+
+      {prAuthor?.displayName && (
+        <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          {prAuthor.displayName}
         </span>
-
-        <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: statusColor(evt.status) }}>
-          v{evt.version}
-        </span>
-
-        <RollbackIndicator isRollback={evt.isRollback} previousVersion={evt.previousVersion} />
-
-        <StatusBadge status={evt.status} />
-
-        <span
-          className="badge text-[11px]"
-          style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
-        >
-          {getDisplayName(evt.environment)}
-        </span>
-
-        {workItem?.key && (
-          <span
-            className="text-[12px]"
-            style={{ color: 'var(--text-secondary)' }}
-            title={workItem.title ?? labels.workItemTitle}
-          >
-            {workItem.key}
-          </span>
-        )}
-
-        <span className="flex-1" />
-
-        {prAuthor?.displayName && (
-          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-            {prAuthor.displayName}
-          </span>
-        )}
-
-        <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
-          {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
-        </span>
-      </div>
-
-      {isExpanded && (
-        <div className="mt-3 pl-7 space-y-2 text-[13px]">
-          <div className="flex gap-6">
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Source: </span>
-              <span style={{ color: 'var(--text-secondary)' }}>{evt.source}</span>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Deployed: </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                {format(new Date(evt.deployedAt), 'MMM d, yyyy HH:mm')}
-              </span>
-            </div>
-            {evt.previousVersion && (
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Previous: </span>
-                <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>v{evt.previousVersion}</span>
-              </div>
-            )}
-          </div>
-
-          {evt.references.length > 0 && (
-            <div className="flex flex-wrap gap-3">
-              {evt.references.map((ref, i) => {
-                const Icon = REF_ICONS[ref.type] ?? ExternalLink;
-                const label = referenceLabel(ref);
-                const tooltip = referenceTooltip(ref, labels);
-                return ref.url ? (
-                  <a
-                    key={i}
-                    href={ref.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={tooltip}
-                    className="inline-flex items-center gap-1 hover:underline"
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    <Icon size={11} />
-                    {label}
-                  </a>
-                ) : (
-                  <span
-                    key={i}
-                    title={tooltip}
-                    className="inline-flex items-center gap-1"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    <Icon size={11} />
-                    {label}
-                  </span>
-                );
-              })}
-            </div>
-          )}
-
-          {[...evt.participants, ...(evt.enrichment?.participants ?? [])].length > 0 && (
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {[...evt.participants, ...(evt.enrichment?.participants ?? [])].map((p, i) => (
-                <span key={i} className="inline-flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
-                  {p.role}: <span style={{ color: 'var(--text-secondary)' }}>{p.displayName ?? p.email}</span>
-                  <CopyEmailButton email={p.email} size={11} />
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
       )}
+
+      <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+        {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
+      </span>
     </div>
   );
 }
@@ -327,12 +254,7 @@ function RollbackIndicator({ isRollback, previousVersion }: { isRollback?: boole
   if (!isRollback) return null;
   const title = previousVersion ? `Rolled back from v${previousVersion}` : 'Rollback';
   return (
-    <span
-      title={title}
-      aria-label={title}
-      className="inline-flex"
-      style={{ color: 'var(--text-muted)' }}
-    >
+    <span title={title} aria-label={title} className="inline-flex" style={{ color: 'var(--text-muted)' }}>
       <Undo2 size={12} />
     </span>
   );
@@ -345,10 +267,7 @@ function StatusBadge({ status }: { status?: string }) {
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide leading-none"
       style={{ backgroundColor: s.bg, color: s.fg }}
     >
-      <span
-        className="inline-block w-1.5 h-1.5 rounded-full"
-        style={{ backgroundColor: s.fg }}
-      />
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: s.fg }} />
       {s.label}
     </span>
   );
@@ -360,11 +279,10 @@ function statusColor(status?: string): string {
   return 'var(--text-primary)';
 }
 
-// ── Sub-components ────────────────────────────────────────────────
+// ── Toolbar sub-components ────────────────────────────────────────
 
 function ExportMenu({ onCSV, onJSON, disabled }: { onCSV: () => void; onJSON: () => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
-
   return (
     <div className="relative">
       <button
@@ -383,18 +301,10 @@ function ExportMenu({ onCSV, onJSON, disabled }: { onCSV: () => void; onJSON: ()
             className="absolute right-0 top-full mt-1 z-20 rounded-lg border shadow-lg py-1 min-w-[120px]"
             style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
           >
-            <button
-              onClick={() => { onCSV(); setOpen(false); }}
-              className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
-              style={{ color: 'var(--text-primary)' }}
-            >
+            <button onClick={() => { onCSV(); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: 'var(--text-primary)' }}>
               Export CSV
             </button>
-            <button
-              onClick={() => { onJSON(); setOpen(false); }}
-              className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
-              style={{ color: 'var(--text-primary)' }}
-            >
+            <button onClick={() => { onJSON(); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: 'var(--text-primary)' }}>
               Export JSON
             </button>
           </div>
@@ -404,21 +314,14 @@ function ExportMenu({ onCSV, onJSON, disabled }: { onCSV: () => void; onJSON: ()
   );
 }
 
-function EnvironmentFilter({
-  environments,
-  selected,
-  displayName,
-  onChange,
-}: {
+function EnvironmentFilter({ environments, selected, displayName, onChange }: {
   environments: string[];
   selected: string | undefined;
   displayName: (key: string) => string;
   onChange: (env: string | undefined) => void;
 }) {
   const [open, setOpen] = useState(false);
-
   if (environments.length <= 1) return null;
-
   return (
     <div className="relative">
       <button
@@ -437,20 +340,11 @@ function EnvironmentFilter({
             className="absolute right-0 top-full mt-1 z-20 rounded-lg border shadow-lg py-1 min-w-[160px]"
             style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
           >
-            <button
-              onClick={() => { onChange(undefined); setOpen(false); }}
-              className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
-              style={{ color: !selected ? 'var(--accent)' : 'var(--text-primary)', fontWeight: !selected ? 600 : 400 }}
-            >
+            <button onClick={() => { onChange(undefined); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: !selected ? 'var(--accent)' : 'var(--text-primary)', fontWeight: !selected ? 600 : 400 }}>
               All environments
             </button>
             {environments.map((env) => (
-              <button
-                key={env}
-                onClick={() => { onChange(env); setOpen(false); }}
-                className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]"
-                style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}
-              >
+              <button key={env} onClick={() => { onChange(env); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}>
                 {displayName(env)}
               </button>
             ))}
@@ -464,39 +358,18 @@ function EnvironmentFilter({
 // ── Export helpers ─────────────────────────────────────────────────
 
 function csvCell(value: string): string {
-  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) return `"${value.replace(/"/g, '""')}"`;
   return value;
 }
 
 function flattenEvent(evt: DeployEvent): Record<string, string> {
-  const workItems = evt.references
-    .filter((r) => r.type === 'work-item')
-    .map((r) => r.key ?? r.url ?? '')
-    .join('; ');
-  const prs = evt.references
-    .filter((r) => r.type === 'pull-request')
-    .map((r) => r.url ?? r.key ?? '')
-    .join('; ');
-  const allParticipants = [...evt.participants, ...(evt.enrichment?.participants ?? [])];
-  const participants = allParticipants
-    .map((p) => `${p.role}: ${p.displayName ?? p.email ?? ''}`)
-    .join('; ');
-
+  const workItems = evt.references.filter((r) => r.type === 'work-item').map((r) => r.key ?? r.url ?? '').join('; ');
+  const prs = evt.references.filter((r) => r.type === 'pull-request').map((r) => r.url ?? r.key ?? '').join('; ');
+  const participants = collectParticipants(evt).map((p) => `${p.role}: ${p.displayName ?? p.email ?? ''}`).join('; ');
   return {
-    id: evt.id,
-    product: evt.product,
-    service: evt.service,
-    environment: evt.environment,
-    version: evt.version,
-    previousVersion: evt.previousVersion ?? '',
-    isRollback: evt.isRollback ? 'true' : '',
-    status: evt.status ?? 'succeeded',
-    source: evt.source,
-    deployedAt: evt.deployedAt,
-    workItems,
-    pullRequests: prs,
-    participants,
+    id: evt.id, product: evt.product, service: evt.service, environment: evt.environment,
+    version: evt.version, previousVersion: evt.previousVersion ?? '',
+    isRollback: evt.isRollback ? 'true' : '', status: evt.status ?? 'succeeded',
+    source: evt.source, deployedAt: evt.deployedAt, workItems, pullRequests: prs, participants,
   };
 }

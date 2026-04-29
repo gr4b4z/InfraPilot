@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
-import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock } from 'lucide-react';
+import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2 } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { CopyEmailButton } from './CopyEmailButton';
 import type { DeploymentStateEntry, DeployReference, DeployParticipant } from '@/lib/types';
@@ -21,7 +21,10 @@ const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
 
 export function DeployEventDetail({ entry, product, onClose }: Props) {
   const { getDisplayName } = useSettingsStore();
-  const allParticipants = [
+
+  // Event-level participants (no reference context — rare with the new model but kept for
+  // backward compat with legacy payloads that put everything at event level).
+  const eventParticipants = [
     ...entry.participants,
     ...(entry.enrichment?.participants ?? []),
   ];
@@ -49,13 +52,31 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
           </button>
         </div>
 
+        {/* Rollback banner */}
+        {entry.isRollback && (
+          <div
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-[13px]"
+            style={{ backgroundColor: 'rgba(234,179,8,0.1)', color: '#eab308' }}
+          >
+            <Undo2 size={14} />
+            <span>
+              Rollback
+              {entry.previousVersion && (
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {' '}— reverted from <span className="font-mono">v{entry.previousVersion}</span> to <span className="font-mono">v{entry.version}</span>
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+
         {/* Version info */}
         <div className="space-y-2">
           <div className="flex items-center justify-between text-[13px]">
             <span style={{ color: 'var(--text-muted)' }}>Version</span>
             <span className="font-mono font-medium" style={{ color: 'var(--text-primary)' }}>v{entry.version}</span>
           </div>
-          {entry.previousVersion && (
+          {entry.previousVersion && !entry.isRollback && (
             <div className="flex items-center justify-between text-[13px]">
               <span style={{ color: 'var(--text-muted)' }}>Previous</span>
               <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>v{entry.previousVersion}</span>
@@ -76,13 +97,13 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
           </div>
         </div>
 
-        {/* References */}
+        {/* References — participants shown inline under each reference */}
         {entry.references.length > 0 && (
           <div className="space-y-2">
             <h3 className="text-[12px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
               References
             </h3>
-            <div className="space-y-1.5">
+            <div className="space-y-2.5">
               {entry.references.map((ref, i) => (
                 <ReferenceItem key={i} reference={ref} labels={labels} />
               ))}
@@ -90,14 +111,14 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
           </div>
         )}
 
-        {/* Participants */}
-        {allParticipants.length > 0 && (
+        {/* Event-level participants — only shown when no references carry them (legacy payloads) */}
+        {eventParticipants.length > 0 && (
           <div className="space-y-2">
             <h3 className="text-[12px] font-medium uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
               <Users size={12} /> Participants
             </h3>
             <div className="space-y-1">
-              {allParticipants.map((p, i) => (
+              {eventParticipants.map((p, i) => (
                 <ParticipantItem key={i} participant={p} />
               ))}
             </div>
@@ -122,23 +143,33 @@ function ReferenceItem({ reference, labels }: { reference: DeployReference; labe
   const Icon = REFERENCE_ICONS[reference.type] ?? ExternalLink;
   const label = buildReferenceLabel(reference, labels);
   const href = resolveReferenceHref(reference);
+  const participants = reference.participants ?? [];
 
   return (
-    <div className="flex items-center gap-2 text-[13px] min-w-0">
-      <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hover:underline truncate"
-          title={label}
-          style={{ color: 'var(--accent)' }}
-        >
-          {label}
-        </a>
-      ) : (
-        <span className="truncate" title={label} style={{ color: 'var(--text-secondary)' }}>{label}</span>
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-[13px] min-w-0">
+        <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline truncate"
+            title={label}
+            style={{ color: 'var(--accent)' }}
+          >
+            {label}
+          </a>
+        ) : (
+          <span className="truncate" title={label} style={{ color: 'var(--text-secondary)' }}>{label}</span>
+        )}
+      </div>
+      {participants.length > 0 && (
+        <div className="pl-5 space-y-0.5">
+          {participants.map((p, i) => (
+            <ParticipantItem key={i} participant={p} />
+          ))}
+        </div>
       )}
     </div>
   );

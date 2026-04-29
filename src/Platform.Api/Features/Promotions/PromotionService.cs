@@ -108,7 +108,18 @@ public class PromotionService
 
         var snapshot = await _resolver.SnapshotAsync(source.Product, source.Service, targetEnv, ct);
 
-        var deployer = ExtractDeployer(source);
+        // AutoApproveWhenNoTickets: if the source event carries no work-item references and the
+        // policy opts in, treat this candidate as if it had an auto-approve policy — no gate needed.
+        var autoApproveNoTickets = false;
+        if (!snapshot.IsAutoApprove && snapshot.AutoApproveWhenNoTickets)
+        {
+            var hasTickets = await _db.DeployEventWorkItems.AsNoTracking()
+                .AnyAsync(w => w.DeployEventId == source.Id, ct);
+            autoApproveNoTickets = !hasTickets;
+        }
+
+        var effectiveAutoApprove = snapshot.IsAutoApprove || autoApproveNoTickets;
+
         var now = DateTimeOffset.UtcNow;
         var candidate = new PromotionCandidate
         {
@@ -119,13 +130,11 @@ public class PromotionService
             TargetEnv = targetEnv,
             Version = source.Version,
             SourceDeployEventId = source.Id,
-            SourceDeployerName = deployer?.Name,
-            SourceDeployerEmail = deployer?.Email,
-            Status = snapshot.IsAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
+            Status = effectiveAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
             PolicyId = snapshot.PolicyId,
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
             CreatedAt = now,
-            ApprovedAt = snapshot.IsAutoApprove ? now : null,
+            ApprovedAt = effectiveAutoApprove ? now : null,
         };
 
         // Supersede any still-pending candidate for the same service+edge — a newer version wins.
@@ -136,14 +145,16 @@ public class PromotionService
         _db.PromotionCandidates.Add(candidate);
 
         // Auto-approve: record a synthetic approval row so the UI's approval trail renders it.
-        if (snapshot.IsAutoApprove)
+        if (effectiveAutoApprove)
         {
             _db.PromotionApprovals.Add(new PromotionApproval
             {
                 Id = Guid.NewGuid(),
                 CandidateId = candidate.Id,
                 ApproverEmail = "system",
-                ApproverName = "System (auto-approve)",
+                ApproverName = autoApproveNoTickets
+                    ? "System (auto-approve — no tickets)"
+                    : "System (auto-approve)",
                 Decision = PromotionDecision.Approved,
                 CreatedAt = now,
             });
@@ -163,7 +174,8 @@ public class PromotionService
                 candidate.TargetEnv,
                 candidate.Version,
                 candidate.Status,
-                AutoApprove = snapshot.IsAutoApprove,
+                AutoApprove = effectiveAutoApprove,
+                AutoApproveReason = snapshot.IsAutoApprove ? "policy" : autoApproveNoTickets ? "no-tickets" : null,
             });
 
         _logger.LogInformation(
@@ -218,34 +230,6 @@ public class PromotionService
         return inherited.ToList();
     }
 
-    private record DeployerInfo(string? Name, string? Email);
-
-    // Canonical role name CI senders use to identify who/what kicked off a pipeline run.
-    // Named "triggered-by" because it's the run initiator (human, service principal, scheduler),
-    // not necessarily the person who authored the code or approved the deploy.
-    private const string TriggeredByRole = "triggered-by";
-
-    private static DeployerInfo? ExtractDeployer(DeployEvent source)
-    {
-        // Participants JSON is a serialised List<ParticipantDto>. We look for the participant
-        // tagged as the run initiator. Normalise each role at read time so the match works
-        // whether or not ingest-time canonicalisation is enabled (senders may post "TriggeredBy",
-        // "triggered_by", etc.). Best-effort parse — return null when the payload is malformed
-        // or absent rather than fail candidate creation.
-        if (string.IsNullOrWhiteSpace(source.ParticipantsJson)) return null;
-        try
-        {
-            var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(source.ParticipantsJson, JsonOptions);
-            var deployer = parts?.FirstOrDefault(p =>
-                RoleNormalizer.Normalize(p.Role) == TriggeredByRole);
-            if (deployer is null) return null;
-            return new DeployerInfo(deployer.DisplayName, deployer.Email);
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     // ---------------------------------------------------------------------
     // Queries
@@ -558,6 +542,17 @@ public class PromotionService
             throw new InvalidOperationException(
                 "This candidate auto-promotes from ticket approvals; approve the tickets, not the promotion.");
 
+        // RequireAllTicketsApproved: the policy says every ticket must be signed off before a
+        // human release manager can approve the promotion. When the bundle has tickets and at least
+        // one is still pending (or rejected), reject the attempt with an actionable message.
+        if (snapshot.RequireAllTicketsApproved && await CandidateHasTicketsAsync(candidate, ct))
+        {
+            if (!await AreAllTicketsApprovedAsync(candidate, ct))
+                throw new InvalidOperationException(
+                    "All work-item tickets must be approved before this promotion can be approved. " +
+                    "Check the Tickets queue for pending sign-offs.");
+        }
+
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
         await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
 
@@ -668,6 +663,16 @@ public class PromotionService
         if (snapshot.IsAutoApprove)
             return new GateResult(true, Array.Empty<string>());
 
+        // AutoApproveOnAllTicketsApproved: independent of Gate mode — as soon as every ticket in the
+        // bundle has an Approved WorkItemApproval the gate is satisfied, regardless of whether a human
+        // has also clicked Approve on the promotion itself. Only activates when the bundle has tickets
+        // (no tickets → fall through to the regular gate so a human signoff is still required).
+        if (snapshot.AutoApproveOnAllTicketsApproved && await CandidateHasTicketsAsync(candidate, ct))
+        {
+            if (await AreAllTicketsApprovedAsync(candidate, ct))
+                return new GateResult(true, Array.Empty<string>());
+        }
+
         return snapshot.Gate switch
         {
             PromotionGate.TicketsOnly => await EvaluateTicketsGateAsync(candidate, snapshot, requireManual: false, ct),
@@ -701,6 +706,41 @@ public class PromotionService
         var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
         return await _db.DeployEventWorkItems.AsNoTracking()
             .AnyAsync(w => bundleEventIds.Contains(w.DeployEventId), ct);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when every distinct work-item key in the candidate's bundle has at least
+    /// one <see cref="PromotionDecision.Approved"/> <see cref="WorkItemApproval"/> row and zero
+    /// <see cref="PromotionDecision.Rejected"/> rows. Returns <c>true</c> vacuously when the
+    /// bundle has no tickets — callers should guard with <see cref="CandidateHasTicketsAsync"/>
+    /// first when they want "no tickets" to be treated differently.
+    /// </summary>
+    private async Task<bool> AreAllTicketsApprovedAsync(PromotionCandidate candidate, CancellationToken ct)
+    {
+        var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
+
+        var ticketKeys = await _db.DeployEventWorkItems.AsNoTracking()
+            .Where(w => bundleEventIds.Contains(w.DeployEventId))
+            .Select(w => w.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (ticketKeys.Count == 0) return true;
+
+        var approvals = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => ticketKeys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.TargetEnv == candidate.TargetEnv)
+            .ToListAsync(ct);
+
+        foreach (var key in ticketKeys)
+        {
+            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
+            if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) return false;
+            if (!rows.Any(a => a.Decision == PromotionDecision.Approved)) return false;
+        }
+
+        return true;
     }
 
     private async Task<GateResult> EvaluateTicketsGateAsync(
@@ -868,6 +908,32 @@ public class PromotionService
     {
         try
         {
+            // Load references and participants from the source deploy event(s) so webhook
+            // consumers don't need a separate API call to understand what changed.
+            // Bundle = own source event + all inherited superseded predecessors.
+            var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds)
+            {
+                candidate.SourceDeployEventId,
+            };
+
+            var sourceEvents = await _db.DeployEvents.AsNoTracking()
+                .Where(e => bundleEventIds.Contains(e.Id))
+                .Select(e => new { e.Id, e.ReferencesJson, e.ParticipantsJson })
+                .ToListAsync(ct);
+
+            var references = sourceEvents
+                .SelectMany(e =>
+                    JsonSerializer.Deserialize<List<ReferenceDto>>(e.ReferencesJson, JsonOptions)
+                    ?? new List<ReferenceDto>())
+                .DistinctBy(r => r.Key ?? r.Url)
+                .ToList();
+
+            var sourceParticipants = sourceEvents
+                .SelectMany(e =>
+                    JsonSerializer.Deserialize<List<ParticipantDto>>(e.ParticipantsJson, JsonOptions)
+                    ?? new List<ParticipantDto>())
+                .ToList();
+
             var payload = new
             {
                 candidateId = candidate.Id,
@@ -877,10 +943,13 @@ public class PromotionService
                 candidate.TargetEnv,
                 candidate.Version,
                 candidate.SourceDeployEventId,
-                candidate.SourceDeployerEmail,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
+                // Promotion-level participants (manually assigned QA/reviewer etc.)
                 participants = candidate.Participants,
+                // Source deploy event data — references carry their own participants
+                references,
+                sourceParticipants,
                 change,
             };
 

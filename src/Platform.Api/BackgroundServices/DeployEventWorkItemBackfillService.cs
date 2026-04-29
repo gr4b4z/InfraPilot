@@ -180,7 +180,7 @@ public class DeployEventWorkItemBackfillService : BackgroundService
 
         if (refs.Count == 0) return 0;
 
-        // Title source: mirrors the live ingest path (DeploymentService.SyncWorkItemsAsync).
+        // Title source: mirrors the live ingest path (WorkItemSyncService.SyncAsync).
         // Prefer caller-supplied per-reference Title; otherwise fall back to a single
         // enrichment.Labels["workItemTitle"] when there's exactly one work-item on the
         // event (the Enrichment shape is flat, so applying one label to multiple

@@ -22,20 +22,49 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
   badge?: number;
-  section?: string;
   adminOnly?: boolean;
   featureFlag?: string;
 }
 
-const navItems: NavItem[] = [
-  { to: '/catalog', label: 'Service Catalog', icon: LayoutGrid, section: 'main', featureFlag: FeatureFlag.ServiceCatalog },
-  { to: '/requests', label: 'My Requests', icon: FileText, section: 'main', featureFlag: FeatureFlag.ServiceCatalog },
-  { to: '/approvals', label: 'Approvals', icon: CheckCircle, badge: 0, section: 'main', featureFlag: FeatureFlag.Approvals },
-  { to: '/deployments', label: 'Deployments', icon: Rocket, section: 'main' },
-  { to: '/promotions', label: 'Promotions', icon: GitPullRequest, section: 'main', featureFlag: FeatureFlag.Promotions },
-  { to: '/me/tickets', label: 'My ticket queue', icon: Inbox, section: 'main', featureFlag: FeatureFlag.Promotions },
-  { to: '/webhooks', label: 'Webhooks', icon: Webhook, section: 'main', adminOnly: true },
-  { to: '/settings', label: 'Settings', icon: Settings, section: 'main', adminOnly: true },
+interface NavGroup {
+  label: string;
+  featureFlag?: string;
+  adminOnly?: boolean;
+  items: NavItem[];
+}
+
+const navGroups: NavGroup[] = [
+  {
+    label: 'Catalog',
+    featureFlag: FeatureFlag.ServiceCatalog,
+    items: [
+      { to: '/catalog',   label: 'Service Catalog', icon: LayoutGrid  },
+      { to: '/requests',  label: 'My Requests',     icon: FileText    },
+      { to: '/approvals', label: 'Approvals',        icon: CheckCircle, badge: 0, featureFlag: FeatureFlag.Approvals },
+    ],
+  },
+  {
+    label: 'Deployments',
+    items: [
+      { to: '/deployments', label: 'Deployments', icon: Rocket },
+    ],
+  },
+  {
+    label: 'Promotions',
+    featureFlag: FeatureFlag.Promotions,
+    items: [
+      { to: '/promotions', label: 'Promotions',    icon: GitPullRequest },
+      { to: '/me/tickets', label: 'Tickets queue', icon: Inbox          },
+    ],
+  },
+  {
+    label: 'System',
+    adminOnly: true,
+    items: [
+      { to: '/webhooks', label: 'Webhooks', icon: Webhook  },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ];
 
 export function Sidebar() {
@@ -46,11 +75,21 @@ export function Sidebar() {
   const isAdmin = user?.isAdmin ?? false;
   const flags = useFeatureFlagsStore((s) => s.flags);
 
-  const visibleNavItems = navItems.filter((item) => {
-    if (item.adminOnly && !isAdmin) return false;
-    if (item.featureFlag && flags[item.featureFlag] === false) return false;
-    return true;
-  });
+  const visibleGroups = navGroups
+    .filter((g) => {
+      if (g.adminOnly && !isAdmin) return false;
+      if (g.featureFlag && flags[g.featureFlag] === false) return false;
+      return true;
+    })
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((item) => {
+        if (item.adminOnly && !isAdmin) return false;
+        if (item.featureFlag && flags[item.featureFlag] === false) return false;
+        return true;
+      }),
+    }))
+    .filter((g) => g.items.length > 0);
 
   return (
     <aside
@@ -97,7 +136,7 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* Environment badge — only shown when ENVIRONMENT_LABEL is set in config.json */}
+      {/* Environment badge */}
       {!collapsed && getEnvironmentLabel() && (
         <div className="px-3 pt-3 pb-1">
           <div
@@ -111,54 +150,63 @@ export function Sidebar() {
       )}
 
       {/* Navigation */}
-      <nav className="flex-1 py-2 px-2">
-        {!collapsed && (
-          <div className="px-2 pt-2 pb-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              Platform
-            </span>
-          </div>
-        )}
-        <div className="space-y-0.5">
-          {visibleNavItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  `group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
-                    collapsed ? 'justify-center' : ''
-                  } ${
-                    isActive
-                      ? ''
-                      : 'hover:bg-[var(--accent-muted)]'
-                  }`
-                }
-                style={({ isActive }) => ({
-                  backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
-                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-                })}
-                title={collapsed ? item.label : undefined}
-              >
-                <Icon size={18} className="shrink-0" />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1">{item.label}</span>
-                    {item.badge !== undefined && item.badge > 0 && (
-                      <span
-                        className="badge text-white"
-                        style={{ backgroundColor: 'var(--accent)' }}
-                      >
-                        {item.badge}
-                      </span>
+      <nav className="flex-1 py-2 px-2 overflow-y-auto">
+        {visibleGroups.map((group, groupIdx) => (
+          <div
+            key={group.label}
+            className={groupIdx > 0 ? 'mt-1 pt-1 border-t' : ''}
+            style={groupIdx > 0 ? { borderColor: 'var(--border-color)' } : undefined}
+          >
+            {/* Group label — hidden when collapsed */}
+            {!collapsed && (
+              <div className="px-2 pt-2 pb-1">
+                <span
+                  className="text-[10px] font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {group.label}
+                </span>
+              </div>
+            )}
+
+            <div className="space-y-0.5">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      `group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
+                        collapsed ? 'justify-center' : ''
+                      } ${isActive ? '' : 'hover:bg-[var(--accent-muted)]'}`
+                    }
+                    style={({ isActive }) => ({
+                      backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
+                      color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                    })}
+                    title={collapsed ? item.label : undefined}
+                  >
+                    <Icon size={18} className="shrink-0" />
+                    {!collapsed && (
+                      <>
+                        <span className="flex-1">{item.label}</span>
+                        {item.badge !== undefined && item.badge > 0 && (
+                          <span
+                            className="badge text-white"
+                            style={{ backgroundColor: 'var(--accent)' }}
+                          >
+                            {item.badge}
+                          </span>
+                        )}
+                      </>
                     )}
-                  </>
-                )}
-              </NavLink>
-            );
-          })}
-        </div>
+                  </NavLink>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
       {/* Bottom section */}

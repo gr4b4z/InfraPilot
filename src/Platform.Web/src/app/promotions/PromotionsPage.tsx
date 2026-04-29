@@ -542,118 +542,121 @@ function CandidateCard({
           </span>
           <TicketsBadge candidate={candidate} progress={ticketProgress} />
         </div>
-        {candidate.sourceEventReferences && candidate.sourceEventReferences.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap mt-2">
-            {candidate.sourceEventReferences.map((ref, i) => {
-              const Icon = REFERENCE_ICONS[ref.type] ?? ExternalLink;
-              const label = referenceChipLabel(ref.type, ref.key);
-              const filterKey = ref.key || ref.revision || '';
-              const titleParts = [ref.title, filterKey ? `Filter by ${filterKey}` : null].filter(Boolean);
-              const buttonTitle = titleParts.join(' — ') || label;
-              const href = resolveReferenceHref({
-                type: ref.type,
-                url: ref.url ?? undefined,
-                provider: ref.provider ?? undefined,
-                revision: ref.revision ?? undefined,
-              });
-              return (
-                <span
-                  key={`ref-${i}`}
-                  className="inline-flex items-center gap-1 text-[10px]"
-                >
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (filterKey && onFilterByReference) onFilterByReference(filterKey);
-                    }}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
-                    style={{
-                      backgroundColor: 'var(--bg-secondary)',
-                      color: 'var(--text-secondary)',
-                      cursor: filterKey ? 'pointer' : 'default',
-                    }}
-                    title={buttonTitle}
-                  >
-                    <Icon size={10} style={{ color: 'var(--text-muted)' }} />
-                    <span className="font-medium">{label}</span>
-                  </button>
-                  {href && (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      style={{ color: 'var(--text-muted)' }}
-                      className="transition-opacity hover:opacity-80"
-                      title={ref.title ?? 'Open'}
-                    >
-                      <ExternalLink size={10} />
-                    </a>
-                  )}
-                </span>
-              );
-            })}
-            {candidate.inheritedCount > 0 && (
-              <span
-                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
-                style={{
-                  backgroundColor: 'var(--bg-secondary)',
-                  color: 'var(--text-muted)',
-                  border: '1px dashed var(--border-color)',
-                }}
-                title={`${candidate.inheritedCount} refs/people inherited from superseded predecessors — open details to view`}
-              >
-                +{candidate.inheritedCount} inherited
-              </span>
-            )}
-          </div>
-        )}
+        {/* Work-item tickets — key + optional title, click-to-filter + external link */}
         {(() => {
-          // Merge deploy-event people + reference-scoped people (per ticket / PR / commit) +
-          // promotion-level people. Promotion-level wins by role over the event-level row,
-          // but reference-level chips are always shown — same role on a different ticket
-          // is still distinct (and is what the operator just routed).
-          const promotionRoles = new Set(
-            (candidate.participants ?? []).map((p) => p.role.toLowerCase()),
+          const tickets = (candidate.sourceEventReferences ?? []).filter(
+            (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
           );
+          if (tickets.length === 0 && candidate.inheritedCount === 0) return null;
+          return (
+            <div className="flex items-center gap-1.5 flex-wrap mt-2">
+              {tickets.map((ref, i) => {
+                const filterKey = ref.key ?? '';
+                const href = resolveReferenceHref({
+                  type: ref.type,
+                  url: ref.url ?? undefined,
+                  provider: ref.provider ?? undefined,
+                  revision: ref.revision ?? undefined,
+                });
+                const chipLabel = ref.title ? `${ref.key} — ${ref.title}` : ref.key!;
+                return (
+                  <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (filterKey && onFilterByReference) onFilterByReference(filterKey);
+                      }}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                      style={{
+                        backgroundColor: 'var(--bg-secondary)',
+                        color: 'var(--text-secondary)',
+                        cursor: filterKey ? 'pointer' : 'default',
+                        maxWidth: 200,
+                      }}
+                      title={ref.title ? `${ref.key} — ${ref.title}` : `Filter by ${filterKey}`}
+                    >
+                      <Ticket size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                      <span className="font-medium truncate">{chipLabel}</span>
+                    </button>
+                    {href && (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ color: 'var(--text-muted)' }}
+                        className="transition-opacity hover:opacity-80"
+                        title="Open ticket"
+                      >
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                  </span>
+                );
+              })}
+              {candidate.inheritedCount > 0 && (
+                <span
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                  style={{
+                    backgroundColor: 'var(--bg-secondary)',
+                    color: 'var(--text-muted)',
+                    border: '1px dashed var(--border-color)',
+                  }}
+                  title={`${candidate.inheritedCount} refs/people inherited from superseded predecessors — open details to view`}
+                >
+                  +{candidate.inheritedCount} inherited
+                </span>
+              )}
+            </div>
+          );
+        })()}
+        {/* People — reference-level (from work-item tickets) + promotion root */}
+        {(() => {
           type Chip = {
             role: string;
             displayName?: string | null;
             email?: string | null;
+            /** Set for reference-level participants; absent for promotion-root ones */
             via?: string;
+            fromPromotion?: boolean;
           };
-          const chips: Chip[] = [
-            ...(candidate.sourceEventParticipants ?? [])
-              .filter((p) => !promotionRoles.has(p.role.toLowerCase()))
-              .map<Chip>((p) => ({ role: p.role, displayName: p.displayName, email: p.email })),
-          ];
+          const chips: Chip[] = [];
+
+          // Participants scoped to a work-item reference (QA on OBS-265, author of PR, etc.)
           for (const ref of candidate.sourceEventReferences ?? []) {
-            const refLabel = ref.key ?? ref.type ?? 'ref';
+            if (ref.type !== 'work-item') continue;
+            const refLabel = ref.key ?? ref.type;
             for (const p of ref.participants ?? []) {
               chips.push({ role: p.role, displayName: p.displayName, email: p.email, via: refLabel });
             }
           }
+
+          // Promotion-root participants (assigned directly on the promotion candidate)
           for (const p of candidate.participants ?? []) {
-            chips.push({ role: p.role, displayName: p.displayName, email: p.email });
+            chips.push({ role: p.role, displayName: p.displayName, email: p.email, fromPromotion: true });
           }
+
           if (chips.length === 0) return null;
           return (
-            <div className="flex items-center gap-1.5 flex-wrap mt-2">
+            <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
               {chips.map((p, i) => (
                 <span
-                  key={`${p.role}-${p.via ?? ''}-${i}`}
+                  key={`p-${p.role}-${p.via ?? 'root'}-${i}`}
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
                   style={{
-                    backgroundColor: 'var(--bg-secondary)',
+                    backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
                     color: 'var(--text-secondary)',
+                    border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
                   }}
-                  title={p.via ? `via ${p.via}${p.email ? ` · ${p.email}` : ''}` : (p.email ?? undefined)}
+                  title={[
+                    `${roleDisplay(p)}: ${p.displayName ?? p.email ?? '—'}`,
+                    p.via ? `via ${p.via}` : null,
+                    p.email ?? null,
+                  ].filter(Boolean).join(' · ')}
                 >
                   <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
-                  <span className="font-medium">
-                    {p.displayName ?? p.email ?? '—'}
-                  </span>
+                  <span className="font-medium">{p.displayName ?? p.email ?? '—'}</span>
                   {p.via && (
                     <span style={{ color: 'var(--text-muted)' }}>· {p.via}</span>
                   )}

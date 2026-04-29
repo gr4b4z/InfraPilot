@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, createContext, useContext } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
@@ -40,6 +40,13 @@ import {
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { resolveReferenceHref } from '@/lib/refUrl';
 
+// Terminal statuses: no further mutations are allowed once one of these is reached.
+const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
+
+// Context that gates all interactive controls on the detail page.
+// Set to true when the candidate is in a terminal state.
+const PromoReadOnlyCtx = createContext(false);
+
 const GATE_LABEL: Record<PromotionGate, string> = {
   PromotionOnly: 'Promotion only',
   TicketsOnly: 'Tickets only',
@@ -78,7 +85,7 @@ function buildBundleWorkItems(
 // falling back to email-only or just the role label when no human name is available.
 // Display names are truncated client-side so a long full name can't blow the row layout.
 function formatReferenceParticipant(p: PromotionSourceEventParticipant): string {
-  const role = roleDisplay(p.role);
+  const role = roleDisplay(p);
   const name = (p.displayName ?? '').trim();
   const truncatedName = name.length > 40 ? `${name.slice(0, 37)}...` : name;
   const email = (p.email ?? '').trim();
@@ -186,8 +193,10 @@ export function PromotionDetailPage() {
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
   const bundleWorkItems = buildBundleWorkItems(sourceEvent, inheritedRefs);
+  const isReadOnly = TERMINAL_STATUSES.includes(candidate.status);
 
   return (
+    <PromoReadOnlyCtx.Provider value={isReadOnly}>
     <div className="max-w-3xl mx-auto space-y-6">
       {/* Breadcrumb */}
       <Link
@@ -266,6 +275,21 @@ export function PromotionDetailPage() {
         >
           <XCircle size={18} />
           <span className="text-[13px] font-medium">{error}</span>
+        </div>
+      )}
+
+      {/* Read-only banner — shown when the candidate has reached a terminal state */}
+      {isReadOnly && (
+        <div
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl border text-[12px]"
+          style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderColor: 'var(--border-color)',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <CheckCircle size={13} style={{ color: cfg.color, flexShrink: 0 }} />
+          This promotion is <strong style={{ color: cfg.color }}>{candidate.status}</strong> — the page is read-only.
         </div>
       )}
 
@@ -528,13 +552,11 @@ export function PromotionDetailPage() {
             </div>
           )}
 
-          {/* People — merges source-event participants (read-only) + ticket / reference
-              participants (read-only, tagged with the ref they came from) + promotion-level
-              (editable). */}
+          {/* People — event-level participants (read-only) + promotion-level (editable).
+              Reference-level participants are shown nested under each reference above. */}
           <PeopleCard
             candidate={candidate}
             sourceEvent={sourceEvent}
-            inheritedReferences={inheritedRefs}
             onChange={(next) => setCandidate({ ...candidate, participants: next })}
           />
 
@@ -558,6 +580,7 @@ export function PromotionDetailPage() {
         </div>
       </div>
     </div>
+    </PromoReadOnlyCtx.Provider>
   );
 }
 
@@ -577,50 +600,49 @@ function ReferenceItem({
     revision: reference.revision ?? undefined,
   });
 
+  const participants = reference.participants ?? [];
+
   return (
-    <div className="flex items-center gap-2 text-[13px] min-w-0">
-      <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hover:underline truncate"
-          title={label}
-          style={{ color: 'var(--accent)' }}
-        >
-          {label}
-        </a>
-      ) : (
-        <span className="truncate" title={label} style={{ color: 'var(--text-secondary)' }}>
-          {label}
-        </span>
+    <div className="min-w-0">
+      <div className="flex items-center gap-2 text-[13px] min-w-0">
+        <Icon size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline truncate"
+            title={label}
+            style={{ color: 'var(--accent)' }}
+          >
+            {label}
+          </a>
+        ) : (
+          <span className="truncate" title={label} style={{ color: 'var(--text-secondary)' }}>
+            {label}
+          </span>
+        )}
+      </div>
+      {participants.length > 0 && (
+        <div className="pl-5 mt-1 space-y-0.5">
+          {participants.map((p, i) => (
+            <div key={i} className="flex items-center justify-between text-[12px]">
+              <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}</span>
+              <span
+                className="inline-flex items-center gap-1.5"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {p.displayName ?? p.email ?? '—'}
+                <CopyEmailButton email={p.email ?? null} />
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-/**
- * Short identifier for a reference — key only, no title. Used in compact tags like
- * "via OBS-265" where the title would be noise. PR keys keep their "#" prefix to
- * distinguish them from ticket keys.
- */
-function buildReferenceShortLabel(ref: PromotionSourceEventReference): string {
-  switch (ref.type) {
-    case 'work-item':
-      return ref.key ?? 'work-item';
-    case 'pull-request':
-      return ref.key ? `#${ref.key}` : 'pull-request';
-    case 'repository':
-      if (ref.key) return ref.key;
-      if (ref.revision) return ref.revision.slice(0, 8);
-      return 'repository';
-    case 'pipeline':
-      return ref.key ?? ref.provider ?? 'pipeline';
-    default:
-      return ref.key ?? ref.type;
-  }
-}
 
 function buildReferenceLabel(
   ref: PromotionSourceEventReference,
@@ -652,14 +674,13 @@ function buildReferenceLabel(
 function PeopleCard({
   candidate,
   sourceEvent,
-  inheritedReferences,
   onChange,
 }: {
   candidate: PromotionCandidate;
   sourceEvent: PromotionSourceEvent | null;
-  inheritedReferences: PromotionInheritedReference[];
   onChange: (participants: PromotionParticipant[]) => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
   const [showForm, setShowForm] = useState(false);
   const [roles, setRoles] = useState<string[]>([]);
   const [role, setRole] = useState('');
@@ -719,35 +740,7 @@ function PeopleCard({
     (p) => !promotionRoleSet.has(p.role.toLowerCase()),
   );
 
-  // Flatten reference-level participants from source-event references + inherited refs.
-  // Each row carries enough context for the operator to see "which ticket / PR routed this".
-  type RefParticipantRow = {
-    participant: PromotionSourceEventParticipant;
-    refLabel: string;
-    fromVersion?: string;
-  };
-  const refParticipants: RefParticipantRow[] = [];
-  if (sourceEvent) {
-    for (const r of sourceEvent.references) {
-      for (const p of r.participants ?? []) {
-        refParticipants.push({ participant: p, refLabel: buildReferenceShortLabel(r) });
-      }
-    }
-  }
-  for (const ir of inheritedReferences) {
-    for (const p of ir.reference.participants ?? []) {
-      refParticipants.push({
-        participant: p,
-        refLabel: buildReferenceShortLabel(ir.reference),
-        fromVersion: ir.fromVersion,
-      });
-    }
-  }
-
-  const hasAny =
-    filteredSource.length > 0 ||
-    refParticipants.length > 0 ||
-    candidate.participants.length > 0;
+  const hasAny = filteredSource.length > 0 || candidate.participants.length > 0;
 
   const reset = () => {
     setRole('');
@@ -810,7 +803,7 @@ function PeopleCard({
         >
           <Users size={12} /> People
         </h2>
-        {!showForm && (
+        {!readOnly && !showForm && (
           <button
             onClick={() => setShowForm(true)}
             className="inline-flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
@@ -840,28 +833,6 @@ function PeopleCard({
             </span>
           </div>
         ))}
-        {refParticipants.map((row, i) => (
-          <div key={`ref-${i}`} className="flex items-center justify-between text-[13px]">
-            <span style={{ color: 'var(--text-muted)' }}>
-              {roleDisplay(row.participant)}
-              <span
-                className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded font-mono"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-                title={row.fromVersion ? `via ${row.refLabel} (carried from v${row.fromVersion})` : `via ${row.refLabel}`}
-              >
-                via {row.refLabel}
-                {row.fromVersion && <span> · v{row.fromVersion}</span>}
-              </span>
-            </span>
-            <span
-              className="inline-flex items-center gap-1.5"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              {row.participant.displayName ?? row.participant.email ?? '—'}
-              <CopyEmailButton email={row.participant.email ?? null} />
-            </span>
-          </div>
-        ))}
         {candidate.participants.map((p) => (
           <div key={`prm-${p.role}`} className="flex items-center justify-between text-[13px]">
             <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}</span>
@@ -871,20 +842,22 @@ function PeopleCard({
             >
               {p.displayName ?? p.email ?? '—'}
               <CopyEmailButton email={p.email ?? null} />
-              <button
-                onClick={() => handleRemove(p.role)}
-                className="transition-opacity hover:opacity-80"
-                style={{ color: 'var(--text-muted)' }}
-                title="Remove"
-              >
-                <X size={12} />
-              </button>
+              {!readOnly && (
+                <button
+                  onClick={() => handleRemove(p.role)}
+                  className="transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Remove"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </span>
           </div>
         ))}
       </div>
 
-      {showForm && (
+      {!readOnly && showForm && (
         <div
           className="mt-4 pt-4 space-y-2 border-t"
           style={{ borderColor: 'var(--border-color)' }}
@@ -1026,6 +999,7 @@ function CommentsCard({
   currentUserEmail: string;
   onChange: (next: PromotionComment[]) => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
   const [body, setBody] = useState('');
   const [posting, setPosting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1167,7 +1141,7 @@ function CommentsCard({
                   >
                     {c.body}
                   </p>
-                  {isMine && (
+                  {isMine && !readOnly && (
                     <div className="flex items-center gap-3 mt-2">
                       <button
                         onClick={() => {
@@ -1195,39 +1169,41 @@ function CommentsCard({
         })}
       </div>
 
-      <div className="space-y-2">
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder="Add a comment..."
-          rows={2}
-          className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-secondary)',
-            color: 'var(--text-primary)',
-          }}
-        />
-        {err && (
-          <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
-            {err}
-          </p>
-        )}
-        <div className="flex items-center justify-end">
-          <button
-            onClick={post}
-            disabled={posting || !body.trim()}
-            className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+      {!readOnly && (
+        <div className="space-y-2">
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Add a comment..."
+            rows={2}
+            className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
             style={{
-              backgroundColor: 'var(--accent)',
-              color: '#fff',
-              opacity: posting || !body.trim() ? 0.6 : 1,
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
             }}
-          >
-            {posting ? 'Posting...' : 'Post'}
-          </button>
+          />
+          {err && (
+            <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+              {err}
+            </p>
+          )}
+          <div className="flex items-center justify-end">
+            <button
+              onClick={post}
+              disabled={posting || !body.trim()}
+              className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+              style={{
+                backgroundColor: 'var(--accent)',
+                color: '#fff',
+                opacity: posting || !body.trim() ? 0.6 : 1,
+              }}
+            >
+              {posting ? 'Posting...' : 'Post'}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1259,11 +1235,18 @@ function PromotionApprovalCard({
   const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
   const ticketsOnly = gate === 'TicketsOnly';
   const showActions = candidate.canApprove && !actionDone;
+  const [showCommentBox, setShowCommentBox] = useState(false);
 
   // Hide the card entirely when there's nothing actionable: not your decision
   // and not a TicketsOnly candidate (where we want to surface the explainer
   // even for non-approvers so the gating is discoverable).
   if (!showActions && !ticketsOnly) return null;
+
+  const handleAction = (action: 'approve' | 'reject') => {
+    onAction(action);
+    setShowCommentBox(false);
+    setComment('');
+  };
 
   return (
     <div
@@ -1300,23 +1283,23 @@ function PromotionApprovalCard({
 
       {showActions && (
         <>
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Optional comment..."
-            rows={3}
-            disabled={ticketsOnly}
-            className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
-            style={{
-              borderColor: 'var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              opacity: ticketsOnly ? 0.6 : 1,
-            }}
-          />
+          {showCommentBox && (
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Optional comment..."
+              rows={3}
+              className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+          )}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => onAction('approve')}
+              onClick={() => handleAction('approve')}
               disabled={actionLoading || ticketsOnly}
               title={ticketsOnly ? 'Disabled under TicketsOnly gate' : undefined}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
@@ -1331,7 +1314,7 @@ function PromotionApprovalCard({
               Approve
             </button>
             <button
-              onClick={() => onAction('reject')}
+              onClick={() => handleAction('reject')}
               disabled={actionLoading || ticketsOnly}
               title={ticketsOnly ? 'Disabled under TicketsOnly gate' : undefined}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
@@ -1345,6 +1328,19 @@ function PromotionApprovalCard({
               <XCircle size={14} />
               Reject
             </button>
+            {!ticketsOnly && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCommentBox((v) => !v);
+                  if (showCommentBox) setComment('');
+                }}
+                className="text-[13px] transition-opacity hover:opacity-80"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {showCommentBox ? 'Hide comment' : 'Add comment'}
+              </button>
+            )}
           </div>
         </>
       )}
@@ -1673,15 +1669,15 @@ function ParticipantChips({
   referenceKey: string;
   onChanged: () => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
   // editingRole === '' means "new assign" (role chosen inside picker).
   // editingRole === <role> means reassigning that specific chip.
   const [editingRole, setEditingRole] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // No event id → can't PATCH (legacy data, no source event link). Render the
-  // existing read-only line as a graceful fallback.
-  if (!deployEventId || !referenceKey) {
+  // No event id or read-only → can't PATCH. Render the read-only text fallback.
+  if (!deployEventId || !referenceKey || readOnly) {
     if (participants.length === 0) return null;
     return (
       <div
@@ -1796,7 +1792,7 @@ function ParticipantChip({
       >
         <Users size={10} />
         <span className="truncate max-w-[160px]">
-          {roleDisplay(participant.role)}: {participant.displayName ?? participant.email ?? '—'}
+          {roleDisplay(participant)}: {participant.displayName ?? participant.email ?? '—'}
         </span>
         {overridden && <span style={{ color: 'var(--accent)' }}>•</span>}
       </button>
@@ -1917,7 +1913,7 @@ function InlineUserPicker({
       style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
     >
       <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
-        {roleEditable ? 'Assign person' : `Assign ${roleDisplay(role)}`}
+        {roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`}
       </div>
       {roleEditable && (
         <>

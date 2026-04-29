@@ -64,7 +64,7 @@ public class DeploymentEnrichmentService : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
         var jira = scope.ServiceProvider.GetRequiredService<JiraClient>();
-        var deployments = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+        var workItemSync = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-lookbackHours);
 
@@ -86,7 +86,7 @@ public class DeploymentEnrichmentService : BackgroundService
                 // Re-sync work-items so any titles enrichment just discovered (e.g. Jira
                 // summary) make it into the relational projection. Idempotent — safe to
                 // call even when enrichment found nothing.
-                await deployments.SyncWorkItemsAsync(evt, ct);
+                await workItemSync.SyncAsync(evt, ct);
                 await db.SaveChangesAsync(ct);
             }
             catch (Exception ex)
