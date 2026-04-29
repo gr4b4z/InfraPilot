@@ -339,6 +339,56 @@ namespace Platform.Api.Migrations.Postgres
                     b.ToTable("deploy_event_work_items", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.ReferenceParticipantOverride", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("AssignedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("AssignedById")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("AssignedByName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("AssigneeDisplayName")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("AssigneeEmail")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<Guid>("DeployEventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ReferenceKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeployEventId");
+
+                    b.HasIndex("DeployEventId", "ReferenceKey", "Role")
+                        .IsUnique();
+
+                    b.ToTable("reference_participant_overrides", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1055,6 +1105,15 @@ namespace Platform.Api.Migrations.Postgres
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
+                        .WithMany()
+                        .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.ReferenceParticipantOverride", b =>
                 {
                     b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
                         .WithMany()

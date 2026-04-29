@@ -48,22 +48,29 @@ const GATE_LABEL: Record<PromotionGate, string> = {
 
 // Distinct work-items in the candidate's bundle. Built from the source event's
 // references plus inherited references (which carry forward when an older
-// pending candidate was superseded). Deduped on key.
+// pending candidate was superseded). Deduped on key. Each entry carries the
+// origin deploy event id so the override-assign PATCH can target the right event.
+export interface BundleWorkItem {
+  reference: PromotionSourceEventReference;
+  /** Deploy event id this reference came from. Needed to PATCH overrides. */
+  deployEventId: string | null;
+}
+
 function buildBundleWorkItems(
   sourceEvent: PromotionSourceEvent | null,
   inheritedRefs: PromotionInheritedReference[],
-): PromotionSourceEventReference[] {
-  const out: PromotionSourceEventReference[] = [];
+): BundleWorkItem[] {
+  const out: BundleWorkItem[] = [];
   const seen = new Set<string>();
-  const push = (r: PromotionSourceEventReference) => {
+  const push = (r: PromotionSourceEventReference, deployEventId: string | null) => {
     if (r.type !== 'work-item') return;
     const k = (r.key ?? '').trim();
     if (!k || seen.has(k)) return;
     seen.add(k);
-    out.push(r);
+    out.push({ reference: r, deployEventId });
   };
-  if (sourceEvent) for (const r of sourceEvent.references) push(r);
-  for (const ir of inheritedRefs) push(ir.reference);
+  if (sourceEvent) for (const r of sourceEvent.references) push(r, sourceEvent.id);
+  for (const ir of inheritedRefs) push(ir.reference, ir.fromEventId ?? null);
   return out;
 }
 
@@ -1282,7 +1289,7 @@ function TicketsCard({
   onChanged,
 }: {
   candidate: PromotionCandidate;
-  workItems: PromotionSourceEventReference[];
+  workItems: BundleWorkItem[];
   onChanged: () => void;
 }) {
   const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
@@ -1318,9 +1325,10 @@ function TicketsCard({
         <div className="space-y-2">
           {workItems.map((wi, i) => (
             <TicketRow
-              key={wi.key ?? wi.url ?? `wi-${i}`}
+              key={wi.reference.key ?? wi.reference.url ?? `wi-${i}`}
               candidate={candidate}
-              reference={wi}
+              reference={wi.reference}
+              deployEventId={wi.deployEventId}
               onChanged={onChanged}
             />
           ))}
@@ -1333,10 +1341,14 @@ function TicketsCard({
 function TicketRow({
   candidate,
   reference,
+  deployEventId,
   onChanged,
 }: {
   candidate: PromotionCandidate;
   reference: PromotionSourceEventReference;
+  /** Source deploy event id this reference belongs to. PATCH targets `/deployments/{eventId}/...`.
+   *  Null when the reference can't be traced back (legacy data) — assign controls hidden. */
+  deployEventId: string | null;
   onChanged: () => void;
 }) {
   const key = reference.key ?? '';
@@ -1458,21 +1470,16 @@ function TicketRow({
             </span>
           </div>
 
-          {/* Reference-level participants (e.g. QA on a ticket, author on a PR). Optional —
-              old payloads have none. Compact one-liner under the title; truncated if long. */}
-          {reference.participants && reference.participants.length > 0 && (
-            <div
-              className="mt-0.5 text-[11px] truncate"
-              style={{ color: 'var(--text-muted)' }}
-              title={reference.participants
-                .map((p) => formatReferenceParticipant(p))
-                .join(', ')}
-            >
-              {reference.participants
-                .map((p) => formatReferenceParticipant(p))
-                .join(', ')}
-            </div>
-          )}
+          {/* Reference-level participants (e.g. QA on a ticket, author on a PR).
+              Now interactive: each chip can be reassigned or cleared, and an empty slot
+              for any role attached to a sibling reference can be filled. Operator
+              overrides surface via PATCH /api/deployments/{eventId}/references/{key}/participants. */}
+          <ParticipantChips
+            participants={reference.participants ?? []}
+            deployEventId={deployEventId}
+            referenceKey={key}
+            onChanged={onChanged}
+          />
 
           {decided && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -1565,6 +1572,294 @@ function TicketRow({
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Roles that *can* be assigned via the override flow, even if the reference doesn't
+// currently have an entry for them. Kept tight — these are the slots an operator
+// realistically wants to fill / route. Existing roles on the reference are always
+// rendered too, even if they're not in this list.
+const ASSIGNABLE_ROLES = ['qa', 'assignee', 'reviewer', 'deployer'];
+
+// One row of role chips for a single reference. Each chip is a participant slot:
+//  - filled  → "Role: Display <email>" with a popover containing Reassign / Clear.
+//  - empty   → "+ Role" button that opens the inline picker.
+// Empty slots are derived from ASSIGNABLE_ROLES minus already-present roles, so the
+// operator always has a route to fill in QA/Assignee/etc when Jira didn't supply them.
+function ParticipantChips({
+  participants,
+  deployEventId,
+  referenceKey,
+  onChanged,
+}: {
+  participants: PromotionSourceEventParticipant[];
+  deployEventId: string | null;
+  referenceKey: string;
+  onChanged: () => void;
+}) {
+  // Editing state keyed by canonicalised role; only one slot is open at a time.
+  const [editingRole, setEditingRole] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const presentRoles = new Set(participants.map((p) => (p.role || '').toLowerCase()));
+  const emptySlots = ASSIGNABLE_ROLES.filter((r) => !presentRoles.has(r));
+
+  // No event id → can't PATCH (legacy data, no source event link). Render the
+  // existing read-only line as a graceful fallback.
+  if (!deployEventId || !referenceKey) {
+    if (participants.length === 0) return null;
+    return (
+      <div
+        className="mt-0.5 text-[11px] truncate"
+        style={{ color: 'var(--text-muted)' }}
+        title={participants.map((p) => formatReferenceParticipant(p)).join(', ')}
+      >
+        {participants.map((p) => formatReferenceParticipant(p)).join(', ')}
+      </div>
+    );
+  }
+
+  const submit = async (role: string, assignee: { email: string; displayName: string } | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.assignReferenceParticipant(deployEventId, referenceKey, role, assignee);
+      setEditingRole(null);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update participant');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      {participants.map((p) => (
+        <ParticipantChip
+          key={`${p.role}-${p.email ?? ''}`}
+          participant={p}
+          onReassign={() => setEditingRole(p.role)}
+          onClear={() => submit(p.role, null)}
+          editing={editingRole === p.role}
+          onCancelEdit={() => setEditingRole(null)}
+          onPick={(picked) => submit(p.role, picked)}
+          busy={busy}
+        />
+      ))}
+      {emptySlots.map((role) => (
+        <span key={`empty-${role}`} className="inline-flex items-center">
+          <button
+            type="button"
+            onClick={() => setEditingRole(role)}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+            style={{
+              borderColor: 'var(--border-color)',
+              color: 'var(--text-muted)',
+              border: '1px dashed var(--border-color)',
+            }}
+            disabled={busy}
+            title={`Assign ${roleDisplay(role)}`}
+          >
+            <Plus size={10} /> {roleDisplay(role)}
+          </button>
+          {editingRole === role && (
+            <InlineUserPicker
+              onPick={(picked) => submit(role, picked)}
+              onCancel={() => setEditingRole(null)}
+              busy={busy}
+            />
+          )}
+        </span>
+      ))}
+      {error && (
+        <span className="text-[10px]" style={{ color: 'var(--danger)' }}>
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ParticipantChip({
+  participant,
+  onReassign,
+  onClear,
+  editing,
+  onCancelEdit,
+  onPick,
+  busy,
+}: {
+  participant: PromotionSourceEventParticipant;
+  onReassign: () => void;
+  onClear: () => void;
+  editing: boolean;
+  onCancelEdit: () => void;
+  onPick: (picked: { email: string; displayName: string }) => void;
+  busy: boolean;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const overridden = participant.isOverride === true;
+  const tooltip = overridden && participant.assignedBy
+    ? `${formatReferenceParticipant(participant)} (overridden by ${participant.assignedBy})`
+    : formatReferenceParticipant(participant);
+
+  return (
+    <span className="inline-flex items-center relative">
+      <button
+        type="button"
+        onClick={() => setMenuOpen((v) => !v)}
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+        style={{
+          backgroundColor: overridden ? 'var(--accent-bg)' : 'var(--bg-tertiary, var(--bg-primary))',
+          color: overridden ? 'var(--accent)' : 'var(--text-secondary)',
+          border: '1px solid var(--border-color)',
+        }}
+        title={tooltip}
+        disabled={busy}
+      >
+        <Users size={10} />
+        <span className="truncate max-w-[160px]">
+          {roleDisplay(participant.role)}: {participant.displayName ?? participant.email ?? '—'}
+        </span>
+        {overridden && <span style={{ color: 'var(--accent)' }}>•</span>}
+      </button>
+      {menuOpen && !editing && (
+        <div
+          className="absolute z-10 mt-1 top-full left-0 rounded-lg border shadow-lg"
+          style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+        >
+          <button
+            type="button"
+            onClick={() => { setMenuOpen(false); onReassign(); }}
+            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            Reassign…
+          </button>
+          <button
+            type="button"
+            onClick={() => { setMenuOpen(false); onClear(); }}
+            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
+            style={{ color: 'var(--danger)' }}
+          >
+            Clear (tombstone)
+          </button>
+        </div>
+      )}
+      {editing && (
+        <InlineUserPicker
+          onPick={(picked) => onPick(picked)}
+          onCancel={onCancelEdit}
+          busy={busy}
+        />
+      )}
+    </span>
+  );
+}
+
+// Minimal inline user picker — debounced search against /promotions/users/search.
+// Returns email + displayName via onPick when the operator picks a result. Falls
+// back to manual email entry when Graph returns no hits (e.g. local-auth dev mode).
+function InlineUserPicker({
+  onPick,
+  onCancel,
+  busy,
+}: {
+  onPick: (picked: { email: string; displayName: string }) => void;
+  onCancel: () => void;
+  busy: boolean;
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) { setResults([]); return; }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.searchPromotionUsers(q);
+        if (!cancelled) setResults(res.users);
+      } catch {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query]);
+
+  const submitManual = () => {
+    const q = query.trim();
+    // Cheap email-shape check. Server validates again with the same rule.
+    if (!q.includes('@') || !q.includes('.')) return;
+    onPick({ email: q, displayName: q });
+  };
+
+  return (
+    <div
+      className="absolute z-20 mt-1 top-full left-0 rounded-lg border shadow-lg p-2 w-64"
+      style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+    >
+      <input
+        autoFocus
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search users or enter email…"
+        className="w-full px-2 py-1 text-[11px] rounded border outline-none"
+        style={{
+          backgroundColor: 'var(--bg-primary)',
+          borderColor: 'var(--border-color)',
+          color: 'var(--text-primary)',
+        }}
+        disabled={busy}
+        onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
+      />
+      <div className="mt-1 max-h-40 overflow-y-auto">
+        {searching && (
+          <div className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Searching…</div>
+        )}
+        {!searching && results.length === 0 && query.trim().length >= 2 && (
+          <button
+            type="button"
+            onClick={submitManual}
+            className="w-full text-left px-2 py-1 text-[11px] rounded hover:opacity-80"
+            style={{ color: 'var(--text-primary)' }}
+            disabled={busy}
+          >
+            Use &ldquo;{query.trim()}&rdquo; as email
+          </button>
+        )}
+        {results.map((u) => (
+          <button
+            key={u.id}
+            type="button"
+            onClick={() => onPick({ email: u.email, displayName: u.displayName })}
+            className="block w-full text-left px-2 py-1 text-[11px] rounded hover:opacity-80"
+            style={{ color: 'var(--text-primary)' }}
+            disabled={busy}
+          >
+            <div className="font-medium truncate">{u.displayName}</div>
+            <div className="truncate" style={{ color: 'var(--text-muted)' }}>{u.email}</div>
+          </button>
+        ))}
+      </div>
+      <div className="mt-1 flex justify-end">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-[10px] hover:opacity-80"
+          style={{ color: 'var(--text-muted)' }}
+          disabled={busy}
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );

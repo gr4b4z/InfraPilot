@@ -81,8 +81,60 @@ public static class DeploymentEndpoints
             return Results.Ok(new { versions });
         });
 
+        // Operator routing override: assign / reassign / clear a participant on a specific
+        // reference of a deploy event. Lives separately from ingest so re-ingesting the same
+        // upstream event won't clobber the manual override (the assignee is "just routing").
+        //
+        // Body: { role: string, assignee: { email, displayName } | null }
+        //  - assignee non-null  → upsert override row.
+        //  - assignee == null   → upsert tombstone row (suppresses lower layers — that's how
+        //    operators express "remove the Jira-supplied person").
+        // Auth: same baseline as the rest of /api/deployments (CanApprove). Only authenticated
+        // users can mutate routing; this is intentionally NOT admin-only because the people who
+        // need to reassign are the same people who triage the queue.
+        group.MapPatch("/{eventId:guid}/references/{referenceKey}/participants", async (
+            ReferenceParticipantOverrideService service,
+            Guid eventId,
+            string referenceKey,
+            AssignReferenceParticipantRequest? body,
+            CancellationToken ct) =>
+        {
+            if (body is null)
+                return Results.BadRequest(new { error = "request body is required" });
+            if (string.IsNullOrWhiteSpace(body.Role))
+                return Results.BadRequest(new { error = "'role' is required" });
+
+            try
+            {
+                var result = await service.AssignAsync(
+                    eventId,
+                    referenceKey,
+                    body.Role,
+                    assigneeEmail: body.Assignee?.Email,
+                    assigneeDisplayName: body.Assignee?.DisplayName,
+                    ct);
+                return Results.Ok(new
+                {
+                    participants = result.Participants,
+                    tombstone = result.Tombstone,
+                    @override = result.Override,
+                });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Results.NotFound(new { error = ex.Message });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
         return group;
     }
+
+    public record AssignReferenceParticipantRequest(string Role, AssigneeBody? Assignee);
+    public record AssigneeBody(string? Email, string? DisplayName);
 
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "succeeded", "failed", "in_progress" };

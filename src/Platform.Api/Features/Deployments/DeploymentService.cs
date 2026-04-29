@@ -222,7 +222,8 @@ public class DeploymentService
             .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
             .ToListAsync(ct);
 
-        return latest.Select(MapToStateDto).ToList();
+        var overrides = await LoadOverridesByEventAsync(latest.Select(e => e.Id), ct);
+        return latest.Select(e => MapToStateDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
     }
 
     public async Task<List<ProductSummaryDto>> GetProductSummaries(CancellationToken ct = default)
@@ -266,7 +267,8 @@ public class DeploymentService
             .Take(limit)
             .ToListAsync(ct);
 
-        return events.Select(MapToResponseDto).ToList();
+        var overrides = await LoadOverridesByEventAsync(events.Select(e => e.Id), ct);
+        return events.Select(e => MapToResponseDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
     }
 
     public async Task<List<DeployEventResponseDto>> GetRecentByEnvironment(
@@ -277,7 +279,8 @@ public class DeploymentService
             .OrderByDescending(e => e.DeployedAt)
             .ToListAsync(ct);
 
-        return events.Select(MapToResponseDto).ToList();
+        var overrides = await LoadOverridesByEventAsync(events.Select(e => e.Id), ct);
+        return events.Select(e => MapToResponseDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
     }
 
     public async Task<List<DeployEventResponseDto>> GetRecentByProduct(
@@ -289,7 +292,23 @@ public class DeploymentService
             .Take(limit)
             .ToListAsync(ct);
 
-        return events.Select(MapToResponseDto).ToList();
+        var overrides = await LoadOverridesByEventAsync(events.Select(e => e.Id), ct);
+        return events.Select(e => MapToResponseDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
+    }
+
+    /// <summary>
+    /// Batch-load override rows keyed by deploy event id. Returns an empty dictionary when
+    /// the input is empty so callers can still call <c>GetValueOrDefault</c> without nulls.
+    /// </summary>
+    private async Task<Dictionary<Guid, List<ReferenceParticipantOverride>>> LoadOverridesByEventAsync(
+        IEnumerable<Guid> eventIds, CancellationToken ct)
+    {
+        var ids = eventIds.Distinct().ToList();
+        if (ids.Count == 0) return new();
+        var rows = await _db.ReferenceParticipantOverrides.AsNoTracking()
+            .Where(o => ids.Contains(o.DeployEventId))
+            .ToListAsync(ct);
+        return rows.GroupBy(o => o.DeployEventId).ToDictionary(g => g.Key, g => g.ToList());
     }
 
     // --- Admin: duplicate cleanup ---
@@ -460,9 +479,9 @@ public class DeploymentService
 
     // --- Mapping helpers ---
 
-    private static DeploymentStateDto MapToStateDto(DeployEvent e)
+    private static DeploymentStateDto MapToStateDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides)
     {
-        var refs = Deserialize<List<ReferenceDto>>(e.ReferencesJson) ?? [];
+        var refs = ApplyOverridesToReferences(e.ReferencesJson, overrides);
         var parts = Deserialize<List<ParticipantDto>>(e.ParticipantsJson) ?? [];
         var enrichment = string.IsNullOrEmpty(e.EnrichmentJson)
             ? null
@@ -473,9 +492,9 @@ public class DeploymentService
             e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment);
     }
 
-    private static DeployEventResponseDto MapToResponseDto(DeployEvent e)
+    private static DeployEventResponseDto MapToResponseDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides)
     {
-        var refs = Deserialize<List<ReferenceDto>>(e.ReferencesJson) ?? [];
+        var refs = ApplyOverridesToReferences(e.ReferencesJson, overrides);
         var parts = Deserialize<List<ParticipantDto>>(e.ParticipantsJson) ?? [];
         var enrichment = string.IsNullOrEmpty(e.EnrichmentJson)
             ? null
@@ -485,6 +504,37 @@ public class DeploymentService
         return new DeployEventResponseDto(
             e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
             e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
+    }
+
+    /// <summary>
+    /// Reads ReferencesJson and merges override rows into each reference's participants[]
+    /// using <see cref="ReferenceParticipantOverrideService.MergeForReference"/>. References
+    /// without overrides pass through untouched. Tombstones are filtered out so the UI sees
+    /// an empty slot rather than a stale Jira person.
+    /// </summary>
+    private static List<ReferenceDto> ApplyOverridesToReferences(
+        string? referencesJson, IReadOnlyList<ReferenceParticipantOverride>? overrides)
+    {
+        var refs = Deserialize<List<ReferenceDto>>(referencesJson) ?? new();
+        if (overrides is null || overrides.Count == 0) return refs;
+
+        var byKey = overrides
+            .Where(o => !string.IsNullOrEmpty(o.ReferenceKey))
+            .GroupBy(o => o.ReferenceKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var result = new List<ReferenceDto>(refs.Count);
+        foreach (var r in refs)
+        {
+            if (string.IsNullOrEmpty(r.Key) || !byKey.TryGetValue(r.Key, out var matches))
+            {
+                result.Add(r);
+                continue;
+            }
+            var merged = ReferenceParticipantOverrideService.MergeForReference(r, matches);
+            result.Add(r with { Participants = merged });
+        }
+        return result;
     }
 
     private static T? Deserialize<T>(string? json)

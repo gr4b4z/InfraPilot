@@ -104,7 +104,8 @@ public class WorkItemApprovalService
         if (snapshot.IsAutoApprove)
             throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
 
-        if (await _auth.IsEmailExcludedByRoleAsync(snapshot, candidate.SourceDeployEventId, _currentUser.Email, ct))
+        if (await _auth.IsEmailExcludedByRoleAsync(
+                snapshot, candidate.SourceDeployEventId, candidate.SupersededSourceEventIds, _currentUser.Email, ct))
         {
             throw new UnauthorizedAccessException(
                 $"You cannot decide on this ticket — the '{snapshot.ExcludeRole}' role is excluded from approving this promotion.");
@@ -367,7 +368,8 @@ public class WorkItemApprovalService
             {
                 blockedReason = "Already decided";
             }
-            else if (await _auth.IsEmailExcludedByRoleAsync(snapshot, candidate.SourceDeployEventId, _currentUser.Email, ct))
+            else if (await _auth.IsEmailExcludedByRoleAsync(
+                snapshot, candidate.SourceDeployEventId, candidate.SupersededSourceEventIds, _currentUser.Email, ct))
             {
                 blockedReason = "Excluded role";
             }
@@ -436,6 +438,15 @@ public class WorkItemApprovalService
             .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson })
             .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson), ct);
 
+        // Operator overrides for those same events — same batch shape so the per-candidate
+        // exclusion check below can consult overrides without an extra query per row.
+        var overridesRows = await _db.ReferenceParticipantOverrides.AsNoTracking()
+            .Where(o => allEventIds.Contains(o.DeployEventId))
+            .ToListAsync(ct);
+        var overridesByEvent = overridesRows
+            .GroupBy(o => o.DeployEventId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
+
         // Cache approver-group membership across distinct groups.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
@@ -483,12 +494,22 @@ public class WorkItemApprovalService
 
             // Excluded-role: precomputed JSON dict so this is in-memory only. Pass both
             // event-level participants and references so reference-level roles count too.
+            // Walk the supersede bundle so an excluded participant on an inherited event also trips.
             if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
-                var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(c.SourceDeployEventId);
-                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
-                        partsJson, refsJson, snapshot.ExcludeRole, _currentUser.Email))
-                    continue;
+                var exclBundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
+                var excluded = false;
+                foreach (var eid in exclBundle)
+                {
+                    var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(eid);
+                    var evOverrides = overridesByEvent.GetValueOrDefault(eid, Array.Empty<ReferenceParticipantOverride>());
+                    if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
+                            partsJson, refsJson, evOverrides, snapshot.ExcludeRole, _currentUser.Email))
+                    {
+                        excluded = true; break;
+                    }
+                }
+                if (excluded) continue;
             }
 
             var bundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);

@@ -944,11 +944,23 @@ public class PromotionService
         // Batch-load source deploy event participants + references for role-based exclusion.
         // One query instead of N — important when the UI is rendering a long list of candidates.
         // References are needed for the reference-level participant lookup (two-level model).
-        var eventIds = list.Select(c => c.SourceDeployEventId).Distinct().ToList();
+        // Bundle = each candidate's own source event + any superseded predecessors so an override
+        // (or excluded participant) on an inherited event still trips the gate.
+        var bundleEventIds = list
+            .SelectMany(c => new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds))
+            .Distinct()
+            .ToList();
         var sourceJsonByEvent = await _db.DeployEvents.AsNoTracking()
-            .Where(e => eventIds.Contains(e.Id))
+            .Where(e => bundleEventIds.Contains(e.Id))
             .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson })
             .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson), ct);
+
+        var overridesRows = await _db.ReferenceParticipantOverrides.AsNoTracking()
+            .Where(o => bundleEventIds.Contains(o.DeployEventId))
+            .ToListAsync(ct);
+        var overridesByEvent = overridesRows
+            .GroupBy(o => o.DeployEventId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
 
         // Cache group membership lookups: one call per unique approver group.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -962,12 +974,19 @@ public class PromotionService
 
             if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
-                var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(c.SourceDeployEventId);
-                if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
-                        partsJson, refsJson, snapshot.ExcludeRole, _currentUser.Email))
+                var bundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
+                var excluded = false;
+                foreach (var eid in bundle)
                 {
-                    result[c.Id] = false; continue;
+                    var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(eid);
+                    var evOverrides = overridesByEvent.GetValueOrDefault(eid, Array.Empty<ReferenceParticipantOverride>());
+                    if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
+                            partsJson, refsJson, evOverrides, snapshot.ExcludeRole, _currentUser.Email))
+                    {
+                        excluded = true; break;
+                    }
                 }
+                if (excluded) { result[c.Id] = false; continue; }
             }
 
             var group = snapshot.ApproverGroup!;
@@ -1029,7 +1048,8 @@ public class PromotionService
     /// </summary>
     private Task<bool> IsCurrentUserExcludedByRoleAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
-        => _auth.IsEmailExcludedByRoleAsync(snapshot, candidate.SourceDeployEventId, _currentUser.Email, ct);
+        => _auth.IsEmailExcludedByRoleAsync(
+            snapshot, candidate.SourceDeployEventId, candidate.SupersededSourceEventIds, _currentUser.Email, ct);
 
     private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)
     {

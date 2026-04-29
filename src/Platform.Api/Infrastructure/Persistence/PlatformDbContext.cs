@@ -29,6 +29,7 @@ public class PlatformDbContext : DbContext
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
+    public DbSet<ReferenceParticipantOverride> ReferenceParticipantOverrides => Set<ReferenceParticipantOverride>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
@@ -242,6 +243,27 @@ public class PlatformDbContext : DbContext
             e.HasIndex(x => new { x.WorkItemKey, x.Product });
             // Lookup: "tickets in product Y" for inbox queries.
             e.HasIndex(x => x.Product);
+        });
+
+        modelBuilder.Entity<ReferenceParticipantOverride>(e =>
+        {
+            e.ToTable("reference_participant_overrides");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ReferenceKey).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Role).HasMaxLength(100).IsRequired();
+            e.Property(x => x.AssigneeEmail).HasMaxLength(300);
+            e.Property(x => x.AssigneeDisplayName).HasMaxLength(300);
+            e.Property(x => x.AssignedById).HasMaxLength(100).IsRequired();
+            e.Property(x => x.AssignedByName).HasMaxLength(300).IsRequired();
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Unique per (event, ref, role) so reassigning the same slot updates in place
+            // (UPSERT semantics — no orphan rows on reassign).
+            e.HasIndex(x => new { x.DeployEventId, x.ReferenceKey, x.Role }).IsUnique();
+            // Lookup: batch-load all overrides for an event when reading the merged list.
+            e.HasIndex(x => x.DeployEventId);
         });
 
         // Webhook Subscriptions

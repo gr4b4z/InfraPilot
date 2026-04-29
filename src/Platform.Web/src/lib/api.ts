@@ -290,6 +290,28 @@ class ApiClient {
     }>(`/promotions/users/search?q=${encodeURIComponent(q)}`);
   }
 
+  /**
+   * Operator routing override on a deploy event's reference. Pass `assignee: null` to
+   * tombstone the slot (suppresses the Jira-supplied participant on the read path so the
+   * UI sees an empty slot). The PATCH returns the merged participant list for the target
+   * reference so callers can re-render without a follow-up GET.
+   */
+  assignReferenceParticipant(
+    eventId: string,
+    referenceKey: string,
+    role: string,
+    assignee: { email: string; displayName: string } | null,
+  ) {
+    return this.request<{
+      participants: PromotionSourceEventParticipant[];
+      tombstone: boolean;
+      override: PromotionSourceEventParticipant | null;
+    }>(
+      `/deployments/${eventId}/references/${encodeURIComponent(referenceKey)}/participants`,
+      { method: 'PATCH', body: JSON.stringify({ role, assignee }) },
+    );
+  }
+
   upsertPromotionParticipant(
     id: string,
     body: {
@@ -636,10 +658,20 @@ export interface PromotionSourceEventParticipant {
   role: string;
   displayName?: string | null;
   email?: string | null;
+  /**
+   * True when this participant came from an operator-supplied override that displaced
+   * (or filled in) the original Jira/event payload. Server-owned: clients should treat
+   * this as a read-only tag for rendering an "(overridden by …)" hint.
+   */
+  isOverride?: boolean;
+  /** Display name of the user who made the override. Null on non-overridden entries. */
+  assignedBy?: string | null;
 }
 
 export interface PromotionInheritedReference {
   reference: PromotionSourceEventReference;
+  /** Source deploy event id this reference came from (needed to PATCH overrides). */
+  fromEventId?: string;
   fromVersion: string;
   fromDeployedAt: string;
 }

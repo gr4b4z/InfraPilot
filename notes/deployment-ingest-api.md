@@ -405,6 +405,54 @@ When a `succeeded` deployment event is ingested, the system automatically checks
 
 The `triggered-by` participant is used as the deployer identity for the "exclude deployer" approval rule, which prevents the person who triggered the deploy from also approving the promotion to the next environment.
 
+## Operator overrides (assigning a participant from the UI)
+
+Routing is editable separately from ingest. Operators can assign, reassign, or clear a
+reference-scoped participant on a deploy event without mutating the source `referencesJson`.
+Re-ingesting the same event does **not** clobber an override — overrides live in their own
+`reference_participant_overrides` table, keyed by `(deployEventId, referenceKey, role)`.
+
+```
+PATCH /api/deployments/{eventId}/references/{referenceKey}/participants
+Content-Type: application/json
+
+{
+  "role": "qa",
+  "assignee": { "email": "qa-new@example.com", "displayName": "QA New" }
+}
+```
+
+- Returns the merged participant list for the target reference (override > reference-level
+  > event-level), plus a `tombstone` flag and the `override` participant (when assigned).
+- `assignee: null` upserts a **tombstone** row, which suppresses the original Jira-supplied
+  participant for that role on the read path. This is how "remove this Jira person" is
+  expressed — without tombstones, an empty payload would just be ignored.
+- The `role` is canonicalised on write (lower-kebab-case via `RoleNormalizer`) so the
+  unique `(eventId, referenceKey, role)` index doesn't fragment on casing differences.
+- The `referenceKey` must already exist on the event's `referencesJson` — this is the
+  **only path** to assign a routing override. Events that carry only a flat
+  event-level `participants[]` (no `references[]`) cannot be overridden via this endpoint;
+  callers will receive `404` because there's no reference to scope the assignment to.
+  Backfilling a `references[]` entry on those events (via re-ingest) is the migration path.
+
+### Read path
+
+`GET` endpoints under `/api/deployments` and the promotion read endpoints
+(`/api/promotions`, `/api/promotions/{id}`) merge overrides into each
+`reference.participants[]` so the UI sees the effective state without the merge logic.
+Override participants surface with `isOverride: true` and `assignedBy: "<actor display name>"`.
+Tombstones are filtered out — the slot reads back as empty.
+
+### Auth + audit
+
+The endpoint is gated by the same `CanApprove` policy as the rest of `/api/deployments`
+(any authenticated user). Each successful PATCH writes an audit row:
+- `deployment.participant.assigned` — when an assignee was set.
+- `deployment.participant.cleared` — when a tombstone was upserted.
+
+Both rows attach the `deployEventId`, `referenceKey`, canonical `role`, the assignee
+(or null), and the actor email.
+
 ## cURL example
 
 ```bash

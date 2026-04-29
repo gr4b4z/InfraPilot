@@ -32,7 +32,14 @@ public record ReferenceDto(
 public record ParticipantDto(
     string Role,
     string? DisplayName = null,
-    string? Email = null);
+    string? Email = null,
+    // Server-owned read-path metadata. Both default to null/false on ingest payloads —
+    // operators don't supply these. The deployments read paths (and the promotion read
+    // paths that surface the source event) flip IsOverride=true and populate AssignedBy
+    // when an operator override has displaced the original participant for a given role
+    // on a given reference, so the UI can render an "(overridden by …)" hint.
+    bool IsOverride = false,
+    string? AssignedBy = null);
 
 // --- Output DTOs ---
 

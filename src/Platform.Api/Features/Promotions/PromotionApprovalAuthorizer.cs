@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Auth;
@@ -15,7 +17,9 @@ namespace Platform.Api.Features.Promotions;
 /// <para>Two responsibilities:</para>
 /// <list type="bullet">
 ///   <item>Approver-group membership (role claim, group claim, live Graph) for the current user.</item>
-///   <item>Excluded-role check against the source deploy event's participants for any email.</item>
+///   <item>Excluded-role check against the source deploy event's participants for any email,
+///         honouring operator-supplied <see cref="ReferenceParticipantOverride"/> rows
+///         (override > reference-level > event-level; tombstones suppress fall-through).</item>
 /// </list>
 /// </summary>
 public class PromotionApprovalAuthorizer
@@ -24,6 +28,12 @@ public class PromotionApprovalAuthorizer
     private readonly ICurrentUser _currentUser;
     private readonly IIdentityService _identity;
     private readonly ILogger<PromotionApprovalAuthorizer> _logger;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+    };
 
     public PromotionApprovalAuthorizer(
         PlatformDbContext db,
@@ -72,21 +82,25 @@ public class PromotionApprovalAuthorizer
     }
 
     /// <summary>
-    /// True when the policy specifies an excluded role and <paramref name="email"/> appears on
-    /// the source deploy event with that role (after normalisation). Returns false when:
-    /// the snapshot has no exclusion configured, no source event id is supplied, the email is
-    /// blank, or the email is not on the event with the excluded role.
+    /// True when the policy specifies an excluded role and <paramref name="email"/> appears
+    /// (after overrides are applied) on the candidate's source event(s) with that role.
+    /// Returns false when no exclusion is configured, no source event id is supplied, the
+    /// email is blank, or the email doesn't match the excluded role on any event in the
+    /// supersede bundle.
     ///
-    /// <para>Walks event-level participants first (so <c>triggered-by</c> and other event-scope
-    /// roles still match) and then reference-level participants nested under
-    /// <c>ReferencesJson</c>. A match at either level returns true.</para>
+    /// <para>The bundle of events scanned matches the existing pattern: the candidate's
+    /// own <c>SourceDeployEventId</c> ∪ its <c>SupersededSourceEventIds</c>. Overrides for
+    /// every event in the bundle are loaded in one query and passed to the resolver, so
+    /// operator overrides on inherited (superseded) events are honoured too.</para>
     ///
-    /// <para>Decoupled from <see cref="PromotionCandidate"/> so ticket-level flows that pick a
-    /// candidate dynamically can pass <c>candidate.SourceDeployEventId</c> directly.</para>
+    /// <para>Decoupled from <see cref="PromotionCandidate"/> so ticket-level flows that pick
+    /// a candidate dynamically can pass <c>candidate.SourceDeployEventId</c> and the bundle
+    /// directly.</para>
     /// </summary>
     public async Task<bool> IsEmailExcludedByRoleAsync(
         ResolvedPolicySnapshot snapshot,
         Guid? sourceDeployEventId,
+        IReadOnlyCollection<Guid>? supersededEventIds,
         string email,
         CancellationToken ct)
     {
@@ -94,26 +108,59 @@ public class PromotionApprovalAuthorizer
         if (string.IsNullOrEmpty(email)) return false;
         if (sourceDeployEventId is null) return false;
 
-        var row = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Id == sourceDeployEventId.Value)
-            .Select(e => new { e.ParticipantsJson, e.ReferencesJson })
-            .FirstOrDefaultAsync(ct);
-        if (row is null) return false;
+        var bundle = (supersededEventIds ?? Array.Empty<Guid>())
+            .Concat(new[] { sourceDeployEventId.Value })
+            .Distinct()
+            .ToList();
 
-        return EmailMatchesExcludedRole(row.ParticipantsJson, row.ReferencesJson, snapshot.ExcludeRole, email);
+        var rows = await _db.DeployEvents.AsNoTracking()
+            .Where(e => bundle.Contains(e.Id))
+            .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson })
+            .ToListAsync(ct);
+        if (rows.Count == 0) return false;
+
+        var overrides = await _db.ReferenceParticipantOverrides.AsNoTracking()
+            .Where(o => bundle.Contains(o.DeployEventId))
+            .ToListAsync(ct);
+        var overridesByEvent = overrides
+            .GroupBy(o => o.DeployEventId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
+
+        foreach (var row in rows)
+        {
+            var evOverrides = overridesByEvent.GetValueOrDefault(row.Id, Array.Empty<ReferenceParticipantOverride>());
+            if (EmailMatchesExcludedRole(row.ParticipantsJson, row.ReferencesJson, evOverrides, snapshot.ExcludeRole, email))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
-    /// Pure helper: checks a participants-JSON blob plus a references-JSON blob (which may
-    /// carry nested per-reference participants) for an entry matching the role and email.
-    /// Used both here and from <see cref="PromotionService.CanUserApproveManyAsync"/> where the
-    /// JSONs have already been batch-loaded.
-    /// <para>Event-level is checked first to preserve existing semantics — <c>triggered-by</c>
-    /// is canonically event-level. If neither layer carries a match, returns false.</para>
+    /// Backwards-compatible 4-arg overload — used by tests that don't yet pass the bundle.
+    /// Equivalent to passing an empty <c>supersededEventIds</c>: scans only the single event.
+    /// </summary>
+    public Task<bool> IsEmailExcludedByRoleAsync(
+        ResolvedPolicySnapshot snapshot,
+        Guid? sourceDeployEventId,
+        string email,
+        CancellationToken ct)
+        => IsEmailExcludedByRoleAsync(snapshot, sourceDeployEventId, supersededEventIds: null, email, ct);
+
+    /// <summary>
+    /// Pure helper: checks a single event's JSON blobs (event-level + reference-level
+    /// participants) plus its overrides for an entry matching the role and email. Walks each
+    /// reference through <see cref="ParticipantResolver.FindByRoleWithOverrides"/> so tombstones
+    /// suppress reference/event-level fallback per-reference. Then checks event-level on its own.
+    ///
+    /// <para>Used both here and from
+    /// <see cref="PromotionService.CanUserApproveManyAsync"/> /
+    /// <see cref="WorkItemApprovalService.GetPendingForCurrentUserAsync"/> where the JSONs +
+    /// overrides have already been batch-loaded.</para>
     /// </summary>
     public static bool EmailMatchesExcludedRole(
         string? participantsJson,
         string? referencesJson,
+        IReadOnlyList<ReferenceParticipantOverride>? overrides,
         string excludedRole,
         string email)
     {
@@ -121,17 +168,46 @@ public class PromotionApprovalAuthorizer
         var canonical = RoleNormalizer.Normalize(excludedRole);
         if (canonical.Length == 0) return false;
 
-        // Event-level first (legacy behaviour, covers triggered-by).
-        foreach (var p in ParticipantResolver.GetEventParticipants(participantsJson))
+        // 1. Walk each reference: per-reference resolver call so a tombstone correctly
+        //    suppresses the reference's own (and the event-level) match. The override layer
+        //    can ALSO inject a new email under the excluded role — if that's the candidate's
+        //    email, it must trip the exclusion.
+        var refs = ParseReferences(referencesJson);
+        var seenRefKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in refs)
         {
-            if (RoleNormalizer.Normalize(p.Role) == canonical
-                && !string.IsNullOrEmpty(p.Email)
-                && string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(r.Key)) continue;
+            seenRefKeys.Add(r.Key);
+            var lookup = ParticipantResolver.FindByRoleWithOverrides(
+                participantsJson, referencesJson, overrides, excludedRole, r.Key);
+            // Tombstone on this (refKey, role) → no exclusion *via that reference*; keep going.
+            if (lookup.Suppressed) continue;
+            if (lookup.Found is { Email: var e } && !string.IsNullOrEmpty(e)
+                && string.Equals(e, email, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
 
-        // Reference-level second — captures roles attached to a specific PR/ticket/commit.
-        foreach (var (_, p) in ParticipantResolver.GetReferenceParticipants(referencesJson))
+        // 2. Override rows can introduce a reference key that didn't exist in ReferencesJson —
+        //    walk them too so a freshly-added override can trip the exclusion.
+        if (overrides is { Count: > 0 })
+        {
+            foreach (var o in overrides)
+            {
+                if (string.IsNullOrEmpty(o.ReferenceKey)) continue;
+                if (seenRefKeys.Contains(o.ReferenceKey)) continue;
+                var lookup = ParticipantResolver.FindByRoleWithOverrides(
+                    participantsJson, referencesJson, overrides, excludedRole, o.ReferenceKey);
+                if (lookup.Suppressed) continue;
+                if (lookup.Found is { Email: var e } && !string.IsNullOrEmpty(e)
+                    && string.Equals(e, email, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                seenRefKeys.Add(o.ReferenceKey);
+            }
+        }
+
+        // 3. Event-level fallback (unaffected by reference-scoped overrides — overrides are
+        //    always tied to a referenceKey). Mirrors the legacy behaviour for triggered-by etc.
+        foreach (var p in ParticipantResolver.GetEventParticipants(participantsJson))
         {
             if (RoleNormalizer.Normalize(p.Role) == canonical
                 && !string.IsNullOrEmpty(p.Email)
@@ -143,10 +219,34 @@ public class PromotionApprovalAuthorizer
     }
 
     /// <summary>
-    /// Backwards-compatible overload — kept so callers that have only event-level JSON to hand
-    /// (legacy paths, tests pre-dating the two-level model) keep compiling. Equivalent to
-    /// passing <c>null</c> for <c>referencesJson</c>: no reference-level lookup is performed.
+    /// Backwards-compatible overload — kept so callers that have only event-level / reference-level
+    /// JSON to hand (legacy paths, tests pre-dating overrides) keep compiling. Equivalent to
+    /// passing an empty overrides list.
+    /// </summary>
+    public static bool EmailMatchesExcludedRole(
+        string? participantsJson,
+        string? referencesJson,
+        string excludedRole,
+        string email)
+        => EmailMatchesExcludedRole(participantsJson, referencesJson, overrides: null, excludedRole, email);
+
+    /// <summary>
+    /// Backwards-compatible 3-arg overload — only event-level JSON. Equivalent to passing
+    /// <c>null</c> for both <c>referencesJson</c> and <c>overrides</c>. Used by older tests.
     /// </summary>
     public static bool EmailMatchesExcludedRole(string? participantsJson, string excludedRole, string email)
-        => EmailMatchesExcludedRole(participantsJson, referencesJson: null, excludedRole, email);
+        => EmailMatchesExcludedRole(participantsJson, referencesJson: null, overrides: null, excludedRole, email);
+
+    private static List<ReferenceDto> ParseReferences(string? referencesJson)
+    {
+        if (string.IsNullOrWhiteSpace(referencesJson)) return new();
+        try
+        {
+            return JsonSerializer.Deserialize<List<ReferenceDto>>(referencesJson, JsonOptions) ?? new();
+        }
+        catch
+        {
+            return new();
+        }
+    }
 }
