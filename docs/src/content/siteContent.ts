@@ -557,16 +557,19 @@ executor:
     slug: 'deployment-ingest-api',
     group: 'API',
     title: 'Deployment ingest API',
-    summary: 'The deployment ingest endpoint is the main CI/CD integration surface for recording deploy events.',
+    summary: 'The deployment ingest endpoint is the main CI/CD integration surface for recording deploy events. The event payload also drives promotion approval rules — references and participants nested in the payload feed the gate evaluator directly.',
     paragraphs: [
-      'Pipelines send deployment events to InfraPilot using an API key. Those events become the source of truth for deployment history, rollback target selection, and promotion candidate creation.',
-      'The request contract supports product, service, environment, version, source, timestamps, status, rollback flags, references, participants, and metadata.',
+      'Pipelines send deployment events to InfraPilot using an API key. Those events become the source of truth for deployment history, rollback target selection, promotion candidate creation, and the participants that promotion approval rules check (e.g. "the person who triggered this deploy cannot approve their own promotion").',
+      'The request contract supports product, service, environment, version, source, timestamps, status, rollback flags, references, participants, and metadata. Each `references[]` entry can carry its own nested `participants[]` array — that is the more specific signal for "who QA-ed this ticket" or "who reviewed this PR" and wins over the event-level layer for the same role.',
+      'Beyond ingest, two operator-facing surfaces sit on the same event: a PATCH endpoint for reference participant overrides (reassign / tombstone a slot without re-running the pipeline), and an enrichment layer populated server-side from Jira / Azure DevOps that is surfaced on read APIs.',
     ],
     bullets: [
       'Endpoint: POST /api/deployments/events',
       'Auth: X-Api-Key header',
       'Status values: succeeded, failed, in_progress',
       'Successful deploys are eligible for promotions and rollback history',
+      'References can be repository, pipeline, pull-request, or work-item — work-item references drive the Tickets queue',
+      'Participants carry on two levels (event-level + reference-level) with operator overrides and enrichment as additional layers',
     ],
     code: `POST /api/deployments/events
 X-Api-Key: <your-api-key>
@@ -827,31 +830,45 @@ export const deploymentApiFullPayload = `{
       "url": "https://github.com/Acmetrix/order-api/pull/312",
       "provider": "github",
       "key": "312",
-      "title": "Add idempotency key to checkout"
+      "title": "Add idempotency key to checkout",
+      "participants": [
+        {
+          "role": "author",
+          "displayName": "Jan Kowalski",
+          "email": "jan.kowalski@acmetrix.com"
+        },
+        {
+          "role": "reviewer",
+          "displayName": "Anna Kowalska",
+          "email": "anna.kowalska@acmetrix.com"
+        }
+      ]
     },
     {
       "type": "work-item",
       "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
       "provider": "jira",
       "key": "PLT-1234",
-      "title": "Add idempotency key to checkout endpoint"
+      "title": "Add idempotency key to checkout endpoint",
+      "participants": [
+        {
+          "role": "qa",
+          "displayName": "Piotr Nowak",
+          "email": "piotr.nowak@acmetrix.com"
+        },
+        {
+          "role": "assignee",
+          "displayName": "Maria Wiśniewska",
+          "email": "maria.wisniewska@acmetrix.com"
+        }
+      ]
     }
   ],
   "participants": [
     {
-      "role": "PR Author",
+      "role": "triggered-by",
       "displayName": "Jan Kowalski",
       "email": "jan.kowalski@acmetrix.com"
-    },
-    {
-      "role": "PR Reviewer",
-      "displayName": "Anna Kowalska",
-      "email": "anna.kowalska@acmetrix.com"
-    },
-    {
-      "role": "QA",
-      "displayName": "Piotr Nowak",
-      "email": "piotr.nowak@acmetrix.com"
     }
   ],
   "metadata": {
@@ -1032,6 +1049,13 @@ export const deploymentApiReferenceRows: TableRow[] = [
     default: 'null',
     description: 'Human-readable title (work-item summary, PR title). When supplied for a work-item reference, the server uses it directly and skips the Jira lookup.',
   },
+  {
+    field: '`participants`',
+    type: 'array',
+    required: 'No',
+    default: '`[]`',
+    description: 'People scoped to this specific reference (e.g. author / reviewer on a PR; qa / assignee on a work item). Same shape as the top-level `participants[]`. Reference-level entries are the more specific signal — they win over the event-level layer for the same role on promotion approval rules.',
+  },
 ];
 
 export const deploymentApiReferenceTypeColumns: TableColumn[] = [
@@ -1121,6 +1145,114 @@ export const deploymentApiAuthRows: TableRow[] = [
   },
 ];
 
+// ── Participant model: event-level vs. reference-level vs. overrides vs. enrichment ──────
+
+export const deploymentApiParticipantLayerColumns: TableColumn[] = [
+  { key: 'layer', label: 'Layer' },
+  { key: 'source', label: 'Source' },
+  { key: 'precedence', label: 'Precedence' },
+  { key: 'usage', label: 'Usage' },
+];
+
+export const deploymentApiParticipantLayerRows: TableRow[] = [
+  {
+    layer: 'Override',
+    source: 'Operator action via PATCH on a reference',
+    precedence: 'Highest — including tombstones that suppress lower layers',
+    usage: 'Reassign or clear a slot when the upstream payload is wrong (Jira out of date, missing reviewer, etc.). Persists across re-ingest because it never mutates the source JSON.',
+  },
+  {
+    layer: 'Reference-level',
+    source: '`references[].participants` on the ingest payload',
+    precedence: 'Wins over event-level for the same role on the same reference',
+    usage: 'Author / reviewer on a PR. QA / assignee on a work-item ticket.',
+  },
+  {
+    layer: 'Event-level',
+    source: '`participants[]` on the ingest payload',
+    precedence: 'Fallback when no reference-level entry covers the role',
+    usage: 'Pipeline triggerer (`triggered-by`), deployer, or any role that applies to the whole deploy rather than a single reference.',
+  },
+  {
+    layer: 'Enrichment',
+    source: 'Server-derived from `EnrichmentJson`',
+    precedence: 'Lowest — augments the event-level layer',
+    usage: 'Auto-populated by the enricher (Jira / Azure DevOps lookups). Surfaced as `enrichment.participants` on read APIs and merged into the event-level fallback by promotion authorisation.',
+  },
+];
+
+// ── Reference participant overrides (PATCH endpoint) ──────────────────────────────────────
+
+export const deploymentApiOverrideEndpointRows: TableRow[] = [
+  {
+    method: '`PATCH`',
+    path: '`/api/deployments/{eventId}/references/{key}/participants`',
+    auth: 'Authenticated user',
+    description: 'Upsert (or tombstone) the participant for a `(referenceKey, role)` slot on an existing deploy event.',
+  },
+];
+
+export const deploymentApiOverrideRequest = `PATCH /api/deployments/f47ac10b-.../references/PLT-1234/participants
+Content-Type: application/json
+
+{
+  "role": "qa",
+  "assignee": {
+    "email": "ola.kowalska@acmetrix.com",
+    "displayName": "Ola Kowalska"
+  }
+}`;
+
+export const deploymentApiOverrideTombstone = `PATCH /api/deployments/f47ac10b-.../references/PLT-1234/participants
+Content-Type: application/json
+
+{
+  "role": "qa",
+  "assignee": null
+}`;
+
+export const deploymentApiOverrideResponse = `{
+  "tombstone": false,
+  "override": {
+    "role": "qa",
+    "displayName": "Ola Kowalska",
+    "email": "ola.kowalska@acmetrix.com",
+    "isOverride": true,
+    "assignedBy": "Sylwester Grabowski"
+  },
+  "participants": [
+    {
+      "role": "qa",
+      "displayName": "Ola Kowalska",
+      "email": "ola.kowalska@acmetrix.com",
+      "isOverride": true,
+      "assignedBy": "Sylwester Grabowski"
+    },
+    {
+      "role": "assignee",
+      "displayName": "Maria Wiśniewska",
+      "email": "maria.wisniewska@acmetrix.com"
+    }
+  ]
+}`;
+
+// ── Enrichment shape on read APIs ─────────────────────────────────────────────────────────
+
+export const deploymentEnrichmentExample = `{
+  "labels": {
+    "service-tier": "tier-1",
+    "owning-team": "checkout"
+  },
+  "participants": [
+    {
+      "role": "qa",
+      "displayName": "Piotr Nowak",
+      "email": "piotr.nowak@acmetrix.com"
+    }
+  ],
+  "enrichedAt": "2026-04-16T10:31:42Z"
+}`;
+
 export const deploymentApiResponseColumns: TableColumn[] = [
   { key: 'status', label: 'Status' },
   { key: 'body', label: 'Body' },
@@ -1204,6 +1336,7 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
     },
     {
       title: '`participants[]` fields',
+      description: '`participants[]` is the event-level layer — people scoped to the whole deploy (e.g. the pipeline triggerer). Reference-level participants nested under `references[].participants` cover people scoped to one PR or one ticket; both layers are honoured when promotion approval rules look up roles.',
       columns: deploymentApiFieldColumns,
       rows: deploymentApiParticipantRows,
     },
@@ -1211,6 +1344,38 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       title: 'Common participant roles',
       columns: deploymentApiReferenceTypeColumns,
       rows: deploymentApiParticipantTypeRows,
+    },
+    {
+      title: 'Participant model — four layers, in descending precedence',
+      description: 'Reads of a deploy event resolve participants through a four-layer model. Promotion authorisation, the Tickets queue, and the detail view all use the same precedence so a person who appears at the right layer for a given (reference, role) is consistently surfaced.',
+      columns: deploymentApiParticipantLayerColumns,
+      rows: deploymentApiParticipantLayerRows,
+    },
+    {
+      title: 'Reference participant overrides — endpoint',
+      description: 'Operators can reassign or clear a participant on a specific reference of an already-ingested deploy event without re-running the pipeline. Overrides live in their own table keyed by `(eventId, referenceKey, role)`, so re-ingesting the same event preserves the override (the source `references[]` JSON is never mutated).',
+      columns: defaultEndpointColumns,
+      rows: deploymentApiOverrideEndpointRows,
+    },
+    {
+      title: 'Reassign — request',
+      description: 'Pass `assignee.email` + `assignee.displayName` to upsert a real person into the `(referenceKey, role)` slot. The merged participant list for the reference is returned so the UI can re-render without a follow-up GET.',
+      code: deploymentApiOverrideRequest,
+    },
+    {
+      title: 'Tombstone — request',
+      description: 'Pass `assignee: null` to suppress the slot — useful when an upstream Jira/PR participant is wrong and there is no replacement. The tombstone hides the lower layers (reference-level, event-level, enrichment) for that `(referenceKey, role)`.',
+      code: deploymentApiOverrideTombstone,
+    },
+    {
+      title: 'Response — merged participant list',
+      description: 'The response carries the effective participant list for that reference after overrides are applied. `isOverride: true` flags entries that came from an override (rather than the upstream payload); `assignedBy` records the operator who wrote it.',
+      code: deploymentApiOverrideResponse,
+    },
+    {
+      title: 'Enrichment (read-side)',
+      description: 'When the enricher service is wired in, it populates `EnrichmentJson` after ingest. Read APIs surface the enriched data on the `enrichment` field of the deploy event response. Promotion authorisation treats enrichment participants as part of the event-level fallback layer (so a Jira-supplied QA shows up alongside any explicitly-supplied participant).',
+      code: deploymentEnrichmentExample,
     },
     {
       title: 'Responses',

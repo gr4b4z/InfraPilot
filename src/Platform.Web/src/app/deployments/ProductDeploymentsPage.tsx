@@ -20,6 +20,7 @@ import {
   ChevronsUpDown,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import { collectParticipants } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
 
 type ViewTab = 'state' | 'activity' | 'compare';
@@ -369,9 +370,9 @@ export function ProductDeploymentsPage() {
     const header = ['Service', 'Environment', 'Version', 'Previous Version', 'Status', 'Deployed At', 'Source', 'Work Item', 'Work Item Title', 'PR Author', 'QA'];
     const rows = filteredActivity.map((evt) => {
       const workItem = evt.references.find((r) => r.type === 'work-item');
-      const allP = [...evt.participants, ...(evt.enrichment?.participants ?? [])];
-      const prAuthor = allP.find((p) => p.role === 'PR Author');
-      const qa = allP.find((p) => p.role === 'QA');
+      const allP = collectParticipants(evt);
+      const prAuthor = allP.find((p) => p.role === 'author' || p.role === 'PR Author');
+      const qa = allP.find((p) => p.role === 'qa' || p.role === 'QA');
       return [
         evt.service,
         evt.environment,

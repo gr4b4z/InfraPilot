@@ -60,6 +60,9 @@ public class PromotionPolicyResolver
                 EscalationGroup: null);
         }
 
+        // Carry the gate forward so PR3's evaluator sees the configured ticket-level mode for
+        // newly created candidates. Old candidates whose snapshot JSON predates this field
+        // deserialise to the default PromotionOnly — preserving today's flow.
         return new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
             ApproverGroup: policy.ApproverGroup,
@@ -67,6 +70,12 @@ public class PromotionPolicyResolver
             MinApprovers: policy.MinApprovers,
             ExcludeRole: policy.ExcludeRole,
             TimeoutHours: policy.TimeoutHours,
-            EscalationGroup: policy.EscalationGroup);
+            EscalationGroup: policy.EscalationGroup)
+        {
+            Gate = policy.Gate,
+            RequireAllTicketsApproved = policy.RequireAllTicketsApproved,
+            AutoApproveOnAllTicketsApproved = policy.AutoApproveOnAllTicketsApproved,
+            AutoApproveWhenNoTickets = policy.AutoApproveWhenNoTickets,
+        };
     }
 }

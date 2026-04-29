@@ -56,9 +56,13 @@ public static class PromotionAdminEndpoints
                 ApproverGroup = string.IsNullOrWhiteSpace(request.ApproverGroup) ? null : request.ApproverGroup,
                 Strategy = request.Strategy,
                 MinApprovers = Math.Max(1, request.MinApprovers),
+                Gate = request.Gate,
                 ExcludeRole = string.IsNullOrWhiteSpace(request.ExcludeRole) ? null : request.ExcludeRole,
                 TimeoutHours = Math.Max(0, request.TimeoutHours),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
+                RequireAllTicketsApproved = request.RequireAllTicketsApproved,
+                AutoApproveOnAllTicketsApproved = request.AutoApproveOnAllTicketsApproved,
+                AutoApproveWhenNoTickets = request.AutoApproveWhenNoTickets,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -83,9 +87,13 @@ public static class PromotionAdminEndpoints
             policy.ApproverGroup = string.IsNullOrWhiteSpace(request.ApproverGroup) ? null : request.ApproverGroup;
             policy.Strategy = request.Strategy;
             policy.MinApprovers = Math.Max(1, request.MinApprovers);
+            policy.Gate = request.Gate;
             policy.ExcludeRole = string.IsNullOrWhiteSpace(request.ExcludeRole) ? null : request.ExcludeRole;
             policy.TimeoutHours = Math.Max(0, request.TimeoutHours);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
+            policy.RequireAllTicketsApproved = request.RequireAllTicketsApproved;
+            policy.AutoApproveOnAllTicketsApproved = request.AutoApproveOnAllTicketsApproved;
+            policy.AutoApproveWhenNoTickets = request.AutoApproveWhenNoTickets;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
 
             await db.SaveChangesAsync();
@@ -135,9 +143,13 @@ public static class PromotionAdminEndpoints
         approverGroup = p.ApproverGroup,
         strategy = p.Strategy.ToString(),
         minApprovers = p.MinApprovers,
+        gate = p.Gate.ToString(),
         excludeRole = p.ExcludeRole,
         timeoutHours = p.TimeoutHours,
         escalationGroup = p.EscalationGroup,
+        requireAllTicketsApproved = p.RequireAllTicketsApproved,
+        autoApproveOnAllTicketsApproved = p.AutoApproveOnAllTicketsApproved,
+        autoApproveWhenNoTickets = p.AutoApproveWhenNoTickets,
         createdAt = p.CreatedAt,
         updatedAt = p.UpdatedAt,
     };
@@ -163,6 +175,10 @@ public record UpsertPolicyRequest(
     string? ApproverGroup,
     PromotionStrategy Strategy,
     int MinApprovers,
+    PromotionGate Gate,
     string? ExcludeRole,
     int TimeoutHours,
-    string? EscalationGroup);
+    string? EscalationGroup,
+    bool RequireAllTicketsApproved = false,
+    bool AutoApproveOnAllTicketsApproved = false,
+    bool AutoApproveWhenNoTickets = false);

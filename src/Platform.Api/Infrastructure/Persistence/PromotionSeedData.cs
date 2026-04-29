@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Features;
@@ -200,9 +199,6 @@ public static class PromotionSeedData
                 _ => (PromotionStatus.Superseded, (DateTimeOffset?)null, (DateTimeOffset?)null),
             };
 
-            // Extract deployer email from participants JSON (same logic as DeploymentService)
-            var deployer = ExtractDeployer(deploy.ParticipantsJson);
-
             var candidate = new PromotionCandidate
             {
                 Id = candidateId,
@@ -212,8 +208,6 @@ public static class PromotionSeedData
                 TargetEnv = "production",
                 Version = deploy.Version,
                 SourceDeployEventId = deploy.Id,
-                SourceDeployerName = deployer?.Name,
-                SourceDeployerEmail = deployer?.Email,
                 Status = status,
                 PolicyId = policy.Id,
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
@@ -230,7 +224,7 @@ public static class PromotionSeedData
             // Generate approval trail for non-Pending, non-Superseded candidates
             if (status is PromotionStatus.Rejected)
             {
-                var (name, email) = PickApprover(rand, deployer?.Email);
+                var (name, email) = PickApprover(rand);
                 approvals.Add(new PromotionApproval
                 {
                     Id = Guid.NewGuid(),
@@ -248,7 +242,7 @@ public static class PromotionSeedData
                 var usedEmails = new HashSet<string>();
                 for (var i = 0; i < 2; i++)
                 {
-                    var (name, email) = PickApprover(rand, deployer?.Email, usedEmails);
+                    var (name, email) = PickApprover(rand, usedEmails);
                     usedEmails.Add(email);
                     approvals.Add(new PromotionApproval
                     {
@@ -267,7 +261,7 @@ public static class PromotionSeedData
                 // Some Pending candidates have 1 approval (waiting for second)
                 if (rand.NextDouble() < 0.4)
                 {
-                    var (name, email) = PickApprover(rand, deployer?.Email);
+                    var (name, email) = PickApprover(rand);
                     approvals.Add(new PromotionApproval
                     {
                         Id = Guid.NewGuid(),
@@ -307,8 +301,6 @@ public static class PromotionSeedData
                     (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 4))),
             };
 
-            var deployer = ExtractDeployer(deploy.ParticipantsJson);
-
             candidates.Add(new PromotionCandidate
             {
                 Id = candidateId,
@@ -318,8 +310,6 @@ public static class PromotionSeedData
                 TargetEnv = "staging",
                 Version = deploy.Version,
                 SourceDeployEventId = deploy.Id,
-                SourceDeployerName = deployer?.Name,
-                SourceDeployerEmail = deployer?.Email,
                 Status = status,
                 PolicyId = policy.Id,
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
@@ -336,7 +326,7 @@ public static class PromotionSeedData
         // constructs a chain on the staging→production edge. The final candidate is
         // Pending and inherits all prior source-event IDs, so the "Inherited from
         // superseded candidates" section on the detail page has something to show.
-        SeedSupersedeChain(db, policies, stagingDeploys, candidates, now);
+        SeedSupersedeChain(db, policies, candidates);
 
         db.PromotionCandidates.AddRange(candidates);
         db.PromotionApprovals.AddRange(approvals);
@@ -345,9 +335,7 @@ public static class PromotionSeedData
     private static void SeedSupersedeChain(
         PlatformDbContext db,
         List<PromotionPolicy> policies,
-        List<DeployEvent> _unused,
-        List<PromotionCandidate> candidates,
-        DateTimeOffset now)
+        List<PromotionCandidate> candidates)
     {
         // Load the full set of succeeded staging deploys (not just the top-60 slice used for
         // other candidate seeding) so we have enough depth to find a service with 4 distinct
@@ -386,12 +374,10 @@ public static class PromotionSeedData
         var older = group.Skip(1).OrderBy(d => d.DeployedAt).ToList(); // oldest-first
 
         var freshId = Guid.NewGuid();
-        var freshDeployer = ExtractDeployer(fresh.ParticipantsJson);
 
         var predecessorIds = new List<Guid>();
         foreach (var ev in older)
         {
-            var deployer = ExtractDeployer(ev.ParticipantsJson);
             candidates.Add(new PromotionCandidate
             {
                 Id = Guid.NewGuid(),
@@ -401,8 +387,6 @@ public static class PromotionSeedData
                 TargetEnv = "production",
                 Version = ev.Version,
                 SourceDeployEventId = ev.Id,
-                SourceDeployerName = deployer?.Name,
-                SourceDeployerEmail = deployer?.Email,
                 Status = PromotionStatus.Superseded,
                 SupersededById = freshId,
                 PolicyId = policy.Id,
@@ -421,8 +405,6 @@ public static class PromotionSeedData
             TargetEnv = "production",
             Version = fresh.Version,
             SourceDeployEventId = fresh.Id,
-            SourceDeployerName = freshDeployer?.Name,
-            SourceDeployerEmail = freshDeployer?.Email,
             Status = PromotionStatus.Pending,
             PolicyId = policy.Id,
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
@@ -442,47 +424,16 @@ public static class PromotionSeedData
             EscalationGroup: policy.EscalationGroup);
 
     /// <summary>
-    /// Picks an approver that is NOT the deployer (to respect the policy's ExcludeRole
-    /// semantics), and not already in the <paramref name="exclude"/> set (to avoid duplicate
-    /// approvals).
+    /// Picks a random approver, excluding anyone already in <paramref name="exclude"/>
+    /// (to avoid duplicate approvals on the same candidate).
     /// </summary>
-    private static (string Name, string Email) PickApprover(
-        Random rand, string? deployerEmail, HashSet<string>? exclude = null)
+    private static (string Name, string Email) PickApprover(Random rand, HashSet<string>? exclude = null)
     {
         var eligible = Approvers
-            .Where(a => !string.Equals(a.Email, deployerEmail, StringComparison.OrdinalIgnoreCase))
             .Where(a => exclude is null || !exclude.Contains(a.Email))
             .ToArray();
 
         if (eligible.Length == 0) return Approvers[0]; // fallback — shouldn't happen with 8 approvers
         return eligible[rand.Next(eligible.Length)];
-    }
-
-    private record DeployerInfo(string? Name, string? Email);
-
-    /// <summary>
-    /// Extracts the first "PR Author" participant from the deploy event's ParticipantsJson.
-    /// </summary>
-    private static DeployerInfo? ExtractDeployer(string? participantsJson)
-    {
-        if (string.IsNullOrEmpty(participantsJson)) return null;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(participantsJson);
-            foreach (var el in doc.RootElement.EnumerateArray())
-            {
-                if (el.TryGetProperty("role", out var role) &&
-                    role.GetString()?.Equals("PR Author", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    var name = el.TryGetProperty("displayName", out var dn) ? dn.GetString() : null;
-                    var email = el.TryGetProperty("email", out var em) ? em.GetString() : null;
-                    return new DeployerInfo(name, email);
-                }
-            }
-        }
-        catch { /* best-effort */ }
-
-        return null;
     }
 }

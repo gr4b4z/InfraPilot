@@ -289,6 +289,106 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("deploy_events", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("DeployEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Provider")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Revision")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Url")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("WorkItemKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product");
+
+                    b.HasIndex("DeployEventId", "WorkItemKey")
+                        .IsUnique();
+
+                    b.HasIndex("WorkItemKey", "Product");
+
+                    b.ToTable("deploy_event_work_items", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.ReferenceParticipantOverride", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("AssignedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("AssignedById")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("AssignedByName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("AssigneeDisplayName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("AssigneeEmail")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<Guid>("DeployEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReferenceKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeployEventId");
+
+                    b.HasIndex("DeployEventId", "ReferenceKey", "Role")
+                        .IsUnique();
+
+                    b.ToTable("reference_participant_overrides", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
                 {
                     b.Property<Guid>("Id")
@@ -371,14 +471,6 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.Property<Guid>("SourceDeployEventId")
                         .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("SourceDeployerEmail")
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.Property<string>("SourceDeployerName")
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
 
                     b.Property<string>("SourceEnv")
                         .IsRequired()
@@ -467,6 +559,16 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
+                    b.Property<bool>("AutoApproveOnAllTicketsApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("AutoApproveWhenNoTickets")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -477,6 +579,13 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<string>("ExcludeRole")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("Gate")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)")
+                        .HasDefaultValue("PromotionOnly");
+
                     b.Property<int>("MinApprovers")
                         .HasColumnType("int");
 
@@ -484,6 +593,11 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("RequireAllTicketsApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("Service")
                         .HasMaxLength(200)
@@ -514,6 +628,61 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasFilter("[Service] IS NOT NULL");
 
                     b.ToTable("promotion_policies", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.WorkItemApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ApproverEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("ApproverName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Comment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("WorkItemKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "TargetEnv");
+
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "ApproverEmail")
+                        .IsUnique();
+
+                    b.ToTable("work_item_approvals", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Requests.Models.ExecutionResult", b =>
@@ -941,6 +1110,24 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired();
 
                     b.Navigation("CatalogItem");
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
+                        .WithMany()
+                        .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.ReferenceParticipantOverride", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
+                        .WithMany()
+                        .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>

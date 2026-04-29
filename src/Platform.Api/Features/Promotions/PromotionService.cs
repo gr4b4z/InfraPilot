@@ -7,7 +7,6 @@ using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
-using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Promotions;
@@ -28,7 +27,7 @@ public class PromotionService
 {
     private readonly PlatformDbContext _db;
     private readonly PromotionPolicyResolver _resolver;
-    private readonly IIdentityService _identity;
+    private readonly PromotionApprovalAuthorizer _auth;
     private readonly ICurrentUser _currentUser;
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
@@ -44,7 +43,7 @@ public class PromotionService
     public PromotionService(
         PlatformDbContext db,
         PromotionPolicyResolver resolver,
-        IIdentityService identity,
+        PromotionApprovalAuthorizer auth,
         ICurrentUser currentUser,
         IAuditLogger audit,
         ILogger<PromotionService> logger,
@@ -53,7 +52,7 @@ public class PromotionService
     {
         _db = db;
         _resolver = resolver;
-        _identity = identity;
+        _auth = auth;
         _currentUser = currentUser;
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
@@ -109,7 +108,18 @@ public class PromotionService
 
         var snapshot = await _resolver.SnapshotAsync(source.Product, source.Service, targetEnv, ct);
 
-        var deployer = ExtractDeployer(source);
+        // AutoApproveWhenNoTickets: if the source event carries no work-item references and the
+        // policy opts in, treat this candidate as if it had an auto-approve policy — no gate needed.
+        var autoApproveNoTickets = false;
+        if (!snapshot.IsAutoApprove && snapshot.AutoApproveWhenNoTickets)
+        {
+            var hasTickets = await _db.DeployEventWorkItems.AsNoTracking()
+                .AnyAsync(w => w.DeployEventId == source.Id, ct);
+            autoApproveNoTickets = !hasTickets;
+        }
+
+        var effectiveAutoApprove = snapshot.IsAutoApprove || autoApproveNoTickets;
+
         var now = DateTimeOffset.UtcNow;
         var candidate = new PromotionCandidate
         {
@@ -120,13 +130,11 @@ public class PromotionService
             TargetEnv = targetEnv,
             Version = source.Version,
             SourceDeployEventId = source.Id,
-            SourceDeployerName = deployer?.Name,
-            SourceDeployerEmail = deployer?.Email,
-            Status = snapshot.IsAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
+            Status = effectiveAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
             PolicyId = snapshot.PolicyId,
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
             CreatedAt = now,
-            ApprovedAt = snapshot.IsAutoApprove ? now : null,
+            ApprovedAt = effectiveAutoApprove ? now : null,
         };
 
         // Supersede any still-pending candidate for the same service+edge — a newer version wins.
@@ -137,14 +145,16 @@ public class PromotionService
         _db.PromotionCandidates.Add(candidate);
 
         // Auto-approve: record a synthetic approval row so the UI's approval trail renders it.
-        if (snapshot.IsAutoApprove)
+        if (effectiveAutoApprove)
         {
             _db.PromotionApprovals.Add(new PromotionApproval
             {
                 Id = Guid.NewGuid(),
                 CandidateId = candidate.Id,
                 ApproverEmail = "system",
-                ApproverName = "System (auto-approve)",
+                ApproverName = autoApproveNoTickets
+                    ? "System (auto-approve — no tickets)"
+                    : "System (auto-approve)",
                 Decision = PromotionDecision.Approved,
                 CreatedAt = now,
             });
@@ -164,7 +174,8 @@ public class PromotionService
                 candidate.TargetEnv,
                 candidate.Version,
                 candidate.Status,
-                AutoApprove = snapshot.IsAutoApprove,
+                AutoApprove = effectiveAutoApprove,
+                AutoApproveReason = snapshot.IsAutoApprove ? "policy" : autoApproveNoTickets ? "no-tickets" : null,
             });
 
         _logger.LogInformation(
@@ -219,34 +230,6 @@ public class PromotionService
         return inherited.ToList();
     }
 
-    private record DeployerInfo(string? Name, string? Email);
-
-    // Canonical role name CI senders use to identify who/what kicked off a pipeline run.
-    // Named "triggered-by" because it's the run initiator (human, service principal, scheduler),
-    // not necessarily the person who authored the code or approved the deploy.
-    private const string TriggeredByRole = "triggered-by";
-
-    private static DeployerInfo? ExtractDeployer(DeployEvent source)
-    {
-        // Participants JSON is a serialised List<ParticipantDto>. We look for the participant
-        // tagged as the run initiator. Normalise each role at read time so the match works
-        // whether or not ingest-time canonicalisation is enabled (senders may post "TriggeredBy",
-        // "triggered_by", etc.). Best-effort parse — return null when the payload is malformed
-        // or absent rather than fail candidate creation.
-        if (string.IsNullOrWhiteSpace(source.ParticipantsJson)) return null;
-        try
-        {
-            var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(source.ParticipantsJson, JsonOptions);
-            var deployer = parts?.FirstOrDefault(p =>
-                RoleNormalizer.Normalize(p.Role) == TriggeredByRole);
-            if (deployer is null) return null;
-            return new DeployerInfo(deployer.DisplayName, deployer.Email);
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     // ---------------------------------------------------------------------
     // Queries
@@ -536,14 +519,39 @@ public class PromotionService
     /// participant matching the policy's <c>ExcludeRole</c>, and the same user may not approve twice
     /// (also enforced by a DB-level unique index as belt-and-suspenders).
     ///
-    /// <para>If the strategy threshold is met after this decision, transitions the candidate to
-    /// <see cref="PromotionStatus.Approved"/> atomically.</para>
+    /// <para>After persisting the approval row, delegates to <see cref="ReevaluateAsync"/> which
+    /// runs the gate evaluator and transitions the candidate to <see cref="PromotionStatus.Approved"/>
+    /// when satisfied. The split keeps the row-recording concerns here (granular audit, dup checks)
+    /// separate from the candidate-level transition concerns owned by re-evaluation, which Phase 3B
+    /// will also drive from the ticket-approval flow.</para>
+    ///
+    /// <para>For <see cref="PromotionGate.TicketsOnly"/> the candidate is not approvable through
+    /// this flow at all — the only path forward is approving the underlying tickets — so we reject
+    /// with a 400-friendly <see cref="InvalidOperationException"/>.</para>
     /// </summary>
     public async Task<PromotionCandidate> ApproveAsync(
         Guid candidateId, string? comment, CancellationToken ct = default)
     {
         var candidate = await LoadPendingAsync(candidateId, ct);
         var snapshot = ReadSnapshot(candidate);
+
+        // TicketsOnly candidates auto-promote from ticket approvals; the manual approval surface
+        // is intentionally inert — UNLESS the bundle has no tickets to gate on, in which case the
+        // gate falls back to PromotionOnly evaluation and a manual signoff is the only way forward.
+        if (snapshot.Gate == PromotionGate.TicketsOnly && await CandidateHasTicketsAsync(candidate, ct))
+            throw new InvalidOperationException(
+                "This candidate auto-promotes from ticket approvals; approve the tickets, not the promotion.");
+
+        // RequireAllTicketsApproved: the policy says every ticket must be signed off before a
+        // human release manager can approve the promotion. When the bundle has tickets and at least
+        // one is still pending (or rejected), reject the attempt with an actionable message.
+        if (snapshot.RequireAllTicketsApproved && await CandidateHasTicketsAsync(candidate, ct))
+        {
+            if (!await AreAllTicketsApprovedAsync(candidate, ct))
+                throw new InvalidOperationException(
+                    "All work-item tickets must be approved before this promotion can be approved. " +
+                    "Check the Tickets queue for pending sign-offs.");
+        }
 
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
         await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
@@ -559,43 +567,245 @@ public class PromotionService
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.PromotionApprovals.Add(decision);
+        await _db.SaveChangesAsync(ct);
 
-        // Evaluate threshold with the new decision included in-memory.
-        var approvedCount = await _db.PromotionApprovals
-            .CountAsync(a => a.CandidateId == candidateId && a.Decision == PromotionDecision.Approved, ct) + 1;
+        // Granular per-row event: "this user signed off on the candidate". Coarse candidate-level
+        // transition is emitted from ReevaluateAsync so a system-driven gate satisfaction (Phase 3B)
+        // looks identical to one triggered directly by this user.
+        await _audit.Log(
+            "promotions", "promotion.approval.recorded",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { approvalId = decision.Id, comment });
 
-        var thresholdMet = snapshot.Strategy switch
-        {
-            PromotionStrategy.Any => true,
-            PromotionStrategy.NOfM => approvedCount >= Math.Max(1, snapshot.MinApprovers),
-            _ => true,
-        };
+        _logger.LogInformation(
+            "Approval recorded on candidate {Id} by {Email}", candidate.Id, _currentUser.Email);
 
-        if (thresholdMet)
-        {
-            candidate.Status = PromotionStatus.Approved;
-            candidate.ApprovedAt = DateTimeOffset.UtcNow;
-        }
+        // Re-evaluate the gate now that the new row is persisted. This may flip the candidate to
+        // Approved (and emit the candidate-level audit + webhook) or leave it Pending if the
+        // strategy threshold or ticket gates aren't yet satisfied.
+        return await ReevaluateAsync(candidateId, ct);
+    }
 
+    /// <summary>
+    /// Re-evaluates a Pending candidate against its policy gate and transitions it to
+    /// <see cref="PromotionStatus.Approved"/> when the gate is satisfied. Idempotent and a no-op
+    /// for candidates that are no longer Pending — safe to call from any path that may have
+    /// affected gate satisfaction (a new <see cref="PromotionApproval"/> from
+    /// <see cref="ApproveAsync"/>, or, in Phase 3B, a new <see cref="WorkItemApproval"/>).
+    ///
+    /// <para>The candidate-level audit entry is written with a <c>system</c> actor and a
+    /// <c>trigger=gate-evaluator</c> marker so logs disambiguate "user X explicitly approved" from
+    /// "the last ticket signoff caused the gate to satisfy and the system promoted the candidate".
+    /// The granular per-user signoff (when present) lives on the corresponding
+    /// <c>promotion.approval.recorded</c> entry written by the caller.</para>
+    /// </summary>
+    public async Task<PromotionCandidate> ReevaluateAsync(Guid candidateId, CancellationToken ct = default)
+    {
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        // Re-evaluation is only meaningful for Pending candidates; everything else is a terminal
+        // or in-flight state and must not be re-transitioned.
+        if (candidate.Status != PromotionStatus.Pending) return candidate;
+
+        var snapshot = ReadSnapshot(candidate);
+        var gate = await EvaluateGateAsync(candidate, snapshot, ct);
+        if (!gate.Satisfied) return candidate;
+
+        candidate.Status = PromotionStatus.Approved;
+        candidate.ApprovedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
             "promotions", "promotion.approved",
-            _currentUser.Id, _currentUser.Name, "user",
+            "system", "System (gate satisfied)", "system",
             "PromotionCandidate", candidate.Id, null,
-            new { approvedCount, thresholdMet, comment });
+            new { trigger = "gate-evaluator", mode = snapshot.Gate.ToString() });
 
         _logger.LogInformation(
-            "Approval recorded on candidate {Id} by {Email}; threshold met: {ThresholdMet}",
-            candidate.Id, _currentUser.Email, thresholdMet);
+            "Candidate {Id} → Approved via gate evaluator (mode={Mode})", candidate.Id, snapshot.Gate);
 
-        // Threshold met → hand off to the executor so the target-env deploy starts without
-        // another round-trip. Dispatch failures don't roll back the approval: the candidate
-        // simply stays Approved and can be manually re-dispatched.
-        if (thresholdMet)
-            await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+        await DispatchWebhookAsync(candidate, "promotion.approved", ct);
 
         return candidate;
+    }
+
+    /// <summary>
+    /// Evaluates whether a Pending candidate's policy gate is satisfied. Pure(ish): reads
+    /// <see cref="PromotionApproval"/> / <see cref="WorkItemApproval"/> / <see cref="DeployEventWorkItem"/>
+    /// rows but never mutates state. Returned blockers are human-readable strings the UI can render
+    /// directly when surfacing "what's missing on this candidate".
+    /// </summary>
+    /// <remarks>
+    /// Behaviour by gate mode:
+    /// <list type="bullet">
+    ///   <item><see cref="PromotionGate.PromotionOnly"/> — counts <see cref="PromotionApproval"/>
+    ///         rows with <see cref="PromotionDecision.Approved"/>; satisfied per the policy
+    ///         <see cref="PromotionStrategy"/>.</item>
+    ///   <item><see cref="PromotionGate.TicketsOnly"/> — every distinct work-item key in the
+    ///         candidate's bundle (source event ∪ inherited superseded events) must have at least
+    ///         one Approved <see cref="WorkItemApproval"/> row for
+    ///         <c>(WorkItemKey, Product, TargetEnv)</c> and zero Rejected rows. A bundle with zero
+    ///         work-items falls back to the <see cref="PromotionGate.PromotionOnly"/> rules — there's
+    ///         nothing to gate on, so the only way forward is a manual signoff.</item>
+    ///   <item><see cref="PromotionGate.TicketsAndManual"/> — TicketsOnly rules AND ≥1 Approved
+    ///         <see cref="PromotionApproval"/> row.</item>
+    /// </list>
+    /// Auto-approve policies (no approver group) short-circuit to satisfied — though such candidates
+    /// are never created Pending so this branch rarely runs.
+    /// </remarks>
+    internal async Task<GateResult> EvaluateGateAsync(
+        PromotionCandidate candidate,
+        ResolvedPolicySnapshot snapshot,
+        CancellationToken ct)
+    {
+        if (snapshot.IsAutoApprove)
+            return new GateResult(true, Array.Empty<string>());
+
+        // AutoApproveOnAllTicketsApproved: independent of Gate mode — as soon as every ticket in the
+        // bundle has an Approved WorkItemApproval the gate is satisfied, regardless of whether a human
+        // has also clicked Approve on the promotion itself. Only activates when the bundle has tickets
+        // (no tickets → fall through to the regular gate so a human signoff is still required).
+        if (snapshot.AutoApproveOnAllTicketsApproved && await CandidateHasTicketsAsync(candidate, ct))
+        {
+            if (await AreAllTicketsApprovedAsync(candidate, ct))
+                return new GateResult(true, Array.Empty<string>());
+        }
+
+        return snapshot.Gate switch
+        {
+            PromotionGate.TicketsOnly => await EvaluateTicketsGateAsync(candidate, snapshot, requireManual: false, ct),
+            PromotionGate.TicketsAndManual => await EvaluateTicketsGateAsync(candidate, snapshot, requireManual: true, ct),
+            _ => await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct),
+        };
+    }
+
+    private async Task<GateResult> EvaluatePromotionOnlyGateAsync(
+        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
+    {
+        var approvedCount = await _db.PromotionApprovals
+            .CountAsync(a => a.CandidateId == candidate.Id && a.Decision == PromotionDecision.Approved, ct);
+
+        var required = snapshot.Strategy switch
+        {
+            PromotionStrategy.Any => 1,
+            PromotionStrategy.NOfM => Math.Max(1, snapshot.MinApprovers),
+            _ => 1,
+        };
+
+        if (approvedCount >= required)
+            return new GateResult(true, Array.Empty<string>());
+
+        var missing = required - approvedCount;
+        return new GateResult(false, new[] { $"{missing} more approval(s) required" });
+    }
+
+    private async Task<bool> CandidateHasTicketsAsync(PromotionCandidate candidate, CancellationToken ct)
+    {
+        var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
+        return await _db.DeployEventWorkItems.AsNoTracking()
+            .AnyAsync(w => bundleEventIds.Contains(w.DeployEventId), ct);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when every distinct work-item key in the candidate's bundle has at least
+    /// one <see cref="PromotionDecision.Approved"/> <see cref="WorkItemApproval"/> row and zero
+    /// <see cref="PromotionDecision.Rejected"/> rows. Returns <c>true</c> vacuously when the
+    /// bundle has no tickets — callers should guard with <see cref="CandidateHasTicketsAsync"/>
+    /// first when they want "no tickets" to be treated differently.
+    /// </summary>
+    private async Task<bool> AreAllTicketsApprovedAsync(PromotionCandidate candidate, CancellationToken ct)
+    {
+        var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
+
+        var ticketKeys = await _db.DeployEventWorkItems.AsNoTracking()
+            .Where(w => bundleEventIds.Contains(w.DeployEventId))
+            .Select(w => w.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (ticketKeys.Count == 0) return true;
+
+        var approvals = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => ticketKeys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.TargetEnv == candidate.TargetEnv)
+            .ToListAsync(ct);
+
+        foreach (var key in ticketKeys)
+        {
+            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
+            if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) return false;
+            if (!rows.Any(a => a.Decision == PromotionDecision.Approved)) return false;
+        }
+
+        return true;
+    }
+
+    private async Task<GateResult> EvaluateTicketsGateAsync(
+        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, bool requireManual, CancellationToken ct)
+    {
+        // Bundle = the candidate's own source event plus everything it inherited from superseded
+        // predecessors on the same edge. Ticket signoffs are scoped to (key, product, target_env)
+        // so they survive a supersede chain.
+        var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds) { candidate.SourceDeployEventId };
+
+        var ticketKeys = await _db.DeployEventWorkItems.AsNoTracking()
+            .Where(w => bundleEventIds.Contains(w.DeployEventId))
+            .Select(w => w.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+
+        // Empty bundle → no tickets to gate on. Per design we fall back to PromotionOnly so a
+        // human signoff (in TicketsAndManual or as a one-off in TicketsOnly) remains a viable
+        // path forward; otherwise the candidate would be permanently un-promotable.
+        if (ticketKeys.Count == 0)
+            return await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct);
+
+        var approvals = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => ticketKeys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.TargetEnv == candidate.TargetEnv)
+            .ToListAsync(ct);
+
+        var blockers = new List<string>();
+        var pendingTickets = new List<string>();
+
+        foreach (var key in ticketKeys)
+        {
+            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
+            if (rows.Any(a => a.Decision == PromotionDecision.Rejected))
+            {
+                // A rejected ticket vetoes the candidate. Phase 3B turns this into a candidate
+                // rejection cascade; for the evaluator alone, it's just an unsatisfiable blocker.
+                blockers.Add($"Ticket {key} was rejected");
+                continue;
+            }
+            if (!rows.Any(a => a.Decision == PromotionDecision.Approved))
+                pendingTickets.Add(key);
+        }
+
+        // Cap pending-ticket blockers at 5 to keep error payloads bounded; tail collapses to
+        // "...and N more" so callers can still see the magnitude.
+        const int MaxPendingShown = 5;
+        if (pendingTickets.Count > 0)
+        {
+            foreach (var key in pendingTickets.Take(MaxPendingShown))
+                blockers.Add($"Awaiting signoff on {key}");
+            if (pendingTickets.Count > MaxPendingShown)
+                blockers.Add($"...and {pendingTickets.Count - MaxPendingShown} more");
+        }
+
+        if (requireManual)
+        {
+            var manualApproved = await _db.PromotionApprovals
+                .AnyAsync(a => a.CandidateId == candidate.Id && a.Decision == PromotionDecision.Approved, ct);
+            if (!manualApproved)
+                blockers.Add("Manual release-manager approval required");
+        }
+
+        return new GateResult(blockers.Count == 0, blockers);
     }
 
     /// <summary>
@@ -698,6 +908,32 @@ public class PromotionService
     {
         try
         {
+            // Load references and participants from the source deploy event(s) so webhook
+            // consumers don't need a separate API call to understand what changed.
+            // Bundle = own source event + all inherited superseded predecessors.
+            var bundleEventIds = new HashSet<Guid>(candidate.SupersededSourceEventIds)
+            {
+                candidate.SourceDeployEventId,
+            };
+
+            var sourceEvents = await _db.DeployEvents.AsNoTracking()
+                .Where(e => bundleEventIds.Contains(e.Id))
+                .Select(e => new { e.Id, e.ReferencesJson, e.ParticipantsJson })
+                .ToListAsync(ct);
+
+            var references = sourceEvents
+                .SelectMany(e =>
+                    JsonSerializer.Deserialize<List<ReferenceDto>>(e.ReferencesJson, JsonOptions)
+                    ?? new List<ReferenceDto>())
+                .DistinctBy(r => r.Key ?? r.Url)
+                .ToList();
+
+            var sourceParticipants = sourceEvents
+                .SelectMany(e =>
+                    JsonSerializer.Deserialize<List<ParticipantDto>>(e.ParticipantsJson, JsonOptions)
+                    ?? new List<ParticipantDto>())
+                .ToList();
+
             var payload = new
             {
                 candidateId = candidate.Id,
@@ -707,10 +943,13 @@ public class PromotionService
                 candidate.TargetEnv,
                 candidate.Version,
                 candidate.SourceDeployEventId,
-                candidate.SourceDeployerEmail,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
+                // Promotion-level participants (manually assigned QA/reviewer etc.)
                 participants = candidate.Participants,
+                // Source deploy event data — references carry their own participants
+                references,
+                sourceParticipants,
                 change,
             };
 
@@ -749,7 +988,7 @@ public class PromotionService
             .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == _currentUser.Email, ct);
         if (already) return false;
 
-        return await IsInApproverGroupAsync(snapshot.ApproverGroup!, ct);
+        return await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct);
     }
 
     /// <summary>
@@ -771,12 +1010,26 @@ public class PromotionService
             .ToListAsync(ct);
         var decidedSet = alreadyDecided.ToHashSet();
 
-        // Batch-load source deploy event participants for role-based exclusion. One query
-        // instead of N — important when the UI is rendering a long list of candidates.
-        var eventIds = list.Select(c => c.SourceDeployEventId).Distinct().ToList();
-        var sourceParticipantsByEvent = await _db.DeployEvents.AsNoTracking()
-            .Where(e => eventIds.Contains(e.Id))
-            .ToDictionaryAsync(e => e.Id, e => e.ParticipantsJson, ct);
+        // Batch-load source deploy event participants + references for role-based exclusion.
+        // One query instead of N — important when the UI is rendering a long list of candidates.
+        // References are needed for the reference-level participant lookup (two-level model).
+        // Bundle = each candidate's own source event + any superseded predecessors so an override
+        // (or excluded participant) on an inherited event still trips the gate.
+        var bundleEventIds = list
+            .SelectMany(c => new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds))
+            .Distinct()
+            .ToList();
+        var sourceJsonByEvent = await _db.DeployEvents.AsNoTracking()
+            .Where(e => bundleEventIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson })
+            .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson), ct);
+
+        var overridesRows = await _db.ReferenceParticipantOverrides.AsNoTracking()
+            .Where(o => bundleEventIds.Contains(o.DeployEventId))
+            .ToListAsync(ct);
+        var overridesByEvent = overridesRows
+            .GroupBy(o => o.DeployEventId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
 
         // Cache group membership lookups: one call per unique approver group.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -790,17 +1043,25 @@ public class PromotionService
 
             if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
             {
-                var json = sourceParticipantsByEvent.GetValueOrDefault(c.SourceDeployEventId);
-                if (EmailMatchesExcludedRole(json, snapshot.ExcludeRole, _currentUser.Email))
+                var bundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
+                var excluded = false;
+                foreach (var eid in bundle)
                 {
-                    result[c.Id] = false; continue;
+                    var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(eid);
+                    var evOverrides = overridesByEvent.GetValueOrDefault(eid, Array.Empty<ReferenceParticipantOverride>());
+                    if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
+                            partsJson, refsJson, evOverrides, snapshot.ExcludeRole, _currentUser.Email))
+                    {
+                        excluded = true; break;
+                    }
                 }
+                if (excluded) { result[c.Id] = false; continue; }
             }
 
             var group = snapshot.ApproverGroup!;
             if (!groupMembership.TryGetValue(group, out var member))
             {
-                member = await IsInApproverGroupAsync(group, ct);
+                member = await _auth.IsInApproverGroupAsync(group, ct);
                 groupMembership[group] = member;
             }
             result[c.Id] = member;
@@ -845,50 +1106,19 @@ public class PromotionService
                 $"You cannot approve — the '{snapshot.ExcludeRole}' role is excluded from approving this promotion.");
         }
 
-        if (!await IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
+        if (!await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
             throw new UnauthorizedAccessException("You are not in the approver group for this promotion");
     }
 
     /// <summary>
-    /// True when the policy specifies an excluded role and the current user appears on the source
-    /// deploy event with that role (after normalisation). Returns false when no exclusion is
-    /// configured, the source event is missing, or the current user is not in the list.
+    /// Thin wrapper over <see cref="PromotionApprovalAuthorizer.IsEmailExcludedByRoleAsync"/>: the
+    /// candidate already knows the source event id and we want the current user's email — pull
+    /// both out and delegate. Kept so existing call-sites read naturally.
     /// </summary>
-    private async Task<bool> IsCurrentUserExcludedByRoleAsync(
+    private Task<bool> IsCurrentUserExcludedByRoleAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(snapshot.ExcludeRole)) return false;
-        if (string.IsNullOrEmpty(_currentUser.Email)) return false;
-
-        var participantsJson = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Id == candidate.SourceDeployEventId)
-            .Select(e => e.ParticipantsJson)
-            .FirstOrDefaultAsync(ct);
-
-        return EmailMatchesExcludedRole(participantsJson, snapshot.ExcludeRole, _currentUser.Email);
-    }
-
-    private static bool EmailMatchesExcludedRole(string? participantsJson, string excludedRole, string email)
-    {
-        if (string.IsNullOrWhiteSpace(participantsJson)) return false;
-        try
-        {
-            var canonical = RoleNormalizer.Normalize(excludedRole);
-            if (canonical.Length == 0) return false;
-
-            var parts = JsonSerializer.Deserialize<List<ParticipantDto>>(participantsJson, JsonOptions);
-            if (parts is null) return false;
-
-            return parts.Any(p =>
-                RoleNormalizer.Normalize(p.Role) == canonical &&
-                !string.IsNullOrEmpty(p.Email) &&
-                string.Equals(p.Email, email, StringComparison.OrdinalIgnoreCase));
-        }
-        catch
-        {
-            return false;
-        }
-    }
+        => _auth.IsEmailExcludedByRoleAsync(
+            snapshot, candidate.SourceDeployEventId, candidate.SupersededSourceEventIds, _currentUser.Email, ct);
 
     private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)
     {
@@ -896,40 +1126,6 @@ public class PromotionService
             .AnyAsync(a => a.CandidateId == candidateId && a.ApproverEmail == email, ct);
         if (dup)
             throw new InvalidOperationException("You have already made a decision on this promotion");
-    }
-
-    /// <summary>
-    /// Checks whether the current user is in <paramref name="approverGroup"/>. Matches against
-    /// (a) their role claims (for policies using a role string like "InfraPortal.Approver"),
-    /// (b) their group claims (for policies using an Entra group object ID), and
-    /// (c) live Graph membership (fallback, via <see cref="IIdentityService"/>).
-    /// </summary>
-    private async Task<bool> IsInApproverGroupAsync(string approverGroup, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(approverGroup)) return false;
-
-        // Admin always qualifies — avoids bootstrapping hell when groups aren't wired up yet.
-        if (_currentUser.IsAdmin) return true;
-
-        // QA role qualifies for all promotions — lightweight alternative to AD groups for small teams.
-        if (_currentUser.IsQA) return true;
-
-        if (_currentUser.Roles.Contains(approverGroup, StringComparer.OrdinalIgnoreCase)) return true;
-        if (_currentUser.IsInGroup(approverGroup)) return true;
-
-        // Fall back to Graph. A stub/local identity service returns an empty list, which is fine.
-        try
-        {
-            var members = await _identity.GetGroupMembers(approverGroup, ct);
-            return members.Any(m =>
-                string.Equals(m.Email, _currentUser.Email, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m.Id, _currentUser.Id, StringComparison.OrdinalIgnoreCase));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Group membership lookup failed for {Group}", approverGroup);
-            return false;
-        }
     }
 }
 
@@ -943,3 +1139,11 @@ public record PromotionQuery(
     string? Service = null,
     string? TargetEnv = null,
     int Limit = 200);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.EvaluateGateAsync"/>: whether the gate is currently
+/// satisfied for a Pending candidate, plus a list of human-readable blockers when it isn't.
+/// Blockers are intended for surfacing in error responses or the UI's "what's missing" panel —
+/// not a structured machine-consumable shape.
+/// </summary>
+public record GateResult(bool Satisfied, IReadOnlyList<string> Blockers);

@@ -96,6 +96,39 @@ Rate limiting is applied per key.
 | `key` | string | no | Unique identifier in that system (commit SHA, PR number, ticket key). |
 | `revision` | string | no | Git revision / commit SHA. Can be omitted if not available. |
 | `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. |
+| `participants` | array | no | Reference-scoped participants. Same shape as the top-level `participants[]` (see below) — a PR has its author/reviewer, a ticket has its QA/assignee, a commit has its author. Optional and may be omitted entirely on legacy senders. |
+
+#### `references[].participants[]` — reference-scoped participants
+
+A reference may carry its own `participants[]` array. Same shape as the event-level participants block — `role` is required, `displayName` and `email` are optional — but scoped to the specific PR/ticket/commit instead of the deploy as a whole. This is the natural place to put a ticket's QA, a PR's reviewer, or a commit's author.
+
+```jsonc
+"references": [
+  {
+    "type": "work-item",
+    "provider": "jira",
+    "key": "PLT-1234",
+    "title": "Add idempotency key to checkout endpoint",
+    "participants": [
+      { "role": "qa",       "displayName": "Eve QA",     "email": "eve.qa@acmetrix.com" },
+      { "role": "assignee", "displayName": "Dan Dev",    "email": "dan.dev@acmetrix.com" }
+    ]
+  },
+  {
+    "type": "pull-request",
+    "provider": "github",
+    "key": "312",
+    "participants": [
+      { "role": "author",   "displayName": "Jan Kowalski", "email": "jan@acmetrix.com" },
+      { "role": "reviewer", "displayName": "Anna Kowalska", "email": "anna@acmetrix.com" }
+    ]
+  }
+]
+```
+
+The event-level `participants[]` block is still accepted and is the right place for genuinely event-level roles like `triggered-by` (the deployer / pipeline trigger). When both layers are present and both carry a participant for the same role, **reference-level wins** for read-time lookups — a participant attached directly to a PR/ticket is a more specific signal than the event-level fallback.
+
+The excluded-role rule (`excludeRole` on a promotion policy) checks both layers: the user is blocked from approving if they appear with the excluded role at *either* level.
 
 Common `type` values:
 
@@ -305,6 +338,48 @@ Returned when the API key is scoped to specific products and the `product` in th
 }
 ```
 
+### Two-level participants (reference-scoped)
+
+Same deployment as the GitHub Actions example, but with the QA tagged on the ticket and the reviewer tagged on the PR — instead of mixed in to the top-level `participants[]`. The deployer (`triggered-by`) stays at event level because it's not scoped to any one reference.
+
+```json
+{
+  "product": "ticketing-platform",
+  "service": "order-api",
+  "environment": "production",
+  "version": "2.14.0",
+  "source": "github-actions",
+  "deployedAt": "2026-04-16T10:30:00Z",
+  "status": "succeeded",
+  "references": [
+    {
+      "type": "pull-request",
+      "url": "https://github.com/Acmetrix/order-api/pull/312",
+      "provider": "github",
+      "key": "312",
+      "participants": [
+        { "role": "author",   "displayName": "Jan Kowalski",  "email": "jan@acmetrix.com" },
+        { "role": "reviewer", "displayName": "Anna Kowalska", "email": "anna@acmetrix.com" }
+      ]
+    },
+    {
+      "type": "work-item",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
+      "provider": "jira",
+      "key": "PLT-1234",
+      "title": "Add idempotency key to checkout endpoint",
+      "participants": [
+        { "role": "qa",       "displayName": "Piotr Nowak",    "email": "piotr@acmetrix.com" },
+        { "role": "assignee", "displayName": "Marta Wisniewska", "email": "marta@acmetrix.com" }
+      ]
+    }
+  ],
+  "participants": [
+    { "role": "triggered-by", "displayName": "Pipeline Bot", "email": "ci@acmetrix.com" }
+  ]
+}
+```
+
 ### Rollback
 
 ```json
@@ -329,6 +404,54 @@ Returned when the API key is scoped to specific products and the `product` in th
 When a `succeeded` deployment event is ingested, the system automatically checks for matching promotion topology edges. If the deployment's environment is a source in the promotion graph (e.g. `development` or `staging`), a **promotion candidate** is created for the next environment in the chain.
 
 The `triggered-by` participant is used as the deployer identity for the "exclude deployer" approval rule, which prevents the person who triggered the deploy from also approving the promotion to the next environment.
+
+## Operator overrides (assigning a participant from the UI)
+
+Routing is editable separately from ingest. Operators can assign, reassign, or clear a
+reference-scoped participant on a deploy event without mutating the source `referencesJson`.
+Re-ingesting the same event does **not** clobber an override — overrides live in their own
+`reference_participant_overrides` table, keyed by `(deployEventId, referenceKey, role)`.
+
+```
+PATCH /api/deployments/{eventId}/references/{referenceKey}/participants
+Content-Type: application/json
+
+{
+  "role": "qa",
+  "assignee": { "email": "qa-new@example.com", "displayName": "QA New" }
+}
+```
+
+- Returns the merged participant list for the target reference (override > reference-level
+  > event-level), plus a `tombstone` flag and the `override` participant (when assigned).
+- `assignee: null` upserts a **tombstone** row, which suppresses the original Jira-supplied
+  participant for that role on the read path. This is how "remove this Jira person" is
+  expressed — without tombstones, an empty payload would just be ignored.
+- The `role` is canonicalised on write (lower-kebab-case via `RoleNormalizer`) so the
+  unique `(eventId, referenceKey, role)` index doesn't fragment on casing differences.
+- The `referenceKey` must already exist on the event's `referencesJson` — this is the
+  **only path** to assign a routing override. Events that carry only a flat
+  event-level `participants[]` (no `references[]`) cannot be overridden via this endpoint;
+  callers will receive `404` because there's no reference to scope the assignment to.
+  Backfilling a `references[]` entry on those events (via re-ingest) is the migration path.
+
+### Read path
+
+`GET` endpoints under `/api/deployments` and the promotion read endpoints
+(`/api/promotions`, `/api/promotions/{id}`) merge overrides into each
+`reference.participants[]` so the UI sees the effective state without the merge logic.
+Override participants surface with `isOverride: true` and `assignedBy: "<actor display name>"`.
+Tombstones are filtered out — the slot reads back as empty.
+
+### Auth + audit
+
+The endpoint is gated by the same `CanApprove` policy as the rest of `/api/deployments`
+(any authenticated user). Each successful PATCH writes an audit row:
+- `deployment.participant.assigned` — when an assignee was set.
+- `deployment.participant.cleared` — when a tombstone was upserted.
+
+Both rows attach the `deployEventId`, `referenceKey`, canonical `role`, the assignee
+(or null), and the actor email.
 
 ## cURL example
 

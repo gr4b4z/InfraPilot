@@ -290,6 +290,28 @@ class ApiClient {
     }>(`/promotions/users/search?q=${encodeURIComponent(q)}`);
   }
 
+  /**
+   * Operator routing override on a deploy event's reference. Pass `assignee: null` to
+   * tombstone the slot (suppresses the Jira-supplied participant on the read path so the
+   * UI sees an empty slot). The PATCH returns the merged participant list for the target
+   * reference so callers can re-render without a follow-up GET.
+   */
+  assignReferenceParticipant(
+    eventId: string,
+    referenceKey: string,
+    role: string,
+    assignee: { email: string; displayName: string } | null,
+  ) {
+    return this.request<{
+      participants: PromotionSourceEventParticipant[];
+      tombstone: boolean;
+      override: PromotionSourceEventParticipant | null;
+    }>(
+      `/deployments/${eventId}/references/${encodeURIComponent(referenceKey)}/participants`,
+      { method: 'PATCH', body: JSON.stringify({ role, assignee }) },
+    );
+  }
+
   upsertPromotionParticipant(
     id: string,
     body: {
@@ -352,6 +374,70 @@ class ApiClient {
       `/promotions/bulk/approve`,
       { method: 'POST', body: JSON.stringify({ ids, comment }) },
     );
+  }
+
+  // ── Work-item (ticket) approvals ───────────────────────────────────────
+
+  // Authority + decision history for a single (key, product, env). Drives the
+  // TicketsCard row state on the promotion detail page. Returns canApprove +
+  // blockedReason mirroring the throwing decision path so the UI surfaces the
+  // same wording the user would see on a failed POST.
+  getWorkItemContext(key: string, product: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, targetEnv });
+    return this.request<WorkItemContext>(
+      `/work-items/${encodeURIComponent(key)}?${params.toString()}`,
+    );
+  }
+
+  approveWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+    return this.request<WorkItemApproval>(
+      `/work-items/${encodeURIComponent(key)}/approvals`,
+      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+    );
+  }
+
+  rejectWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+    return this.request<WorkItemApproval>(
+      `/work-items/${encodeURIComponent(key)}/rejections`,
+      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+    );
+  }
+
+  // The current user's pending tickets across all (product, targetEnv) pairs.
+  // Powers the /me/tickets queue page.
+  //
+  // Optional `role` and `assignee` narrow the list (display only — server-side authorisation
+  // is unchanged). The matrix:
+  //   - both null            → full authorized list (no narrowing).
+  //   - role only            → at least one participant in that role.
+  //   - assignee=email       → that email holds a role in the assignee set (or the role-filter
+  //                            when set).
+  //   - assignee=unassigned  → no participant in the effective role set.
+  // Response also carries the (email, role) → count rollup and the canonical role set so the
+  // queue page can populate its dropdowns without a second call.
+  getMyPendingWorkItems(args?: {
+    role?: string;
+    assignee?: string;
+    /**
+     * Status mode — "pending" (default, the inbox awaiting decision) or "decided"
+     * (combined approved + rejected history). On "decided" the role/assignee filters are
+     * ignored; pass `since` to narrow the time window (server defaults to last 24h).
+     */
+    status?: 'pending' | 'decided';
+    /** ISO timestamp lower bound on the decision time. Only used when status === 'decided'. */
+    since?: string;
+  }) {
+    const params = new URLSearchParams();
+    const role = args?.role?.trim();
+    const assignee = args?.assignee?.trim();
+    const status = args?.status;
+    if (role) params.set('role', role);
+    if (assignee) params.set('assignee', assignee);
+    if (status && status !== 'pending') params.set('status', status);
+    if (args?.since) params.set('since', args.since);
+    const qs = params.toString();
+    const suffix = qs.length > 0 ? `?${qs}` : '';
+    return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
   }
 
   // ── Promotion admin ────────────────────────────────────────────────────
@@ -497,6 +583,9 @@ export type PromotionStatus =
   | 'Superseded'
   | 'Rejected';
 
+/** Gate mode read from the candidate's resolved policy snapshot. */
+export type PromotionGate = 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
+
 export interface PromotionCandidate {
   id: string;
   product: string;
@@ -509,8 +598,6 @@ export interface PromotionCandidate {
   /** Count of refs/participants inherited from superseded predecessors. 0 when the candidate didn't displace anything. */
   inheritedCount: number;
   status: PromotionStatus;
-  sourceDeployerName: string | null;
-  sourceDeployerEmail: string | null;
   externalRunUrl: string | null;
   createdAt: string;
   approvedAt: string | null;
@@ -520,6 +607,89 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /**
+   * Gate mode from the candidate's resolved policy snapshot. Defaults to
+   * PromotionOnly for old candidates / missing snapshots — matches the API.
+   */
+  gate?: PromotionGate;
+}
+
+export interface WorkItemApproval {
+  id: string;
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  approverEmail: string;
+  approverName: string;
+  decision: 'Approved' | 'Rejected';
+  comment: string | null;
+  createdAt: string;
+}
+
+export interface WorkItemContext {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  pendingCandidateId: string | null;
+  canApprove: boolean;
+  blockedReason: string | null;
+  approvals: WorkItemApproval[];
+}
+
+/** One row from `GET /api/work-items/me/pending`. */
+export interface PendingTicket {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  provider: string | null;
+  url: string | null;
+  title: string | null;
+  candidateId: string;
+  service: string;
+  version: string;
+  sourceEnv: string;
+  blockingPromotions: number;
+  /** Source deploy event id — used to PATCH reference participants. */
+  sourceDeployEventId: string;
+  /** Participants on this specific work-item reference (overrides applied). */
+  participants: PromotionSourceEventParticipant[];
+  /**
+   * Status of the candidate this row represents. "Pending" on the inbox; for decision-history
+   * views the candidate may have moved on (Approved / Deploying / Deployed / Rejected /
+   * Superseded). "Unknown" when no candidate could be linked to the row.
+   */
+  candidateStatus?: string;
+  /**
+   * The decision recorded on this ticket — null on the pending inbox; populated on the
+   * "decided" view. Decisions can come from any approver in the candidate's authorised group.
+   */
+  decision?: 'Approved' | 'Rejected' | null;
+  decidedAt?: string | null;
+  decidedByEmail?: string | null;
+  decidedByName?: string | null;
+  decisionComment?: string | null;
+}
+
+/**
+ * One row of the (email, role) assignee summary returned alongside the queue. Counts come from
+ * the user's authorized list <i>before</i> the role/person filter is applied, so the queue page
+ * can render every choice the user could narrow to. Aggregated server-side per (email, role)
+ * pair — a single person on multiple roles produces multiple rows.
+ */
+export interface PendingAssignee {
+  email: string;
+  displayName: string;
+  role: string;
+  count: number;
+}
+
+/** Full response shape for `GET /api/work-items/me/pending`. */
+export interface MyPendingWorkItemsResponse {
+  tickets: PendingTicket[];
+  /** (email, role) rollup of the unfiltered authorized list. Sorted by count desc, displayName asc. */
+  assignees: PendingAssignee[];
+  /** Canonical assignee-role set from PromotionAssigneeRoleSettings — feeds the role dropdown. */
+  roles: string[];
 }
 
 export interface PromotionParticipant {
@@ -545,16 +715,33 @@ export interface PromotionSourceEventReference {
   key?: string | null;
   revision?: string | null;
   title?: string | null;
+  /**
+   * Reference-scoped participants. Optional and may be absent on legacy payloads —
+   * always treat as `participants ?? []`. Same shape as event-level participants.
+   * The reference-level layer is the more specific signal for excluded-role checks
+   * (a QA on a ticket, an author on a PR, etc.).
+   */
+  participants?: PromotionSourceEventParticipant[];
 }
 
 export interface PromotionSourceEventParticipant {
   role: string;
   displayName?: string | null;
   email?: string | null;
+  /**
+   * True when this participant came from an operator-supplied override that displaced
+   * (or filled in) the original Jira/event payload. Server-owned: clients should treat
+   * this as a read-only tag for rendering an "(overridden by …)" hint.
+   */
+  isOverride?: boolean;
+  /** Display name of the user who made the override. Null on non-overridden entries. */
+  assignedBy?: string | null;
 }
 
 export interface PromotionInheritedReference {
   reference: PromotionSourceEventReference;
+  /** Source deploy event id this reference came from (needed to PATCH overrides). */
+  fromEventId?: string;
   fromVersion: string;
   fromDeployedAt: string;
 }
@@ -597,9 +784,13 @@ export interface PromotionPolicy {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
+  gate: 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
   excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
+  requireAllTicketsApproved: boolean;
+  autoApproveOnAllTicketsApproved: boolean;
+  autoApproveWhenNoTickets: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -611,9 +802,13 @@ export interface UpsertPromotionPolicyPayload {
   approverGroup: string | null;
   strategy: 'Any' | 'NOfM';
   minApprovers: number;
+  gate: 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
   excludeRole: string | null;
   timeoutHours: number;
   escalationGroup: string | null;
+  requireAllTicketsApproved: boolean;
+  autoApproveOnAllTicketsApproved: boolean;
+  autoApproveWhenNoTickets: boolean;
 }
 
 export interface FeatureFlag {

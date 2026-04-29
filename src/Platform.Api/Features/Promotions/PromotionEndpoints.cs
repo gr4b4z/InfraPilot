@@ -92,13 +92,24 @@ public static class PromotionEndpoints
             var capability = await svc.CanUserApproveManyAsync(candidates);
             var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
 
+            // Operator overrides for everything in the source-event window — applied per
+            // event when projecting the list cards' references.
+            var listOverrides = await db.ReferenceParticipantOverrides.AsNoTracking()
+                .Where(o => eventIds.Contains(o.DeployEventId))
+                .ToListAsync();
+            var listOverridesByEvent = listOverrides
+                .GroupBy(o => o.DeployEventId)
+                .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
+
             return Results.Ok(new
             {
                 candidates = candidates.Select(c =>
                 {
                     var source = eventData.GetValueOrDefault(c.SourceDeployEventId);
                     var sourceParticipants = ExtractSourceParticipants(source?.ParticipantsJson, source?.EnrichmentJson);
-                    var sourceReferences = ExtractSourceReferences(source?.ReferencesJson);
+                    var rawSourceReferences = ExtractSourceReferences(source?.ReferencesJson);
+                    var sourceOverrides = listOverridesByEvent.GetValueOrDefault(c.SourceDeployEventId, Array.Empty<ReferenceParticipantOverride>());
+                    var sourceReferences = ApplyOverridesToReferenceList(rawSourceReferences, sourceOverrides);
                     targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
                     return ToDto(c, capability.GetValueOrDefault(c.Id), sourceParticipants, sourceReferences, targetCurrent);
                 }),
@@ -138,13 +149,25 @@ public static class PromotionEndpoints
                     .Where(e => inheritedIds.Contains(e.Id))
                     .ToListAsync();
 
+            // Operator overrides for source + inherited events — single batch query, then
+            // applied per-event when projecting references for the UI. This is the read
+            // surface where TicketRow renders the "+ Assign" / "Reassign" / "Clear" controls.
+            var allEventIds = new[] { c.SourceDeployEventId }.Concat(inheritedIds).ToList();
+            var allOverrides = await db.ReferenceParticipantOverrides.AsNoTracking()
+                .Where(o => allEventIds.Contains(o.DeployEventId))
+                .ToListAsync();
+            var overridesByEvent = allOverrides
+                .GroupBy(o => o.DeployEventId)
+                .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
+
             var inheritedRefs = new List<object>();
             var inheritedParticipants = new List<object>();
             foreach (var ev in inheritedEvents)
             {
-                foreach (var r in ExtractSourceReferences(ev.ReferencesJson))
+                var evOverrides = overridesByEvent.GetValueOrDefault(ev.Id, Array.Empty<ReferenceParticipantOverride>());
+                foreach (var r in ApplyOverridesToReferenceList(ExtractSourceReferences(ev.ReferencesJson), evOverrides))
                 {
-                    inheritedRefs.Add(new { reference = r, fromVersion = ev.Version, fromDeployedAt = ev.DeployedAt });
+                    inheritedRefs.Add(new { reference = r, fromEventId = ev.Id, fromVersion = ev.Version, fromDeployedAt = ev.DeployedAt });
                 }
                 foreach (var p in ExtractSourceParticipants(ev.ParticipantsJson, ev.EnrichmentJson))
                 {
@@ -154,6 +177,7 @@ public static class PromotionEndpoints
 
             var comments = await svc.GetCommentsAsync(id);
 
+            var sourceOverrides = overridesByEvent.GetValueOrDefault(c.SourceDeployEventId, Array.Empty<ReferenceParticipantOverride>());
             return Results.Ok(new
             {
                 candidate = ToDto(c, canApprove, targetCurrentVersion: targetCurrent),
@@ -168,7 +192,7 @@ public static class PromotionEndpoints
                     decision = a.Decision.ToString(),
                     a.CreatedAt,
                 }),
-                sourceEvent = sourceEvent is null ? null : ToSourceEventDto(sourceEvent),
+                sourceEvent = sourceEvent is null ? null : ToSourceEventDto(sourceEvent, sourceOverrides),
                 comments = comments.Select(ToCommentDto),
             });
         });
@@ -376,9 +400,10 @@ public static class PromotionEndpoints
         PropertyNameCaseInsensitive = true,
     };
 
-    private static object ToSourceEventDto(DeployEvent e)
+    private static object ToSourceEventDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides = null)
     {
-        var references = Deserialize<List<ReferenceDto>>(e.ReferencesJson) ?? [];
+        var rawReferences = Deserialize<List<ReferenceDto>>(e.ReferencesJson) ?? [];
+        var references = ApplyOverridesToReferenceList(rawReferences, overrides);
         var participants = Deserialize<List<ParticipantDto>>(e.ParticipantsJson) ?? [];
         var enrichment = string.IsNullOrEmpty(e.EnrichmentJson)
             ? null
@@ -393,6 +418,35 @@ public static class PromotionEndpoints
             participants,
             enrichment,
         };
+    }
+
+    /// <summary>
+    /// Applies operator overrides to a list of references, replacing each reference's
+    /// participant list with the merged one. References without overrides pass through.
+    /// Tombstones are filtered out so the UI sees an empty slot.
+    /// </summary>
+    private static List<ReferenceDto> ApplyOverridesToReferenceList(
+        IReadOnlyList<ReferenceDto> references,
+        IReadOnlyList<ReferenceParticipantOverride>? overrides)
+    {
+        if (overrides is null || overrides.Count == 0) return references.ToList();
+        var byKey = overrides
+            .Where(o => !string.IsNullOrEmpty(o.ReferenceKey))
+            .GroupBy(o => o.ReferenceKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var result = new List<ReferenceDto>(references.Count);
+        foreach (var r in references)
+        {
+            if (string.IsNullOrEmpty(r.Key) || !byKey.TryGetValue(r.Key, out var matches))
+            {
+                result.Add(r);
+                continue;
+            }
+            var merged = Platform.Api.Features.Deployments.ReferenceParticipantOverrideService.MergeForReference(r, matches);
+            result.Add(r with { Participants = merged });
+        }
+        return result;
     }
 
     private static T? Deserialize<T>(string? json)
@@ -418,8 +472,6 @@ public static class PromotionEndpoints
         // would replace). Null when the target has no prior deploy for this service.
         targetCurrentVersion,
         status = c.Status.ToString(),
-        sourceDeployerName = c.SourceDeployerName,
-        sourceDeployerEmail = c.SourceDeployerEmail,
         externalRunUrl = c.ExternalRunUrl,
         createdAt = c.CreatedAt,
         approvedAt = c.ApprovedAt,
@@ -432,7 +484,31 @@ public static class PromotionEndpoints
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
+        // Gate mode from the candidate's resolved policy snapshot. Surfaces "PromotionOnly"
+        // (legacy), "TicketsOnly", or "TicketsAndManual". Defaults to PromotionOnly when the
+        // candidate has no snapshot or the snapshot can't be deserialised — matches the
+        // ResolvedPolicySnapshot.Gate default and keeps the legacy flow intact for old data.
+        gate = ReadGate(c).ToString(),
     };
+
+    // Best-effort read of the candidate's gate mode from its policy snapshot. Returns the
+    // PromotionOnly default when the snapshot is missing or malformed; the candidate's actual
+    // approval flow ultimately depends on the snapshot read deeper in the service layer, so
+    // this is purely a UI hint and a hard read failure here doesn't break anything.
+    private static PromotionGate ReadGate(PromotionCandidate c)
+    {
+        if (string.IsNullOrEmpty(c.ResolvedPolicyJson)) return PromotionGate.PromotionOnly;
+        try
+        {
+            var snap = JsonSerializer.Deserialize<ResolvedPolicySnapshot>(
+                c.ResolvedPolicyJson, SourceEventJsonOptions);
+            return snap?.Gate ?? PromotionGate.PromotionOnly;
+        }
+        catch
+        {
+            return PromotionGate.PromotionOnly;
+        }
+    }
 
     // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)
     // triple across the candidate set. Single query; returns a dictionary keyed by the triple.
