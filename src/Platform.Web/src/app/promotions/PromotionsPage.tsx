@@ -610,33 +610,53 @@ function CandidateCard({
           </div>
         )}
         {(() => {
-          // Merge deploy-event people + promotion-level people; promotion roles win by role.
+          // Merge deploy-event people + reference-scoped people (per ticket / PR / commit) +
+          // promotion-level people. Promotion-level wins by role over the event-level row,
+          // but reference-level chips are always shown — same role on a different ticket
+          // is still distinct (and is what the operator just routed).
           const promotionRoles = new Set(
             (candidate.participants ?? []).map((p) => p.role.toLowerCase()),
           );
-          const merged = [
-            ...(candidate.sourceEventParticipants ?? []).filter(
-              (p) => !promotionRoles.has(p.role.toLowerCase()),
-            ),
-            ...(candidate.participants ?? []),
+          type Chip = {
+            role: string;
+            displayName?: string | null;
+            email?: string | null;
+            via?: string;
+          };
+          const chips: Chip[] = [
+            ...(candidate.sourceEventParticipants ?? [])
+              .filter((p) => !promotionRoles.has(p.role.toLowerCase()))
+              .map<Chip>((p) => ({ role: p.role, displayName: p.displayName, email: p.email })),
           ];
-          if (merged.length === 0) return null;
+          for (const ref of candidate.sourceEventReferences ?? []) {
+            const refLabel = ref.key ?? ref.type ?? 'ref';
+            for (const p of ref.participants ?? []) {
+              chips.push({ role: p.role, displayName: p.displayName, email: p.email, via: refLabel });
+            }
+          }
+          for (const p of candidate.participants ?? []) {
+            chips.push({ role: p.role, displayName: p.displayName, email: p.email });
+          }
+          if (chips.length === 0) return null;
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
-              {merged.map((p, i) => (
+              {chips.map((p, i) => (
                 <span
-                  key={`${p.role}-${i}`}
+                  key={`${p.role}-${p.via ?? ''}-${i}`}
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
                   style={{
                     backgroundColor: 'var(--bg-secondary)',
                     color: 'var(--text-secondary)',
                   }}
-                  title={p.email ?? undefined}
+                  title={p.via ? `via ${p.via}${p.email ? ` · ${p.email}` : ''}` : (p.email ?? undefined)}
                 >
                   <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
                   <span className="font-medium">
                     {p.displayName ?? p.email ?? '—'}
                   </span>
+                  {p.via && (
+                    <span style={{ color: 'var(--text-muted)' }}>· {p.via}</span>
+                  )}
                 </span>
               ))}
             </div>
