@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PendingTicket } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
 import {
   Ticket,
   CheckCircle,
@@ -11,6 +12,12 @@ import {
   Inbox,
   Clock,
 } from 'lucide-react';
+import {
+  AssigneeFilter,
+  loadAssigneeFilter,
+  saveAssigneeFilter,
+  type AssigneeFilterValue,
+} from './AssigneeFilter';
 
 /**
  * "My queue" page — tickets awaiting the current user's signoff. Reads
@@ -22,16 +29,24 @@ export function MyQueuePage() {
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Hydrate the filter from localStorage so the user's pick survives reloads. Only happens
+  // on mount — subsequent updates flow through the onChange callback below.
+  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilterValue>(() => loadAssigneeFilter());
+  // The auth store already carries the current user's email — same source PromotionDetailPage
+  // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
+  // server when the user picks "Assigned to me".
+  const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
 
   // Defined as an async function so the initial fetch from `useEffect` can be a
   // microtask (avoids the eslint react-hooks/set-state-in-effect rule and the
   // associated cascading-render warning) while still letting decision handlers
   // call `fetchData()` directly to refresh after Approve / Reject.
-  const fetchData = async () => {
+  const fetchData = async (filter: AssigneeFilterValue) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.getMyPendingWorkItems();
+      const apiArg = toApiArg(filter, currentUserEmail);
+      const res = await api.getMyPendingWorkItems(apiArg);
       setTickets(res.tickets ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tickets');
@@ -41,8 +56,14 @@ export function MyQueuePage() {
   };
 
   useEffect(() => {
-    void fetchData();
-  }, []);
+    void fetchData(assigneeFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assigneeFilter, currentUserEmail]);
+
+  const handleFilterChange = (next: AssigneeFilterValue) => {
+    saveAssigneeFilter(next);
+    setAssigneeFilter(next);
+  };
 
   return (
     <div className="space-y-6">
@@ -56,6 +77,10 @@ export function MyQueuePage() {
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
           Work-items awaiting your signoff across all products and environments.
         </p>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <AssigneeFilter value={assigneeFilter} onChange={handleFilterChange} />
       </div>
 
       {error && (
@@ -93,21 +118,73 @@ export function MyQueuePage() {
             <Inbox size={24} />
           </div>
           <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-            No tickets awaiting your signoff.
+            {emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-            New tickets will appear here as promotions roll through your environments.
+            {emptyStateBody(assigneeFilter)}
           </p>
         </div>
       ) : (
         <div className="space-y-2">
           {tickets.map((t) => (
-            <TicketRow key={`${t.workItemKey}-${t.candidateId}`} ticket={t} onChanged={fetchData} />
+            <TicketRow
+              key={`${t.workItemKey}-${t.candidateId}`}
+              ticket={t}
+              onChanged={() => fetchData(assigneeFilter)}
+            />
           ))}
         </div>
       )}
     </div>
   );
+}
+
+function toApiArg(
+  filter: AssigneeFilterValue,
+  currentUserEmail: string,
+): { assignee?: string } | undefined {
+  switch (filter.mode) {
+    case 'all':
+      return undefined;
+    case 'me':
+      // The endpoint always knows who the user is, but it treats `assignee` as the slot
+      // we're filtering on — so even "Me" needs the email so the server matches it as a
+      // person rather than as the caller. If the auth store hasn't populated the email
+      // yet (rare race during initial mount), fall back to "all" rather than narrow to
+      // an empty string and surface no results.
+      if (!currentUserEmail) return undefined;
+      return { assignee: currentUserEmail };
+    case 'unassigned':
+      return { assignee: 'unassigned' };
+    case 'person':
+      return { assignee: filter.email };
+  }
+}
+
+function emptyStateTitle(filter: AssigneeFilterValue): string {
+  switch (filter.mode) {
+    case 'all':
+      return 'No tickets awaiting your signoff.';
+    case 'me':
+      return 'Nothing assigned to you right now.';
+    case 'unassigned':
+      return 'No unassigned tickets in your authorized list.';
+    case 'person':
+      return `No tickets assigned to ${filter.displayName}.`;
+  }
+}
+
+function emptyStateBody(filter: AssigneeFilterValue): string {
+  switch (filter.mode) {
+    case 'all':
+      return 'New tickets will appear here as promotions roll through your environments.';
+    case 'me':
+      return 'Switch to "Anyone" to see the full queue you can sign off on.';
+    case 'unassigned':
+      return 'Tickets without a named QA / reviewer / assignee will show up here.';
+    case 'person':
+      return 'Try a different person, or switch to "Anyone".';
+  }
 }
 
 function TicketRow({

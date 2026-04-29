@@ -405,8 +405,15 @@ class ApiClient {
 
   // The current user's pending tickets across all (product, targetEnv) pairs.
   // Powers the /me/tickets queue page.
-  getMyPendingWorkItems() {
-    return this.request<{ tickets: PendingTicket[] }>(`/work-items/me/pending`);
+  //
+  // Optional `assignee` narrows the list (display only — server-side authorisation is
+  // unchanged). Pass an email to keep only candidates where that person has an "assignee"
+  // role on the merged participant view, or "unassigned" to keep only candidates where no
+  // one is named in such a role.
+  getMyPendingWorkItems(args?: { assignee?: string }) {
+    const a = args?.assignee?.trim();
+    const suffix = a && a.length > 0 ? `?assignee=${encodeURIComponent(a)}` : '';
+    return this.request<{ tickets: PendingTicket[] }>(`/work-items/me/pending${suffix}`);
   }
 
   // ── Promotion admin ────────────────────────────────────────────────────

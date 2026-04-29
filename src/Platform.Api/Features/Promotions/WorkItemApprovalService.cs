@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Webhooks;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
@@ -31,6 +32,7 @@ public class WorkItemApprovalService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly PromotionService _promotion;
+    private readonly PromotionAssigneeRoleSettings _assigneeRoles;
     private readonly ILogger<WorkItemApprovalService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -49,6 +51,7 @@ public class WorkItemApprovalService
         IAuditLogger audit,
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
+        PromotionAssigneeRoleSettings assigneeRoles,
         ILogger<WorkItemApprovalService> logger)
     {
         _db = db;
@@ -57,6 +60,7 @@ public class WorkItemApprovalService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _promotion = promotion;
+        _assigneeRoles = assigneeRoles;
         _logger = logger;
     }
 
@@ -404,12 +408,28 @@ public class WorkItemApprovalService
     /// is bounded by the number of services × envs, not historical events). The distinct group
     /// cache mirrors <see cref="PromotionService.CanUserApproveManyAsync"/>.</para>
     /// </summary>
-    public async Task<List<PendingTicketView>> GetPendingForCurrentUserAsync(CancellationToken ct = default)
+    public async Task<List<PendingTicketView>> GetPendingForCurrentUserAsync(
+        CancellationToken ct = default,
+        string? assigneeFilter = null)
     {
         var pending = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Pending)
             .ToListAsync(ct);
         if (pending.Count == 0) return new();
+
+        // Resolve the assignee-role set up front when a filter is set; skip when null since
+        // the post-filter pass below short-circuits and we'd be doing unnecessary work.
+        var trimmedAssignee = assigneeFilter?.Trim();
+        var assigneeFilterActive = !string.IsNullOrEmpty(trimmedAssignee);
+        var assigneeIsUnassigned = assigneeFilterActive
+            && string.Equals(trimmedAssignee, "unassigned", StringComparison.OrdinalIgnoreCase);
+        var assigneeEmail = (assigneeFilterActive && !assigneeIsUnassigned)
+            ? trimmedAssignee!.ToLowerInvariant()
+            : null;
+        IReadOnlyList<string> assigneeRoles = assigneeFilterActive
+            ? await _assigneeRoles.GetAsync(ct)
+            : Array.Empty<string>();
+        var assigneeRoleSet = new HashSet<string>(assigneeRoles, StringComparer.OrdinalIgnoreCase);
 
         // Bundle → all event ids that contribute work-items to a candidate.
         var allEventIds = pending
@@ -520,6 +540,32 @@ public class WorkItemApprovalService
                 .GroupBy(w => w.WorkItemKey)
                 .Select(g => g.First());
 
+            // Build the merged participant view across the candidate's full bundle once per
+            // candidate (only when the assignee filter is active — pure narrowing, doesn't
+            // touch authorisation). Tombstones are honoured via FindByRoleWithOverrides so
+            // suppressed roles don't count as "assigned".
+            List<MergedParticipant>? bundleAssignees = null;
+            if (assigneeFilterActive)
+            {
+                bundleAssignees = BuildMergedAssignees(
+                    new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds),
+                    sourceJsonByEvent, overridesByEvent, assigneeRoleSet);
+
+                if (assigneeIsUnassigned)
+                {
+                    // No participant in the merged set has a role in the assignee role set.
+                    if (bundleAssignees.Count > 0) continue;
+                }
+                else
+                {
+                    // Some participant has email match (case-insensitive) AND role ∈ assigneeRoles.
+                    var anyMatch = bundleAssignees.Any(p =>
+                        !string.IsNullOrEmpty(p.Email)
+                        && string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
+                    if (!anyMatch) continue;
+                }
+            }
+
             foreach (var w in bundleItems)
             {
                 var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
@@ -582,6 +628,80 @@ public class WorkItemApprovalService
             eventIdSet.Contains(c.SourceDeployEventId)
             || c.SupersededSourceEventIds.Any(eventIdSet.Contains));
     }
+
+    /// <summary>
+    /// Walks every event in the candidate's bundle and emits the merged participant view —
+    /// override layer first (with reference scoping + tombstones suppressing fall-through),
+    /// then reference-level participants for any reference whose (key, role) wasn't already
+    /// resolved by an override, then event-level participants for any role not already covered.
+    ///
+    /// <para>Only participants whose role canonicalises into <paramref name="assigneeRoleSet"/>
+    /// are returned — the filter cares about a specific subset of roles and we don't need to
+    /// surface anything else.</para>
+    /// </summary>
+    private static List<MergedParticipant> BuildMergedAssignees(
+        IEnumerable<Guid> bundleEventIds,
+        Dictionary<Guid, (string ParticipantsJson, string ReferencesJson)> sourceJsonByEvent,
+        Dictionary<Guid, IReadOnlyList<ReferenceParticipantOverride>> overridesByEvent,
+        HashSet<string> assigneeRoleSet)
+    {
+        var result = new List<MergedParticipant>();
+        if (assigneeRoleSet.Count == 0) return result;
+
+        foreach (var eid in bundleEventIds.Distinct())
+        {
+            var (partsJson, refsJson) = sourceJsonByEvent.GetValueOrDefault(eid);
+            var evOverrides = overridesByEvent.GetValueOrDefault(eid, Array.Empty<ReferenceParticipantOverride>());
+
+            // Walk every (referenceKey, role-in-set) cell — ParticipantResolver handles override
+            // precedence + tombstones for us. The set of reference keys to walk is the union of
+            // ReferencesJson keys and any override-only reference keys.
+            var refs = ParticipantResolver.GetReferenceParticipants(refsJson);
+            var refKeys = refs
+                .Select(rp => rp.Ref.Key ?? "")
+                .Where(k => !string.IsNullOrEmpty(k))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var o in evOverrides)
+            {
+                if (!string.IsNullOrEmpty(o.ReferenceKey)) refKeys.Add(o.ReferenceKey);
+            }
+
+            foreach (var refKey in refKeys)
+            {
+                foreach (var role in assigneeRoleSet)
+                {
+                    var lookup = ParticipantResolver.FindByRoleWithOverrides(
+                        partsJson, refsJson, evOverrides, role, refKey);
+                    // Tombstone => slot is explicitly empty for this (refKey, role); skip.
+                    if (lookup.Suppressed) continue;
+                    if (lookup.Found is { } p && !string.IsNullOrEmpty(p.Email))
+                    {
+                        result.Add(new MergedParticipant(
+                            Role: RoleNormalizer.Normalize(p.Role),
+                            Email: p.Email!.Trim().ToLowerInvariant()));
+                    }
+                }
+            }
+
+            // Event-level participants: surface any whose role is in the set. These are not
+            // reference-scoped so overrides (which always carry a reference key) don't displace
+            // them — that mirrors the existing excluded-role check.
+            foreach (var p in ParticipantResolver.GetEventParticipants(partsJson))
+            {
+                var canon = RoleNormalizer.Normalize(p.Role);
+                if (canon.Length == 0) continue;
+                if (!assigneeRoleSet.Contains(canon)) continue;
+                if (string.IsNullOrEmpty(p.Email)) continue;
+                result.Add(new MergedParticipant(
+                    Role: canon,
+                    Email: p.Email!.Trim().ToLowerInvariant()));
+            }
+        }
+
+        return result;
+    }
+
+    private readonly record struct MergedParticipant(string Role, string Email);
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)
     {

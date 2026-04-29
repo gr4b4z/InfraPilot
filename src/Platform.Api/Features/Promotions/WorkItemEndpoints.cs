@@ -20,10 +20,16 @@ public static class WorkItemEndpoints
     {
         // Inbox: tickets the current user could sign off right now. Mounted under the work-items
         // group at /me/pending — see class summary for the route choice.
+        //
+        // Optional `assignee` query parameter narrows the list (display only — authorisation is
+        // unchanged). Empty/null = no narrowing. "unassigned" (case-insensitive) = candidates
+        // where no participant in the merged view has a role in the configured assignee-role set.
+        // Anything else is treated as an email — case-insensitive match against participants
+        // whose role is in the assignee-role set. See PromotionAssigneeRoleSettings for the set.
         group.MapGet("/me/pending", async (
-            WorkItemApprovalService svc, CancellationToken ct) =>
+            WorkItemApprovalService svc, string? assignee, CancellationToken ct) =>
         {
-            var tickets = await svc.GetPendingForCurrentUserAsync(ct);
+            var tickets = await svc.GetPendingForCurrentUserAsync(ct, assignee);
             return Results.Ok(new { tickets });
         });
 
