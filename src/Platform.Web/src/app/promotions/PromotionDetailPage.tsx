@@ -600,6 +600,28 @@ function ReferenceItem({
   );
 }
 
+/**
+ * Short identifier for a reference — key only, no title. Used in compact tags like
+ * "via OBS-265" where the title would be noise. PR keys keep their "#" prefix to
+ * distinguish them from ticket keys.
+ */
+function buildReferenceShortLabel(ref: PromotionSourceEventReference): string {
+  switch (ref.type) {
+    case 'work-item':
+      return ref.key ?? 'work-item';
+    case 'pull-request':
+      return ref.key ? `#${ref.key}` : 'pull-request';
+    case 'repository':
+      if (ref.key) return ref.key;
+      if (ref.revision) return ref.revision.slice(0, 8);
+      return 'repository';
+    case 'pipeline':
+      return ref.key ?? ref.provider ?? 'pipeline';
+    default:
+      return ref.key ?? ref.type;
+  }
+}
+
 function buildReferenceLabel(
   ref: PromotionSourceEventReference,
   labels: Record<string, string>,
@@ -708,7 +730,7 @@ function PeopleCard({
   if (sourceEvent) {
     for (const r of sourceEvent.references) {
       for (const p of r.participants ?? []) {
-        refParticipants.push({ participant: p, refLabel: buildReferenceLabel(r, sourceEvent.enrichment?.labels ?? {}) });
+        refParticipants.push({ participant: p, refLabel: buildReferenceShortLabel(r) });
       }
     }
   }
@@ -716,7 +738,7 @@ function PeopleCard({
     for (const p of ir.reference.participants ?? []) {
       refParticipants.push({
         participant: p,
-        refLabel: buildReferenceLabel(ir.reference, {}),
+        refLabel: buildReferenceShortLabel(ir.reference),
         fromVersion: ir.fromVersion,
       });
     }
