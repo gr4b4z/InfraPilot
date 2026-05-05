@@ -5,4 +5,6 @@ public record Reference(
     string? Url = null,
     string? Provider = null,
     string? Key = null,
-    string? Revision = null);
+    string? Revision = null,
+    string? Title = null,
+    IReadOnlyList<Participant>? Participants = null);

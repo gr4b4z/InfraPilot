@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Catalog.Models;
@@ -11,7 +12,7 @@ using Platform.Api.Infrastructure.Features;
 
 namespace Platform.Api.Infrastructure.Persistence;
 
-public class PlatformDbContext : DbContext
+public class PlatformDbContext : DbContext, IDataProtectionKeyContext
 {
     public PlatformDbContext(DbContextOptions<PlatformDbContext> options) : base(options) { }
 
@@ -39,6 +40,7 @@ public class PlatformDbContext : DbContext
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
+    public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

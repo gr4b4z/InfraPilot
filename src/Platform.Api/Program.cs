@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
@@ -182,7 +183,8 @@ builder.Services.AddHttpClient<CatalogAgent>();
 builder.Services.AddScoped<CatalogAgent>();
 
 // Webhooks
-builder.Services.AddDataProtection();
+builder.Services.AddDataProtection()
+    .PersistKeysToDbContext<PlatformDbContext>();
 builder.Services.AddScoped<IWebhookDispatcher, WebhookDispatcher>();
 builder.Services.AddHttpClient("webhook-delivery");
 builder.Services.AddHostedService<WebhookDeliveryWorker>();
