@@ -5,6 +5,7 @@ export const FeatureFlag = {
   Promotions: 'features.promotions',
   ServiceCatalog: 'features.serviceCatalog',
   Approvals: 'features.approvals',
+  ReleaseNotes: 'features.releaseNotes',
 } as const;
 
 export type FeatureFlagKey = (typeof FeatureFlag)[keyof typeof FeatureFlag];

@@ -404,6 +404,74 @@ curl -X POST "$PLATFORM_URL/api/deployments/events" \
 
 `previousVersion` is computed automatically by the server from the last event for the same `(product, service, environment)` tuple — publishers never send it. Set `isRollback: true` when the new `version` is a re-deploy of a prior version (the UI then renders an `Undo2` icon next to the version with a `Rolled back from v{previousVersion}` tooltip).
 
+## Release Notes
+
+Release Notes turn a stream of `DeployEvents` into structured, human-readable summaries — one note per `(product, environment, window)` — and broadcast them as a webhook so downstream consumers (Teams, Confluence, an email blast) can publish without a second call back to InfraPilot.
+
+The feature is gated by the `features.releaseNotes` flag and is **off by default**. Flip it on per environment from Settings → Feature Flags.
+
+### Workflow
+
+| Step | Endpoint | Persists | Webhook |
+|---|---|---|---|
+| 1. Raw aggregation | `GET /api/release-notes/preview/raw` | no | no |
+| 2. Templated preview | `GET /api/release-notes/preview` | no | no |
+| 3. Publish | `POST /api/release-notes/generate` | yes | yes (`release_note.generated`) |
+| 4. List | `GET /api/release-notes` | — | — |
+| 5. Detail | `GET /api/release-notes/{id}` | — | — |
+
+In the UI, the list page (`/release-notes/:product`) shows the form for picking environment + window. The "Preview" button navigates to a dedicated draft route (`/release-notes/:product/new?env=…&from=…&to=…`) where the rendered markdown can be edited side-by-side with a live HTML preview. "Publish" persists the (possibly edited) markdown and redirects to the permanent detail URL.
+
+### Templates
+
+Release notes are rendered with [Handlebars.Net](https://github.com/Handlebars-Net/Handlebars.Net) against the aggregated services. Templates are stored in `platform_settings` at one of three scopes; resolution picks the most-specific row that exists:
+
+| Scope | `platform_settings.Key` |
+|---|---|
+| Per (product, environment) | `release-notes.template.{product}.{environment}` |
+| Per product | `release-notes.template.{product}` |
+| Global default | `release-notes.template.default` |
+
+Edit via Settings → Release Notes Template (admin only). The editor loads the *exact* row for the chosen scope; if nothing is saved there yet it shows the inherited template so you can fork it.
+
+#### Available template fields
+
+Top level: `product`, `environment`, `date`, `from`, `to`, `services` (array).
+
+Per service (inside `{{#each services}}`): `service`, `previousVersion`, `currentVersion`, `isRollback`, `deployedAt`, `workItems[]`, `pullRequests[]`, `pipelines[]`, `participants[]`, plus the first-match shortcuts `pullRequest`, `pipeline`, `author`, `qa`, `triggeredBy` (each `{ displayName, email }`).
+
+Use `{{{name}}}` (triple-mustache) for content that should not be HTML-escaped (e.g. display names with diacritics).
+
+### Webhook payload
+
+The `release_note.generated` event fires once a note is persisted and is subject to the standard webhook subscription filters (`Product`, `Environment`):
+
+```jsonc
+{
+  "id": "ae1fa7ef-...",
+  "product": "identity-platform",
+  "environment": "production",
+  "from": "2026-05-06T21:12:17Z",
+  "to":   "2026-05-07T14:00:00Z",
+  "generatedAt": "2026-05-07T14:05:00Z",
+  "renderedContent": "# 🛠️ Release: identity-platform — production\n...",
+  "services": [
+    {
+      "service": "auth-api",
+      "previousVersion": "1.8.5",
+      "currentVersion": "1.10.0",
+      "isRollback": false,
+      "workItems":    [{ "key": "IDP-2946", "title": "...", "url": "..." }],
+      "pullRequests": [{ "key": "888",      "title": "...", "url": "..." }],
+      "pipelines":    [{ "key": "build-79588", "url": "..." }],
+      "participants": [{ "role": "author", "displayName": "...", "email": "..." }]
+    }
+  ]
+}
+```
+
+Because `renderedContent` is included, a Logic App or Azure Pipeline can post directly to Teams without calling back to InfraPilot.
+
 ## Secrets
 
 Do not commit real secrets to the repository.

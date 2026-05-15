@@ -153,6 +153,15 @@ export const featureCards: FeatureCard[] = [
     ],
   },
   {
+    title: 'Release notes that write themselves',
+    body: 'Turn the stream of deployment events into structured release notes per (product, environment, window). Preview, edit, publish, and broadcast.',
+    points: [
+      'Handlebars templates with per-product and per-environment overrides',
+      'Draft → edit markdown → publish flow with a permanent URL',
+      'release_note.generated webhook with rendered markdown + structured services',
+    ],
+  },
+  {
     title: 'Governance without replacing your toolchain',
     body: 'InfraPilot works with the delivery and identity systems teams already use instead of forcing a new all-in-one stack.',
     points: [
@@ -214,6 +223,17 @@ export const proofPanels: ProofPanel[] = [
       'auth-service · staging · 3.1.0-beta.2',
       'promotion candidate · staging → prod',
       'rollback target · previousVersion available',
+    ],
+  },
+  {
+    title: 'Release Notes',
+    label: 'Release UI',
+    eyebrow: 'Auto-generated, editable, broadcast',
+    lines: [
+      'identity-platform · production · 10 services',
+      '[IDP-2946] Fix timezone handling — PR #888 · Build #79588',
+      'draft → edit markdown → publish',
+      'webhook: release_note.generated',
     ],
   },
 ];
@@ -448,6 +468,24 @@ executor:
     ],
   },
   {
+    slug: 'release-notes-setup',
+    group: 'Integrations',
+    title: 'Release notes setup',
+    summary: 'Aggregate deploy events into structured, templated release notes per (product, environment, window) and broadcast them via webhook.',
+    paragraphs: [
+      'Release Notes turn the stream of ingested deploy events into human-readable summaries — one note per (product, environment, window). Each note is rendered through a Handlebars template, persisted, and dispatched via the `release_note.generated` webhook so downstream consumers (Teams, Confluence, an email blast) can publish without a second call back to InfraPilot.',
+      'Templates are stored at three scopes and resolve most-specific-first: per (product, environment), per product, and a global default. Operators can edit a template at any scope from Settings — Release Notes Template. The UI exposes a draft / review workflow: pick window + environment, preview the rendered markdown, edit it inline, then publish to a permanent URL.',
+      'The feature is gated by the `features.releaseNotes` flag and is off by default — enable it per environment from the Feature Flags screen.',
+    ],
+    bullets: [
+      'GET `/api/release-notes/preview` for read-only rendered preview, no persistence or webhook',
+      'POST `/api/release-notes/generate` to persist + fire `release_note.generated`',
+      'Auto-derived window: `from = generatedAt of last published note`, `to = now`',
+      'Per (product, environment) template overrides via `release-notes.template.{product}.{environment}` in `platform_settings`',
+      'Webhook payload includes both rendered markdown and structured services array',
+    ],
+  },
+  {
     slug: 'notifications-and-webhooks-setup',
     group: 'Integrations',
     title: 'Notifications and webhooks setup',
@@ -668,6 +706,17 @@ X-Api-Key: <your-api-key>
     paragraphs: [
       'The audit API is designed for querying event history by entity, actor, module, action, and time range.',
       'Responses are paginated using page and pageSize query parameters.',
+    ],
+  },
+  {
+    slug: 'release-notes-api',
+    group: 'API',
+    title: 'Release Notes API',
+    summary: 'Aggregate deploy events into structured, templated release notes; preview, persist, and dispatch them via webhook.',
+    paragraphs: [
+      'Release Notes turn deploy events into human-readable summaries per (product, environment, window). Preview endpoints are read-only; the `generate` endpoint persists a row in `release_notes` and dispatches the `release_note.generated` webhook.',
+      'Templates resolve most-specific-first: per (product, environment), per product, then a global default. Templates render with Handlebars.Net against the aggregated services. The `generate` endpoint accepts an optional `renderedContent` override so an "edit before publish" UI can persist user-tweaked markdown verbatim.',
+      'The feature is gated by the `features.releaseNotes` flag and is off by default. All endpoints require the `CanApprove` authorisation policy.',
     ],
   },
   {
@@ -1813,6 +1862,149 @@ function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
       columns: deploymentApiResponseColumns,
       rows: [
         { status: '`200 OK`', body: '`{ items, total, page, pageSize }`', notes: 'Returns filtered audit entries sorted by timestamp descending.' },
+      ],
+    },
+  ],
+  'release-notes-api': [
+    {
+      title: 'Endpoints',
+      columns: defaultEndpointColumns,
+      rows: [
+        { method: '`GET`',  path: '`/api/release-notes/preview/raw`', auth: 'CanApprove', description: 'Aggregate deploy events for `(product, environment, from, to)` into the structured services payload. Read-only.' },
+        { method: '`GET`',  path: '`/api/release-notes/preview`',     auth: 'CanApprove', description: 'Same aggregation rendered through the resolved Handlebars template. Returns `{ rendered, raw }`. Read-only.' },
+        { method: '`GET`',  path: '`/api/release-notes/template`',    auth: 'CanApprove', description: 'Read the saved template at a given scope. Query: `product`, `environment`, `exact` (when `true`, returns only the row at the exact scope without walking the fallback chain).' },
+        { method: '`PUT`',  path: '`/api/release-notes/template`',    auth: 'CanApprove', description: 'Save a template at a scope. Body: `{ product?, environment?, template }`.' },
+        { method: '`POST`', path: '`/api/release-notes/generate`',    auth: 'CanApprove', description: 'Persist a release note + dispatch `release_note.generated` webhook. Body: `{ product, environment, from?, to?, renderedContent? }`. When `renderedContent` is supplied it is persisted verbatim; otherwise the template is rendered.' },
+        { method: '`GET`',  path: '`/api/release-notes`',             auth: 'CanApprove', description: 'List persisted release notes. Query: `product?`, `environment?`, `limit?` (default 100, max 500).' },
+        { method: '`GET`',  path: '`/api/release-notes/{id}`',        auth: 'CanApprove', description: 'Detail of a single release note. Returns rendered content + structured `raw` services snapshot.' },
+      ],
+    },
+    {
+      title: 'Query parameters — preview / generate',
+      columns: queryFieldColumns,
+      rows: [
+        { name: '`product`',     type: 'string',           description: 'Product name. Required for preview; required for generate.' },
+        { name: '`environment`', type: 'string',           description: 'Environment name. Required for preview; required for generate.' },
+        { name: '`from`',        type: 'DateTimeOffset',   description: 'Window lower bound (ISO-8601). Required for preview; optional for generate (auto-derived from the `generatedAt` of the last published note for the same `(product, environment)`).' },
+        { name: '`to`',          type: 'DateTimeOffset',   description: 'Window upper bound (ISO-8601). Required for preview; optional for generate (defaults to `UtcNow`).' },
+      ],
+    },
+    {
+      title: 'Generate request body',
+      columns: bodyFieldColumns,
+      rows: [
+        { field: '`product`',         type: 'string',         required: 'Yes', description: 'Product name.' },
+        { field: '`environment`',     type: 'string',         required: 'Yes', description: 'Environment name.' },
+        { field: '`from`',            type: 'DateTimeOffset', required: 'No',  description: 'Window lower bound. Defaults to the last published note for `(product, environment)`.' },
+        { field: '`to`',              type: 'DateTimeOffset', required: 'No',  description: 'Window upper bound. Defaults to `UtcNow`.' },
+        { field: '`renderedContent`', type: 'string',         required: 'No',  description: 'When present, the supplied markdown is persisted verbatim and the template is skipped. Used by the draft → edit → publish UI flow.' },
+      ],
+    },
+    {
+      title: 'Template scopes (resolution order)',
+      description: 'Templates live in the `platform_settings` table. Resolution picks the most-specific row that exists; when nothing is saved the built-in default template is used.',
+      columns: [
+        { key: 'scope',    label: 'Scope' },
+        { key: 'key',      label: '`platform_settings.Key`' },
+        { key: 'effect',   label: 'Effect' },
+      ],
+      rows: [
+        { scope: 'Per (product, environment)', key: '`release-notes.template.{product}.{environment}`', effect: 'Wins over per-product and default for the given pair.' },
+        { scope: 'Per product',                key: '`release-notes.template.{product}`',                effect: 'Default for any environment of this product.' },
+        { scope: 'Global default',             key: '`release-notes.template.default`',                   effect: 'Fallback for all products. If absent, a hard-coded default ships with the build.' },
+      ],
+    },
+    {
+      title: 'Template context — top-level fields',
+      columns: bodyFieldColumns,
+      rows: [
+        { field: '`product`',     type: 'string',        required: '—', description: 'Product name.' },
+        { field: '`environment`', type: 'string',        required: '—', description: 'Environment name.' },
+        { field: '`date`',        type: 'string',        required: '—', description: 'Date stamp for the rendering (yyyy-MM-dd).' },
+        { field: '`from`, `to`',  type: 'string',        required: '—', description: 'Window bounds (ISO-8601 `u` format).' },
+        { field: '`services`',    type: 'array',         required: '—', description: 'One entry per service deployed in the window. Use `{{#each services}}`.' },
+      ],
+    },
+    {
+      title: 'Template context — per-service fields',
+      columns: bodyFieldColumns,
+      rows: [
+        { field: '`service`',               type: 'string',  required: '—', description: 'Service name.' },
+        { field: '`previousVersion`',       type: 'string',  required: '—', description: 'Previous version string, or `—` when this is the first event for the service.' },
+        { field: '`currentVersion`',        type: 'string',  required: '—', description: 'Deployed version.' },
+        { field: '`isRollback`',            type: 'boolean', required: '—', description: 'Truthy when the underlying deploy event was a rollback.' },
+        { field: '`deployedAt`',            type: 'string',  required: '—', description: 'Deploy timestamp (ISO-8601 `u` format).' },
+        { field: '`workItems[]`',           type: 'array',   required: '—', description: 'Each: `{ key, title, type, url }`. Use `{{#each workItems}}`.' },
+        { field: '`pullRequests[]`',        type: 'array',   required: '—', description: 'Each: `{ key, title, url }`.' },
+        { field: '`pipelines[]`',           type: 'array',   required: '—', description: 'Each: `{ key, title, url }`.' },
+        { field: '`participants[]`',        type: 'array',   required: '—', description: 'Deduped event + reference-level participants. Each: `{ role, displayName, email }`.' },
+        { field: '`pullRequest`',           type: 'object',  required: '—', description: 'First entry of `pullRequests[]`, or `null`. Lets templates avoid `{{#each}}` for the common single-PR case.' },
+        { field: '`pipeline`',              type: 'object',  required: '—', description: 'First entry of `pipelines[]`, or `null`.' },
+        { field: '`author`, `qa`, `triggeredBy`', type: 'object', required: '—', description: 'Single-best-match participant for each role: `{ displayName, email }` or `null`. Allows `[{{{author.displayName}}}](mailto:{{author.email}})` directly.' },
+      ],
+    },
+    {
+      title: 'Built-in default template',
+      description: 'Used when no template is stored at any scope. Triple-mustache (`{{{value}}}`) is used for content that should not be HTML-escaped (e.g. names with diacritics, em-dashes, work-item titles).',
+      code: `# 🛠️ Release: {{product}} — {{environment}}
+
+**Date:** {{date}} | **Window:** {{from}} → {{to}}
+
+{{#each services}}
+* **{{service}}** (\\\`{{{previousVersion}}} → {{currentVersion}}\\\`){{#if isRollback}} ⚠️ rollback{{/if}}
+{{#each workItems}}
+  * [{{key}}]({{url}}) — {{{title}}}{{#if ../pullRequest}} · PR [#{{../pullRequest.key}}]({{../pullRequest.url}}){{/if}}{{#if ../pipeline}} · Build [{{../pipeline.key}}]({{../pipeline.url}}){{/if}}{{#if ../author}} · author: [{{{../author.displayName}}}](mailto:{{../author.email}}){{/if}}{{#if ../qa}} · qa: [{{{../qa.displayName}}}](mailto:{{../qa.email}}){{/if}}
+{{/each}}
+{{#unless workItems}}
+  * _no work items_{{#if pullRequest}} · PR [#{{pullRequest.key}}]({{pullRequest.url}}){{/if}}{{#if pipeline}} · Build [{{pipeline.key}}]({{pipeline.url}}){{/if}}{{#if author}} · author: [{{{author.displayName}}}](mailto:{{author.email}}){{/if}}{{#if qa}} · qa: [{{{qa.displayName}}}](mailto:{{qa.email}}){{/if}}
+{{/unless}}
+{{/each}}`,
+    },
+    {
+      title: 'Webhook: `release_note.generated`',
+      description: 'Fires once a note is persisted. Subject to the standard webhook subscription filters `Product` and `Environment`. `renderedContent` carries the final markdown so downstream consumers can post directly to Teams / Confluence without calling back; `services` is included so consumers needing their own format do not have to parse markdown.',
+      code: `{
+  "id": "ae1fa7ef-...",
+  "product": "identity-platform",
+  "environment": "production",
+  "from": "2026-05-06T21:12:17Z",
+  "to":   "2026-05-07T14:00:00Z",
+  "generatedAt": "2026-05-07T14:05:00Z",
+  "renderedContent": "# 🛠️ Release: identity-platform — production\\n...",
+  "services": [
+    {
+      "service": "auth-api",
+      "previousVersion": "1.8.5",
+      "currentVersion":  "1.10.0",
+      "isRollback": false,
+      "workItems":    [{ "key": "IDP-2946", "title": "...", "url": "..." }],
+      "pullRequests": [{ "key": "888",      "title": "...", "url": "..." }],
+      "pipelines":    [{ "key": "build-79588", "url": "..." }],
+      "participants": [{ "role": "author", "displayName": "...", "email": "..." }]
+    }
+  ]
+}`,
+    },
+    {
+      title: 'Generate — minimal example',
+      description: 'After a release, the simplest pipeline call. The server auto-derives `from` from the most recent published note for the same `(product, environment)`, using `UtcNow` for `to`. The response includes the persisted `renderedContent` so the caller can also post it to Teams without subscribing to the webhook.',
+      code: `POST /api/release-notes/generate
+
+{
+  "product": "identity-platform",
+  "environment": "production"
+}`,
+    },
+    {
+      title: 'Responses',
+      columns: deploymentApiResponseColumns,
+      rows: [
+        { status: '`201 Created`',     body: '`{ id, product, environment, from, to, generatedAt, servicesCount, status, renderedContent }`', notes: 'Returned by `POST /generate`. `Location` header points at the new detail URL.' },
+        { status: '`200 OK` (list)',   body: '`ReleaseNoteListItem[]`',  notes: 'Returned by `GET /api/release-notes`. One row per persisted note with `id`, `product`, `environment`, window, `generatedAt`, `servicesCount`, `status`.' },
+        { status: '`200 OK` (detail)', body: '`ReleaseNoteDetailDto`',   notes: 'Returned by `GET /api/release-notes/{id}`. Includes `renderedContent` and the original `raw` services snapshot.' },
+        { status: '`204 No Content`',  body: '—',                         notes: 'Returned by `PUT /api/release-notes/template` on a successful save.' },
+        { status: '`400 Bad Request`', body: '`{ error }` or `{ errors[] }`', notes: 'Missing required fields, invalid window (`from > to`), or template render failure.' },
+        { status: '`404 Not Found`',   body: '—',                         notes: 'Returned by `GET /api/release-notes/{id}` when the id does not exist.' },
       ],
     },
   ],

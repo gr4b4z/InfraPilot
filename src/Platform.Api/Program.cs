@@ -9,6 +9,7 @@ using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Promotions;
+using Platform.Api.Features.ReleaseNotes;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Infrastructure.Auth;
@@ -175,6 +176,11 @@ builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
+// Release Notes
+builder.Services.AddSingleton<TemplateEngine>();
+builder.Services.AddScoped<ReleaseNoteService>();
+builder.Services.AddScoped<ReleaseNoteTemplateService>();
+
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();
 builder.Services.AddScoped<ValidationRunner>();
@@ -302,6 +308,7 @@ app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuth
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)

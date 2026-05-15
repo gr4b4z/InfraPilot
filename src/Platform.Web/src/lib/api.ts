@@ -503,6 +503,92 @@ class ApiClient {
     const query = '?' + new URLSearchParams(entries).toString();
     return this.request<{ versions: DeploymentVersion[] }>(`/deployments/versions${query}`);
   }
+
+  // ── Release Notes ──────────────────────────────────────────────────────
+
+  getReleaseNotePreviewRaw(params: { product: string; environment: string; from: string; to: string }) {
+    const q = new URLSearchParams(params as Record<string, string>).toString();
+    return this.request<RawPreview>(`/release-notes/preview/raw?${q}`);
+  }
+
+  getReleaseNotePreview(params: { product: string; environment: string; from: string; to: string }) {
+    const q = new URLSearchParams(params as Record<string, string>).toString();
+    return this.request<{ rendered: string; raw: RawPreview }>(`/release-notes/preview?${q}`);
+  }
+
+  getReleaseNoteTemplate(opts: { product?: string; environment?: string; exact?: boolean } = {}) {
+    const entries: [string, string][] = [];
+    if (opts.product) entries.push(['product', opts.product]);
+    if (opts.environment) entries.push(['environment', opts.environment]);
+    if (opts.exact) entries.push(['exact', 'true']);
+    const q = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<{ product: string; environment: string; template: string }>(`/release-notes/template${q}`);
+  }
+
+  saveReleaseNoteTemplate(template: string, opts: { product?: string; environment?: string } = {}) {
+    return this.request<void>(`/release-notes/template`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        product: opts.product ?? null,
+        environment: opts.environment ?? null,
+        template,
+      }),
+    });
+  }
+
+  generateReleaseNote(payload: { product: string; environment: string; from?: string; to?: string; renderedContent?: string }) {
+    return this.request<ReleaseNoteListItem & { renderedContent: string }>(`/release-notes/generate`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  listReleaseNotes(params: { product?: string; environment?: string; limit?: number } = {}) {
+    const entries: [string, string][] = [];
+    if (params.product) entries.push(['product', params.product]);
+    if (params.environment) entries.push(['environment', params.environment]);
+    if (params.limit) entries.push(['limit', String(params.limit)]);
+    const q = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<ReleaseNoteListItem[]>(`/release-notes${q}`);
+  }
+
+  getReleaseNote(id: string) {
+    return this.request<ReleaseNoteDetail>(`/release-notes/${id}`);
+  }
+}
+
+export interface RawPreview {
+  product: string;
+  environment: string;
+  from: string;
+  to: string;
+  generatedAt: string;
+  services: Array<{
+    service: string;
+    previousVersion: string | null;
+    currentVersion: string;
+    isRollback: boolean;
+    deployedAt: string;
+    workItems: Array<{ key: string; title: string | null; type: string | null; url: string | null }>;
+    pullRequests: Array<{ key: string | null; title: string | null; url: string | null }>;
+    participants: Array<{ role: string; displayName: string | null; email: string | null }>;
+  }>;
+}
+
+export interface ReleaseNoteListItem {
+  id: string;
+  product: string;
+  environment: string;
+  from: string;
+  to: string;
+  generatedAt: string;
+  servicesCount: number;
+  status: string;
+}
+
+export interface ReleaseNoteDetail extends ReleaseNoteListItem {
+  renderedContent: string;
+  raw: RawPreview;
 }
 
 // Response types

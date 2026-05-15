@@ -253,3 +253,39 @@ body {
   letter-spacing: 0.02em;
   line-height: 18px;
 }
+
+/* Markdown rendering for release notes detail page. Kept narrow in scope
+   so the rest of the app isn't affected by tag-level resets. */
+.release-notes-prose h1 { font-size: 1.4em; font-weight: 700; margin: 0 0 0.4em; }
+.release-notes-prose h2 { font-size: 1.2em; font-weight: 700; margin: 1em 0 0.4em; }
+.release-notes-prose h3 { font-size: 1.05em; font-weight: 600; margin: 0.8em 0 0.3em; }
+.release-notes-prose p { margin: 0.4em 0; }
+.release-notes-prose ul, .release-notes-prose ol { padding-left: 1.4em; margin: 0.4em 0; }
+.release-notes-prose ul { list-style: disc; }
+.release-notes-prose ol { list-style: decimal; }
+.release-notes-prose li { margin: 0.15em 0; }
+.release-notes-prose li > ul, .release-notes-prose li > ol { margin: 0.15em 0; }
+.release-notes-prose a { color: var(--accent); text-decoration: underline; }
+.release-notes-prose a:hover { text-decoration: none; }
+.release-notes-prose code {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+  font-size: 0.9em;
+}
+.release-notes-prose pre {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.7em 1em;
+  overflow-x: auto;
+}
+.release-notes-prose pre code { background: none; border: 0; padding: 0; }
+.release-notes-prose strong { font-weight: 600; }
+.release-notes-prose blockquote {
+  border-left: 3px solid var(--border-color);
+  padding-left: 0.8em;
+  color: var(--text-muted);
+  margin: 0.5em 0;
+}

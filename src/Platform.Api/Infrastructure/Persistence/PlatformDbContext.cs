@@ -4,6 +4,7 @@ using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.ReleaseNotes.Models;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Auth;
@@ -40,6 +41,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
+    public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -410,6 +412,23 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
             // Lookup: "any decisions in this product+env" — admin queries.
             e.HasIndex(x => new { x.Product, x.TargetEnv });
+        });
+
+        // Release Notes
+        modelBuilder.Entity<ReleaseNote>(e =>
+        {
+            e.ToTable("release_notes");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).HasDefaultValue("published").IsRequired();
+            // RenderedContent + RawJson are unbounded — templates can be long.
+            e.Property(x => x.RenderedContent).IsRequired();
+            var rawJson = e.Property(x => x.RawJson).HasDefaultValue("{}").IsRequired();
+            if (jsonType != null) rawJson.HasColumnType(jsonType);
+            e.HasIndex(x => new { x.Product, x.Environment, x.GeneratedAt })
+                .IsDescending(false, false, true);
+            e.HasIndex(x => x.GeneratedAt).IsDescending(true);
         });
 
         // Promotion Comments

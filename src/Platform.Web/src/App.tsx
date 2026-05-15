@@ -20,6 +20,11 @@ import { FeatureFlagSettings } from '@/app/settings/FeatureFlagSettings';
 import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
 import { DeploymentMaintenanceSettings } from '@/app/settings/DeploymentMaintenanceSettings';
+import { ReleaseNoteTemplateSettings } from '@/app/settings/ReleaseNoteTemplateSettings';
+import { ReleaseNotesPage } from '@/app/release-notes/ReleaseNotesPage';
+import { ReleaseNotesIndexPage } from '@/app/release-notes/ReleaseNotesIndexPage';
+import { ReleaseNoteDraftPage } from '@/app/release-notes/ReleaseNoteDraftPage';
+import { ReleaseNoteDetailPage } from '@/app/release-notes/ReleaseNoteDetailPage';
 import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
 import { AdminRoute } from '@/components/auth/AdminRoute';
@@ -45,6 +50,11 @@ function App() {
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — tickets awaiting the current user's signoff across products/envs. */}
           <Route path="/me/tickets" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
+          <Route path="/release-notes" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesIndexPage /></FeatureRoute>} />
+          <Route path="/release-notes/:product" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesPage /></FeatureRoute>} />
+          {/* "new" route must come before the dynamic :id route so it isn't captured as an id. */}
+          <Route path="/release-notes/:product/new" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDraftPage /></FeatureRoute>} />
+          <Route path="/release-notes/:product/:id" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDetailPage /></FeatureRoute>} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>}>
@@ -56,6 +66,7 @@ function App() {
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
             <Route path="deployment-maintenance" element={<DeploymentMaintenanceSettings />} />
+            <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>
         </Route>
       </Routes>

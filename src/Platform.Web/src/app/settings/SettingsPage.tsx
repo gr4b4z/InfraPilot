@@ -7,6 +7,7 @@ import {
   Package,
   GitPullRequest,
   Wrench,
+  ScrollText,
 } from 'lucide-react';
 
 interface NavItem {
@@ -58,6 +59,12 @@ const NAV: NavItem[] = [
     label: 'Deployment Maintenance',
     icon: Wrench,
     description: 'Clean up duplicate deployment events',
+  },
+  {
+    to: 'release-notes-template',
+    label: 'Release Notes Template',
+    icon: ScrollText,
+    description: 'Handlebars template applied to release notes',
   },
 ];
 
