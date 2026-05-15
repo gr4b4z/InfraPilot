@@ -704,6 +704,62 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("work_item_approvals", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.ReleaseNotes.Models.ReleaseNote", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset>("From")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("GeneratedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("RawJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("{}");
+
+                    b.Property<string>("RenderedContent")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("ServicesCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasDefaultValue("published");
+
+                    b.Property<DateTimeOffset>("To")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GeneratedAt")
+                        .IsDescending();
+
+                    b.HasIndex("Product", "Environment", "GeneratedAt")
+                        .IsDescending(false, false, true);
+
+                    b.ToTable("release_notes", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Requests.Models.ExecutionResult", b =>
                 {
                     b.Property<Guid>("Id")

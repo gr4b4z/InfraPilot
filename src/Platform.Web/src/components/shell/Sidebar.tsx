@@ -12,6 +12,7 @@ import {
   Webhook,
   GitPullRequest,
   Inbox,
+  ScrollText,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -47,6 +48,7 @@ const navGroups: NavGroup[] = [
     label: 'Deployments',
     items: [
       { to: '/deployments', label: 'Deployments', icon: Rocket },
+      { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
     ],
   },
   {

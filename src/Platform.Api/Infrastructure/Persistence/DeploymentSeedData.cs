@@ -209,6 +209,10 @@ public static class DeploymentSeedData
         var deployRunId = rand.Next(10000, 99999);
         var prNum       = rand.Next(50, 900);
         var wiKey       = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
+        // Realistic titles for tickets and PRs so release-notes / activity cards have
+        // something to display instead of a bare key.
+        var wiTitle     = WorkItemTitles[rand.Next(WorkItemTitles.Length)];
+        var prTitle     = PrTitles[rand.Next(PrTitles.Length)];
 
         // Build pipeline — triggered by the PR author merging or a scheduled run.
         // Deploy pipeline — triggered separately (CD job, release manager, or scheduler).
@@ -225,6 +229,7 @@ public static class DeploymentSeedData
 
             refs.Add(new ReferenceDto("pull-request",
                 $"{product.BaseUrl}/_git/{service}/pullrequest/{prNum}", "azure-devops", prNum.ToString(),
+                Title: prTitle,
                 Participants: [
                     new("author",   author.Name,   author.Email),
                     new("reviewer", reviewer.Name, reviewer.Email),
@@ -242,6 +247,7 @@ public static class DeploymentSeedData
 
             refs.Add(new ReferenceDto("pull-request",
                 $"{product.BaseUrl}/{service}/pull/{prNum}", "github", prNum.ToString(),
+                Title: prTitle,
                 Participants: [
                     new("author",   author.Name,   author.Email),
                     new("reviewer", reviewer.Name, reviewer.Email),
@@ -264,6 +270,7 @@ public static class DeploymentSeedData
 
             refs.Add(new ReferenceDto("work-item",
                 $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
+                Title: wiTitle,
                 Participants: wiParticipants));
         }
 
