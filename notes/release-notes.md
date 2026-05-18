@@ -73,10 +73,11 @@ Body:
 Pipeline:
 
 1. Aggregate `DeployEvents` for the window (same as `/preview/raw`).
-2. If `renderedContent` is supplied, use it verbatim. Otherwise resolve the template (see [Templates](#templates)) and render it against the aggregation.
-3. Insert a row into `release_notes` with the rendered output, the raw aggregation JSON, and a `published` status.
-4. Dispatch the `release_note.generated` webhook with payload combining structured services and rendered markdown.
-5. Return `201` + the new id.
+2. **Empty-window guard:** if no services were deployed in the window AND `renderedContent` was not supplied, return `400 { error, code: "no_services", product, environment, from, to }`. This prevents pipelines from spamming the webhook with header-only notes after a no-op release. Operators who genuinely want to publish an empty / hand-written note can do so via the UI preview-edit-publish flow, which sets `renderedContent` and bypasses the guard.
+3. If `renderedContent` is supplied, use it verbatim. Otherwise resolve the template (see [Templates](#templates)) and render it against the aggregation.
+4. Insert a row into `release_notes` with the rendered output, the raw aggregation JSON, and a `published` status.
+5. Dispatch the `release_note.generated` webhook with payload combining structured services and rendered markdown.
+6. Return `201` + the new id.
 
 The auto-window behaviour (`from = last published note for product+env`, `to = UtcNow`) makes the simplest pipeline call just `{ product, environment }` after each release.
 
