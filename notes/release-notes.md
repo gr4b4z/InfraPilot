@@ -150,14 +150,20 @@ Handlebars HTML-escapes `{{value}}` by default. Use `{{{value}}}` for content th
 
 ---
 
-## Webhook event
+## Webhook events
 
-```
-event: release_note.generated
-filters: Product, Environment
-```
+Two events fire on every publish — subscribe to whichever payload suits your consumer:
 
-Payload:
+| Event | Payload | When to use |
+|---|---|---|
+| `release_note.generated`      | markdown only (`renderedContent`) | Teams incoming webhook (renders markdown natively), Slack, anything that posts markdown verbatim. **Smaller payload — preferred default.** |
+| `release_note.generated.html` | markdown **and** HTML (`renderedContent` + `renderedHtml`) | Confluence storage format, HTML email templates, SharePoint pages, anything that can't parse markdown. |
+
+Both events honour the standard subscription filters (`Product`, `Environment`).
+
+The HTML is rendered server-side once per publish (via [Markdig](https://github.com/xoofx/markdig) with the advanced pipeline — tables, autolinks, task lists), then reused across all subscribers, so adding HTML subscribers is O(1) extra work per publish.
+
+**Markdown payload (`release_note.generated`):**
 
 ```jsonc
 {
@@ -172,7 +178,19 @@ Payload:
 }
 ```
 
-`renderedContent` carries the final markdown so downstream consumers (Azure Pipeline, Logic App, Teams channel webhook) can publish without a follow-up call back to InfraPilot. The structured `services` array is included alongside so a consumer that needs to render its own format (Confluence storage format, ServiceNow record, etc.) doesn't have to parse markdown.
+**HTML payload (`release_note.generated.html`)** — same as above plus a `renderedHtml` field:
+
+```jsonc
+{
+  "id": "ae1fa7ef-...",
+  // ...
+  "renderedContent": "# 🛠️ Release: identity-platform — production\n...",
+  "renderedHtml":    "<h1>🛠️ Release: identity-platform — production</h1>...",
+  "services":        [ /* ... */ ]
+}
+```
+
+The structured `services` array is included alongside in both events so consumers that need their own format (ServiceNow record, custom dashboard, etc.) don't have to parse markdown or HTML.
 
 ---
 

@@ -86,6 +86,7 @@ public static class ReleaseNoteEndpoints
             ReleaseNoteService service,
             ReleaseNoteTemplateService templates,
             TemplateEngine engine,
+            MarkdownRenderer markdown,
             IWebhookDispatcher webhooks,
             GenerateReleaseNoteRequest body,
             CancellationToken ct) =>
@@ -160,6 +161,9 @@ public static class ReleaseNoteEndpoints
             db.ReleaseNotes.Add(note);
             await db.SaveChangesAsync(ct);
 
+            var filters = new WebhookEventFilters(note.Product, note.Environment);
+
+            // Primary event — markdown only. Small payload, what most consumers want.
             await webhooks.DispatchAsync("release_note.generated", new
             {
                 note.Id,
@@ -170,7 +174,30 @@ public static class ReleaseNoteEndpoints
                 note.GeneratedAt,
                 renderedContent = note.RenderedContent,
                 services = raw.Services,
-            }, new WebhookEventFilters(note.Product, note.Environment));
+            }, filters);
+
+            // Secondary event — adds `renderedHtml` for consumers that can't parse
+            // markdown (Confluence storage format, HTML-only mail templates, etc.).
+            // Dispatched as a separate event so markdown subscribers don't pay the
+            // payload-size cost they don't need. The matching subscription opts in
+            // by subscribing to `release_note.generated.html` explicitly.
+            //
+            // Rendered server-side once and reused; the webhook delivery worker
+            // serialises this payload per subscription, so doing the markdown→HTML
+            // conversion up here keeps it O(1) instead of O(subscriptions).
+            var html = markdown.ToHtml(note.RenderedContent);
+            await webhooks.DispatchAsync("release_note.generated.html", new
+            {
+                note.Id,
+                note.Product,
+                note.Environment,
+                note.From,
+                note.To,
+                note.GeneratedAt,
+                renderedContent = note.RenderedContent,
+                renderedHtml = html,
+                services = raw.Services,
+            }, filters);
 
             return Results.Created($"/api/release-notes/{note.Id}", new
             {

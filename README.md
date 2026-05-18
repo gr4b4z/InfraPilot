@@ -472,6 +472,8 @@ The `release_note.generated` event fires once a note is persisted and is subject
 
 Because `renderedContent` is included, a Logic App or Azure Pipeline can post directly to Teams without calling back to InfraPilot.
 
+A parallel event `release_note.generated.html` fires with the same payload **plus** a `renderedHtml` field (rendered server-side by [Markdig](https://github.com/xoofx/markdig)). Subscribe to whichever event suits the downstream — markdown subscribers (Teams, Slack) stay on `release_note.generated`; HTML consumers (Confluence storage format, HTML email templates, SharePoint pages) subscribe to `release_note.generated.html`. Markdown subscribers don't pay the size cost of the HTML payload.
+
 ## Secrets
 
 Do not commit real secrets to the repository.
