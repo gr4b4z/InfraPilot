@@ -30,6 +30,7 @@ const AVAILABLE_EVENTS = [
   'promotion.rejected',
   'promotion.deployed',
   'promotion.updated',
+  'release_note.generated',
   'ping',
 ];
 

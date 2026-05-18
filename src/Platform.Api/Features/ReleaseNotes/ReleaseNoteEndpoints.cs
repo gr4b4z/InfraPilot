@@ -113,6 +113,23 @@ public static class ReleaseNoteEndpoints
             if (from > to) return Results.BadRequest(new { error = "'from' must be <= 'to'" });
 
             var raw = await service.GetRawPreview(body.Product, body.Environment, from, to, ct);
+
+            // Reject empty windows up front so pipelines don't spam the webhook with
+            // header-only notes. Callers that genuinely want an empty note can opt in
+            // by supplying their own `renderedContent` (the edit-in-UI path).
+            if (raw.Services.Count == 0 && string.IsNullOrEmpty(body.RenderedContent))
+            {
+                return Results.BadRequest(new
+                {
+                    error = "No services deployed in the given window — nothing to release.",
+                    code = "no_services",
+                    product = body.Product,
+                    environment = body.Environment,
+                    from,
+                    to,
+                });
+            }
+
             string rendered;
             // Edited-in-UI path: caller supplied final markdown after previewing.
             // Skip the template render entirely so user tweaks are preserved verbatim.

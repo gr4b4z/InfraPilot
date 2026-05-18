@@ -2003,7 +2003,7 @@ function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
         { status: '`200 OK` (list)',   body: '`ReleaseNoteListItem[]`',  notes: 'Returned by `GET /api/release-notes`. One row per persisted note with `id`, `product`, `environment`, window, `generatedAt`, `servicesCount`, `status`.' },
         { status: '`200 OK` (detail)', body: '`ReleaseNoteDetailDto`',   notes: 'Returned by `GET /api/release-notes/{id}`. Includes `renderedContent` and the original `raw` services snapshot.' },
         { status: '`204 No Content`',  body: '—',                         notes: 'Returned by `PUT /api/release-notes/template` on a successful save.' },
-        { status: '`400 Bad Request`', body: '`{ error }` or `{ errors[] }`', notes: 'Missing required fields, invalid window (`from > to`), or template render failure.' },
+        { status: '`400 Bad Request`', body: '`{ error }` or `{ errors[] }`', notes: 'Missing required fields, invalid window (`from > to`), template render failure, or empty window (`code: "no_services"`) when no services were deployed and no `renderedContent` override was supplied.' },
         { status: '`404 Not Found`',   body: '—',                         notes: 'Returned by `GET /api/release-notes/{id}` when the id does not exist.' },
       ],
     },
