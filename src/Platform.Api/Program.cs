@@ -178,6 +178,7 @@ builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();
+builder.Services.AddSingleton<MarkdownRenderer>();
 builder.Services.AddScoped<ReleaseNoteService>();
 builder.Services.AddScoped<ReleaseNoteTemplateService>();
 

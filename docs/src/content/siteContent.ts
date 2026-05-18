@@ -158,7 +158,7 @@ export const featureCards: FeatureCard[] = [
     points: [
       'Handlebars templates with per-product and per-environment overrides',
       'Draft → edit markdown → publish flow with a permanent URL',
-      'release_note.generated webhook with rendered markdown + structured services',
+      'release_note.generated webhook (markdown) + release_note.generated.html (with server-rendered HTML for Confluence / email)',
     ],
   },
   {
@@ -1961,8 +1961,20 @@ function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
 {{/each}}`,
     },
     {
-      title: 'Webhook: `release_note.generated`',
-      description: 'Fires once a note is persisted. Subject to the standard webhook subscription filters `Product` and `Environment`. `renderedContent` carries the final markdown so downstream consumers can post directly to Teams / Confluence without calling back; `services` is included so consumers needing their own format do not have to parse markdown.',
+      title: 'Webhook events',
+      description: 'Two events fire on every publish — subscribe to whichever payload matches your consumer. Both honour the standard `Product` / `Environment` subscription filters. The HTML is rendered server-side once via Markdig (advanced pipeline — tables, autolinks, task lists) and reused across all subscribers.',
+      columns: [
+        { key: 'event',   label: 'Event' },
+        { key: 'payload', label: 'Payload' },
+        { key: 'use',     label: 'When to use' },
+      ],
+      rows: [
+        { event: '`release_note.generated`',      payload: 'markdown only (`renderedContent`)',                            use: 'Teams incoming webhook (renders markdown natively), Slack, anything that posts markdown verbatim. Smaller payload — preferred default.' },
+        { event: '`release_note.generated.html`', payload: 'markdown **and** HTML (`renderedContent` + `renderedHtml`)', use: 'Confluence storage format, HTML email templates, SharePoint pages, anything that can\'t parse markdown.' },
+      ],
+    },
+    {
+      title: 'Markdown payload — `release_note.generated`',
       code: `{
   "id": "ae1fa7ef-...",
   "product": "identity-platform",
@@ -1983,6 +1995,21 @@ function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
       "participants": [{ "role": "author", "displayName": "...", "email": "..." }]
     }
   ]
+}`,
+    },
+    {
+      title: 'HTML payload — `release_note.generated.html`',
+      description: 'Same shape as the markdown event with an extra `renderedHtml` field containing the server-rendered HTML.',
+      code: `{
+  "id": "ae1fa7ef-...",
+  "product": "identity-platform",
+  "environment": "production",
+  "from": "2026-05-06T21:12:17Z",
+  "to":   "2026-05-07T14:00:00Z",
+  "generatedAt": "2026-05-07T14:05:00Z",
+  "renderedContent": "# 🛠️ Release: identity-platform — production\\n...",
+  "renderedHtml":    "<h1>🛠️ Release: identity-platform — production</h1>...",
+  "services": [ /* ... same as above ... */ ]
 }`,
     },
     {
