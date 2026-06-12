@@ -214,20 +214,27 @@ public static class ReleaseNoteEndpoints
         });
 
         group.MapGet("/", async (
-            PlatformDbContext db, string? product, string? environment, int? limit, CancellationToken ct) =>
+            PlatformDbContext db, string? product, string? environment,
+            int? page, int? pageSize, CancellationToken ct) =>
         {
             var query = db.ReleaseNotes.AsNoTracking().AsQueryable();
             if (!string.IsNullOrEmpty(product)) query = query.Where(r => r.Product == product);
             if (!string.IsNullOrEmpty(environment)) query = query.Where(r => r.Environment == environment);
 
+            var resolvedPage = Math.Max(page ?? 1, 1);
+            var resolvedPageSize = Math.Clamp(pageSize ?? 10, 1, 50);
+            var total = await query.CountAsync(ct);
+
             var rows = await query
                 .OrderByDescending(r => r.GeneratedAt)
-                .Take(Math.Clamp(limit ?? 100, 1, 500))
-                .Select(r => new ReleaseNoteListItemDto(
+                .Skip((resolvedPage - 1) * resolvedPageSize)
+                .Take(resolvedPageSize)
+                .Select(r => new ReleaseNoteFeedItemDto(
                     r.Id, r.Product, r.Environment, r.From, r.To, r.GeneratedAt,
-                    r.ServicesCount, r.Status))
+                    r.ServicesCount, r.Status, r.RenderedContent))
                 .ToListAsync(ct);
-            return Results.Ok(rows);
+
+            return Results.Ok(new PagedResult<ReleaseNoteFeedItemDto>(rows, total, resolvedPage, resolvedPageSize));
         });
 
         group.MapGet("/{id:guid}", async (

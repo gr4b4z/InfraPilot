@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Loader2, ScrollText, Eye } from 'lucide-react';
+import { Loader2, ScrollText, Eye, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { api, type ReleaseNoteListItem } from '@/lib/api';
+import { marked } from 'marked';
+import { api, type ReleaseNoteFeedItem } from '@/lib/api';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+
+// Content originates from our own server-side template engine, so we render the
+// stored markdown synchronously without further sanitisation (same as the detail page).
+marked.setOptions({ gfm: true, breaks: false });
+
+const PAGE_SIZE = 10;
 
 // `<input type="datetime-local">` consumes/emits "yyyy-MM-ddTHH:mm" in local time.
 function toLocalInput(d: Date): string {
@@ -15,12 +22,17 @@ export function ReleaseNotesPage() {
   const { product = '' } = useParams<{ product: string }>();
   const navigate = useNavigate();
   const { products, fetchProducts } = useDeploymentStore();
-  const [items, setItems] = useState<ReleaseNoteListItem[]>([]);
+  const [items, setItems] = useState<ReleaseNoteFeedItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [environment, setEnvironment] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [from, setFrom] = useState<string | null>(null);
   const [to, setTo] = useState<string | null>(null);
+  // Newest note's timestamp, captured from page 1 so the "from" default stays
+  // correct even while browsing older pages.
+  const [newestAt, setNewestAt] = useState<string | null>(null);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -28,8 +40,15 @@ export function ReleaseNotesPage() {
     setLoading(true);
     setError(null);
     try {
-      const rows = await api.listReleaseNotes({ product, environment: environment || undefined });
-      setItems(rows);
+      const res = await api.listReleaseNotes({
+        product,
+        environment: environment || undefined,
+        page,
+        pageSize: PAGE_SIZE,
+      });
+      setItems(res.items);
+      setTotal(res.total);
+      if (res.page === 1) setNewestAt(res.items[0]?.generatedAt ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -37,10 +56,15 @@ export function ReleaseNotesPage() {
     }
   }
 
+  // Reset to the first page whenever the filter changes.
+  useEffect(() => {
+    setPage(1);
+  }, [product, environment]);
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product, environment]);
+  }, [product, environment, page]);
 
   const productEntry = products.find((p) => p.product === product);
   const envsFromProduct = productEntry ? Object.keys(productEntry.environments) : [];
@@ -50,15 +74,14 @@ export function ReleaseNotesPage() {
 
   const defaultWindow = useMemo(() => {
     const now = new Date();
-    const lastForEnv = environment
-      ? items.find((i) => i.environment === environment)
-      : items[0];
-    const start = lastForEnv ? new Date(lastForEnv.generatedAt) : new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const start = newestAt ? new Date(newestAt) : new Date(now.getTime() - 24 * 60 * 60 * 1000);
     return { from: toLocalInput(start), to: toLocalInput(now) };
-  }, [items, environment]);
+  }, [newestAt]);
 
   const fromValue = from ?? defaultWindow.from;
   const toValue = to ?? defaultWindow.to;
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   function openDraft() {
     if (!environment) { setError('Pick an environment before previewing'); return; }
@@ -156,40 +179,81 @@ export function ReleaseNotesPage() {
           <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>No release notes yet</p>
         </div>
       ) : (
-        <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
-                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Generated</th>
-                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Environment</th>
-                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Window</th>
-                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Services</th>
-                <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((row) => (
-                <tr
-                  key={row.id}
-                  className="cursor-pointer transition-colors hover:opacity-80"
-                  style={{ borderBottom: '1px solid var(--border-color)' }}
-                  onClick={() => navigate(`/release-notes/${product}/${row.id}`)}
-                >
-                  <td className="px-4 py-3" style={{ color: 'var(--text-primary)' }}>
-                    {formatDistanceToNow(new Date(row.generatedAt), { addSuffix: true })}
-                  </td>
-                  <td className="px-4 py-3" style={{ color: 'var(--text-secondary)' }}>{row.environment}</td>
-                  <td className="px-4 py-3 text-[12px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {new Date(row.from).toLocaleDateString()} → {new Date(row.to).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-3" style={{ color: 'var(--text-secondary)' }}>{row.servicesCount}</td>
-                  <td className="px-4 py-3" style={{ color: 'var(--text-secondary)' }}>{row.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-6">
+          {items.map((note) => (
+            <ReleaseNoteCard
+              key={note.id}
+              note={note}
+              onOpen={() => navigate(`/release-notes/${product}/${note.id}`)}
+            />
+          ))}
+
+          <div className="flex items-center justify-between pt-2">
+            <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              {total} note{total === 1 ? '' : 's'} · page {page} of {totalPages}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border text-[12px] disabled:opacity-40"
+                style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              >
+                <ChevronLeft size={14} /> Prev
+              </button>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border text-[12px] disabled:opacity-40"
+                style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              >
+                Next <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ReleaseNoteCard({ note, onOpen }: { note: ReleaseNoteFeedItem; onOpen: () => void }) {
+  const html = useMemo(() => marked.parse(note.renderedContent) as string, [note.renderedContent]);
+  return (
+    <div
+      className="rounded-xl border overflow-hidden"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div
+        className="flex items-center justify-between gap-3 px-5 py-3"
+        style={{ borderBottom: '1px solid var(--border-color)' }}
+      >
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <span className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{note.environment}</span>
+          <span className="text-[12px] font-mono" style={{ color: 'var(--text-muted)' }}>
+            {new Date(note.from).toLocaleDateString()} → {new Date(note.to).toLocaleDateString()}
+          </span>
+          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            {note.servicesCount} service{note.servicesCount === 1 ? '' : 's'}
+          </span>
+          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            {formatDistanceToNow(new Date(note.generatedAt), { addSuffix: true })}
+          </span>
+        </div>
+        <button
+          onClick={onOpen}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[12px] shrink-0"
+          style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+          title="Open full note"
+        >
+          <ExternalLink size={12} /> Open
+        </button>
+      </div>
+      <div
+        className="release-notes-prose px-5 py-4 text-[14px] overflow-x-auto"
+        style={{ color: 'var(--text-primary)' }}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
     </div>
   );
 }

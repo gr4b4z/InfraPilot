@@ -543,13 +543,14 @@ class ApiClient {
     });
   }
 
-  listReleaseNotes(params: { product?: string; environment?: string; limit?: number } = {}) {
+  listReleaseNotes(params: { product?: string; environment?: string; page?: number; pageSize?: number } = {}) {
     const entries: [string, string][] = [];
     if (params.product) entries.push(['product', params.product]);
     if (params.environment) entries.push(['environment', params.environment]);
-    if (params.limit) entries.push(['limit', String(params.limit)]);
+    if (params.page) entries.push(['page', String(params.page)]);
+    if (params.pageSize) entries.push(['pageSize', String(params.pageSize)]);
     const q = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
-    return this.request<ReleaseNoteListItem[]>(`/release-notes${q}`);
+    return this.request<PagedResult<ReleaseNoteFeedItem>>(`/release-notes${q}`);
   }
 
   getReleaseNote(id: string) {
@@ -589,6 +590,17 @@ export interface ReleaseNoteListItem {
 export interface ReleaseNoteDetail extends ReleaseNoteListItem {
   renderedContent: string;
   raw: RawPreview;
+}
+
+export interface ReleaseNoteFeedItem extends ReleaseNoteListItem {
+  renderedContent: string;
+}
+
+export interface PagedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 // Response types

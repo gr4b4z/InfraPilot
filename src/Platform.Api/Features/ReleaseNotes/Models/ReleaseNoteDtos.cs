@@ -56,6 +56,21 @@ public record ReleaseNoteListItemDto(
     int ServicesCount,
     string Status);
 
+// Feed item carries the rendered markdown so the per-product page can stack full
+// notes inline instead of linking out to a detail view per row.
+public record ReleaseNoteFeedItemDto(
+    Guid Id,
+    string Product,
+    string Environment,
+    DateTimeOffset From,
+    DateTimeOffset To,
+    DateTimeOffset GeneratedAt,
+    int ServicesCount,
+    string Status,
+    string RenderedContent);
+
+public record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
+
 public record ReleaseNoteDetailDto(
     Guid Id,
     string Product,
