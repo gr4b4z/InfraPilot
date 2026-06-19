@@ -664,8 +664,71 @@ X-Api-Key: <your-api-key>
       'Each candidate carries deploy-event references (pull requests, work items, commits) and participants (author, reviewer, `triggered-by`) pulled from its source deploy event, plus promotion-level participants added in the portal (QA, release manager, or any custom role) and a free-text comment thread. Role strings are canonicalised on write; display names are controlled by an admin-managed role dictionary in Settings — the same pattern used for environment display names.',
       'Listing supports filtering by status, product, target environment, substring service search, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped.',
       'A directory-search endpoint proxies Entra ID (via Microsoft Graph) when configured and falls back to local users otherwise, so the portal can resolve real people when assigning participants.',
+      'Two invariants keep candidates honest against rollbacks. Source-drift: a candidate can only be approved while its source environment still runs the candidate version — if the source is rolled back off that version the gate blocks it as stale. Idempotent reactivation: redeploying that exact version to the source reactivates the original candidate (clearing the drift block) instead of creating a duplicate. See "Promotion and rollback logic" for the full model.',
       'Admin endpoints configure the policy and topology model that drives the promotion machinery.',
     ],
+  },
+  {
+    slug: 'rollbacks-api',
+    group: 'API',
+    title: 'Rollbacks API',
+    summary: 'Create, preview, approve, reject, and cancel rollback requests that revert one or more services in an environment to an earlier, previously-deployed version.',
+    paragraphs: [
+      'A rollback is the inverse of a promotion: the environment stays fixed and the version moves backward. One request groups N items so the same model covers a single malfunctioning service (one item) and aligning a whole environment to a reference (many items). Approval, gate, and tracking reuse the promotion policy for that (product, target env), so rollbacks follow promotion rules.',
+      'There are two selection modes. `manual` takes an explicit `items` list of `{ service, toVersion }`. `align` derives the items from the diff between the target environment and a `referenceEnv`, optionally minus an `exclude` list ("roll everything back to match prod, except these services"). `POST /api/rollbacks/preview` returns the resolved items with an `eligible` flag and a `skipReason` for each, so the UI can show "will roll back N, skip M" before submitting.',
+      'The safety rule: a target version must have previously run successfully in that environment (verified against deploy history) and must differ from what is currently running. Ineligible items are dropped; a request with zero eligible items is rejected.',
+      'If the resolved promotion policy has an approver group the request is created Pending and needs approval; with no approver group it auto-approves. On approval the `rollback.approved` webhook fires and your executor performs the deploy. Completion is detected from the resulting deploy event (matched on product/service/env/version after approval) — there is no trusted callback, and the `IsRollback` flag is corroboration, not a requirement. A request only allows Cancel while Pending; once Approved it has been dispatched.',
+      'Endpoints: `GET /api/rollbacks` (queue + per-request `canApprove`), `GET /api/rollbacks/{id}` (detail + approvals), `POST /api/rollbacks/preview`, `POST /api/rollbacks`, `POST /api/rollbacks/{id}/approve|reject|cancel`. Per-product enrollment is managed at `PUT /api/rollbacks/admin/enabled-products`. Everything is gated by the global `features.rollbacks` flag plus per-product enrollment, on top of promotion enrollment.',
+    ],
+    code: `// Single service (manual): roll "api" in staging back to 2.0
+POST /api/rollbacks
+{
+  "product": "acme",
+  "targetEnv": "staging",
+  "mode": "manual",
+  "reason": "2.1 broke checkout",
+  "items": [ { "service": "api", "toVersion": "2.0" } ]
+}
+
+// Multiple services (manual): explicit per-service targets
+POST /api/rollbacks
+{
+  "product": "acme",
+  "targetEnv": "staging",
+  "mode": "manual",
+  "items": [
+    { "service": "api", "toVersion": "2.0" },
+    { "service": "web", "toVersion": "5.4" }
+  ]
+}
+
+// Multiple services (align): match staging to production, except payments-api
+POST /api/rollbacks
+{
+  "product": "acme",
+  "targetEnv": "staging",
+  "mode": "align",
+  "referenceEnv": "production",
+  "exclude": [ "payments-api" ],
+  "reason": "resync staging to the prod baseline"
+}
+
+// rollback.approved webhook payload (what your executor consumes)
+{
+  "rollbackId": "0f1e...",
+  "product": "acme",
+  "targetEnv": "staging",
+  "mode": "Align",
+  "referenceEnv": "production",
+  "status": "Approved",
+  "reason": "resync staging to the prod baseline",
+  "approvedAt": "2026-06-19T10:12:00Z",
+  "items": [
+    { "service": "api", "fromVersion": "2.1", "toVersion": "2.0", "status": "Pending" },
+    { "service": "web", "fromVersion": "5.6", "toVersion": "5.4", "status": "Pending" }
+  ]
+}`,
+    note: 'The executor deploys the toVersion of each item; emitting the resulting deploy event (ideally with isRollback=true) is what flips that item to RolledBack, and the request to RolledBack once all items land.',
   },
   {
     slug: 'webhooks-api',
@@ -675,6 +738,7 @@ X-Api-Key: <your-api-key>
     paragraphs: [
       'Webhooks are an operational integration surface for emitting deployment and promotion events to downstream systems — useful for pushing Jira/ServiceNow updates, Slack notifications, or triggering Logic Apps.',
       'Promotion-related events include `promotion.approved`, `promotion.rejected`, `promotion.deployed`, and `promotion.updated`. The `promotion.updated` event fires for editorial changes (participant added/removed, comment added/edited/deleted) and carries a `change.changeType` discriminator plus the full current candidate state, so subscribers can act without re-fetching.',
+      'Rollback events are `rollback.approved`, `rollback.rejected`, `rollback.deployed`, and `rollback.cancelled`. `rollback.approved` is the one your executor (e.g. a Logic App) should act on: it carries the `rollbackId`, `product`, `targetEnv`, `mode`, and an `items` array of `{ service, fromVersion, toVersion }` to deploy. `rollback.deployed` fires once every item has been confirmed back via deploy events. See the Rollbacks API page for full payload shapes.',
       'The create endpoint generates a secret once and returns it only in the creation response, which is important to capture at subscription creation time.',
     ],
   },
@@ -718,6 +782,32 @@ X-Api-Key: <your-api-key>
       'Templates resolve most-specific-first: per (product, environment), per product, then a global default. Templates render with Handlebars.Net against the aggregated services. The `generate` endpoint accepts an optional `renderedContent` override so an "edit before publish" UI can persist user-tweaked markdown verbatim.',
       'The feature is gated by the `features.releaseNotes` flag and is off by default. All endpoints require the `CanApprove` authorisation policy.',
     ],
+  },
+  {
+    slug: 'promotion-and-rollback-logic',
+    group: 'Operations',
+    title: 'Promotion and rollback logic',
+    summary: 'How InfraPilot turns deploy events into promotion candidates, gates them, detects drift, and runs rollbacks as the inverse — including what happens to candidates and stories across a rollback.',
+    paragraphs: [
+      'Both promotions and rollbacks are driven by one input: the stream of deploy events ingested from CI/CD. A promotion answers "this version reached environment A — should it move forward to B?" A rollback answers "environment A is on the wrong version — put it back to a known-good one it ran before." Rollback reuses the promotion policy/approval machinery; the difference is that the environment stays fixed and the version moves backward.',
+      'Promotion candidates. When a successful, non-rollback deploy lands in a source environment and a promotion policy exists for the (product, target env) edge, a candidate is created. Its lifecycle is Pending → Approved → Deploying → Deployed, with Superseded and Rejected as terminal off-ramps. A newer version on the same edge supersedes any still-Pending candidate and inherits its work items / PRs / participants, so the latest candidate always carries the full set of forward changes. Completion is matched from the deploy event of the target environment itself (same product/service/env/version), which flips the candidate to Deployed.',
+      'The gate. Approval is evaluated against the policy snapshot taken at creation time: an approver group with an Any or N-of-M strategy, optional role exclusion (e.g. the pipeline triggerer cannot approve their own promotion), and optional ticket gates (every work item approved, or auto-approve when there are no tickets). With no approver group the candidate auto-approves.',
+      'Source-drift invariant. A candidate is only promotable while its source environment still runs the candidate version. If the source is rolled back (or otherwise moves off that version), the gate blocks the candidate as stale rather than letting it promote a version no live environment runs. Drift is judged on positive evidence — a differing source deploy exists — so an absence of history never blocks. Redeploying that exact version to the source reactivates the original candidate (clearing the block) instead of minting a duplicate.',
+      'Rollbacks. A rollback request reverts one or more services in one environment to an earlier version that previously ran there. It is approved through the same policy/gate as a promotion (auto-approve when there is no approver group), then your executor performs the deploy on the rollback.approved webhook. Completion is inferred from the resulting deploy event; cancel is only allowed while Pending, because once approved the work has already been dispatched.',
+      'What a rollback does to promotions. When a rollback lands, InfraPilot decides whether the rolled-back version is still worth promoting: if it differs from the current version of the target environment it (re)creates a promotion candidate for it; if it already matches the target, forward promotion is suppressed (there is nothing to ship). This is why rolling staging back to 2.0 while prod runs 1.5 brings the 2.0 promotion back, but rolling staging down to match prod does not.',
+      'What a rollback does to stories. A rollback-created candidate does not inherit the stories of the reverted (newer) candidate — those changes were undone. Instead it bundles the true diff against the target: every work item from source-env deploys for versions introduced after the current target version, up to and including the rolled-back-to version. Ordering uses the first-seen deploy time of each version in the source environment, so rolling back to 1.3 after 1.4 shipped carries only the 1.3 stories, while a later roll-forward to 1.4 carries 1.3 + 1.4.',
+    ],
+    bullets: [
+      'Promotion candidate lifecycle: Pending → Approved → Deploying → Deployed; Superseded / Rejected are terminal',
+      'Newer version supersedes a pending candidate and inherits its work items, PRs, and participants',
+      'Gate = approver group + Any/N-of-M strategy + optional role exclusion and ticket gates; no group ⇒ auto-approve',
+      'Source-drift: a candidate is blocked while its source env no longer runs the version; a redeploy reactivates it idempotently',
+      'Rollback safety rule: target version must have previously run in that environment and differ from what is running now',
+      'Rollback recreates a promotion only when the rolled-back version differs from the target env (otherwise suppressed)',
+      'Rollback story bundle = the version diff vs the target (first-seen ordering), never the stories of the reverted version',
+      'Cancel a rollback only while Pending; once Approved the rollback.approved webhook has dispatched it',
+    ],
+    note: 'Gated by `features.rollbacks` plus per-product enrollment, on top of promotion enrollment. Manage enrollment in Settings — Rollbacks.',
   },
   {
     slug: 'operations',

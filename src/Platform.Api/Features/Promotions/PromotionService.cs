@@ -84,12 +84,29 @@ public class PromotionService
     /// in <see cref="PromotionStatus.Approved"/> so downstream executor dispatch can pick it up.</para>
     /// </summary>
     public async Task<PromotionCandidate?> CreateCandidateAsync(
-        DeployEvent source, string targetEnv, CancellationToken ct = default)
+        DeployEvent source, string targetEnv, bool treatAsRollback = false, CancellationToken ct = default)
     {
-        if (source.IsRollback)
+        // A rollback (flagged event, or one that completed a rollback request) only warrants a
+        // forward-promotion candidate when it leaves the source env *ahead of / different from* the
+        // target — e.g. staging rolled back to 2.0 while prod is on 1.5: 2.0 is still shippable, so
+        // the promotion should reappear. If the rolled-back version already matches the target
+        // (rolling back *to* the target's version), there's nothing to promote — skip.
+        var isRollback = source.IsRollback || treatAsRollback;
+        if (isRollback)
         {
-            _logger.LogInformation("Skipping promotion candidate for rollback event {EventId}", source.Id);
-            return null;
+            var targetCurrent = await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Product == source.Product && e.Service == source.Service
+                         && e.Environment == targetEnv)
+                .OrderByDescending(e => e.DeployedAt)
+                .Select(e => e.Version)
+                .FirstOrDefaultAsync(ct);
+            if (string.Equals(targetCurrent, source.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation(
+                    "Skipping promotion candidate for rollback event {EventId} — version {Version} already matches {TargetEnv}",
+                    source.Id, LogSanitizer.Clean(source.Version), LogSanitizer.Clean(targetEnv));
+                return null;
+            }
         }
 
         if (!string.Equals(source.Status, "succeeded", StringComparison.OrdinalIgnoreCase))
@@ -104,6 +121,25 @@ public class PromotionService
         {
             _logger.LogDebug("No promotion policy found for event {EventId}; skipping candidate creation", source.Id);
             return null;
+        }
+
+        // Idempotent reactivation: if a non-terminal candidate already exists for this exact
+        // (product, service, source→target, version), reuse it instead of creating a duplicate.
+        // This is what lets a *redeploy* of a previously-rolled-back version re-establish the
+        // version in the source env and reactivate the original candidate (re-evaluating clears the
+        // "source drifted" gate block) rather than minting a new one that loses the approval trail.
+        var existing = await _db.PromotionCandidates.FirstOrDefaultAsync(c =>
+            c.Product == source.Product && c.Service == source.Service
+            && c.SourceEnv == source.Environment && c.TargetEnv == targetEnv && c.Version == source.Version
+            && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved
+                || c.Status == PromotionStatus.Deploying), ct);
+        if (existing is not null)
+        {
+            _logger.LogInformation(
+                "Reusing existing candidate {CandidateId} for redeployed version {Version} (no duplicate)",
+                existing.Id, LogSanitizer.Clean(source.Version));
+            if (existing.Status == PromotionStatus.Pending) await ReevaluateAsync(existing.Id, ct);
+            return existing;
         }
 
         var snapshot = await _resolver.SnapshotAsync(source.Product, source.Service, targetEnv, ct);
@@ -137,10 +173,17 @@ public class PromotionService
             ApprovedAt = effectiveAutoApprove ? now : null,
         };
 
-        // Supersede any still-pending candidate for the same service+edge — a newer version wins.
-        // The fresh candidate inherits their source deploy-event IDs so the UI can surface work
-        // items, PRs, and participants that were part of superseded predecessors.
-        candidate.SupersededSourceEventIds = await SupersedeStalePendingAsync(candidate, ct);
+        // Supersede any still-pending candidate for the same service+edge — keep that side-effect
+        // either way (the old candidate is no longer the active one).
+        var inherited = await SupersedeStalePendingAsync(candidate, ct);
+
+        // Forward deploy: inherit the superseded predecessors' events (a newer version *includes*
+        // the older changes). Rollback: do NOT inherit — those newer stories were reverted. Instead
+        // bundle the work items that actually ship by promoting this version, i.e. the diff between
+        // the target env's current version and this one.
+        candidate.SupersededSourceEventIds = isRollback
+            ? await ComputeRollbackBundleAsync(source, targetEnv, ct)
+            : inherited;
 
         _db.PromotionCandidates.Add(candidate);
 
@@ -197,6 +240,57 @@ public class PromotionService
         }
 
         return candidate;
+    }
+
+    /// <summary>
+    /// Builds the "what ships if you promote this version" bundle for a rollback/redeploy candidate:
+    /// the source-env deploy events for every version introduced *after* the target env's current
+    /// version, up to and including the rolled-back-to version. Work items are read across that
+    /// bundle by the gate evaluator / UI, so the promotion reflects the true diff against the target.
+    ///
+    /// <para>Ordering uses each version's <b>first-seen</b> deploy time in the source env — not the
+    /// rollback's own (later) timestamp — so rolling back to 1.3 after 1.4 shipped correctly
+    /// excludes 1.4 (its first-seen is after 1.3's), while a later roll-forward to 1.4 includes both.</para>
+    /// </summary>
+    private async Task<List<Guid>> ComputeRollbackBundleAsync(
+        DeployEvent source, string targetEnv, CancellationToken ct)
+    {
+        // The version the target env currently runs — the lower bound of the diff.
+        var targetVersion = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == source.Product && e.Service == source.Service && e.Environment == targetEnv)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => e.Version)
+            .FirstOrDefaultAsync(ct);
+
+        // All source-env deploys (id, version, time). Compute first-seen time per version.
+        var sourceEvents = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == source.Product && e.Service == source.Service
+                     && e.Environment == source.Environment)
+            .Select(e => new { e.Id, e.Version, e.DeployedAt })
+            .ToListAsync(ct);
+
+        var firstSeen = sourceEvents
+            .GroupBy(e => e.Version)
+            .ToDictionary(g => g.Key, g => g.Min(e => e.DeployedAt), StringComparer.OrdinalIgnoreCase);
+
+        // Lower bound: when the target's current version first appeared in source (exclusive).
+        // If the target version never ran in source, include everything up to X.
+        var lowerBound = targetVersion is not null && firstSeen.TryGetValue(targetVersion, out var tp)
+            ? tp
+            : DateTimeOffset.MinValue;
+        var upperBound = firstSeen.TryGetValue(source.Version, out var tx) ? tx : source.DeployedAt;
+
+        var bundleVersions = firstSeen
+            .Where(kv => kv.Value > lowerBound && kv.Value <= upperBound)
+            .Select(kv => kv.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // All event ids for the bundle versions, minus the candidate's own source event (it's the
+        // SourceDeployEventId — the bundle is the *additional* events).
+        return sourceEvents
+            .Where(e => bundleVersions.Contains(e.Version) && e.Id != source.Id)
+            .Select(e => e.Id)
+            .ToList();
     }
 
     private async Task<List<Guid>> SupersedeStalePendingAsync(PromotionCandidate fresh, CancellationToken ct)
@@ -660,6 +754,28 @@ public class PromotionService
         ResolvedPolicySnapshot snapshot,
         CancellationToken ct)
     {
+        // Source-drift invariant: a candidate is only promotable while its source environment is
+        // still running the candidate's version. If the source was rolled back (or otherwise moved
+        // off this version), block — promoting would push a version no live env runs. This clears
+        // automatically once the source is redeployed to the version (see idempotent reactivation
+        // in CreateCandidateAsync). Checked before auto-approve so even auto policies can't promote
+        // a drifted version.
+        var sourceCurrent = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == candidate.Product && e.Service == candidate.Service
+                     && e.Environment == candidate.SourceEnv)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => e.Version)
+            .FirstOrDefaultAsync(ct);
+        // Only block on positive evidence of drift: a source deploy exists and runs a *different*
+        // version. No source history (null) means we can't conclude drift, so don't block.
+        if (sourceCurrent is not null
+            && !string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
+            return new GateResult(false, new[]
+            {
+                $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
+                $"(now {sourceCurrent}) — promotion is stale until redeployed",
+            });
+
         if (snapshot.IsAutoApprove)
             return new GateResult(true, Array.Empty<string>());
 

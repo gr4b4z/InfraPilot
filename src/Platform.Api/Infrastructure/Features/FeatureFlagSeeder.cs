@@ -16,6 +16,7 @@ public static class FeatureFlagSeeder
         var defaults = new (string Key, string ConfigPath, bool FallbackDefault)[]
         {
             (FeatureFlagKeys.Promotions, "Features:Promotions:DefaultEnabled", false),
+            (FeatureFlagKeys.Rollbacks, "Features:Rollbacks:DefaultEnabled", false),
             (FeatureFlagKeys.ServiceCatalog, "Features:ServiceCatalog:DefaultEnabled", true),
             (FeatureFlagKeys.Approvals, "Features:Approvals:DefaultEnabled", true),
             (FeatureFlagKeys.ReleaseNotes, "Features:ReleaseNotes:DefaultEnabled", false),

@@ -13,6 +13,7 @@ import {
   GitPullRequest,
   Inbox,
   ScrollText,
+  Undo2,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -57,6 +58,13 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/promotions', label: 'Promotions',    icon: GitPullRequest },
       { to: '/me/tickets', label: 'Tickets queue', icon: Inbox          },
+    ],
+  },
+  {
+    label: 'Rollbacks',
+    featureFlag: FeatureFlag.Rollbacks,
+    items: [
+      { to: '/rollbacks', label: 'Rollbacks', icon: Undo2 },
     ],
   },
   {

@@ -9,6 +9,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Platform.Api.Infrastructure.Persistence;
 
+// Integration tests share process-global state — notably the static feature-flag cache
+// (FeatureFlags._cache) and a real in-process server — so running test classes in parallel makes
+// flag-toggling tests race (e.g. one class disabling features.promotions while another needs it
+// enabled). Run them serially for determinism.
+[assembly: Xunit.CollectionBehavior(DisableTestParallelization = true)]
+
 namespace Platform.Integration.Tests;
 
 /// <summary>

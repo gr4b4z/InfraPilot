@@ -4,6 +4,7 @@ using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Features.Webhooks.Models;
@@ -41,6 +42,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
+    public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
+    public DbSet<RollbackItem> RollbackItems => Set<RollbackItem>();
+    public DbSet<RollbackApproval> RollbackApprovals => Set<RollbackApproval>();
     public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
@@ -429,6 +433,64 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.Product, x.Environment, x.GeneratedAt })
                 .IsDescending(false, false, true);
             e.HasIndex(x => x.GeneratedAt).IsDescending(true);
+        });
+
+        // Rollback Requests
+        modelBuilder.Entity<RollbackRequest>(e =>
+        {
+            e.ToTable("rollback_requests");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.Mode).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.ReferenceEnv).HasMaxLength(100);
+            e.Property(x => x.Reason).HasMaxLength(1000);
+            e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
+            e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
+            var exclusionsJson = e.Property(x => x.ExclusionsJson).HasDefaultValue("[]");
+            var rbResolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
+            if (jsonType != null)
+            {
+                exclusionsJson.HasColumnType(jsonType);
+                rbResolvedPolicyJson.HasColumnType(jsonType);
+            }
+            e.Ignore(x => x.Exclusions);
+            e.HasMany(x => x.Items)
+                .WithOne()
+                .HasForeignKey(x => x.RequestId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => x.Status);
+            e.HasIndex(x => new { x.Product, x.TargetEnv });
+        });
+
+        modelBuilder.Entity<RollbackItem>(e =>
+        {
+            e.ToTable("rollback_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.FromVersion).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ToVersion).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.ExternalRunUrl).HasMaxLength(2000);
+            e.HasIndex(x => x.RequestId);
+            // Lookup for completion matching: open items by service in a product/env.
+            e.HasIndex(x => new { x.Service, x.Status });
+        });
+
+        modelBuilder.Entity<RollbackApproval>(e =>
+        {
+            e.ToTable("rollback_approvals");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ApproverEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Comment).HasMaxLength(2000);
+            e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.HasIndex(x => new { x.RequestId, x.ApproverEmail }).IsUnique();
+            e.HasOne<RollbackRequest>()
+                .WithMany()
+                .HasForeignKey(x => x.RequestId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         // Promotion Comments

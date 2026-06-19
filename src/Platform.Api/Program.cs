@@ -10,6 +10,7 @@ using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.ReleaseNotes;
+using Platform.Api.Features.Rollbacks;
 using Platform.Api.Features.Settings;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
@@ -174,6 +175,7 @@ builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionTopologySer
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionAssigneeRoleSettings>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 
@@ -312,6 +314,8 @@ app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(A
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+app.MapGroup("/api/rollbacks").MapRollbackEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();

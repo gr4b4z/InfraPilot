@@ -6,6 +6,7 @@ import {
   Flag,
   Package,
   GitPullRequest,
+  Undo2,
   Wrench,
   ScrollText,
 } from 'lucide-react';
@@ -53,6 +54,12 @@ const NAV: NavItem[] = [
     label: 'Promotions',
     icon: GitPullRequest,
     description: 'Approver groups, policies, and topology',
+  },
+  {
+    to: 'rollbacks',
+    label: 'Rollbacks',
+    icon: Undo2,
+    description: 'Choose which products can use rollbacks',
   },
   {
     to: 'deployment-maintenance',

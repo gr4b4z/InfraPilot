@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2 } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { CopyEmailButton } from './CopyEmailButton';
 import type { DeploymentStateEntry, DeployReference, DeployParticipant } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
@@ -21,6 +22,7 @@ const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
 
 export function DeployEventDetail({ entry, product, onClose }: Props) {
   const { getDisplayName } = useSettingsStore();
+  const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
 
   // Event-level participants (no reference context — rare with the new model but kept for
   // backward compat with legacy payloads that put everything at event level).
@@ -125,15 +127,31 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
           </div>
         )}
 
-        {/* History link */}
-        <Link
-          to={`/deployments/${product}/${entry.service}/history`}
-          className="inline-flex items-center gap-1.5 text-[13px] font-medium transition-opacity hover:opacity-80"
-          style={{ color: 'var(--accent)' }}
-        >
-          View History
-          <ExternalLink size={12} />
-        </Link>
+        {/* Actions */}
+        <div className="flex items-center gap-4">
+          {/* History link */}
+          <Link
+            to={`/deployments/${product}/${entry.service}/history`}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium transition-opacity hover:opacity-80"
+            style={{ color: 'var(--accent)' }}
+          >
+            View History
+            <ExternalLink size={12} />
+          </Link>
+
+          {/* Roll back — deep-links to the create-rollback flow prefilled with this
+              service/product/env (manual mode). Gated by the rollbacks feature flag. */}
+          {rollbacksEnabled && (
+            <Link
+              to={`/rollbacks?new=1&product=${encodeURIComponent(product)}&targetEnv=${encodeURIComponent(entry.environment)}&service=${encodeURIComponent(entry.service)}`}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <Undo2 size={12} />
+              Roll back
+            </Link>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -117,12 +117,27 @@ public class PromotionServiceTests : IDisposable
     // ---------------------------------------------------------------------
 
     [Fact]
-    public async Task Create_RollbackEvent_Skipped()
+    public async Task Create_RollbackEvent_MatchingTarget_Skipped()
     {
-        var e = SeedDeploy(rollback: true);
+        // Rolling back to the version prod already runs → nothing to promote → skip.
+        SeedPolicy();
+        SeedDeploy(env: "prod", version: "v1.2.3");
+        var e = SeedDeploy(rollback: true, version: "v1.2.3");
         var c = await _sut.CreateCandidateAsync(e, "prod");
         Assert.Null(c);
-        Assert.Empty(_db.PromotionCandidates);
+    }
+
+    [Fact]
+    public async Task Create_RollbackEvent_AheadOfTarget_CreatesCandidate()
+    {
+        // Rolling back to a version that still differs from prod (e.g. staging 2.0 vs prod 1.5)
+        // is still shippable, so a promotion candidate should be created.
+        SeedPolicy();
+        SeedDeploy(env: "prod", version: "v1.5.0");
+        var e = SeedDeploy(rollback: true, version: "v2.0.0");
+        var c = await _sut.CreateCandidateAsync(e, "prod");
+        Assert.NotNull(c);
+        Assert.Equal("v2.0.0", c!.Version);
     }
 
     [Fact]
@@ -183,14 +198,8 @@ public class PromotionServiceTests : IDisposable
         Assert.Equal(PromotionStatus.Pending, c2.Status);
     }
 
-    [Fact]
-    public async Task Create_CapturesDeployerEmail()
-    {
-        SeedPolicy();
-        var e = SeedDeploy(deployerEmail: "deployer@example.com");
-        var c = await _sut.CreateCandidateAsync(e, "prod");
-        Assert.Equal("deployer@example.com", c!.SourceDeployerEmail);
-    }
+    // (Removed Create_CapturesDeployerEmail — SourceDeployerEmail was dropped from
+    //  PromotionCandidate in the DropPromotionCandidateDeployerFields migration.)
 
     // ---------------------------------------------------------------------
     // ApproveAsync

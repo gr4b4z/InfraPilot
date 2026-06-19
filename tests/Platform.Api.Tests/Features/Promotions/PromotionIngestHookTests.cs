@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Rollbacks;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
@@ -47,14 +49,20 @@ public class PromotionIngestHookTests : IDisposable
         var auth = new PromotionApprovalAuthorizer(
             _db, currentUser, identity,
             Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
+        var webhook = Substitute.For<IWebhookDispatcher>();
         _promotions = new PromotionService(
             _db, resolver, auth, currentUser, audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>(),
+            webhook,
             TestOptions.Normalization());
 
+        var workItemSync = new WorkItemSyncService(_db, Substitute.For<ILogger<WorkItemSyncService>>());
+        var rollbacks = new RollbackService(
+            _db, resolver, auth, currentUser, audit, webhook, _flags,
+            Substitute.For<ILogger<RollbackService>>());
+
         _sut = new PromotionIngestHook(
-            _flags, _topology, _promotions, _db,
+            _flags, _topology, _promotions, rollbacks, workItemSync, _db,
             Substitute.For<ILogger<PromotionIngestHook>>());
     }
 

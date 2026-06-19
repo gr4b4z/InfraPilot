@@ -11,6 +11,7 @@ import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
+import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
 import { MyQueuePage } from '@/app/me/MyQueuePage';
 import { SettingsPage } from '@/app/settings/SettingsPage';
 import { EnvironmentsSettings } from '@/app/settings/EnvironmentsSettings';
@@ -19,6 +20,7 @@ import { ActivityTemplateSettings } from '@/app/settings/ActivityTemplateSetting
 import { FeatureFlagSettings } from '@/app/settings/FeatureFlagSettings';
 import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
+import { RollbackSettings } from '@/app/settings/RollbackSettings';
 import { DeploymentMaintenanceSettings } from '@/app/settings/DeploymentMaintenanceSettings';
 import { ReleaseNoteTemplateSettings } from '@/app/settings/ReleaseNoteTemplateSettings';
 import { ReleaseNotesPage } from '@/app/release-notes/ReleaseNotesPage';
@@ -50,6 +52,7 @@ function App() {
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — tickets awaiting the current user's signoff across products/envs. */}
           <Route path="/me/tickets" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
+          <Route path="/rollbacks" element={<FeatureRoute flag={FeatureFlag.Rollbacks}><RollbacksPage /></FeatureRoute>} />
           <Route path="/release-notes" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesIndexPage /></FeatureRoute>} />
           <Route path="/release-notes/:product" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesPage /></FeatureRoute>} />
           {/* "new" route must come before the dynamic :id route so it isn't captured as an id. */}
@@ -65,6 +68,7 @@ function App() {
             <Route path="feature-flags" element={<FeatureFlagSettings />} />
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
+            <Route path="rollbacks" element={<RollbackSettings />} />
             <Route path="deployment-maintenance" element={<DeploymentMaintenanceSettings />} />
             <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>

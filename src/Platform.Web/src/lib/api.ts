@@ -485,6 +485,75 @@ class ApiClient {
     });
   }
 
+  // ── Rollbacks ──────────────────────────────────────────────────────────
+
+  listRollbacks(params?: {
+    status?: string;
+    product?: string;
+    targetEnv?: string;
+    limit?: number;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.status) entries.push(['status', params.status]);
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.targetEnv) entries.push(['targetEnv', params.targetEnv]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<{ requests: RollbackRequest[] }>(`/rollbacks${query}`);
+  }
+
+  getRollback(id: string) {
+    return this.request<RollbackRequest & { approvals: RollbackApprovalEntry[] }>(
+      `/rollbacks/${id}`,
+    );
+  }
+
+  previewRollback(body: RollbackInput) {
+    return this.request<RollbackPreview>(`/rollbacks/preview`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  createRollback(body: RollbackInput) {
+    return this.request<RollbackRequest>(`/rollbacks`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  approveRollback(id: string, comment?: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+  }
+
+  rejectRollback(id: string, comment?: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+  }
+
+  cancelRollback(id: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/cancel`, {
+      method: 'POST',
+    });
+  }
+
+  getRollbackEnabledProducts() {
+    return this.request<{ products: string[] }>(`/rollbacks/enabled-products`);
+  }
+
+  // Admin: set the full set of products enrolled in rollbacks.
+  setRollbackEnabledProducts(products: string[]) {
+    return this.request<{ products: string[] }>(`/rollbacks/admin/enabled-products`, {
+      method: 'PUT',
+      body: JSON.stringify({ products }),
+    });
+  }
+
   // ── Feature flags ──────────────────────────────────────────────────────
 
   listFeatureFlags() {
@@ -949,6 +1018,88 @@ export interface DeploymentVersion {
   deployedAt: string;
   deployerEmail: string | null;
   isRollback: boolean;
+}
+
+// ── Rollbacks ───────────────────────────────────────────────────────────────
+export type RollbackStatus =
+  | 'Pending'
+  | 'Approved'
+  | 'RollingBack'
+  | 'RolledBack'
+  | 'Rejected'
+  | 'Cancelled';
+
+export type RollbackMode = 'Manual' | 'Align';
+
+export type RollbackItemStatus =
+  | 'Pending'
+  | 'RollingBack'
+  | 'RolledBack'
+  | 'Failed'
+  | 'Skipped';
+
+export interface RollbackItem {
+  id: string;
+  service: string;
+  fromVersion: string;
+  toVersion: string;
+  status: RollbackItemStatus;
+  completedDeployEventId: string | null;
+  externalRunUrl: string | null;
+  completedAt: string | null;
+}
+
+export interface RollbackRequest {
+  id: string;
+  product: string;
+  targetEnv: string;
+  status: RollbackStatus;
+  mode: RollbackMode;
+  referenceEnv: string | null;
+  exclusions: string[];
+  reason: string | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  approvedAt: string | null;
+  completedAt: string | null;
+  canApprove: boolean;
+  items: RollbackItem[];
+}
+
+export interface RollbackApprovalEntry {
+  approverEmail: string;
+  approverName: string;
+  decision: 'Approved' | 'Rejected';
+  comment: string | null;
+  createdAt: string;
+}
+
+/** Body shared by previewRollback / createRollback. */
+export interface RollbackInput {
+  product: string;
+  targetEnv: string;
+  mode: RollbackMode;
+  referenceEnv?: string;
+  exclude?: string[];
+  items?: { service: string; toVersion: string }[];
+  reason?: string;
+}
+
+export interface ResolvedItem {
+  service: string;
+  fromVersion: string;
+  toVersion: string;
+  eligible: boolean;
+  skipReason: string | null;
+}
+
+export interface RollbackPreview {
+  product: string;
+  targetEnv: string;
+  mode: RollbackMode;
+  referenceEnv: string | null;
+  items: ResolvedItem[];
 }
 
 export const api = new ApiClient();

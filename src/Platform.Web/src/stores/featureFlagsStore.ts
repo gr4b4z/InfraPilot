@@ -3,6 +3,7 @@ import { api } from '@/lib/api';
 
 export const FeatureFlag = {
   Promotions: 'features.promotions',
+  Rollbacks: 'features.rollbacks',
   ServiceCatalog: 'features.serviceCatalog',
   Approvals: 'features.approvals',
   ReleaseNotes: 'features.releaseNotes',
