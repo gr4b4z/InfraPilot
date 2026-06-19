@@ -1,4 +1,4 @@
-import { acquireToken, isMsalEnabled } from './auth';
+import { acquireToken, isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
 import { isLocalAuthEnabled } from './authConfig';
 import { getStoredToken } from './localAuth';
@@ -36,6 +36,13 @@ class ApiClient {
     });
 
     if (!response.ok) {
+      // A 401 under MSAL means the session expired or was revoked. Silent renewal
+      // can't recover and a reload won't either (the stale account lingers in
+      // sessionStorage), so force an interactive redirect instead of leaving the
+      // UI stuck with no data. Local-auth 401s keep their existing behaviour.
+      if (response.status === 401 && isMsalEnabled()) {
+        await reauthenticate();
+      }
       const error = await response.json().catch(() => ({ error: response.statusText }));
       throw new Error(error.error || `API error: ${response.status}`);
     }

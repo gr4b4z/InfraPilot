@@ -72,6 +72,26 @@ export async function logout(): Promise<void> {
   });
 }
 
+// Guards against firing multiple concurrent redirects (e.g. several parallel API
+// calls all 401-ing at once), which MSAL rejects with "interaction_in_progress".
+let redirecting = false;
+
+/**
+ * Force an interactive, full-page redirect to re-authenticate. Use when silent
+ * token acquisition can't recover (expired session / refresh token) or the API
+ * returns 401. A redirect — not a popup — is essential: popups triggered from a
+ * background fetch are blocked, and a plain reload won't recover because the
+ * stale account persists in sessionStorage, so the redirect guard in AuthProvider
+ * never re-fires. This navigates the page away and resolves only nominally.
+ */
+export async function reauthenticate(): Promise<void> {
+  const { enabled, instance, loginRequest } = init();
+  if (!enabled || !instance || redirecting) return;
+  redirecting = true;
+  const account = instance.getAllAccounts()[0];
+  await instance.acquireTokenRedirect({ ...loginRequest, account });
+}
+
 export async function acquireToken(): Promise<string | null> {
   const { enabled, instance, loginRequest } = init();
   if (!enabled || !instance) return null;
@@ -86,11 +106,9 @@ export async function acquireToken(): Promise<string | null> {
     });
     return result.accessToken;
   } catch {
-    try {
-      const result = await instance.acquireTokenPopup(loginRequest);
-      return result.accessToken;
-    } catch {
-      return null;
-    }
+    // Silent renewal failed — recover via a full-page redirect rather than a
+    // (blocked) popup. Returns null while the browser navigates to the IdP.
+    await reauthenticate();
+    return null;
   }
 }
