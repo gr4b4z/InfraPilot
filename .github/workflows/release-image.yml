@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to build and release (e.g. v1.0.25)
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -20,6 +26,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve release tag
+        id: tag
+        run: echo "value=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Normalize image name
         id: image-name
@@ -46,7 +58,7 @@ jobs:
         with:
           images: ${{ steps.image-name.outputs.value }}
           tags: |
-            type=ref,event=tag
+            type=raw,value=${{ steps.tag.outputs.value }}
             type=raw,value=latest
 
       - name: Build and push app image
@@ -60,17 +72,17 @@ jobs:
           tags: ${{ steps.image-meta.outputs.tags }}
           labels: ${{ steps.image-meta.outputs.labels }}
           build-args: |
-            APP_VERSION=${{ github.ref_name }}
+            APP_VERSION=${{ steps.tag.outputs.value }}
 
       - name: Create or update GitHub release notes
         uses: actions/github-script@v7
         env:
           IMAGE_NAME: ${{ steps.image-name.outputs.value }}
-          IMAGE_TAG: ${{ github.ref_name }}
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
           IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
         with:
           script: |
-            const tag = context.ref.replace('refs/tags/', '');
+            const tag = process.env.IMAGE_TAG;
             const body = [
               '## Container image',
               '',
