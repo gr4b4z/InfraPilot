@@ -29,7 +29,7 @@ export function CreateRollbackPanel({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
+  const { environments, getDisplayName } = useSettingsStore();
 
   const [products, setProducts] = useState<string[]>([]);
   const [product, setProduct] = useState(prefill.product);
@@ -92,26 +92,7 @@ export function CreateRollbackPanel({
     setPreview(null);
   }, [product, targetEnv, mode, referenceEnv, manualVersion]);
 
-  // Target/reference environments come from the product's actual deploy history (the DB), not just
-  // the configured mapping — a product can only be rolled back in an env it has deployed to. The
-  // settings mapping is used only for display names and ordering (unmapped envs sort last).
-  const [productEnvs, setProductEnvs] = useState<string[]>([]);
-  useEffect(() => {
-    if (!product) {
-      setProductEnvs([]);
-      return;
-    }
-    api
-      .getDeploymentState({ product })
-      .then((rows) => setProductEnvs([...new Set(rows.map((r) => r.environment))]))
-      .catch(() => setProductEnvs([]));
-  }, [product]);
-
-  const envOptions = useMemo(
-    // Include the current targetEnv (e.g. a deep-linked prefill) so it shows before the list loads.
-    () => getOrderedEnvironments([...new Set([...productEnvs, ...(targetEnv ? [targetEnv] : [])])]),
-    [productEnvs, targetEnv, getOrderedEnvironments],
-  );
+  const envOptions = useMemo(() => environments.map((e) => e.key), [environments]);
 
   const buildBody = (applyExclusions: boolean): RollbackInput => {
     const body: RollbackInput = {
