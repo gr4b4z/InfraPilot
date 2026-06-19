@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
+import { api } from '@/lib/api';
 
 export interface EnvironmentConfig {
   key: string;
@@ -29,10 +29,14 @@ interface SettingsState {
    * then to a humanised form of the key. */
   roles: RoleConfig[];
   activityTemplate: ActivityTemplateLine[];
+  /** True once the server config has been loaded at least once this session. */
+  loaded: boolean;
 
-  setEnvironments: (envs: EnvironmentConfig[]) => void;
-  setRoles: (roles: RoleConfig[]) => void;
-  setActivityTemplate: (lines: ActivityTemplateLine[]) => void;
+  /** Hydrate from the server (source of truth). Falls back to defaults on failure. */
+  load: () => Promise<void>;
+  setEnvironments: (envs: EnvironmentConfig[]) => Promise<void>;
+  setRoles: (roles: RoleConfig[]) => Promise<void>;
+  setActivityTemplate: (lines: ActivityTemplateLine[]) => Promise<void>;
   getDisplayName: (key: string) => string;
   getRoleDisplayName: (key: string) => string;
   getOrderedEnvironments: (keys: string[]) => string[];
@@ -73,62 +77,74 @@ export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
   { template: 'PR: {participant:PR Author}  \u00b7  QA: {participant:QA}  \u00b7  {time}', style: 'muted' },
 ];
 
-export const useSettingsStore = create<SettingsState>()(
-  persist(
-    (set, get) => ({
-      environments: DEFAULT_ENVIRONMENTS,
-      roles: DEFAULT_ROLES,
-      activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
+// Shared, admin-curated config now lives server-side (GET/PUT /api/settings) so it can't
+// silently revert to defaults the way the old browser-localStorage store did. The defaults
+// below are only a first-paint placeholder until load() resolves; the server is the source
+// of truth and every setter writes through to it.
+export const useSettingsStore = create<SettingsState>()((set, get) => ({
+  environments: DEFAULT_ENVIRONMENTS,
+  roles: DEFAULT_ROLES,
+  activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
+  loaded: false,
 
-      setEnvironments: (envs) => set({ environments: envs }),
-
-      setRoles: (roles) => set({ roles }),
-
-      setActivityTemplate: (lines) => set({ activityTemplate: lines }),
-
-      getDisplayName: (key) => {
-        const env = get().environments.find((e) => e.key === key);
-        return env?.displayName ?? key;
-      },
-
-      getRoleDisplayName: (key) => {
-        if (!key) return '';
-        const role = get().roles.find((r) => r.key === key);
-        if (role) return role.displayName;
-        return humaniseRoleKey(key);
-      },
-
-      getOrderedEnvironments: (keys) => {
-        const order = get().environments.map((e) => e.key);
-        return [...keys].sort((a, b) => {
-          const ai = order.indexOf(a);
-          const bi = order.indexOf(b);
-          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-        });
-      },
-    }),
-    {
-      name: 'platform-settings',
-      // Migrate old shapes:
-      //  v0: { environments }                            (pre-rename)
-      //  v1: { defaultEnvironments, productEnvironments } (per-product overrides)
-      //  v2: { environments }                            (current — global only)
-      migrate: (persisted: unknown) => {
-        const state = persisted as Record<string, unknown>;
-        if (state.defaultEnvironments && !state.environments) {
-          state.environments = state.defaultEnvironments;
-        }
-        delete state.defaultEnvironments;
-        delete state.productEnvironments;
-        if (!Array.isArray(state.roles)) {
-          state.roles = DEFAULT_ROLES;
-        }
-        return state as SettingsState;
-      },
-      version: 3,
+  load: async () => {
+    try {
+      const s = await api.getAppSettings();
+      set({
+        environments: s.environments,
+        roles: s.roles,
+        activityTemplate: s.activityTemplate as ActivityTemplateLine[],
+        loaded: true,
+      });
+    } catch {
+      // Keep defaults visible if the endpoint is unreachable; don't wipe the UI.
+      set({ loaded: true });
     }
-  )
-);
+  },
+
+  // Setters persist the full config to the server, then update local state only on success
+  // so the in-memory store never drifts from what's saved.
+  setEnvironments: async (envs) => {
+    await api.saveAppSettings({ ...currentPayload(get), environments: envs });
+    set({ environments: envs });
+  },
+
+  setRoles: async (roles) => {
+    await api.saveAppSettings({ ...currentPayload(get), roles });
+    set({ roles });
+  },
+
+  setActivityTemplate: async (lines) => {
+    await api.saveAppSettings({ ...currentPayload(get), activityTemplate: lines });
+    set({ activityTemplate: lines });
+  },
+
+  getDisplayName: (key) => {
+    const env = get().environments.find((e) => e.key === key);
+    return env?.displayName ?? key;
+  },
+
+  getRoleDisplayName: (key) => {
+    if (!key) return '';
+    const role = get().roles.find((r) => r.key === key);
+    if (role) return role.displayName;
+    return humaniseRoleKey(key);
+  },
+
+  getOrderedEnvironments: (keys) => {
+    const order = get().environments.map((e) => e.key);
+    return [...keys].sort((a, b) => {
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+  },
+}));
+
+function currentPayload(get: () => SettingsState) {
+  const { environments, roles, activityTemplate } = get();
+  return { environments, roles, activityTemplate };
+}
 
 /**
  * Resolve a template string against a DeployEvent.

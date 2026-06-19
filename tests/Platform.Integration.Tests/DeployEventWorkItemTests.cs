@@ -13,7 +13,7 @@ namespace Platform.Integration.Tests;
 /// <summary>
 /// Integration tests covering the work-item projection table. Two groups:
 ///   1. Live ingest path (<see cref="DeploymentService.IngestEvent"/> calling
-///      <see cref="DeploymentService.SyncWorkItemsAsync"/>).
+///      <see cref="WorkItemSyncService.SyncAsync"/>).
 ///   2. Startup backfill (<see cref="DeployEventWorkItemBackfillService"/>).
 ///
 /// Each test owns a fresh <see cref="TestFactory"/> so the SQLite in-memory database
@@ -43,6 +43,10 @@ public class DeployEventWorkItemTests
         });
 
         var ev = await service.IngestEvent(dto);
+        // Work-item extraction runs as a post-ingest step (enrichment service / promotion
+        // hook) via WorkItemSyncService, not inside IngestEvent itself.
+        await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+        await db.SaveChangesAsync();
 
         var rows = await db.DeployEventWorkItems
             .Where(w => w.DeployEventId == ev.Id)
@@ -79,11 +83,11 @@ public class DeployEventWorkItemTests
         // matters — it must not produce duplicate join rows for the same event.
         using (var scope = factory.Services.CreateScope())
         {
-            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var service = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
 
-            await service.SyncWorkItemsAsync(ev);
+            await service.SyncAsync(ev);
             await db.SaveChangesAsync();
         }
 
@@ -118,7 +122,7 @@ public class DeployEventWorkItemTests
         // Re-sync with a shrunken references list: FOO-2 should be removed.
         using (var scope = factory.Services.CreateScope())
         {
-            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var service = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
 
@@ -128,7 +132,7 @@ public class DeployEventWorkItemTests
                 new("work-item", Key: "FOO-1"),
             };
 
-            await service.SyncWorkItemsAsync(ev);
+            await service.SyncAsync(ev);
             await db.SaveChangesAsync();
         }
 
@@ -181,6 +185,8 @@ public class DeployEventWorkItemTests
         });
 
         var ev = await service.IngestEvent(dto);
+        await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+        await db.SaveChangesAsync();
 
         var rows = await db.DeployEventWorkItems
             .Where(w => w.DeployEventId == ev.Id)

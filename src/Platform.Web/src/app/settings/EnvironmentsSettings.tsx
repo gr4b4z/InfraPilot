@@ -6,18 +6,30 @@ export function EnvironmentsSettings() {
   const { environments, setEnvironments } = useSettingsStore();
   const [items, setItems] = useState<EnvironmentConfig[]>(environments);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setItems(environments);
   }, [environments]);
 
-  const save = () => {
-    const cleaned = items.filter((i) => i.key.trim() !== '');
-    setEnvironments(cleaned);
-    setItems(cleaned);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const save = async () => {
+    const cleaned = items
+      .filter((i) => i.key.trim() !== '')
+      .map((i) => ({ key: i.key.trim(), displayName: i.displayName.trim() }));
+    setSaving(true);
+    setError(null);
+    try {
+      await setEnvironments(cleaned);
+      setItems(cleaned);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateItem = (index: number, field: keyof EnvironmentConfig, value: string) => {
@@ -125,15 +137,19 @@ export function EnvironmentsSettings() {
       <div className="flex items-center gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
         <button
           onClick={save}
-          className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90"
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-60"
           style={{ backgroundColor: 'var(--accent)' }}
         >
-          Save
+          {saving ? 'Saving…' : 'Save'}
         </button>
         {saved && (
           <span className="inline-flex items-center gap-1 text-[13px]" style={{ color: 'var(--success)' }}>
             <Check size={14} /> Saved
           </span>
+        )}
+        {error && (
+          <span className="text-[13px]" style={{ color: 'var(--danger)' }}>{error}</span>
         )}
       </div>
     </section>

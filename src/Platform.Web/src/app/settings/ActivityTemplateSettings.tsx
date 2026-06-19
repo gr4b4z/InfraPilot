@@ -10,17 +10,27 @@ export function ActivityTemplateSettings() {
   const { activityTemplate, setActivityTemplate } = useSettingsStore();
   const [lines, setLines] = useState<ActivityTemplateLine[]>(activityTemplate);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLines(activityTemplate);
   }, [activityTemplate]);
 
-  const save = () => {
+  const save = async () => {
     const cleaned = lines.filter((l) => l.template.trim() !== '');
-    setActivityTemplate(cleaned);
-    setLines(cleaned);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaving(true);
+    setError(null);
+    try {
+      await setActivityTemplate(cleaned);
+      setLines(cleaned);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateLine = (index: number, field: keyof ActivityTemplateLine, value: string) => {
@@ -162,15 +172,19 @@ export function ActivityTemplateSettings() {
       <div className="flex items-center gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
         <button
           onClick={save}
-          className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90"
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-60"
           style={{ backgroundColor: 'var(--accent)' }}
         >
-          Save
+          {saving ? 'Saving…' : 'Save'}
         </button>
         {saved && (
           <span className="inline-flex items-center gap-1 text-[13px]" style={{ color: 'var(--success)' }}>
             <Check size={14} /> Saved
           </span>
+        )}
+        {error && (
+          <span className="text-[13px]" style={{ color: 'var(--danger)' }}>{error}</span>
         )}
       </div>
     </section>

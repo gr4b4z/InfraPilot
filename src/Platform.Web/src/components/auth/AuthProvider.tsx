@@ -4,6 +4,7 @@ import { InteractionType } from '@azure/msal-browser';
 import { getMsalInstance, isMsalEnabled, getLoginRequest } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { getStoredToken, fetchCurrentUser } from '@/lib/localAuth';
 import { LoginPage } from '@/app/login/LoginPage';
@@ -27,6 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isAuthenticated) {
       useFeatureFlagsStore.getState().load();
+      useSettingsStore.getState().load();
     }
   }, [isAuthenticated]);
 

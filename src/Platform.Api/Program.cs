@@ -10,6 +10,7 @@ using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.ReleaseNotes;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
 using Platform.Api.Infrastructure.Auth;
@@ -182,6 +183,9 @@ builder.Services.AddSingleton<MarkdownRenderer>();
 builder.Services.AddScoped<ReleaseNoteService>();
 builder.Services.AddScoped<ReleaseNoteTemplateService>();
 
+// Shared UI settings (environments, roles, activity template)
+builder.Services.AddScoped<Platform.Api.Features.Settings.AppSettingsService>();
+
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();
 builder.Services.AddScoped<ValidationRunner>();
@@ -310,6 +314,7 @@ app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(Aut
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)

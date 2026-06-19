@@ -556,6 +556,25 @@ class ApiClient {
   getReleaseNote(id: string) {
     return this.request<ReleaseNoteDetail>(`/release-notes/${id}`);
   }
+
+  // ── Shared UI settings (environments, roles, activity template) ────────────
+
+  getAppSettings() {
+    return this.request<AppSettingsPayload>(`/settings`);
+  }
+
+  saveAppSettings(payload: AppSettingsPayload) {
+    return this.request<void>(`/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+}
+
+export interface AppSettingsPayload {
+  environments: { key: string; displayName: string }[];
+  roles: { key: string; displayName: string }[];
+  activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
 }
 
 export interface RawPreview {
