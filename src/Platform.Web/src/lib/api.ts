@@ -282,8 +282,8 @@ class ApiClient {
       approvals: PromotionApprovalEntry[];
       sourceEvent: PromotionSourceEvent | null;
       comments: PromotionComment[];
-      inheritedReferences: PromotionInheritedReference[];
-      inheritedParticipants: PromotionInheritedParticipant[];
+      approvalProgress: PromotionApprovalProgress;
+      eligibleRequirements: EligibleRequirement[];
     }>(`/promotions/${id}`);
   }
 
@@ -295,6 +295,12 @@ class ApiClient {
     return this.request<{
       users: Array<{ id: string; displayName: string; email: string }>;
     }>(`/promotions/users/search?q=${encodeURIComponent(q)}`);
+  }
+
+  searchPromotionGroups(q: string) {
+    return this.request<{
+      groups: Array<{ id: string; displayName: string }>;
+    }>(`/promotions/groups/search?q=${encodeURIComponent(q)}`);
   }
 
   /**
@@ -362,10 +368,18 @@ class ApiClient {
     return this.request<void>(`/promotions/comments/${commentId}`, { method: 'DELETE' });
   }
 
-  approvePromotion(id: string, comment?: string) {
+  approvePromotion(
+    id: string,
+    comment?: string,
+    target?: { stepName: string; requirementName: string },
+  ) {
     return this.request<PromotionCandidate>(`/promotions/${id}/approve`, {
       method: 'POST',
-      body: JSON.stringify({ comment }),
+      body: JSON.stringify({
+        comment,
+        stepName: target?.stepName,
+        requirementName: target?.requirementName,
+      }),
     });
   }
 
@@ -410,8 +424,8 @@ class ApiClient {
     );
   }
 
-  // The current user's pending tickets across all (product, targetEnv) pairs.
-  // Powers the /me/tickets queue page.
+  // The current user's pending work items across all (product, targetEnv) pairs.
+  // Powers the /me/work-items queue page.
   //
   // Optional `role` and `assignee` narrow the list (display only — server-side authorisation
   // is unchanged). The matrix:
@@ -467,22 +481,6 @@ class ApiClient {
 
   deletePromotionPolicy(id: string) {
     return this.request<void>(`/promotions/admin/policies/${id}`, { method: 'DELETE' });
-  }
-
-  getPromotionTopology() {
-    return this.request<{ environments: string[]; edges: Array<{ from: string; to: string }> }>(
-      `/promotions/admin/topology`,
-    );
-  }
-
-  updatePromotionTopology(topology: {
-    environments: string[];
-    edges: Array<{ from: string; to: string }>;
-  }) {
-    return this.request<typeof topology>(`/promotions/admin/topology`, {
-      method: 'PUT',
-      body: JSON.stringify(topology),
-    });
   }
 
   // ── Rollbacks ──────────────────────────────────────────────────────────
@@ -777,7 +775,7 @@ export type PromotionStatus =
   | 'Rejected';
 
 /** Gate mode read from the candidate's resolved policy snapshot. */
-export type PromotionGate = 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
+export type PromotionGate = 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
 
 export interface PromotionCandidate {
   id: string;
@@ -788,8 +786,6 @@ export interface PromotionCandidate {
   version: string;
   /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
   targetCurrentVersion: string | null;
-  /** Count of refs/participants inherited from superseded predecessors. 0 when the candidate didn't displace anything. */
-  inheritedCount: number;
   status: PromotionStatus;
   externalRunUrl: string | null;
   createdAt: string;
@@ -931,20 +927,6 @@ export interface PromotionSourceEventParticipant {
   assignedBy?: string | null;
 }
 
-export interface PromotionInheritedReference {
-  reference: PromotionSourceEventReference;
-  /** Source deploy event id this reference came from (needed to PATCH overrides). */
-  fromEventId?: string;
-  fromVersion: string;
-  fromDeployedAt: string;
-}
-
-export interface PromotionInheritedParticipant {
-  participant: PromotionSourceEventParticipant;
-  fromVersion: string;
-  fromDeployedAt: string;
-}
-
 export interface PromotionSourceEventEnrichment {
   labels: Record<string, string>;
   participants: PromotionSourceEventParticipant[];
@@ -966,7 +948,74 @@ export interface PromotionApprovalEntry {
   approverName: string;
   comment: string | null;
   decision: 'Approved' | 'Rejected';
+  /** Which requirement the approver was recorded against (null on legacy/auto rows). */
+  stepName: string | null;
+  requirementName: string | null;
   createdAt: string;
+}
+
+/**
+ * One requirement the current user is eligible to approve as, identified by its unique
+ * (stepName, requirementName) pair. When more than one is returned the UI prompts the approver
+ * to choose which one they approve as.
+ */
+export interface EligibleRequirement {
+  stepName: string;
+  requirementName: string;
+}
+
+/** Live approval gate progress for the detail view (mirrors the backend `ApprovalProgress`). */
+export interface PromotionApprovalProgress {
+  /** False for auto-approve candidates / no requirements — the UI hides the panel. */
+  requiresApproval: boolean;
+  allSatisfied: boolean;
+  totalRequired: number;
+  totalApproved: number;
+  steps: PromotionStepProgress[];
+  /** The "all work items resolved" gate condition, when the policy gates on it; null otherwise. */
+  workItems: PromotionWorkItemGate | null;
+}
+
+export interface PromotionWorkItemGate {
+  required: boolean;
+  total: number;
+  approved: number;
+  satisfied: boolean;
+  /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
+  autoApprove: boolean;
+}
+
+export interface PromotionStepProgress {
+  name: string;
+  satisfied: boolean;
+  requirements: PromotionRequirementProgress[];
+}
+
+export interface PromotionRequirementProgress {
+  name: string;
+  required: number;
+  approved: number;
+  satisfied: boolean;
+  // Who can satisfy this requirement — configured groups (id+name) + explicitly listed user emails.
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+}
+
+export interface PromotionPolicyGroupRef {
+  id: string;
+  name: string;
+}
+
+export interface PromotionPolicyRequirement {
+  name: string;
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+  minApprovers: number;
+}
+
+export interface PromotionPolicyStep {
+  name: string;
+  requirements: PromotionPolicyRequirement[];
 }
 
 export interface PromotionPolicy {
@@ -974,16 +1023,13 @@ export interface PromotionPolicy {
   product: string;
   service: string | null;
   targetEnv: string;
-  approverGroup: string | null;
-  strategy: 'Any' | 'NOfM';
-  minApprovers: number;
-  gate: 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
-  excludeRole: string | null;
+  steps: PromotionPolicyStep[];
+  gate: 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
   timeoutHours: number;
   escalationGroup: string | null;
-  requireAllTicketsApproved: boolean;
-  autoApproveOnAllTicketsApproved: boolean;
-  autoApproveWhenNoTickets: boolean;
+  requireAllWorkItemsApproved: boolean;
+  autoApproveOnAllWorkItemsApproved: boolean;
+  autoApproveWhenNoWorkItems: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -992,16 +1038,13 @@ export interface UpsertPromotionPolicyPayload {
   product: string;
   service: string | null;
   targetEnv: string;
-  approverGroup: string | null;
-  strategy: 'Any' | 'NOfM';
-  minApprovers: number;
-  gate: 'PromotionOnly' | 'TicketsOnly' | 'TicketsAndManual';
-  excludeRole: string | null;
+  steps: PromotionPolicyStep[];
+  gate: 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
   timeoutHours: number;
   escalationGroup: string | null;
-  requireAllTicketsApproved: boolean;
-  autoApproveOnAllTicketsApproved: boolean;
-  autoApproveWhenNoTickets: boolean;
+  requireAllWorkItemsApproved: boolean;
+  autoApproveOnAllWorkItemsApproved: boolean;
+  autoApproveWhenNoWorkItems: boolean;
 }
 
 export interface FeatureFlag {

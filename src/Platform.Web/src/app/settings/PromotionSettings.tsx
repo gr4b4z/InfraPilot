@@ -1,27 +1,38 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuthStore } from '@/stores/authStore';
-import { api, type PromotionPolicy, type UpsertPromotionPolicyPayload } from '@/lib/api';
-import { Plus, Trash2, Check, Pencil, ArrowRight, X } from 'lucide-react';
+import {
+  api,
+  type PromotionPolicy,
+  type PromotionPolicyStep,
+  type PromotionPolicyRequirement,
+  type PromotionPolicyGroupRef,
+  type UpsertPromotionPolicyPayload,
+} from '@/lib/api';
+import { Plus, Trash2, Check, Pencil, X } from 'lucide-react';
 
-interface Topology {
-  environments: string[];
-  edges: Array<{ from: string; to: string }>;
-}
+const emptyRequirement = (): PromotionPolicyRequirement => ({
+  name: '',
+  groups: [],
+  users: [],
+  minApprovers: 1,
+});
+
+const emptyStep = (): PromotionPolicyStep => ({
+  name: '',
+  requirements: [emptyRequirement()],
+});
 
 const emptyForm: UpsertPromotionPolicyPayload = {
   product: '',
   service: null,
   targetEnv: '',
-  approverGroup: null,
-  strategy: 'Any',
-  minApprovers: 1,
+  steps: [],
   gate: 'PromotionOnly',
-  excludeRole: null,
   timeoutHours: 24,
   escalationGroup: null,
-  requireAllTicketsApproved: false,
-  autoApproveOnAllTicketsApproved: false,
-  autoApproveWhenNoTickets: false,
+  requireAllWorkItemsApproved: false,
+  autoApproveOnAllWorkItemsApproved: false,
+  autoApproveWhenNoWorkItems: false,
 };
 
 const inputClass =
@@ -32,17 +43,335 @@ const inputStyle = {
   color: 'var(--text-primary)',
 };
 
+const labelClass = 'text-[11px] font-medium uppercase tracking-wider';
+const labelStyle = { color: 'var(--text-muted)' };
+
+/** Summarise a step tree for the policy table. */
+function summarizeSteps(steps: PromotionPolicyStep[]): string {
+  if (!steps || steps.length === 0) return 'auto-approve';
+  return steps
+    .map((s, i) => {
+      const reqs = s.requirements
+        .map((r) => {
+          const approvers = [...r.groups.map((g) => g.name), ...r.users];
+          const who = approvers.length > 0 ? approvers.join(', ') : '—';
+          return `${who} (${r.minApprovers})`;
+        })
+        .join(' + ');
+      const name = s.name?.trim() || `Step ${i + 1}`;
+      return `${name}: ${reqs}`;
+    })
+    .join('  →  ');
+}
+
+/** Per-requirement validation errors keyed by `${stepIdx}:${reqIdx}`. */
+function validateSteps(steps: PromotionPolicyStep[]): Record<string, string> {
+  const errors: Record<string, string> = {};
+  steps.forEach((step, si) => {
+    step.requirements.forEach((req, ri) => {
+      const key = `${si}:${ri}`;
+      if (req.groups.length === 0 && req.users.length === 0) {
+        errors[key] = 'Add at least one group or user.';
+      } else if (req.minApprovers < 1) {
+        errors[key] = 'Min approvers must be at least 1.';
+      }
+    });
+  });
+  return errors;
+}
+
+/** Removable chip row shared by the group/user pickers. `label(v)` resolves a display label. */
+function ChipRow({
+  values,
+  label,
+  onRemove,
+}: {
+  values: string[];
+  label: (v: string) => string;
+  onRemove: (v: string) => void;
+}) {
+  if (values.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {values.map((v) => (
+        <span
+          key={v}
+          className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-full border"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+          title={label(v) !== v ? v : undefined}
+        >
+          {label(v)}
+          <button
+            type="button"
+            onClick={() => onRemove(v)}
+            className="hover:opacity-80 transition-colors"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <X size={12} />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Typeahead picker for user emails. Debounced search against /promotions/users/search; selecting
+ * a hit adds the user's *email* to `values` (that's what the gate matches on). Falls back to
+ * manual entry of an unmatched email so local-dev / edge cases still work.
+ */
+function UserPicker({
+  values,
+  onChange,
+}: {
+  values: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<
+    Array<{ id: string; displayName: string; email: string }>
+  >([]);
+  const [searching, setSearching] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.searchPromotionUsers(q);
+        if (!cancelled) setResults(res.users || []);
+      } catch {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
+  const add = (email: string) => {
+    const v = email.trim();
+    if (!v || values.includes(v)) return;
+    onChange([...values, v]);
+    setQuery('');
+    setResults([]);
+  };
+
+  const remove = (v: string) => onChange(values.filter((x) => x !== v));
+
+  const trimmed = query.trim();
+  const manualOk = trimmed.includes('@') && trimmed.includes('.');
+
+  return (
+    <div className="space-y-1.5">
+      <ChipRow values={values} label={(v) => v} onRemove={remove} />
+      <div className="relative">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            blurTimer.current = setTimeout(() => setFocused(false), 150);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (results.length === 0 && manualOk) add(trimmed);
+            }
+          }}
+          placeholder="Search directory (name or email)..."
+          className={`${inputClass} w-full`}
+          style={inputStyle}
+        />
+        {focused && trimmed.length >= 2 && (
+          <div
+            className="absolute z-20 mt-1 top-full left-0 right-0 max-h-48 overflow-y-auto rounded-lg border shadow-lg"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+            onMouseDown={() => {
+              if (blurTimer.current) clearTimeout(blurTimer.current);
+            }}
+          >
+            {searching && (
+              <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                Searching...
+              </div>
+            )}
+            {!searching && results.length === 0 && (
+              <button
+                type="button"
+                onClick={() => add(trimmed)}
+                disabled={!manualOk}
+                className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80 disabled:opacity-40"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as email</span>
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
+                </span>
+              </button>
+            )}
+            {!searching &&
+              results.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => add(u.email)}
+                  className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  <span className="font-medium truncate">{u.displayName}</span>
+                  <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+                    {u.email}
+                  </span>
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Typeahead picker for AD groups. Debounced search against /promotions/groups/search; selecting a
+ * hit stores both the group's object *id* (the approval-time Graph lookup keys off the id) and its
+ * display *name* as `{ id, name }`. The chip label shows the name, so a saved policy reloads showing
+ * group names rather than raw object GUIDs. Unmatched manual entries are stored as `{id, name}` with
+ * the typed text used for both. Falls back to manual entry too.
+ */
+function GroupPicker({
+  values,
+  onChange,
+}: {
+  values: PromotionPolicyGroupRef[];
+  onChange: (next: PromotionPolicyGroupRef[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Array<{ id: string; displayName: string }>>([]);
+  const [searching, setSearching] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.searchPromotionGroups(q);
+        if (!cancelled) setResults(res.groups || []);
+      } catch {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
+  const add = (id: string, displayName?: string) => {
+    const trimmedId = id.trim();
+    if (!trimmedId || values.some((g) => g.id === trimmedId)) return;
+    onChange([...values, { id: trimmedId, name: (displayName ?? trimmedId).trim() }]);
+    setQuery('');
+    setResults([]);
+  };
+
+  const remove = (id: string) => onChange(values.filter((g) => g.id !== id));
+
+  const trimmed = query.trim();
+
+  return (
+    <div className="space-y-1.5">
+      <ChipRow values={values.map((g) => g.id)} label={(id) => values.find((g) => g.id === id)?.name ?? id} onRemove={remove} />
+      <div className="relative">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            blurTimer.current = setTimeout(() => setFocused(false), 150);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (results.length === 0 && trimmed) add(trimmed);
+            }
+          }}
+          placeholder="Search groups..."
+          className={`${inputClass} w-full`}
+          style={inputStyle}
+        />
+        {focused && trimmed.length >= 2 && (
+          <div
+            className="absolute z-20 mt-1 top-full left-0 right-0 max-h-48 overflow-y-auto rounded-lg border shadow-lg"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+            onMouseDown={() => {
+              if (blurTimer.current) clearTimeout(blurTimer.current);
+            }}
+          >
+            {searching && (
+              <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                Searching...
+              </div>
+            )}
+            {!searching && results.length === 0 && (
+              <button
+                type="button"
+                onClick={() => add(trimmed)}
+                className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as group</span>
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  No directory matches — added as-is.
+                </span>
+              </button>
+            )}
+            {!searching &&
+              results.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => add(g.id, g.displayName)}
+                  className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  <span className="font-medium truncate">{g.displayName}</span>
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function PromotionSettings() {
   const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
-
-  // ── Topology state ──
-  const [topology, setTopology] = useState<Topology>({ environments: [], edges: [] });
-  const [topoLoading, setTopoLoading] = useState(true);
-  const [topoSaved, setTopoSaved] = useState(false);
-  const [topoError, setTopoError] = useState<string | null>(null);
-  const [newEnv, setNewEnv] = useState('');
-  const [edgeFrom, setEdgeFrom] = useState('');
-  const [edgeTo, setEdgeTo] = useState('');
 
   // ── Policies state ──
   const [policies, setPolicies] = useState<PromotionPolicy[]>([]);
@@ -55,6 +384,7 @@ export function PromotionSettings() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<UpsertPromotionPolicyPayload>(emptyForm);
   const [formSaving, setFormSaving] = useState(false);
+  const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
 
   // ── Delete confirm ──
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
@@ -62,12 +392,8 @@ export function PromotionSettings() {
   // ── Load data ──
   useEffect(() => {
     if (!isAdmin) return;
-    api.getPromotionTopology()
-      .then(setTopology)
-      .catch(() => setTopoError('Failed to load topology'))
-      .finally(() => setTopoLoading(false));
-
-    api.listPromotionPolicies()
+    api
+      .listPromotionPolicies()
       .then((d) => setPolicies(d.policies))
       .catch(() => setPolError('Failed to load policies'))
       .finally(() => setPolLoading(false));
@@ -75,51 +401,11 @@ export function PromotionSettings() {
 
   if (!isAdmin) return null;
 
-  // ── Topology handlers ──
-
-  const handleAddEnv = () => {
-    const trimmed = newEnv.trim();
-    if (!trimmed || topology.environments.includes(trimmed)) return;
-    setTopology((t) => ({ ...t, environments: [...t.environments, trimmed] }));
-    setNewEnv('');
-  };
-
-  const handleRemoveEnv = (env: string) => {
-    setTopology((t) => ({
-      environments: t.environments.filter((e) => e !== env),
-      edges: t.edges.filter((e) => e.from !== env && e.to !== env),
-    }));
-  };
-
-  const handleAddEdge = () => {
-    if (!edgeFrom || !edgeTo || edgeFrom === edgeTo) return;
-    if (topology.edges.some((e) => e.from === edgeFrom && e.to === edgeTo)) return;
-    setTopology((t) => ({ ...t, edges: [...t.edges, { from: edgeFrom, to: edgeTo }] }));
-    setEdgeFrom('');
-    setEdgeTo('');
-  };
-
-  const handleRemoveEdge = (idx: number) => {
-    setTopology((t) => ({ ...t, edges: t.edges.filter((_, i) => i !== idx) }));
-  };
-
-  const handleSaveTopology = async () => {
-    setTopoError(null);
-    setTopoSaved(false);
-    try {
-      const result = await api.updatePromotionTopology(topology);
-      setTopology(result);
-      setTopoSaved(true);
-      setTimeout(() => setTopoSaved(false), 2000);
-    } catch (e) {
-      setTopoError(e instanceof Error ? e.message : 'Failed to save topology');
-    }
-  };
-
   // ── Policy handlers ──
 
   const openAddForm = () => {
     setForm(emptyForm);
+    setStepErrors({});
     setEditingId(null);
     setShowForm(true);
   };
@@ -129,17 +415,24 @@ export function PromotionSettings() {
       product: p.product,
       service: p.service,
       targetEnv: p.targetEnv,
-      approverGroup: p.approverGroup,
-      strategy: p.strategy,
-      minApprovers: p.minApprovers,
+      // Deep clone so edits don't mutate the list row.
+      steps: p.steps.map((s) => ({
+        name: s.name,
+        requirements: s.requirements.map((r) => ({
+          name: r.name,
+          groups: [...r.groups],
+          users: [...r.users],
+          minApprovers: r.minApprovers,
+        })),
+      })),
       gate: p.gate ?? 'PromotionOnly',
-      excludeRole: p.excludeRole,
       timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
-      requireAllTicketsApproved: p.requireAllTicketsApproved ?? false,
-      autoApproveOnAllTicketsApproved: p.autoApproveOnAllTicketsApproved ?? false,
-      autoApproveWhenNoTickets: p.autoApproveWhenNoTickets ?? false,
+      requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
+      autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
+      autoApproveWhenNoWorkItems: p.autoApproveWhenNoWorkItems ?? false,
     });
+    setStepErrors({});
     setEditingId(p.id);
     setShowForm(true);
   };
@@ -148,9 +441,16 @@ export function PromotionSettings() {
     setShowForm(false);
     setEditingId(null);
     setForm(emptyForm);
+    setStepErrors({});
   };
 
   const handleSavePolicy = async () => {
+    const errors = validateSteps(form.steps);
+    if (Object.keys(errors).length > 0) {
+      setStepErrors(errors);
+      return;
+    }
+    setStepErrors({});
     setFormSaving(true);
     setPolError(null);
     setPolSaved(false);
@@ -193,6 +493,52 @@ export function PromotionSettings() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
+  // ── Step / requirement mutators ──
+
+  const addStep = () => setForm((p) => ({ ...p, steps: [...p.steps, emptyStep()] }));
+
+  const removeStep = (si: number) =>
+    setForm((p) => ({ ...p, steps: p.steps.filter((_, i) => i !== si) }));
+
+  const updateStepName = (si: number, name: string) =>
+    setForm((p) => ({
+      ...p,
+      steps: p.steps.map((s, i) => (i === si ? { ...s, name } : s)),
+    }));
+
+  const addRequirement = (si: number) =>
+    setForm((p) => ({
+      ...p,
+      steps: p.steps.map((s, i) =>
+        i === si ? { ...s, requirements: [...s.requirements, emptyRequirement()] } : s,
+      ),
+    }));
+
+  const removeRequirement = (si: number, ri: number) =>
+    setForm((p) => ({
+      ...p,
+      steps: p.steps.map((s, i) =>
+        i === si ? { ...s, requirements: s.requirements.filter((_, j) => j !== ri) } : s,
+      ),
+    }));
+
+  const updateRequirement = (
+    si: number,
+    ri: number,
+    patch: Partial<PromotionPolicyRequirement>,
+  ) =>
+    setForm((p) => ({
+      ...p,
+      steps: p.steps.map((s, i) =>
+        i === si
+          ? {
+              ...s,
+              requirements: s.requirements.map((r, j) => (j === ri ? { ...r, ...patch } : r)),
+            }
+          : s,
+      ),
+    }));
+
   return (
     <div
       className="rounded-xl border p-5 space-y-4"
@@ -203,174 +549,20 @@ export function PromotionSettings() {
           Promotions
         </h2>
         <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-          Manage the promotion topology and approval policies.
+          Manage promotion approval policies.
         </p>
       </div>
 
-      {/* ══════════ Section A: Environment Topology ══════════ */}
+      {/* ══════════ Promotion Policies ══════════ */}
       <div className="space-y-3">
-        <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Environment Topology
-        </h3>
-
-        {topoLoading ? (
-          <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>Loading topology…</p>
-        ) : (
-          <>
-            {/* Environments as pills */}
-            <div className="flex flex-wrap gap-1.5">
-              {topology.environments.map((env) => (
-                <span
-                  key={env}
-                  className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-full border"
-                  style={{
-                    borderColor: 'var(--border-color)',
-                    backgroundColor: 'var(--bg-primary)',
-                    color: 'var(--text-primary)',
-                  }}
-                >
-                  {env}
-                  <button
-                    onClick={() => handleRemoveEnv(env)}
-                    className="hover:opacity-80 transition-colors"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-              {topology.environments.length === 0 && (
-                <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                  No environments defined.
-                </span>
-              )}
-            </div>
-
-            {/* Add environment */}
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={newEnv}
-                onChange={(e) => setNewEnv(e.target.value)}
-                placeholder="New environment"
-                onKeyDown={(e) => e.key === 'Enter' && handleAddEnv()}
-                className={inputClass}
-                style={inputStyle}
-              />
-              <button
-                onClick={handleAddEnv}
-                className="inline-flex items-center gap-1 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
-              >
-                <Plus size={14} />
-                Add
-              </button>
-            </div>
-
-            {/* Edges list */}
-            {topology.edges.length > 0 && (
-              <div className="space-y-1">
-                {topology.edges.map((edge, idx) => (
-                  <div
-                    key={idx}
-                    className="inline-flex items-center gap-2 text-[13px] px-2.5 py-1 rounded-lg mr-2"
-                    style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-                  >
-                    <span>{edge.from}</span>
-                    <ArrowRight size={13} style={{ color: 'var(--text-muted)' }} />
-                    <span>{edge.to}</span>
-                    <button
-                      onClick={() => handleRemoveEdge(idx)}
-                      className="hover:opacity-80 transition-colors"
-                      style={{ color: 'var(--text-muted)' }}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add edge */}
-            <div className="flex items-center gap-2">
-              <select
-                value={edgeFrom}
-                onChange={(e) => setEdgeFrom(e.target.value)}
-                className={inputClass}
-                style={inputStyle}
-              >
-                <option value="">From…</option>
-                {topology.environments.map((env) => (
-                  <option key={env} value={env}>{env}</option>
-                ))}
-              </select>
-              <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-              <select
-                value={edgeTo}
-                onChange={(e) => setEdgeTo(e.target.value)}
-                className={inputClass}
-                style={inputStyle}
-              >
-                <option value="">To…</option>
-                {topology.environments.map((env) => (
-                  <option key={env} value={env}>{env}</option>
-                ))}
-              </select>
-              <button
-                onClick={handleAddEdge}
-                className="inline-flex items-center gap-1 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
-              >
-                <Plus size={14} />
-                Add Edge
-              </button>
-            </div>
-
-            {/* Save topology */}
-            <div
-              className="flex items-center gap-3 pt-2 border-t"
-              style={{ borderColor: 'var(--border-color)' }}
-            >
-              <button
-                onClick={handleSaveTopology}
-                className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90"
-                style={{ backgroundColor: 'var(--accent)' }}
-              >
-                Save Topology
-              </button>
-              {topoSaved && (
-                <span
-                  className="inline-flex items-center gap-1 text-[13px]"
-                  style={{ color: 'var(--success)' }}
-                >
-                  <Check size={14} /> Saved
-                </span>
-              )}
-            </div>
-
-            {topoError && (
-              <div
-                className="text-[13px] rounded-lg px-3 py-2"
-                style={{ color: 'var(--danger, #dc2626)', backgroundColor: 'var(--danger-muted, #fee2e2)' }}
-              >
-                {topoError}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* ══════════ Section B: Promotion Policies ══════════ */}
-      <div
-        className="space-y-3 pt-4 border-t"
-        style={{ borderColor: 'var(--border-color)' }}
-      >
         <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
           Promotion Policies
         </h3>
 
         {polLoading ? (
-          <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>Loading policies…</p>
+          <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+            Loading policies…
+          </p>
         ) : (
           <>
             {/* Table */}
@@ -385,9 +577,8 @@ export function PromotionSettings() {
                       <th className="pb-2 pr-3">Product</th>
                       <th className="pb-2 pr-3">Service</th>
                       <th className="pb-2 pr-3">Target Env</th>
-                      <th className="pb-2 pr-3">Approver Group</th>
-                      <th className="pb-2 pr-3">Strategy</th>
-                      <th className="pb-2 pr-3">Min Approvers</th>
+                      <th className="pb-2 pr-3">Approval Steps</th>
+                      <th className="pb-2 pr-3">Gate</th>
                       <th className="pb-2">Actions</th>
                     </tr>
                   </thead>
@@ -399,15 +590,22 @@ export function PromotionSettings() {
                         style={{ borderColor: 'var(--border-color)' }}
                       >
                         <td className="py-2 pr-3">{p.product}</td>
-                        <td className="py-2 pr-3" style={{ color: p.service ? undefined : 'var(--text-muted)' }}>
+                        <td
+                          className="py-2 pr-3"
+                          style={{ color: p.service ? undefined : 'var(--text-muted)' }}
+                        >
                           {p.service || '—'}
                         </td>
                         <td className="py-2 pr-3">{p.targetEnv}</td>
-                        <td className="py-2 pr-3" style={{ color: p.approverGroup ? undefined : 'var(--text-muted)' }}>
-                          {p.approverGroup || 'auto-approve'}
+                        <td
+                          className="py-2 pr-3"
+                          style={{
+                            color: p.steps?.length ? undefined : 'var(--text-muted)',
+                          }}
+                        >
+                          {summarizeSteps(p.steps)}
                         </td>
-                        <td className="py-2 pr-3">{p.strategy}</td>
-                        <td className="py-2 pr-3">{p.minApprovers}</td>
+                        <td className="py-2 pr-3">{p.gate}</td>
                         <td className="py-2">
                           <div className="flex items-center gap-1.5">
                             <button
@@ -420,7 +618,12 @@ export function PromotionSettings() {
                             <button
                               onClick={() => handleDeletePolicy(p.id)}
                               className="p-1 rounded-lg transition-colors hover:opacity-80"
-                              style={{ color: deleteConfirm === p.id ? 'var(--danger, #dc2626)' : 'var(--text-muted)' }}
+                              style={{
+                                color:
+                                  deleteConfirm === p.id
+                                    ? 'var(--danger, #dc2626)'
+                                    : 'var(--text-muted)',
+                              }}
                             >
                               <Trash2 size={14} />
                               {deleteConfirm === p.id && (
@@ -458,7 +661,10 @@ export function PromotionSettings() {
             {showForm && (
               <div
                 className="rounded-lg border p-4 space-y-3"
-                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-primary)',
+                }}
               >
                 <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                   {editingId ? 'Edit Policy' : 'New Policy'}
@@ -467,7 +673,7 @@ export function PromotionSettings() {
                 <div className="grid grid-cols-2 gap-3">
                   {/* Product */}
                   <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    <label className={labelClass} style={labelStyle}>
                       Product *
                     </label>
                     <input
@@ -482,7 +688,7 @@ export function PromotionSettings() {
 
                   {/* Service */}
                   <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    <label className={labelClass} style={labelStyle}>
                       Service
                     </label>
                     <input
@@ -497,7 +703,7 @@ export function PromotionSettings() {
 
                   {/* Target Env */}
                   <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    <label className={labelClass} style={labelStyle}>
                       Target Env *
                     </label>
                     <input
@@ -510,57 +716,9 @@ export function PromotionSettings() {
                     />
                   </div>
 
-                  {/* Approver Group */}
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                      Approver Group
-                    </label>
-                    <input
-                      type="text"
-                      value={form.approverGroup ?? ''}
-                      onChange={(e) => setField('approverGroup', e.target.value || null)}
-                      placeholder="empty = auto-approve"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    />
-                  </div>
-
-                  {/* Strategy */}
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                      Strategy
-                    </label>
-                    <select
-                      value={form.strategy}
-                      onChange={(e) => setField('strategy', e.target.value as 'Any' | 'NOfM')}
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    >
-                      <option value="Any">Any</option>
-                      <option value="NOfM">NOfM</option>
-                    </select>
-                  </div>
-
-                  {/* Min Approvers — only when NOfM */}
-                  {form.strategy === 'NOfM' && (
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                        Min Approvers
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        value={form.minApprovers}
-                        onChange={(e) => setField('minApprovers', Number(e.target.value))}
-                        className={`${inputClass} w-full`}
-                        style={inputStyle}
-                      />
-                    </div>
-                  )}
-
                   {/* Timeout Hours */}
                   <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    <label className={labelClass} style={labelStyle}>
                       Timeout Hours
                     </label>
                     <input
@@ -573,36 +731,9 @@ export function PromotionSettings() {
                     />
                   </div>
 
-                  {/* Exclude role from approving */}
-                  <div className="space-y-1">
-                    <label className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider cursor-pointer" style={{ color: 'var(--text-muted)' }}>
-                      <input
-                        type="checkbox"
-                        checked={form.excludeRole !== null}
-                        onChange={(e) =>
-                          setField('excludeRole', e.target.checked ? (form.excludeRole || 'triggered-by') : null)
-                        }
-                        className="rounded"
-                      />
-                      Restrict a role from approving
-                    </label>
-                    <input
-                      type="text"
-                      value={form.excludeRole ?? ''}
-                      onChange={(e) => setField('excludeRole', e.target.value || null)}
-                      placeholder="triggered-by"
-                      disabled={form.excludeRole === null}
-                      className={`${inputClass} w-full`}
-                      style={{
-                        ...inputStyle,
-                        opacity: form.excludeRole === null ? 0.5 : 1,
-                      }}
-                    />
-                  </div>
-
                   {/* Escalation Group */}
                   <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    <label className={labelClass} style={labelStyle}>
                       Escalation Group
                     </label>
                     <input
@@ -617,43 +748,225 @@ export function PromotionSettings() {
 
                   {/* Approval Gate */}
                   <div className="space-y-1">
-                    <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    <label className={labelClass} style={labelStyle}>
                       Approval Gate
                     </label>
                     <select
                       value={form.gate}
-                      onChange={(e) => setField('gate', e.target.value as UpsertPromotionPolicyPayload['gate'])}
+                      onChange={(e) =>
+                        setField('gate', e.target.value as UpsertPromotionPolicyPayload['gate'])
+                      }
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     >
                       <option value="PromotionOnly">Promotion only (manual)</option>
-                      <option value="TicketsOnly">Tickets only (auto when all approved)</option>
-                      <option value="TicketsAndManual">Tickets + manual</option>
+                      <option value="WorkItemsOnly">Work items only (auto when all approved)</option>
+                      <option value="WorkItemsAndManual">Work items + manual</option>
                     </select>
                   </div>
-
                 </div>
 
-                {/* ── Ticket-gate options ── */}
+                {/* ── Approval steps ── */}
+                <div
+                  className="rounded-lg border p-3 space-y-3"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <p
+                      className="text-[11px] font-semibold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Approval steps
+                    </p>
+                    <button
+                      type="button"
+                      onClick={addStep}
+                      className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-lg transition-colors hover:opacity-80"
+                      style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+                    >
+                      <Plus size={13} />
+                      Add Step
+                    </button>
+                  </div>
+
+                  {form.steps.length === 0 && (
+                    <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                      No steps — promotions to this target auto-approve.
+                    </p>
+                  )}
+
+                  {form.steps.map((step, si) => (
+                    <div
+                      key={si}
+                      className="rounded-lg border p-3 space-y-3"
+                      style={{
+                        borderColor: 'var(--border-color)',
+                        backgroundColor: 'var(--bg-primary)',
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="text-[11px] font-semibold"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          Step {si + 1}
+                        </span>
+                        <input
+                          type="text"
+                          value={step.name}
+                          onChange={(e) => updateStepName(si, e.target.value)}
+                          placeholder="Step name (e.g. Security review)"
+                          className={`${inputClass} flex-1`}
+                          style={inputStyle}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeStep(si)}
+                          className="p-1 rounded-lg transition-colors hover:opacity-80"
+                          style={{ color: 'var(--text-muted)' }}
+                          title="Remove step"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+
+                      {/* Requirements */}
+                      <div className="space-y-2 pl-2 border-l-2" style={{ borderColor: 'var(--border-color)' }}>
+                        {step.requirements.map((req, ri) => {
+                          const errKey = `${si}:${ri}`;
+                          const err = stepErrors[errKey];
+                          return (
+                            <div
+                              key={ri}
+                              className="rounded-lg border p-3 space-y-2.5"
+                              style={{
+                                borderColor: err
+                                  ? 'var(--danger, #dc2626)'
+                                  : 'var(--border-color)',
+                                backgroundColor: 'var(--bg-secondary)',
+                              }}
+                            >
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={req.name}
+                                  onChange={(e) =>
+                                    updateRequirement(si, ri, { name: e.target.value })
+                                  }
+                                  placeholder="Requirement name (optional)"
+                                  className={`${inputClass} flex-1`}
+                                  style={inputStyle}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeRequirement(si, ri)}
+                                  className="p-1 rounded-lg transition-colors hover:opacity-80"
+                                  style={{ color: 'var(--text-muted)' }}
+                                  title="Remove requirement"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <label className={labelClass} style={labelStyle}>
+                                    AD Groups
+                                  </label>
+                                  <GroupPicker
+                                    values={req.groups}
+                                    onChange={(groups) =>
+                                      updateRequirement(si, ri, { groups })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className={labelClass} style={labelStyle}>
+                                    User Emails
+                                  </label>
+                                  <UserPicker
+                                    values={req.users}
+                                    onChange={(users) => updateRequirement(si, ri, { users })}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="space-y-1 w-40">
+                                <label className={labelClass} style={labelStyle}>
+                                  Min Approvers
+                                </label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={req.minApprovers}
+                                  onChange={(e) =>
+                                    updateRequirement(si, ri, {
+                                      minApprovers: Number(e.target.value),
+                                    })
+                                  }
+                                  className={`${inputClass} w-full`}
+                                  style={inputStyle}
+                                />
+                              </div>
+
+                              {err && (
+                                <p
+                                  className="text-[12px]"
+                                  style={{ color: 'var(--danger, #dc2626)' }}
+                                >
+                                  {err}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        <button
+                          type="button"
+                          onClick={() => addRequirement(si)}
+                          className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-lg transition-colors hover:opacity-80"
+                          style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+                        >
+                          <Plus size={13} />
+                          Add Requirement
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── Work-item-gate options ── */}
                 <div
                   className="rounded-lg border p-3 space-y-2"
-                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                  }}
                 >
-                  <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                    Ticket-gate options
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Work-item-gate options
                   </p>
 
                   <label className="flex items-start gap-2.5 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={form.requireAllTicketsApproved}
-                      onChange={(e) => setField('requireAllTicketsApproved', e.target.checked)}
+                      checked={form.requireAllWorkItemsApproved}
+                      onChange={(e) => setField('requireAllWorkItemsApproved', e.target.checked)}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      All tickets must be approved before promotion can be approved
-                      <span className="block text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                        Blocks the Approve button until every work-item ticket has a sign-off.
+                      All work items must be approved before promotion can be approved
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Blocks the Approve button until every work item has a sign-off.
                       </span>
                     </span>
                   </label>
@@ -661,14 +974,20 @@ export function PromotionSettings() {
                   <label className="flex items-start gap-2.5 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={form.autoApproveOnAllTicketsApproved}
-                      onChange={(e) => setField('autoApproveOnAllTicketsApproved', e.target.checked)}
+                      checked={form.autoApproveOnAllWorkItemsApproved}
+                      onChange={(e) =>
+                        setField('autoApproveOnAllWorkItemsApproved', e.target.checked)
+                      }
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      Auto-approve promotion when all tickets are approved
-                      <span className="block text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                        Promotion is automatically approved the moment the last ticket gets its sign-off.
+                      Auto-approve promotion when all work items are approved
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Promotion is automatically approved the moment the last work item gets its
+                        sign-off.
                       </span>
                     </span>
                   </label>
@@ -676,14 +995,18 @@ export function PromotionSettings() {
                   <label className="flex items-start gap-2.5 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={form.autoApproveWhenNoTickets}
-                      onChange={(e) => setField('autoApproveWhenNoTickets', e.target.checked)}
+                      checked={form.autoApproveWhenNoWorkItems}
+                      onChange={(e) => setField('autoApproveWhenNoWorkItems', e.target.checked)}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      Auto-approve promotion when no tickets are assigned
-                      <span className="block text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                        If the deploy event has no work-item references, skip the approval gate entirely.
+                      Auto-approve promotion when no work items are assigned
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        If the deploy event has no work-item references, skip the approval gate
+                        entirely.
                       </span>
                     </span>
                   </label>
@@ -723,7 +1046,10 @@ export function PromotionSettings() {
             {polError && (
               <div
                 className="text-[13px] rounded-lg px-3 py-2"
-                style={{ color: 'var(--danger, #dc2626)', backgroundColor: 'var(--danger-muted, #fee2e2)' }}
+                style={{
+                  color: 'var(--danger, #dc2626)',
+                  backgroundColor: 'var(--danger-muted, #fee2e2)',
+                }}
               >
                 {polError}
               </div>

@@ -11,16 +11,13 @@ import {
   CheckCircle,
   XCircle,
   Rocket,
-  ArrowUpRight,
   GitPullRequest,
-  GitBranch,
   Ticket,
-  Workflow,
   ExternalLink,
 } from 'lucide-react';
 
 /**
- * Per-candidate ticket signoff progress for the list. Computed lazily for the
+ * Per-candidate work-item signoff progress for the list. Computed lazily for the
  * pending rows only — non-pending candidates show "—". The list API returns the
  * candidate's own sourceEventReferences (work-items + others); we filter to
  * work-items, then call /work-items/{key}?... for each to get approval state.
@@ -28,28 +25,11 @@ import {
  * Cap at the visible Pending set per render, which is bounded by the page's
  * filter so this stays well-behaved in practice.
  */
-interface TicketProgress {
+interface WorkItemProgress {
   total: number;
   approved: number;
   rejected: number;
   loading: boolean;
-}
-
-const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
-  pipeline: Workflow,
-  repository: GitBranch,
-  'pull-request': GitPullRequest,
-  'work-item': Ticket,
-};
-
-function referenceChipLabel(type: string, key: string | null | undefined): string {
-  if (!key) return type;
-  switch (type) {
-    case 'pull-request':
-      return `#${key}`;
-    default:
-      return key;
-  }
 }
 
 const STATUS_CONFIG: Record<
@@ -64,37 +44,41 @@ const STATUS_CONFIG: Record<
   Rejected: { icon: XCircle, color: 'var(--danger)', bg: 'var(--danger-bg)' },
 };
 
-const STATUS_OPTIONS: Array<{ label: string; value: string }> = [
-  { label: 'All', value: '' },
-  { label: 'Pending', value: 'Pending' },
-  { label: 'Approved', value: 'Approved' },
-  { label: 'Deploying', value: 'Deploying' },
-  { label: 'Deployed', value: 'Deployed' },
-  { label: 'Rejected', value: 'Rejected' },
-];
-
 export function PromotionsPage() {
+  // The page is pending-by-default: `candidates` holds only Pending promotions.
+  // Resolved (Approved/Deploying/Deployed/Rejected) promotions are never fetched
+  // until the user explicitly opens the resolved section (lazy-loaded below).
   const [candidates, setCandidates] = useState<PromotionCandidate[]>([]);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState('');
   const [productFilter, setProductFilter] = useState('');
   const [serviceFilter, setServiceFilter] = useState('');
   const [targetEnvFilter, setTargetEnvFilter] = useState('');
   const [referenceFilter, setReferenceFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
-  const [ticketProgress, setTicketProgress] = useState<Record<string, TicketProgress>>({});
+  const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
+  // Two-tab view over the loaded Pending set: all pending, or only the ones the
+  // current user can act on right now (per-candidate `canApprove`). No refetch.
+  const [view, setView] = useState<'pending' | 'mine'>('pending');
+  // Resolved section — lazy. Only fetched when the user opens it.
+  const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
+  const [resolvedShown, setResolvedShown] = useState(false);
+  const [resolvedLoading, setResolvedLoading] = useState(false);
 
-  const fetchData = () => {
-    setLoading(true);
+  // Secondary filters shared by both the pending fetch and the resolved fetch.
+  const filterParams = () => {
     const params: Record<string, string> = {};
-    if (statusFilter) params.status = statusFilter;
     if (productFilter) params.product = productFilter;
     if (serviceFilter) params.service = serviceFilter;
     if (targetEnvFilter) params.targetEnv = targetEnvFilter;
     if (referenceFilter) params.reference = referenceFilter;
+    return params;
+  };
+
+  const fetchData = () => {
+    setLoading(true);
     api
-      .listPromotions(params)
+      .listPromotions({ status: 'Pending', ...filterParams() })
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
@@ -102,14 +86,28 @@ export function PromotionsPage() {
 
   useEffect(() => {
     fetchData();
-  }, [statusFilter, productFilter, serviceFilter, targetEnvFilter, referenceFilter]);
+    // A filter change invalidates any loaded resolved set — collapse it so it
+    // reloads fresh (with the new filters) if the user reopens it.
+    setResolvedShown(false);
+    setResolved([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productFilter, serviceFilter, targetEnvFilter, referenceFilter]);
+
+  const loadResolved = () => {
+    setResolvedShown(true);
+    setResolvedLoading(true);
+    api
+      .listPromotions(filterParams())
+      .then((data) => setResolved((data.candidates || []).filter((c) => c.status !== 'Pending')))
+      .catch(() => setResolved([]))
+      .finally(() => setResolvedLoading(false));
+  };
 
   const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
-  const nonPending = useMemo(() => candidates.filter((c) => c.status !== 'Pending'), [candidates]);
 
-  // Lazy ticket-progress fetch for Pending rows only. Non-pending rows show "—"
+  // Lazy work-item-progress fetch for Pending rows only. Non-pending rows show "—"
   // so we never spend an HTTP round-trip on them. We fan out concurrently per
-  // candidate and per ticket, capped by the natural Pending bound (small in
+  // candidate and per work item, capped by the natural Pending bound (small in
   // practice). A cancellation guard avoids overwriting state when the candidate
   // list churns mid-flight (e.g. a filter changes).
   useEffect(() => {
@@ -120,14 +118,14 @@ export function PromotionsPage() {
           (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
         );
         if (tickets.length === 0) {
-          setTicketProgress((prev) => ({
+          setWorkItemProgress((prev) => ({
             ...prev,
             [c.id]: { total: 0, approved: 0, rejected: 0, loading: false },
           }));
           continue;
         }
         // Mark the row as loading once per candidate so the cell can show a hint.
-        setTicketProgress((prev) => ({
+        setWorkItemProgress((prev) => ({
           ...prev,
           [c.id]: prev[c.id] ?? {
             total: tickets.length,
@@ -152,7 +150,7 @@ export function PromotionsPage() {
             if (decision === 'Approved') approved++;
             else if (decision === 'Rejected') rejected++;
           }
-          setTicketProgress((prev) => ({
+          setWorkItemProgress((prev) => ({
             ...prev,
             [c.id]: {
               total: tickets.length,
@@ -163,7 +161,7 @@ export function PromotionsPage() {
           }));
         } catch {
           if (cancelled) return;
-          setTicketProgress((prev) => ({
+          setWorkItemProgress((prev) => ({
             ...prev,
             [c.id]: { total: tickets.length, approved: 0, rejected: 0, loading: false },
           }));
@@ -193,6 +191,7 @@ export function PromotionsPage() {
   }, [candidates, productFilter]);
 
   const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
+  const displayedPending = view === 'mine' ? approvablePending : pending;
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
 
@@ -228,20 +227,6 @@ export function PromotionsPage() {
     }
   };
 
-  const statCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      Pending: 0,
-      Approved: 0,
-      Deploying: 0,
-      Deployed: 0,
-      Rejected: 0,
-    };
-    for (const c of candidates) {
-      if (counts[c.status] !== undefined) counts[c.status]++;
-    }
-    return counts;
-  }, [candidates]);
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -254,54 +239,8 @@ export function PromotionsPage() {
         </p>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-5 gap-3">
-        {[
-          { label: 'Pending', color: 'var(--warning)', bg: 'var(--warning-bg)', icon: Clock },
-          { label: 'Approved', color: 'var(--info)', bg: 'var(--info-bg)', icon: CheckCircle },
-          { label: 'Deploying', color: 'var(--accent)', bg: 'var(--accent-bg)', icon: Rocket },
-          { label: 'Deployed', color: 'var(--success)', bg: 'var(--success-bg)', icon: CheckCircle },
-          { label: 'Rejected', color: 'var(--danger)', bg: 'var(--danger-bg)', icon: XCircle },
-        ].map((s) => (
-          <div
-            key={s.label}
-            className="flex items-center gap-3 p-3.5 rounded-xl border"
-            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-          >
-            <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-              style={{ backgroundColor: s.bg, color: s.color }}
-            >
-              <s.icon size={16} />
-            </div>
-            <div>
-              <p className="text-lg font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
-                {statCounts[s.label] ?? 0}
-              </p>
-              <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Filters */}
+      {/* Secondary filters */}
       <div className="flex items-center gap-3 flex-wrap">
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-[13px]"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-primary)',
-          }}
-        >
-          {STATUS_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
         <select
           value={productFilter}
           onChange={(e) => setProductFilter(e.target.value)}
@@ -362,38 +301,60 @@ export function PromotionsPage() {
         />
       </div>
 
+      {/* Segmented control: all pending vs. only what the current user can approve. */}
+      <div className="flex items-center gap-2">
+        {([
+          { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
+          { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
+        ] as const).map((tab) => {
+          const active = view === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setView(tab.key)}
+              aria-pressed={active}
+              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
+              style={{
+                borderColor: active ? 'var(--accent)' : 'var(--border-color)',
+                backgroundColor: active ? 'var(--accent-bg)' : 'var(--bg-primary)',
+                color: active ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+            >
+              {tab.label}
+              {tab.showBadge && tab.count > 0 && (
+                <span
+                  className="ml-0.5 px-1.5 rounded-full text-[11px] font-semibold"
+                  style={{
+                    backgroundColor: active ? 'var(--accent)' : 'var(--warning-bg)',
+                    color: active ? '#fff' : 'var(--warning)',
+                  }}
+                >
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="skeleton h-24" />
           ))}
         </div>
-      ) : candidates.length === 0 ? (
-        <div
-          className="flex flex-col items-center justify-center py-20 rounded-xl border"
-          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-        >
-          <div
-            className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-          >
-            <GitPullRequest size={24} />
-          </div>
-          <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-            No promotion candidates
-          </p>
-          <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-            Promotion candidates will appear here when new versions are ready to move between environments
-          </p>
-        </div>
       ) : (
         <div className="space-y-6">
-          {/* Pending section */}
-          {pending.length > 0 && (
+          {/* Pending list (or "awaiting my approval" when that tab is active) */}
+          {displayedPending.length > 0 ? (
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  {approvablePending.length > 0 && (
+                  {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
+                     where every row is something you can act on. The default list stays
+                     action-per-row (Review →) without checkbox clutter. */}
+                  {view === 'mine' && approvablePending.length > 0 && (
                     <input
                       type="checkbox"
                       checked={allApprovableSelected}
@@ -405,10 +366,10 @@ export function PromotionsPage() {
                     className="text-[11px] font-semibold uppercase tracking-wider"
                     style={{ color: 'var(--text-muted)' }}
                   >
-                    Pending ({pending.length})
+                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({displayedPending.length})
                   </h2>
                 </div>
-                {selected.size > 0 && (
+                {view === 'mine' && selected.size > 0 && (
                   <button
                     onClick={handleBulkApprove}
                     disabled={bulkLoading}
@@ -425,40 +386,107 @@ export function PromotionsPage() {
                 )}
               </div>
               <div className="space-y-2">
-                {pending.map((c) => (
+                {displayedPending.map((c) => (
                   <CandidateCard
                     key={c.id}
                     candidate={c}
                     urgent
-                    selectable={c.canApprove}
+                    selectable={view === 'mine' && c.canApprove}
                     selected={selected.has(c.id)}
                     onToggleSelect={() => toggleSelect(c.id)}
                     onFilterByReference={setReferenceFilter}
-                    ticketProgress={ticketProgress[c.id]}
+                    workItemProgress={workItemProgress[c.id]}
+                    awaitingCue={view !== 'mine'}
                   />
                 ))}
               </div>
             </div>
+          ) : view === 'mine' ? (
+            <div
+              className="flex flex-col items-center justify-center py-16 rounded-xl border"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+            >
+              <div
+                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+              >
+                <CheckCircle size={24} />
+              </div>
+              <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                Nothing awaiting your approval
+              </p>
+              <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Promotions you can approve will appear here.
+              </p>
+            </div>
+          ) : (
+            <div
+              className="flex flex-col items-center justify-center py-16 rounded-xl border"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+            >
+              <div
+                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+              >
+                <GitPullRequest size={24} />
+              </div>
+              <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                No pending promotions
+              </p>
+              <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Pending promotions awaiting approval will appear here.
+              </p>
+            </div>
           )}
 
-          {/* Non-pending section */}
-          {nonPending.length > 0 && (
+          {/* Resolved promotions — lazy-loaded only when the user asks. */}
+          {!resolvedShown ? (
+            <button
+              type="button"
+              onClick={loadResolved}
+              className="text-[13px] font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Show resolved promotions
+            </button>
+          ) : (
             <div>
-              <h2
-                className="text-[11px] font-semibold uppercase tracking-wider mb-3"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                Resolved ({nonPending.length})
-              </h2>
-              <div className="space-y-2">
-                {nonPending.map((c) => (
-                  <CandidateCard
-                    key={c.id}
-                    candidate={c}
-                    onFilterByReference={setReferenceFilter}
-                  />
-                ))}
+              <div className="flex items-center justify-between mb-3">
+                <h2
+                  className="text-[11px] font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Resolved ({resolved.length})
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResolvedShown(false);
+                    setResolved([]);
+                  }}
+                  className="text-[12px] font-medium transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Hide resolved
+                </button>
               </div>
+              {resolvedLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="skeleton h-24" />
+                  ))}
+                </div>
+              ) : resolved.length > 0 ? (
+                <div className="space-y-2">
+                  {resolved.map((c) => (
+                    <CandidateCard key={c.id} candidate={c} compact onFilterByReference={setReferenceFilter} />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                  No resolved promotions.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -474,7 +502,9 @@ function CandidateCard({
   selected,
   onToggleSelect,
   onFilterByReference,
-  ticketProgress,
+  workItemProgress,
+  awaitingCue,
+  compact,
 }: {
   candidate: PromotionCandidate;
   urgent?: boolean;
@@ -482,7 +512,12 @@ function CandidateCard({
   selected?: boolean;
   onToggleSelect?: () => void;
   onFilterByReference?: (key: string) => void;
-  ticketProgress?: TicketProgress;
+  workItemProgress?: WorkItemProgress;
+  /** Show the "Awaiting your approval" cue when the user can act (used in the all-pending view). */
+  awaitingCue?: boolean;
+  /** Compact reference row for the resolved (browse-only) list: drops work-item chips,
+     people chips, and signoff progress; keeps service, version/env, status, time, View. */
+  compact?: boolean;
 }) {
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
@@ -512,10 +547,21 @@ function CandidateCard({
           <h3 className="text-[14px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
             {candidate.product} / {candidate.service}
           </h3>
-          <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
-            <StatusIcon size={10} />
-            {candidate.status}
-          </span>
+          {/* The status badge only carries information once status varies (the resolved list).
+             In the all-pending list it's constant noise, so drop it there and surface the
+             actionable "Awaiting your approval" cue instead. */}
+          {candidate.status !== 'Pending' && (
+            <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
+              <StatusIcon size={10} />
+              {candidate.status}
+            </span>
+          )}
+          {awaitingCue && candidate.canApprove && (
+            <span className="badge" style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}>
+              <Clock size={10} />
+              Awaiting your approval
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
           <span className="font-medium">{candidate.sourceEnv}</span>
@@ -540,14 +586,14 @@ function CandidateCard({
             <Clock size={10} />
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
-          <TicketsBadge candidate={candidate} progress={ticketProgress} />
+          {!compact && <WorkItemsBadge candidate={candidate} progress={workItemProgress} />}
         </div>
-        {/* Work-item tickets — key + optional title, click-to-filter + external link */}
-        {(() => {
+        {/* Work items — key + optional title, click-to-filter + external link */}
+        {!compact && (() => {
           const tickets = (candidate.sourceEventReferences ?? []).filter(
             (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
           );
-          if (tickets.length === 0 && candidate.inheritedCount === 0) return null;
+          if (tickets.length === 0) return null;
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
               {tickets.map((ref, i) => {
@@ -587,7 +633,7 @@ function CandidateCard({
                         onClick={(e) => e.stopPropagation()}
                         style={{ color: 'var(--text-muted)' }}
                         className="transition-opacity hover:opacity-80"
-                        title="Open ticket"
+                        title="Open work item"
                       >
                         <ExternalLink size={10} />
                       </a>
@@ -595,24 +641,11 @@ function CandidateCard({
                   </span>
                 );
               })}
-              {candidate.inheritedCount > 0 && (
-                <span
-                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
-                  style={{
-                    backgroundColor: 'var(--bg-secondary)',
-                    color: 'var(--text-muted)',
-                    border: '1px dashed var(--border-color)',
-                  }}
-                  title={`${candidate.inheritedCount} refs/people inherited from superseded predecessors — open details to view`}
-                >
-                  +{candidate.inheritedCount} inherited
-                </span>
-              )}
             </div>
           );
         })()}
-        {/* People — reference-level (from work-item tickets) + promotion root */}
-        {(() => {
+        {/* People — reference-level (from work items) + promotion root */}
+        {!compact && (() => {
           type Chip = {
             role: string;
             displayName?: string | null;
@@ -666,23 +699,32 @@ function CandidateCard({
           );
         })()}
       </div>
-      <ArrowUpRight size={16} style={{ color: 'var(--text-muted)' }} className="shrink-0 mt-1" />
+      {/* Explicit per-row action. The whole card is the click target (navigates to detail);
+         this is the visible CTA so the row reads as an action, not a static record. A right
+         chevron (not ↗) — it stays in-app. */}
+      <span
+        className="shrink-0 self-center inline-flex items-center gap-1 text-[12px] font-medium"
+        style={{ color: candidate.canApprove ? 'var(--accent)' : 'var(--text-muted)' }}
+      >
+        {candidate.canApprove ? 'Review' : 'View'}
+        <ArrowRight size={14} />
+      </span>
     </div>
   );
 }
 
 /**
- * Inline ticket-progress indicator for the list. The list response surfaces
+ * Inline work-item-progress indicator for the list. The list response surfaces
  * the candidate's own work-item refs (sourceEventReferences) but not approval
  * state, so the parent fetches /work-items/{key}?... lazily for Pending rows
  * only. Non-pending rows render "—" so historical state isn't fetched.
  */
-function TicketsBadge({
+function WorkItemsBadge({
   candidate,
   progress,
 }: {
   candidate: PromotionCandidate;
-  progress: TicketProgress | undefined;
+  progress: WorkItemProgress | undefined;
 }) {
   const bundleSize = (candidate.sourceEventReferences ?? []).filter(
     (r) => r.type === 'work-item',
@@ -691,9 +733,11 @@ function TicketsBadge({
     return (
       <span
         className="inline-flex items-center gap-1"
-        title="No work-items in this candidate's bundle"
+        style={{ color: 'var(--text-muted)' }}
+        title="This promotion has no work items"
       >
-        <Ticket size={10} />—
+        <Ticket size={10} />
+        No work items
       </span>
     );
   }
@@ -710,7 +754,7 @@ function TicketsBadge({
   }
   if (progress.loading) {
     return (
-      <span className="inline-flex items-center gap-1" title="Loading ticket state…">
+      <span className="inline-flex items-center gap-1" title="Loading work item state…">
         <Ticket size={10} />
         {progress.approved}/{progress.total}
         <ProgressBar approved={progress.approved} total={progress.total} />

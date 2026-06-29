@@ -439,6 +439,14 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
+                    b.Property<string>("RequirementName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("StepName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CandidateId", "ApproverEmail")
@@ -466,6 +474,10 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
+                    b.Property<string>("FromRevision")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<string>("ParticipantsJson")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -480,6 +492,12 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("ReferencesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
                     b.Property<string>("ResolvedPolicyJson")
                         .HasColumnType("nvarchar(max)");
 
@@ -487,9 +505,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
-
-                    b.Property<Guid>("SourceDeployEventId")
-                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("SourceEnv")
                         .IsRequired()
@@ -504,16 +519,14 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<Guid?>("SupersededById")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("SupersededSourceEventIdsJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("nvarchar(max)")
-                        .HasDefaultValue("[]");
-
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("ToRevision")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("Version")
                         .IsRequired()
@@ -522,11 +535,9 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasKey("Id");
 
-                    b.HasIndex("SourceDeployEventId");
-
                     b.HasIndex("Status");
 
-                    b.HasIndex("Product", "Service", "SourceEnv", "TargetEnv");
+                    b.HasIndex("Product", "Service", "SourceEnv", "TargetEnv", "Version");
 
                     b.ToTable("promotion_candidates", (string)null);
                 });
@@ -574,16 +585,18 @@ namespace Platform.Api.Migrations.SqlServer
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("ApproverGroup")
-                        .HasMaxLength(400)
-                        .HasColumnType("nvarchar(400)");
+                    b.Property<string>("ApprovalStepsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
 
-                    b.Property<bool>("AutoApproveOnAllTicketsApproved")
+                    b.Property<bool>("AutoApproveOnAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
 
-                    b.Property<bool>("AutoApproveWhenNoTickets")
+                    b.Property<bool>("AutoApproveWhenNoWorkItems")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
@@ -595,9 +608,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
-                    b.Property<string>("ExcludeRole")
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("Gate")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -605,15 +615,12 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(30)")
                         .HasDefaultValue("PromotionOnly");
 
-                    b.Property<int>("MinApprovers")
-                        .HasColumnType("int");
-
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<bool>("RequireAllTicketsApproved")
+                    b.Property<bool>("RequireAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
@@ -621,11 +628,6 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<string>("Service")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("Strategy")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
 
                     b.Property<string>("TargetEnv")
                         .IsRequired()
@@ -647,6 +649,58 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasFilter("[Service] IS NOT NULL");
 
                     b.ToTable("promotion_policies", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionWorkItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Provider")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Revision")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Url")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("WorkItemKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidateId");
+
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+
+                    b.ToTable("promotion_work_items", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.WorkItemApproval", b =>
@@ -1379,6 +1433,15 @@ namespace Platform.Api.Migrations.SqlServer
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionComment", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
+                        .WithMany()
+                        .HasForeignKey("CandidateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionWorkItem", b =>
                 {
                     b.HasOne("Platform.Api.Features.Promotions.Models.PromotionCandidate", null)
                         .WithMany()

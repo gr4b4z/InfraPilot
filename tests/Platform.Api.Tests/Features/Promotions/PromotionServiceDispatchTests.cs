@@ -45,7 +45,7 @@ public class PromotionServiceDispatchTests : IDisposable
 
         var resolver = new PromotionPolicyResolver(_db);
         var auth = new PromotionApprovalAuthorizer(
-            _db, _currentUser, _identity,
+            _currentUser, _identity,
             Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
         _sut = new PromotionService(
             _db, resolver, auth, _currentUser, _audit,
@@ -56,39 +56,47 @@ public class PromotionServiceDispatchTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private DeployEvent SeedDeploy(string version = "v1", string deployerEmail = "bob@example.com")
-    {
-        var participants = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = deployerEmail } });
-        var e = new DeployEvent
-        {
-            Id = Guid.NewGuid(),
-            Product = "acme",
-            Service = "api",
-            Environment = "staging",
-            Version = version,
-            Status = "succeeded",
-            Source = "ci",
-            DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = participants,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.DeployEvents.Add(e);
-        _db.SaveChanges();
-        return e;
-    }
+    /// <summary>
+    /// Builds a <see cref="CreatePromotionDto"/> for the (acme, api, staging→prod) edge and calls the
+    /// external create path. No staging DeployEvent is seeded, so the source-drift invariant never
+    /// blocks (no source history ⇒ can't conclude drift).
+    /// </summary>
+    private Task<PromotionCandidate?> CreateAsync(string version = "v1")
+        => _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme",
+            Service: "api",
+            SourceEnv: "staging",
+            TargetEnv: "prod",
+            Version: version,
+            FromRevision: null,
+            ToRevision: null,
+            References: null,
+            Participants: null));
 
+    /// <summary>
+    /// Seeds a product-level policy (Service=null) for prod. A null <paramref name="approverGroup"/>
+    /// means no requirements ⇒ auto-approve; otherwise one requirement satisfied by the group with
+    /// MinApprovers:1.
+    /// </summary>
     private void SeedPolicy(string? approverGroup)
     {
+        var steps = approverGroup is null
+            ? new List<ApprovalStep>()
+            : new List<ApprovalStep>
+            {
+                new("Approval", new()
+                {
+                    new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), 1),
+                }),
+            };
+
         _db.PromotionPolicies.Add(new PromotionPolicy
         {
             Id = Guid.NewGuid(),
             Product = "acme",
             Service = null,
             TargetEnv = "prod",
-            ApproverGroup = approverGroup,
-            Strategy = PromotionStrategy.Any,
-            MinApprovers = 1,
-            ExcludeRole = null,
+            ApprovalSteps = steps,
         });
         _db.SaveChanges();
     }
@@ -98,8 +106,7 @@ public class PromotionServiceDispatchTests : IDisposable
     {
         SeedPolicy(approverGroup: null);
 
-        var e = SeedDeploy();
-        var candidate = await _sut.CreateCandidateAsync(e, "prod");
+        var candidate = await CreateAsync();
 
         Assert.NotNull(candidate);
         await _webhookDispatcher.Received(1).DispatchAsync(
@@ -113,8 +120,7 @@ public class PromotionServiceDispatchTests : IDisposable
     {
         SeedPolicy(approverGroup: "ops");
 
-        var e = SeedDeploy();
-        var candidate = await _sut.CreateCandidateAsync(e, "prod");
+        var candidate = await CreateAsync();
 
         Assert.NotNull(candidate);
         Assert.Equal(PromotionStatus.Pending, candidate!.Status);
@@ -129,12 +135,13 @@ public class PromotionServiceDispatchTests : IDisposable
     {
         SeedPolicy(approverGroup: "ops");
 
-        var e = SeedDeploy();
-        var candidate = await _sut.CreateCandidateAsync(e, "prod");
+        var candidate = await CreateAsync();
         Assert.Equal(PromotionStatus.Pending, candidate!.Status);
 
+        // Admin satisfies the single MinApprovers:1 requirement (group bypass) → gate flips Approved.
         var approved = await _sut.ApproveAsync(candidate.Id, comment: null);
 
+        Assert.Equal(PromotionStatus.Approved, approved.Status);
         await _webhookDispatcher.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
@@ -146,8 +153,7 @@ public class PromotionServiceDispatchTests : IDisposable
     {
         SeedPolicy(approverGroup: "ops");
 
-        var e = SeedDeploy();
-        var candidate = await _sut.CreateCandidateAsync(e, "prod");
+        var candidate = await CreateAsync();
         Assert.Equal(PromotionStatus.Pending, candidate!.Status);
 
         await _sut.RejectAsync(candidate.Id, comment: "not ready");

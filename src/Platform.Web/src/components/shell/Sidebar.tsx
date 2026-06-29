@@ -57,7 +57,7 @@ const navGroups: NavGroup[] = [
     featureFlag: FeatureFlag.Promotions,
     items: [
       { to: '/promotions', label: 'Promotions',    icon: GitPullRequest },
-      { to: '/me/tickets', label: 'Tickets queue', icon: Inbox          },
+      { to: '/me/work-items', label: 'Work items queue', icon: Inbox     },
     ],
   },
   {

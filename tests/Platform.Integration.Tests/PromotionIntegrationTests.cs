@@ -49,66 +49,36 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         // May contain policies created by other tests in the same fixture, so just assert it's an array.
     }
 
-    [Fact]
-    public async Task GetTopology_ReturnsEmptyTopologyByDefault()
-    {
-        var response = await _adminClient.GetAsync("/api/promotions/admin/topology");
-        response.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(response);
-        var environments = body.GetProperty("environments");
-        var edges = body.GetProperty("edges");
-
-        Assert.Equal(JsonValueKind.Array, environments.ValueKind);
-        Assert.Equal(0, environments.GetArrayLength());
-        Assert.Equal(JsonValueKind.Array, edges.ValueKind);
-        Assert.Equal(0, edges.GetArrayLength());
-    }
-
-    [Fact]
-    public async Task PutTopology_SavesAndRetrieves()
-    {
-        var topology = new
-        {
-            environments = new[] { "dev", "staging", "prod" },
-            edges = new[]
-            {
-                new { from = "dev", to = "staging" },
-                new { from = "staging", to = "prod" },
-            },
-        };
-
-        var putResponse = await _adminClient.PutAsJsonAsync("/api/promotions/admin/topology", topology);
-        putResponse.EnsureSuccessStatusCode();
-
-        var getResponse = await _adminClient.GetAsync("/api/promotions/admin/topology");
-        getResponse.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(getResponse);
-        var environments = body.GetProperty("environments");
-        var edges = body.GetProperty("edges");
-
-        Assert.Equal(3, environments.GetArrayLength());
-        Assert.Equal(2, edges.GetArrayLength());
-
-        // Verify the edge content round-trips correctly.
-        var firstEdge = edges[0];
-        Assert.Equal("dev", firstEdge.GetProperty("from").GetString());
-        Assert.Equal("staging", firstEdge.GetProperty("to").GetString());
-    }
+    // Topology endpoints were removed (D19): the external system is the source of truth for edges,
+    // so GetTopology/PutTopology no longer exist. The corresponding tests were dropped.
 
     [Fact]
     public async Task PostPolicy_CreatesPolicy()
     {
+        // §8 step-tree shape: steps[] → { name, requirements[] → { name, groups[], users[], minApprovers } }.
         var policy = new
         {
             product = "my-product",
             service = "my-service",
             targetEnv = "prod",
-            approverGroup = "release-approvers",
-            strategy = "Any",
-            minApprovers = 1,
-            excludeRole = "triggered-by",
+            steps = new[]
+            {
+                new
+                {
+                    name = "Release Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Approvers",
+                            groups = new[] { "release-approvers" },
+                            users = Array.Empty<string>(),
+                            minApprovers = 1,
+                        },
+                    },
+                },
+            },
+            gate = "PromotionOnly",
             timeoutHours = 48,
             escalationGroup = (string?)null,
         };
@@ -120,10 +90,18 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         Assert.Equal("my-product", body.GetProperty("product").GetString());
         Assert.Equal("my-service", body.GetProperty("service").GetString());
         Assert.Equal("prod", body.GetProperty("targetEnv").GetString());
-        Assert.Equal("Any", body.GetProperty("strategy").GetString());
-        Assert.Equal(1, body.GetProperty("minApprovers").GetInt32());
-        Assert.Equal("triggered-by", body.GetProperty("excludeRole").GetString());
         Assert.Equal(48, body.GetProperty("timeoutHours").GetInt32());
+
+        // Step tree round-trips.
+        var steps = body.GetProperty("steps");
+        Assert.Equal(1, steps.GetArrayLength());
+        var req = steps[0].GetProperty("requirements")[0];
+        // Groups are emitted as { id, name } objects. A bare-string on input (back-compat) is
+        // normalised to id == name.
+        var group = req.GetProperty("groups")[0];
+        Assert.Equal("release-approvers", group.GetProperty("id").GetString());
+        Assert.Equal("release-approvers", group.GetProperty("name").GetString());
+        Assert.Equal(1, req.GetProperty("minApprovers").GetInt32());
 
         // Id should be a valid GUID.
         Assert.True(Guid.TryParse(body.GetProperty("id").GetString(), out _));

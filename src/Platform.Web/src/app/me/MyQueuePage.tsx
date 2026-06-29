@@ -12,7 +12,6 @@ import {
   ExternalLink,
   ArrowRight,
   Inbox,
-  Clock,
   Plus,
   Users,
   X,
@@ -33,8 +32,8 @@ import {
 } from './ScopeFilter';
 
 /**
- * "My queue" page — tickets awaiting the current user's signoff. Reads
- * GET /api/work-items/me/pending which returns one row per (ticket × candidate)
+ * "My queue" page — work items awaiting the current user's signoff. Reads
+ * GET /api/work-items/me/pending which returns one row per (work item × candidate)
  * after applying authority filters server-side (approver group, excluded role,
  * already-decided), so client-side rendering is straight-through.
  */
@@ -80,7 +79,7 @@ export function MyQueuePage() {
       setAssignees(res.assignees ?? []);
       setRoles(res.roles ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tickets');
+      setError(err instanceof Error ? err.message : 'Failed to load work items');
     } finally {
       setLoading(false);
     }
@@ -124,10 +123,10 @@ export function MyQueuePage() {
           className="text-xl font-semibold tracking-tight"
           style={{ color: 'var(--text-primary)' }}
         >
-          Tickets queue
+          Work items queue
         </h1>
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          Work-items awaiting your signoff across all products and environments.
+          Work items awaiting your signoff across all products and environments.
         </p>
       </div>
 
@@ -189,7 +188,7 @@ export function MyQueuePage() {
           </div>
           <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
-              ? 'No tickets match the current filters.'
+              ? 'No work items match the current filters.'
               : emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
@@ -372,20 +371,20 @@ function emptyStateTitle(filter: AssigneeFilterValue): string {
   switch (filter.mode) {
     case 'all':
       return roleLabel
-        ? `No tickets where someone is ${roleLabel}.`
-        : 'No tickets awaiting your signoff.';
+        ? `No work items where someone is ${roleLabel}.`
+        : 'No work items awaiting your signoff.';
     case 'me':
       return roleLabel
-        ? `No tickets where you're the ${roleLabel}.`
+        ? `No work items where you're the ${roleLabel}.`
         : 'Nothing assigned to you right now.';
     case 'unassigned':
       return roleLabel
-        ? `No tickets without a ${roleLabel} assigned.`
-        : 'No unassigned tickets in your authorized list.';
+        ? `No work items without a ${roleLabel} assigned.`
+        : 'No unassigned work items in your authorized list.';
     case 'person':
       return roleLabel
-        ? `No tickets with ${filter.displayName} as ${roleLabel}.`
-        : `No tickets with ${filter.displayName} as any role.`;
+        ? `No work items with ${filter.displayName} as ${roleLabel}.`
+        : `No work items with ${filter.displayName} as any role.`;
   }
 }
 
@@ -394,13 +393,13 @@ function emptyStateBody(filter: AssigneeFilterValue): string {
     case 'all':
       return filter.role
         ? 'Pick a different role or "Any role" to widen the queue.'
-        : 'New tickets will appear here as promotions roll through your environments.';
+        : 'New work items will appear here as promotions roll through your environments.';
     case 'me':
       return 'Switch the assignee to "Anyone" to see the full queue you can sign off on.';
     case 'unassigned':
       return filter.role
-        ? 'Tickets where this role is empty will show up here.'
-        : 'Tickets without a named QA / reviewer / assignee will show up here.';
+        ? 'Work items where this role is empty will show up here.'
+        : 'Work items without a named QA / reviewer / assignee will show up here.';
     case 'person':
       return 'Try a different person, or switch to "Anyone".';
   }
@@ -579,7 +578,7 @@ function TicketRow({
                     onClick={() => handleRemove(p.role)}
                     className="ml-0.5 inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-70"
                     style={{ color: 'var(--text-muted)', width: 14, height: 14 }}
-                    title={p.isOverride ? 'Remove assignment' : 'Hide this participant for this ticket'}
+                    title={p.isOverride ? 'Remove assignment' : 'Hide this participant for this work item'}
                     aria-label={`Remove ${roleDisplay(p)} ${p.displayName ?? p.email ?? ''}`}
                   >
                     <X size={10} />

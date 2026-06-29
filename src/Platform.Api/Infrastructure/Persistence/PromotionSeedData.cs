@@ -1,15 +1,18 @@
 using System.Text.Json;
-using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
-using Platform.Api.Infrastructure.Features;
 
 namespace Platform.Api.Infrastructure.Persistence;
 
 /// <summary>
 /// Generates deterministic demo promotion data that builds on top of
-/// <see cref="DeploymentSeedData"/>. Seeds a topology, policies, candidates
-/// in mixed lifecycle states, and approval trails so the Promotions UI has
-/// something to display on first run.
+/// <see cref="DeploymentSeedData"/>. Seeds policies, self-contained candidates
+/// in mixed lifecycle states, their work-item index rows, and approval trails so
+/// the Promotions UI has something to display on first run.
+///
+/// <para>Candidates are now self-contained (each carries its own References) and created
+/// externally in production — there is no topology to seed. For demo data we copy the
+/// originating deploy event's references onto the candidate.</para>
 ///
 /// <para>Must run <b>after</b> <see cref="DeploymentSeedData.Seed"/> so the
 /// <c>DeployEvents</c> table is already populated.</para>
@@ -19,6 +22,7 @@ public static class PromotionSeedData
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
     };
 
     // Reuse the same people pool from DeploymentSeedData for consistency.
@@ -65,42 +69,49 @@ public static class PromotionSeedData
         var rand = new Random(20260416); // deterministic, different seed from DeploymentSeedData
         var now = DateTimeOffset.UtcNow;
 
-        // ── 1. Seed topology ──────────────────────────────────────────────
-        await SeedTopology(db, now);
-
-        // ── 2. Seed policies ──────────────────────────────────────────────
+        // ── 1. Seed policies ──────────────────────────────────────────────
         var policies = SeedPolicies(db, now);
         await db.SaveChangesAsync();
 
-        // ── 3. Seed candidates derived from real deploy events ────────────
+        // ── 2. Seed self-contained candidates derived from real deploy events ──
         await SeedCandidates(db, policies, rand, now);
 
         await db.SaveChangesAsync();
     }
 
-    private static async Task SeedTopology(PlatformDbContext db, DateTimeOffset now)
+    /// <summary>
+    /// Copies a deploy event's references onto a candidate (the self-contained net change set) and
+    /// stages <see cref="PromotionWorkItem"/> rows for its work-item references.
+    /// </summary>
+    private static void PopulateChangeSet(PlatformDbContext db, PromotionCandidate candidate, DeployEvent source)
     {
-        // Only seed if no topology exists yet.
-        var existing = db.PlatformSettings
-            .FirstOrDefault(s => s.Key == PromotionTopologyService.SettingKey);
-        if (existing is not null) return;
+        var refs = string.IsNullOrEmpty(source.ReferencesJson)
+            ? new List<ReferenceDto>()
+            : JsonSerializer.Deserialize<List<ReferenceDto>>(source.ReferencesJson, JsonOptions) ?? new();
+        candidate.References = refs;
 
-        var topology = new PromotionTopology(
-            ["development", "staging", "production"],
-            [
-                new PromotionEdge("development", "staging"),
-                new PromotionEdge("staging", "production"),
-            ]);
+        var workItems = refs
+            .Where(r => string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase)
+                     && !string.IsNullOrWhiteSpace(r.Key))
+            .GroupBy(r => r.Key!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First());
 
-        db.PlatformSettings.Add(new PlatformSetting
+        foreach (var r in workItems)
         {
-            Key = PromotionTopologyService.SettingKey,
-            Value = JsonSerializer.Serialize(topology, JsonOptions),
-            UpdatedAt = now.AddDays(-30),
-            UpdatedBy = "system",
-        });
-
-        await db.SaveChangesAsync();
+            db.PromotionWorkItems.Add(new PromotionWorkItem
+            {
+                Id = Guid.NewGuid(),
+                CandidateId = candidate.Id,
+                WorkItemKey = r.Key!,
+                Product = candidate.Product,
+                TargetEnv = candidate.TargetEnv,
+                Provider = r.Provider,
+                Url = r.Url,
+                Title = r.Title,
+                Revision = r.Revision,
+                CreatedAt = candidate.CreatedAt,
+            });
+        }
     }
 
     /// <summary>
@@ -114,31 +125,36 @@ public static class PromotionSeedData
 
         foreach (var product in products)
         {
-            // dev → staging: auto-approve (no approver group)
+            // dev → staging: auto-approve (no approval steps)
             policies.Add(new PromotionPolicy
             {
                 Id = Guid.NewGuid(),
                 Product = product,
                 TargetEnv = "staging",
-                ApproverGroup = null, // auto-approve
-                Strategy = PromotionStrategy.Any,
-                MinApprovers = 0,
-                ExcludeRole = null,
+                ApprovalSteps = new(), // empty ⇒ auto-approve
                 TimeoutHours = 24,
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-28),
             });
 
-            // staging → production: gated, 2-of-N approval, deployer excluded
+            // staging → production: a single "Release Approval" step requiring 2 distinct approvers
+            // from the admin group (multi-step tree replaces the legacy NOfM single group).
             policies.Add(new PromotionPolicy
             {
                 Id = Guid.NewGuid(),
                 Product = product,
                 TargetEnv = "production",
-                ApproverGroup = "InfraPortal.Admin",
-                Strategy = PromotionStrategy.NOfM,
-                MinApprovers = 2,
-                ExcludeRole = "triggered-by",
+                ApprovalSteps = new()
+                {
+                    new ApprovalStep("Release Approval", new()
+                    {
+                        new ApproverRequirement(
+                            Name: "Release managers",
+                            Groups: new() { new GroupRef("InfraPortal.Admin", "InfraPortal.Admin") },
+                            Users: new(),
+                            MinApprovers: 2),
+                    }),
+                },
                 TimeoutHours = 48,
                 EscalationGroup = "ACX-PLT-TeamLeads",
                 CreatedAt = now.AddDays(-28),
@@ -207,7 +223,6 @@ public static class PromotionSeedData
                 SourceEnv = "staging",
                 TargetEnv = "production",
                 Version = deploy.Version,
-                SourceDeployEventId = deploy.Id,
                 Status = status,
                 PolicyId = policy.Id,
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
@@ -218,6 +233,7 @@ public static class PromotionSeedData
                 ApprovedAt = approvedAt,
                 DeployedAt = deployedAt,
             };
+            PopulateChangeSet(db, candidate, deploy);
 
             candidates.Add(candidate);
 
@@ -301,7 +317,7 @@ public static class PromotionSeedData
                     (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 4))),
             };
 
-            candidates.Add(new PromotionCandidate
+            var devCandidate = new PromotionCandidate
             {
                 Id = candidateId,
                 Product = deploy.Product,
@@ -309,23 +325,23 @@ public static class PromotionSeedData
                 SourceEnv = "development",
                 TargetEnv = "staging",
                 Version = deploy.Version,
-                SourceDeployEventId = deploy.Id,
                 Status = status,
                 PolicyId = policy.Id,
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
                 CreatedAt = deploy.DeployedAt.AddMinutes(rand.Next(1, 10)),
                 ApprovedAt = approvedAt,
                 DeployedAt = deployedAt,
-            });
+            };
+            PopulateChangeSet(db, devCandidate, deploy);
+            candidates.Add(devCandidate);
 
             // Auto-approve means no PromotionApproval rows — the system approved it.
         }
 
-        // ── supersede chain (demo): 3 predecessors superseded by a fresh Pending ──
-        // Picks one service with ≥4 succeeded staging deploys at distinct versions and
-        // constructs a chain on the staging→production edge. The final candidate is
-        // Pending and inherits all prior source-event IDs, so the "Inherited from
-        // superseded candidates" section on the detail page has something to show.
+        // ── supersede chain (demo): 3 superseded predecessors + a fresh Pending winner ──
+        // Picks one service with ≥4 succeeded staging deploys at distinct versions and a matching
+        // staging→production policy. Each candidate is self-contained (its own References); supersede
+        // is just a state flip (D2), so the predecessors are Superseded and point at the winner.
         SeedSupersedeChain(db, policies, candidates);
 
         db.PromotionCandidates.AddRange(candidates);
@@ -350,7 +366,11 @@ public static class PromotionSeedData
             .Select(p => p.Product)
             .ToHashSet();
 
-        var reservedIds = candidates.Select(c => c.SourceDeployEventId).ToHashSet();
+        // Avoid versions already used by earlier candidate seeding on the same edge so the natural
+        // key (product, service, source→target, version) stays distinct.
+        var reservedKeys = candidates
+            .Select(c => (c.Product, c.Service, c.SourceEnv, c.TargetEnv, c.Version))
+            .ToHashSet();
 
         var group = allStaging
             .Where(d => productsWithProdPolicy.Contains(d.Product))
@@ -358,7 +378,7 @@ public static class PromotionSeedData
             .Select(g => g
                 .GroupBy(d => d.Version) // dedupe same-version redeploys
                 .Select(vg => vg.OrderByDescending(d => d.DeployedAt).First())
-                .Where(d => !reservedIds.Contains(d.Id)) // avoid events already consumed elsewhere
+                .Where(d => !reservedKeys.Contains((d.Product, d.Service, "staging", "production", d.Version)))
                 .OrderByDescending(d => d.DeployedAt)
                 .Take(4)
                 .ToList())
@@ -375,10 +395,9 @@ public static class PromotionSeedData
 
         var freshId = Guid.NewGuid();
 
-        var predecessorIds = new List<Guid>();
         foreach (var ev in older)
         {
-            candidates.Add(new PromotionCandidate
+            var pred = new PromotionCandidate
             {
                 Id = Guid.NewGuid(),
                 Product = ev.Product,
@@ -386,17 +405,17 @@ public static class PromotionSeedData
                 SourceEnv = "staging",
                 TargetEnv = "production",
                 Version = ev.Version,
-                SourceDeployEventId = ev.Id,
                 Status = PromotionStatus.Superseded,
                 SupersededById = freshId,
                 PolicyId = policy.Id,
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
                 CreatedAt = ev.DeployedAt.AddMinutes(5),
-            });
-            predecessorIds.Add(ev.Id);
+            };
+            PopulateChangeSet(db, pred, ev);
+            candidates.Add(pred);
         }
 
-        candidates.Add(new PromotionCandidate
+        var winner = new PromotionCandidate
         {
             Id = freshId,
             Product = fresh.Product,
@@ -404,24 +423,27 @@ public static class PromotionSeedData
             SourceEnv = "staging",
             TargetEnv = "production",
             Version = fresh.Version,
-            SourceDeployEventId = fresh.Id,
             Status = PromotionStatus.Pending,
             PolicyId = policy.Id,
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
             CreatedAt = fresh.DeployedAt.AddMinutes(5),
-            SupersededSourceEventIds = predecessorIds,
-        });
+        };
+        PopulateChangeSet(db, winner, fresh);
+        candidates.Add(winner);
     }
 
     private static ResolvedPolicySnapshot MakeSnapshot(PromotionPolicy policy) =>
         new(
             PolicyId: policy.Id,
-            ApproverGroup: policy.ApproverGroup,
-            Strategy: policy.Strategy,
-            MinApprovers: policy.MinApprovers,
-            ExcludeRole: policy.ExcludeRole,
             TimeoutHours: policy.TimeoutHours,
-            EscalationGroup: policy.EscalationGroup);
+            EscalationGroup: policy.EscalationGroup)
+        {
+            ApprovalSteps = policy.ApprovalSteps,
+            Gate = policy.Gate,
+            RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
+            AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
+            AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
+        };
 
     /// <summary>
     /// Picks a random approver, excluding anyone already in <paramref name="exclude"/>

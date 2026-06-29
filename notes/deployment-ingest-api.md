@@ -82,7 +82,7 @@ Rate limiting is applied per key.
 
 | Value | Meaning |
 |-------|---------|
-| `succeeded` | Deployment completed successfully. Only this status creates promotion candidates and is eligible as a rollback target. |
+| `succeeded` | Deployment completed successfully. Eligible as a rollback target, and the status that completes a matching in-flight promotion when the version lands on its target environment. |
 | `failed` | Deployment failed. Recorded for tracking and dashboards. |
 | `in_progress` | Deployment is still running. Can be updated later by sending a new event with the same version and a final status. |
 
@@ -128,7 +128,7 @@ A reference may carry its own `participants[]` array. Same shape as the event-le
 
 The event-level `participants[]` block is still accepted and is the right place for genuinely event-level roles like `triggered-by` (the deployer / pipeline trigger). When both layers are present and both carry a participant for the same role, **reference-level wins** for read-time lookups — a participant attached directly to a PR/ticket is a more specific signal than the event-level fallback.
 
-The excluded-role rule (`excludeRole` on a promotion policy) checks both layers: the user is blocked from approving if they appear with the excluded role at *either* level.
+Reference-level participants are surfaced on the promotion candidate (carried on the create payload), so a work item's QA or a PR's reviewer is visible where the promotion is reviewed.
 
 Common `type` values:
 
@@ -162,7 +162,7 @@ The URL is derived purely from the inbound `url` (with any trailing `.git` or `/
 
 | Role | Usage |
 |------|-------|
-| `triggered-by` | **Canonical.** Person or service principal that initiated the pipeline run. Used by the promotions system to populate `sourceDeployerEmail` and to enforce the "exclude deployer" approval rule (same person can't approve their own promotion). |
+| `triggered-by` | **Canonical.** Person or service principal that initiated the pipeline run. Recorded as a deploy participant. (The promotions system no longer enforces a built-in "exclude deployer" approval rule — separation-of-duties, if needed, is supplied via the promotion create payload.) |
 | `author` | Git commit author on the deployed revision. |
 | `reviewer` | Person who reviewed/approved the PR. |
 | `qa` | QA engineer who validated the change. |
@@ -180,7 +180,7 @@ By default the platform canonicalises role and environment strings to **kebab-ca
 }
 ```
 
-Set either field to `null` to preserve sender casing exactly as sent. Read-time matching (e.g. the `triggered-by` lookup for the "exclude deployer" rule) always normalises before comparing, so the feature works regardless of the policy.
+Set either field to `null` to preserve sender casing exactly as sent. Read-time matching (e.g. participant-role and environment lookups) always normalises before comparing, so matching works regardless of sender casing.
 
 ## Response
 
@@ -401,9 +401,14 @@ Same deployment as the GitHub Actions example, but with the QA tagged on the tic
 
 ## Promotion integration
 
-When a `succeeded` deployment event is ingested, the system automatically checks for matching promotion topology edges. If the deployment's environment is a source in the promotion graph (e.g. `development` or `staging`), a **promotion candidate** is created for the next environment in the chain.
+Ingesting a deployment event does **not** create promotion candidates. Promotions are
+created explicitly by an external system (typically the pipeline that computed the change
+set) via `POST /api/promotions`, with the authoritative set of references (work items, PRs,
+commits) being promoted on the request. There is no promotion topology and no auto-generation
+from the deploy graph. See `docs/plans/external-promotion-creation.md` for the full model.
 
-The `triggered-by` participant is used as the deployer identity for the "exclude deployer" approval rule, which prevents the person who triggered the deploy from also approving the promotion to the next environment.
+Ingest still **completes** promotions: when a `succeeded` event lands a version on a
+promotion's target environment, the matching in-flight candidate is marked `Deployed`.
 
 ## Operator overrides (assigning a participant from the UI)
 

@@ -53,18 +53,18 @@ public class ReferenceParticipantOverridesTests
     [Fact]
     public async Task Assign_OnEmptySlot_ReadReturnsAssigneeWithIsOverrideTrue()
     {
+        // The override read path is now the deploy-event history endpoint (promotions are
+        // self-contained and no longer surface deploy-event overrides — D19/D14). The override
+        // mechanics are otherwise unchanged.
         var service = $"ov-empty-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAndPolicyAsync(service);
-        var (eventId, candidateId) = await IngestDeployWithReference(service, "EM-1", participants: null);
+        var eventId = await IngestDeployWithReference(service, "EM-1", participants: null);
 
         var patch = await _adminClient.PatchAsJsonAsync(
             $"/api/deployments/{eventId}/references/EM-1/participants",
             new { role = "qa", assignee = new { email = "qa-new@example.com", displayName = "QA New" } });
         Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
 
-        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
-        var refs = detail.GetProperty("sourceEvent").GetProperty("references");
-        var workItem = FindReference(refs, "EM-1");
+        var workItem = await ReadEventReferenceAsync(service, eventId, "EM-1");
         Assert.NotNull(workItem);
 
         var nested = workItem.Value.GetProperty("participants");
@@ -84,8 +84,7 @@ public class ReferenceParticipantOverridesTests
     public async Task Assign_OnExistingJiraParticipant_OverrideWinsOnRead()
     {
         var service = $"ov-replace-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAndPolicyAsync(service);
-        var (eventId, candidateId) = await IngestDeployWithReference(
+        var eventId = await IngestDeployWithReference(
             service, "RP-1",
             participants: new[]
             {
@@ -96,8 +95,7 @@ public class ReferenceParticipantOverridesTests
             $"/api/deployments/{eventId}/references/RP-1/participants",
             new { role = "qa", assignee = new { email = "qa-override@example.com", displayName = "QA Override" } });
 
-        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
-        var nested = FindReference(detail.GetProperty("sourceEvent").GetProperty("references"), "RP-1")!.Value
+        var nested = (await ReadEventReferenceAsync(service, eventId, "RP-1"))!.Value
             .GetProperty("participants");
         Assert.Equal(1, nested.GetArrayLength());
         Assert.Equal("qa-override@example.com", nested[0].GetProperty("email").GetString());
@@ -110,8 +108,7 @@ public class ReferenceParticipantOverridesTests
     public async Task Reassign_TwiceWithDifferentAssignees_SecondWinsAndOnlyOneRow()
     {
         var service = $"ov-reasn-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAndPolicyAsync(service);
-        var (eventId, candidateId) = await IngestDeployWithReference(service, "RA-1", participants: null);
+        var eventId = await IngestDeployWithReference(service, "RA-1", participants: null);
 
         await _adminClient.PatchAsJsonAsync(
             $"/api/deployments/{eventId}/references/RA-1/participants",
@@ -121,8 +118,7 @@ public class ReferenceParticipantOverridesTests
             $"/api/deployments/{eventId}/references/RA-1/participants",
             new { role = "qa", assignee = new { email = "second@example.com", displayName = "Second" } });
 
-        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
-        var nested = FindReference(detail.GetProperty("sourceEvent").GetProperty("references"), "RA-1")!.Value
+        var nested = (await ReadEventReferenceAsync(service, eventId, "RA-1"))!.Value
             .GetProperty("participants");
         Assert.Equal(1, nested.GetArrayLength());
         Assert.Equal("second@example.com", nested[0].GetProperty("email").GetString());
@@ -143,8 +139,7 @@ public class ReferenceParticipantOverridesTests
     public async Task Clear_TombstoneHidesJiraParticipant()
     {
         var service = $"ov-clear-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAndPolicyAsync(service);
-        var (eventId, candidateId) = await IngestDeployWithReference(
+        var eventId = await IngestDeployWithReference(
             service, "CL-1",
             participants: new[]
             {
@@ -158,85 +153,19 @@ public class ReferenceParticipantOverridesTests
         var patchBody = await Deserialize(patch);
         Assert.True(patchBody.GetProperty("tombstone").GetBoolean());
 
-        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
-        var refNode = FindReference(detail.GetProperty("sourceEvent").GetProperty("references"), "CL-1")!.Value;
+        var refNode = (await ReadEventReferenceAsync(service, eventId, "CL-1"))!.Value;
         if (refNode.TryGetProperty("participants", out var nested) && nested.ValueKind != JsonValueKind.Null)
         {
             Assert.Equal(0, nested.GetArrayLength());
         }
     }
 
-    // ── 5. Excluded-role check honours override ─────────────────────────────
-
-    [Fact]
-    public async Task Override_PinningCurrentUserAsQA_BlocksApproval()
-    {
-        var service = $"ov-excl-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAsync();
-        await CreatePolicyAsync(targetEnv: "prod", approverGroup: "InfraPortal.Admin", excludeRole: "qa", service: service);
-        var (eventId, candidateId) = await IngestDeployWithReference(service, "EX-1", participants: null);
-
-        // Pin admin@localhost as the QA via override — they shouldn't be able to approve.
-        var patchResp = await _adminClient.PatchAsJsonAsync(
-            $"/api/deployments/{eventId}/references/EX-1/participants",
-            new { role = "qa", assignee = new { email = "admin@localhost", displayName = "Admin" } });
-        Assert.Equal(HttpStatusCode.OK, patchResp.StatusCode);
-
-        // Sanity: confirm the override row landed with the canonicalised role + matching key.
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var rows = await db.ReferenceParticipantOverrides
-                .Where(o => o.DeployEventId == eventId)
-                .ToListAsync();
-            Assert.Single(rows);
-            Assert.Equal("EX-1", rows[0].ReferenceKey);
-            Assert.Equal("qa", rows[0].Role);
-            Assert.Equal("admin@localhost", rows[0].AssigneeEmail);
-        }
-
-        var listResp = await _adminClient.GetAsync(
-            $"/api/promotions/?product=acme&service={service}&targetEnv=prod&status=Pending");
-        var list = await Deserialize(listResp);
-        var candidate = FindCandidateById(list.GetProperty("candidates"), candidateId);
-        Assert.NotNull(candidate);
-        Assert.False(candidate.Value.GetProperty("canApprove").GetBoolean());
-
-        var approveResp = await _adminClient.PostAsJsonAsync(
-            $"/api/promotions/{candidateId}/approve", new { comment = "should be blocked" });
-        Assert.Equal(HttpStatusCode.Forbidden, approveResp.StatusCode);
-    }
-
-    // ── 6. Excluded-role check honours tombstone ────────────────────────────
-
-    [Fact]
-    public async Task Tombstone_OnExcludedRole_ClearsExclusionForThatReference()
-    {
-        var service = $"ov-tomb-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAsync();
-        await CreatePolicyAsync(targetEnv: "prod", approverGroup: "InfraPortal.Admin", excludeRole: "qa", service: service);
-
-        // The Jira-supplied QA matches admin@localhost, so without the tombstone they couldn't approve.
-        var (eventId, candidateId) = await IngestDeployWithReference(
-            service, "TS-1",
-            participants: new[]
-            {
-                new { role = "qa", displayName = "Admin", email = "admin@localhost" },
-            });
-
-        // Clear the slot — tombstone suppresses the Jira-supplied admin@localhost match.
-        await _adminClient.PatchAsJsonAsync(
-            $"/api/deployments/{eventId}/references/TS-1/participants",
-            new { role = "qa", assignee = (object?)null });
-
-        // Now admin can approve. Re-pull the list to refresh canApprove.
-        var listResp = await _adminClient.GetAsync(
-            $"/api/promotions/?product=acme&service={service}&targetEnv=prod&status=Pending");
-        var list = await Deserialize(listResp);
-        var candidate = FindCandidateById(list.GetProperty("candidates"), candidateId);
-        Assert.NotNull(candidate);
-        Assert.True(candidate.Value.GetProperty("canApprove").GetBoolean());
-    }
+    // Deleted Override_PinningCurrentUserAsQA_BlocksApproval and
+    // Tombstone_OnExcludedRole_ClearsExclusionForThatReference: both asserted the excluded-role /
+    // separation-of-duties gate (a participant in an excluded role can't approve, a tombstone
+    // clears that exclusion). That machinery was removed (D17) — anyone authorized for a promotion
+    // may approve, and overrides no longer feed any promotion-approval gate. No replacement concept
+    // exists, so these assert behaviour that is intentionally gone.
 
     // ── 7. 404 when refKey not on ReferencesJson ───────────────────────────
 
@@ -244,8 +173,7 @@ public class ReferenceParticipantOverridesTests
     public async Task Patch_OnUnknownReferenceKey_Returns404()
     {
         var service = $"ov-404-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAndPolicyAsync(service);
-        var (eventId, _) = await IngestDeployWithReference(service, "EXIST-1", participants: null);
+        var eventId = await IngestDeployWithReference(service, "EXIST-1", participants: null);
 
         var resp = await _adminClient.PatchAsJsonAsync(
             $"/api/deployments/{eventId}/references/NOPE-1/participants",
@@ -259,8 +187,7 @@ public class ReferenceParticipantOverridesTests
     public async Task Patch_WithBadEmailShape_Returns400()
     {
         var service = $"ov-bad-{Guid.NewGuid():N}"[..20];
-        await SeedTopologyAndPolicyAsync(service);
-        var (eventId, _) = await IngestDeployWithReference(service, "BD-1", participants: null);
+        var eventId = await IngestDeployWithReference(service, "BD-1", participants: null);
 
         var resp = await _adminClient.PatchAsJsonAsync(
             $"/api/deployments/{eventId}/references/BD-1/participants",
@@ -270,7 +197,11 @@ public class ReferenceParticipantOverridesTests
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private async Task<(Guid eventId, string candidateId)> IngestDeployWithReference(
+    // Ingest a deploy event carrying one work-item reference. Promotions are no longer derived
+    // from ingest (D19), so this just records the deploy event and returns its id. The override
+    // machinery and the deploy-event read paths that surface it are unchanged; tests read the
+    // overridden reference back via the deploy-event history endpoint, not via a promotion.
+    private async Task<Guid> IngestDeployWithReference(
         string service, string refKey, object[]? participants)
     {
         var refsArr = participants is null
@@ -294,8 +225,6 @@ public class ReferenceParticipantOverridesTests
             deployedAt = DateTimeOffset.UtcNow,
             status = "succeeded",
             references = refsArr,
-            // Always include a triggered-by event-level participant — many tests need a
-            // candidate to exist (which requires the policy + topology + a non-empty bundle).
             participants = new[]
             {
                 new { role = "triggered-by", displayName = "Bob", email = "bob@example.com" },
@@ -305,34 +234,20 @@ public class ReferenceParticipantOverridesTests
         var ingest = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", payload);
         Assert.Equal(HttpStatusCode.Created, ingest.StatusCode);
         var ingestBody = await Deserialize(ingest);
-        var eventId = Guid.Parse(ingestBody.GetProperty("id").GetString()!);
-
-        // Find the Pending candidate for this version.
-        var listResp = await _adminClient.GetAsync(
-            $"/api/promotions/?product=acme&service={service}&targetEnv=prod&status=Pending");
-        var list = await Deserialize(listResp);
-        var candidate = FindCandidateByVersion(list.GetProperty("candidates"), version, "prod");
-        Assert.NotNull(candidate);
-        var candidateId = candidate.Value.GetProperty("id").GetString()!;
-        return (eventId, candidateId);
+        return Guid.Parse(ingestBody.GetProperty("id").GetString()!);
     }
 
-    private static JsonElement? FindCandidateByVersion(JsonElement candidates, string version, string targetEnv)
+    // Read a single reference back from the deploy-event history endpoint, which applies operator
+    // overrides/tombstones to the reference's participants. Returns null if the reference is absent.
+    private async Task<JsonElement?> ReadEventReferenceAsync(string service, Guid eventId, string refKey)
     {
-        foreach (var c in candidates.EnumerateArray())
+        var resp = await _adminClient.GetAsync($"/api/deployments/history/acme/{service}");
+        resp.EnsureSuccessStatusCode();
+        var events = await Deserialize(resp);
+        foreach (var ev in events.EnumerateArray())
         {
-            if (c.GetProperty("version").GetString() == version
-                && c.GetProperty("targetEnv").GetString() == targetEnv)
-                return c;
-        }
-        return null;
-    }
-
-    private static JsonElement? FindCandidateById(JsonElement candidates, string id)
-    {
-        foreach (var c in candidates.EnumerateArray())
-        {
-            if (c.GetProperty("id").GetString() == id) return c;
+            if (ev.GetProperty("id").GetString() != eventId.ToString()) continue;
+            return FindReference(ev.GetProperty("references"), refKey);
         }
         return null;
     }
@@ -344,45 +259,6 @@ public class ReferenceParticipantOverridesTests
             if (r.TryGetProperty("key", out var k) && k.GetString() == key) return r;
         }
         return null;
-    }
-
-    private async Task SeedTopologyAsync()
-    {
-        await _adminClient.PutAsJsonAsync("/api/promotions/admin/topology", new
-        {
-            environments = new[] { "dev", "staging", "prod" },
-            edges = new[]
-            {
-                new { from = "dev", to = "staging" },
-                new { from = "staging", to = "prod" },
-            },
-        });
-        await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
-    }
-
-    private async Task SeedTopologyAndPolicyAsync(string? service = null)
-    {
-        await SeedTopologyAsync();
-        await CreatePolicyAsync(targetEnv: "prod", approverGroup: "InfraPortal.Admin", excludeRole: null, service: service);
-    }
-
-    private async Task CreatePolicyAsync(string targetEnv, string? approverGroup, string? excludeRole, string? service = null)
-    {
-        // Per-test policies: each test passes its unique service so the policy is per
-        // (product, service, env) and doesn't collide on the unique index with sibling tests
-        // sharing the same factory instance.
-        await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
-        {
-            product = "acme",
-            service,
-            targetEnv,
-            approverGroup,
-            strategy = "Any",
-            minApprovers = approverGroup is null ? 0 : 1,
-            excludeRole,
-            timeoutHours = 24,
-            escalationGroup = (string?)null,
-        });
     }
 
     private HttpClient CreateAuthenticatedClient(string email, string password)

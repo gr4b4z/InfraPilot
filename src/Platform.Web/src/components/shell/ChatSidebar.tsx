@@ -324,10 +324,7 @@ export function ChatSidebar() {
  * Supports: [label](url), bare /path?query URLs, and **bold**.
  */
 function MessageText({ text }: { text: string }) {
-  // Match markdown links [text](url), bare internal paths (/something...), and **bold**
-  const parts = text.split(/(\[.+?\]\(.+?\)|\*\*.+?\*\*|(?:^|\s)(\/[a-zA-Z0-9/_-]+(?:\?[^\s)]*)?))/).filter(Boolean);
-
-  // Simpler approach: use a single regex to find all special segments
+  // Use a single regex to find all special segments
   const segments: Array<{ type: 'text' | 'md-link' | 'bare-link' | 'bold'; value: string; label?: string; href?: string }> = [];
   const regex = /\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|(\/deployments\/[^\s)]+|\/catalog\/[^\s)]+|\/requests\/[^\s)]+|\/settings[^\s)]*)/g;
   let lastIndex = 0;

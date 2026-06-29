@@ -11,7 +11,6 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
-  Check,
   X,
   AlertCircle,
   Save,

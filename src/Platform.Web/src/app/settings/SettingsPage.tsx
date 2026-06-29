@@ -53,7 +53,7 @@ const NAV: NavItem[] = [
     to: 'promotions',
     label: 'Promotions',
     icon: GitPullRequest,
-    description: 'Approver groups, policies, and topology',
+    description: 'Approval policies and gating',
   },
   {
     to: 'rollbacks',

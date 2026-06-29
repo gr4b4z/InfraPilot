@@ -1,14 +1,18 @@
 using System.Text.Json;
+using Platform.Api.Features.Deployments.Models;
 
 namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
-/// An auto-generated promotion candidate: "service X version V that landed in source env
-/// should move forward to target env." Lifecycle is Pending → Approved → Deploying → Deployed,
-/// with Superseded / Rejected as terminal off-ramps.
+/// A promotion candidate: "service X version V in source env should move forward to target env."
+/// Lifecycle is Pending → Approved → Deploying → Deployed, with Superseded / Rejected as terminal
+/// off-ramps.
 ///
-/// Candidates are produced by <see cref="PromotionService.TryCreateCandidate"/> on deploy-event
-/// ingest and closed by either approval + executor dispatch or a newer version replacing them.
+/// <para>Candidates are created externally via <see cref="PromotionService.CreateExternalCandidateAsync"/>
+/// (an external system POSTs the authoritative net change set) and closed by either approval +
+/// executor dispatch or a newer version replacing them. The candidate is <b>self-contained</b>: it
+/// carries its own <see cref="References"/> (the net change set), so supersede is a pure state flip
+/// — no inheritance or event-id copying.</para>
 /// </summary>
 public class PromotionCandidate
 {
@@ -21,8 +25,10 @@ public class PromotionCandidate
     public string TargetEnv { get; set; } = "";
     public string Version { get; set; } = "";
 
-    // Back-reference to the deploy event that spawned this candidate.
-    public Guid SourceDeployEventId { get; set; }
+    // Display/traceability only (not used for gating): the target env's current SHA and the SHA
+    // being promoted. Supplied by the external creator; the tool records but never validates them.
+    public string? FromRevision { get; set; }
+    public string? ToRevision { get; set; }
 
     public PromotionStatus Status { get; set; } = PromotionStatus.Pending;
 
@@ -41,22 +47,21 @@ public class PromotionCandidate
     // Set when a newer version creates a candidate on the same edge and supersedes this one.
     public Guid? SupersededById { get; set; }
 
-    // Deploy-event IDs inherited from superseded predecessors on the same edge. Union of
-    // each predecessor's own list plus its SourceDeployEventId — so a chain
-    // C1→C2→C3 accumulates correctly. Enables the UI to surface work items, PRs, and
-    // participants that were part of prior Pending candidates before this one replaced them,
-    // preserving audit context when multiple dev deploys stack up without approval.
-    public string SupersededSourceEventIdsJson { get; set; } = "[]";
+    // The authoritative net change set this candidate ships, supplied by the external creator.
+    // Shape: [{ type, provider, key, url, title, revision }] — same as DeployEvent.References so
+    // the UI and downstream integrations can treat both sources uniformly. Self-contained: this is
+    // the single source of truth for "what ships", so supersede never copies/inherits anything.
+    public string ReferencesJson { get; set; } = "[]";
 
-    public List<Guid> SupersededSourceEventIds
+    public List<ReferenceDto> References
     {
-        get => string.IsNullOrEmpty(SupersededSourceEventIdsJson)
+        get => string.IsNullOrEmpty(ReferencesJson)
             ? new()
-            : JsonSerializer.Deserialize<List<Guid>>(SupersededSourceEventIdsJson, JsonOpts) ?? new();
-        set => SupersededSourceEventIdsJson = JsonSerializer.Serialize(value, JsonOpts);
+            : JsonSerializer.Deserialize<List<ReferenceDto>>(ReferencesJson, JsonOpts) ?? new();
+        set => ReferencesJson = JsonSerializer.Serialize(value, JsonOpts);
     }
 
-    // Free-form participants attached at the promotion level (not from the source deploy event).
+    // Free-form participants attached at the promotion level (not from any deploy event).
     // Shape: [{ role, displayName, email }] — same as DeployEvent.Participants so UI and downstream
     // integrations (Jira, Slack) can treat both sources uniformly. Roles are user-defined strings;
     // the platform doesn't enforce a fixed taxonomy.

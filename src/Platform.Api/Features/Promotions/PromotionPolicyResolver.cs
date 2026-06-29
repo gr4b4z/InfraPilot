@@ -49,33 +49,27 @@ public class PromotionPolicyResolver
         var policy = await ResolveAsync(product, service, targetEnv, ct);
         if (policy is null)
         {
-            // Implicit auto-approve: no policy row means "no approval gate configured".
+            // Implicit auto-approve: no policy row means "no approval gate configured". Empty
+            // ApprovalSteps ⇒ IsAutoApprove.
             return new ResolvedPolicySnapshot(
                 PolicyId: null,
-                ApproverGroup: null,
-                Strategy: PromotionStrategy.Any,
-                MinApprovers: 0,
-                ExcludeRole: null,
                 TimeoutHours: 0,
                 EscalationGroup: null);
         }
 
-        // Carry the gate forward so PR3's evaluator sees the configured ticket-level mode for
-        // newly created candidates. Old candidates whose snapshot JSON predates this field
-        // deserialise to the default PromotionOnly — preserving today's flow.
+        // Project the policy's rule tree and gate forward so the evaluator sees the configured
+        // requirements + work-item-level mode for newly created candidates. Old candidates whose
+        // snapshot JSON predates a field deserialise to its default — preserving today's flow.
         return new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
-            ApproverGroup: policy.ApproverGroup,
-            Strategy: policy.Strategy,
-            MinApprovers: policy.MinApprovers,
-            ExcludeRole: policy.ExcludeRole,
             TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup)
         {
+            ApprovalSteps = policy.ApprovalSteps,
             Gate = policy.Gate,
-            RequireAllTicketsApproved = policy.RequireAllTicketsApproved,
-            AutoApproveOnAllTicketsApproved = policy.AutoApproveOnAllTicketsApproved,
-            AutoApproveWhenNoTickets = policy.AutoApproveWhenNoTickets,
+            RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
+            AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
+            AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
         };
     }
 }

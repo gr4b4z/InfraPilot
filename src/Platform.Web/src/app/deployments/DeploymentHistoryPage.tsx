@@ -3,7 +3,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
-import { format, formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
 import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
@@ -179,7 +179,6 @@ function HistoryRow({ event: evt, isSelected, onClick }: {
   onClick: () => void;
 }) {
   const { getDisplayName } = useSettingsStore();
-  const workItem = evt.references.find((r) => r.type === 'work-item');
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
 

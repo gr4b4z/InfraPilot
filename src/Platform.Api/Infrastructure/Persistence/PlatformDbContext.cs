@@ -40,6 +40,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionPolicy> PromotionPolicies => Set<PromotionPolicy>();
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
+    public DbSet<PromotionWorkItem> PromotionWorkItems => Set<PromotionWorkItem>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
     public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
@@ -340,12 +341,15 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
             e.Property(x => x.Service).HasMaxLength(200);
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
-            e.Property(x => x.ApproverGroup).HasMaxLength(400);
-            e.Property(x => x.Strategy).HasMaxLength(20).IsRequired().HasConversion<string>();
+            // Approval rule tree, persisted as a JSON string column ("[]" ⇒ auto-approve). The
+            // computed ApprovalSteps property is not mapped.
+            var approvalStepsJson = e.Property(x => x.ApprovalStepsJson).HasDefaultValue("[]");
+            if (jsonType != null) approvalStepsJson.HasColumnType(jsonType);
+            e.Ignore(x => x.ApprovalSteps);
             e.Property(x => x.Gate).HasMaxLength(30).IsRequired().HasConversion<string>().HasDefaultValue(PromotionGate.PromotionOnly);
-            e.Property(x => x.RequireAllTicketsApproved).IsRequired().HasDefaultValue(false);
-            e.Property(x => x.AutoApproveOnAllTicketsApproved).IsRequired().HasDefaultValue(false);
-            e.Property(x => x.AutoApproveWhenNoTickets).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
             // Unique per (product, service?, target_env). SQL Server and Postgres both treat
             // NULL as distinct from NULL in unique indexes, which is the semantics we want:
@@ -369,17 +373,47 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             var resolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
             if (jsonType != null) resolvedPolicyJson.HasColumnType(jsonType);
 
+            e.Property(x => x.FromRevision).HasMaxLength(200);
+            e.Property(x => x.ToRevision).HasMaxLength(200);
+
             var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
             if (jsonType != null) participantsJson.HasColumnType(jsonType);
             e.Ignore(x => x.Participants);
 
-            var supersededIdsJson = e.Property(x => x.SupersededSourceEventIdsJson).HasDefaultValue("[]");
-            if (jsonType != null) supersededIdsJson.HasColumnType(jsonType);
-            e.Ignore(x => x.SupersededSourceEventIds);
+            var referencesJson = e.Property(x => x.ReferencesJson).HasDefaultValue("[]");
+            if (jsonType != null) referencesJson.HasColumnType(jsonType);
+            e.Ignore(x => x.References);
 
             e.HasIndex(x => x.Status);
-            e.HasIndex(x => new { x.Product, x.Service, x.SourceEnv, x.TargetEnv });
-            e.HasIndex(x => x.SourceDeployEventId);
+            // Natural-key lookup for create-time reuse. NOTE: the non-terminal natural key
+            // (Product, Service, SourceEnv, TargetEnv, Version) must be unique, but EF can't
+            // express a *filtered* unique index (status ∈ {Pending, Approved, Deploying})
+            // portably across Postgres + SqlServer. So this is a plain (non-unique) index and
+            // uniqueness is enforced in code (CreateExternalCandidateAsync finds-and-reuses, and
+            // catches a concurrent-insert conflict to treat it as reuse).
+            e.HasIndex(x => new { x.Product, x.Service, x.SourceEnv, x.TargetEnv, x.Version });
+        });
+
+        // Promotion Work Items — candidate-scoped projection of the candidate's work-item refs.
+        modelBuilder.Entity<PromotionWorkItem>(e =>
+        {
+            e.ToTable("promotion_work_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Provider).HasMaxLength(50);
+            e.Property(x => x.Url).HasMaxLength(2000);
+            e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.Revision).HasMaxLength(200);
+            e.HasOne<PromotionCandidate>()
+                .WithMany()
+                .HasForeignKey(x => x.CandidateId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Lookup: "all tickets on candidate X" for the gate evaluator.
+            e.HasIndex(x => x.CandidateId);
+            // Lookup: "candidates carrying ticket X for (product, env)" for the approval surface.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
         });
 
         // Promotion Approvals
@@ -391,6 +425,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Comment).HasMaxLength(2000);
             e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            // Optional attribution to the step/requirement the approval was recorded against.
+            e.Property(x => x.StepName).HasMaxLength(200);
+            e.Property(x => x.RequirementName).HasMaxLength(200);
             // DB-level guard against double approval from the same user.
             e.HasIndex(x => new { x.CandidateId, x.ApproverEmail }).IsUnique();
             e.HasOne<PromotionCandidate>()

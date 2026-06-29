@@ -8,7 +8,6 @@ import { Clock, CheckCircle, XCircle, AlertTriangle, Shield, ArrowUpRight } from
 export function ApprovalsPage() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
 
   useEffect(() => {
     api.getApprovals()

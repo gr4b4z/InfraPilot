@@ -47,10 +47,10 @@ public class PromotionQueueAssigneeFilterTests
     public async Task AssigneeFilter_ByCurrentUserEmail_ReturnsOnlyCandidatesAssignedToMe()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // Mine: I'm the QA on a reference participant.
-        var (eventMine, _) = await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-mine",
             referenceKey: "MINE-1",
@@ -60,7 +60,7 @@ public class PromotionQueueAssigneeFilterTests
             });
 
         // Theirs: someone else is the QA, I'm not on the candidate.
-        var (eventTheirs, _) = await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-theirs",
             referenceKey: "THEIRS-1",
@@ -77,10 +77,6 @@ public class PromotionQueueAssigneeFilterTests
         var unfiltered = await GetPendingAsync(assignee: null);
         Assert.Contains(unfiltered, t => t.WorkItemKey == "MINE-1");
         Assert.Contains(unfiltered, t => t.WorkItemKey == "THEIRS-1");
-
-        // Touch the local variables so unused-warning analyzers don't trip.
-        Assert.NotEqual(Guid.Empty, eventMine);
-        Assert.NotEqual(Guid.Empty, eventTheirs);
     }
 
     // ── 2. assignee=<other email> returns their candidates, none of mine ──
@@ -89,9 +85,9 @@ public class PromotionQueueAssigneeFilterTests
     public async Task AssigneeFilter_ByOtherEmail_ReturnsTheirCandidatesNotMine()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-mine-2",
             referenceKey: "MINE2-1",
@@ -100,7 +96,7 @@ public class PromotionQueueAssigneeFilterTests
                 new { role = "qa", displayName = "Admin", email = "admin@localhost" },
             });
 
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-them",
             referenceKey: "THEM-1",
@@ -120,10 +116,10 @@ public class PromotionQueueAssigneeFilterTests
     public async Task AssigneeFilter_Unassigned_ReturnsCandidatesWithoutNamedAssignees()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // Has a QA participant — should NOT show up as unassigned.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-named",
             referenceKey: "NAMED-1",
@@ -134,7 +130,7 @@ public class PromotionQueueAssigneeFilterTests
 
         // No participants in any assignee role (only triggered-by event-level participant
         // which is not in the default assignee role set).
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-empty",
             referenceKey: "EMPTY-1",
@@ -151,12 +147,12 @@ public class PromotionQueueAssigneeFilterTests
     public async Task AssigneeFilter_RoleSetOverride_RestrictsAssigneeRoles()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // Reviewer-only — with the default role set ["qa","reviewer","assignee"] this
         // candidate is "assigned"; with the override ["qa"] it's NOT, so it should appear
         // under the unassigned filter once we override.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-rev-only",
             referenceKey: "REV-1",
@@ -179,38 +175,11 @@ public class PromotionQueueAssigneeFilterTests
         await ResetAssigneeRoleSettingAsync();
     }
 
-    // ── 5. Tombstone interaction — overridden-cleared QA → treated as unassigned ──
-
-    [Fact]
-    public async Task AssigneeFilter_TombstonedAssignee_IsTreatedAsUnassigned()
-    {
-        var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
-
-        var (eventId, _) = await IngestDeployAsync(
-            product,
-            service: "svc-tomb",
-            referenceKey: "TOMB-1",
-            referenceParticipants: new[]
-            {
-                new { role = "qa", displayName = "Other", email = "other@example.com" },
-            });
-
-        // Tombstone — clears the QA slot, so the merged view should treat the candidate as
-        // having no participant in any assignee role.
-        var patch = await _adminClient.PatchAsJsonAsync(
-            $"/api/deployments/{eventId}/references/TOMB-1/participants",
-            new { role = "qa", assignee = (object?)null });
-        Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
-
-        var unassigned = await GetPendingAsync(assignee: "unassigned");
-        Assert.Contains(unassigned, t => t.WorkItemKey == "TOMB-1");
-
-        // And conversely, filtering by the now-tombstoned email should NOT return the row
-        // (the override merge has dropped the tombstoned participant from the merged view).
-        var byOldEmail = await GetPendingAsync(assignee: "other@example.com");
-        Assert.DoesNotContain(byOldEmail, t => t.WorkItemKey == "TOMB-1");
-    }
+    // Deleted AssigneeFilter_TombstonedAssignee_IsTreatedAsUnassigned: the pending-queue assignee
+    // filter now sources participants from the self-contained candidate (reference-level +
+    // promotion-level participants), not from deploy-event references merged with operator
+    // overrides/tombstones (D19). Deploy-event reference overrides no longer feed the promotion
+    // queue, so the tombstone-driven behaviour this asserted no longer exists in this path.
 
     // ── 6. Email match is case-insensitive ──
 
@@ -218,9 +187,9 @@ public class PromotionQueueAssigneeFilterTests
     public async Task AssigneeFilter_EmailMatch_IsCaseInsensitive()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-case",
             referenceKey: "CASE-1",
@@ -242,10 +211,10 @@ public class PromotionQueueAssigneeFilterTests
     public async Task RolePersonMatrix_RoleOnly_ReturnsCandidatesWithSomeoneInRole()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // QA: someone in role.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-qa",
             referenceKey: "RQA-1",
@@ -255,7 +224,7 @@ public class PromotionQueueAssigneeFilterTests
             });
 
         // Reviewer-only — under role=qa narrowing this row should drop.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-rev",
             referenceKey: "RREV-1",
@@ -273,10 +242,10 @@ public class PromotionQueueAssigneeFilterTests
     public async Task RolePersonMatrix_RoleAndMe_ReturnsOnlyWhereIAmInThatRole()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // I'm QA → match.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-iq",
             referenceKey: "IQ-1",
@@ -286,7 +255,7 @@ public class PromotionQueueAssigneeFilterTests
             });
 
         // I'm Reviewer (not QA) → drop under role=qa+me.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-ir",
             referenceKey: "IR-1",
@@ -304,10 +273,10 @@ public class PromotionQueueAssigneeFilterTests
     public async Task RolePersonMatrix_RoleAndOtherPerson_ReturnsOnlyWhereTheyAreInRole()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // Other is QA → match.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-oq",
             referenceKey: "OQ-1",
@@ -317,7 +286,7 @@ public class PromotionQueueAssigneeFilterTests
             });
 
         // Other is Reviewer (not QA) → drop under role=qa+other.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-or",
             referenceKey: "OR-1",
@@ -335,10 +304,10 @@ public class PromotionQueueAssigneeFilterTests
     public async Task RolePersonMatrix_RoleAndUnassigned_ReturnsOnlyWhereThatRoleIsEmpty()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // Has QA → drop under role=qa+unassigned.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-hasqa",
             referenceKey: "HASQA-1",
@@ -349,7 +318,7 @@ public class PromotionQueueAssigneeFilterTests
 
         // No QA but has reviewer → keep under role=qa+unassigned (other roles don't matter
         // when the role filter is set).
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-noqa",
             referenceKey: "NOQA-1",
@@ -369,7 +338,7 @@ public class PromotionQueueAssigneeFilterTests
     public async Task ResponseShape_AssigneesRollup_DedupedPerEmailRole_WithCorrectCounts()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         // Test-scoped emails so the shared factory's residue from earlier tests doesn't
         // bleed into the rollup counts. The rollup is global across the user's authorized
@@ -380,7 +349,7 @@ public class PromotionQueueAssigneeFilterTests
         var bobEmail = $"bob-{scope}@example.com";
 
         // Alice is QA on two candidates → count=2, role=qa.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-a1",
             referenceKey: "A1-1",
@@ -388,7 +357,7 @@ public class PromotionQueueAssigneeFilterTests
             {
                 new { role = "qa", displayName = "Alice", email = aliceEmail },
             });
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-a2",
             referenceKey: "A2-1",
@@ -398,7 +367,7 @@ public class PromotionQueueAssigneeFilterTests
             });
 
         // Alice is Reviewer on one candidate → count=1, role=reviewer.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-a3",
             referenceKey: "A3-1",
@@ -408,7 +377,7 @@ public class PromotionQueueAssigneeFilterTests
             });
 
         // Bob is QA on one → count=1, role=qa.
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-b1",
             referenceKey: "B1-1",
@@ -447,13 +416,13 @@ public class PromotionQueueAssigneeFilterTests
     public async Task ResponseShape_RollupBuiltAgainstUnfilteredAuthorizedList()
     {
         var product = NewProduct();
-        await SeedTopologyAndPolicyAsync(product);
+        await SeedPolicyAsync(product);
 
         var scope = $"pre-{Guid.NewGuid():N}"[..12];
         var aliceEmail = $"alice-{scope}@example.com";
         var bobEmail = $"bob-{scope}@example.com";
 
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-pre1",
             referenceKey: "PRE-1",
@@ -461,7 +430,7 @@ public class PromotionQueueAssigneeFilterTests
             {
                 new { role = "qa", displayName = "Alice", email = aliceEmail },
             });
-        await IngestDeployAsync(
+        await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-pre2",
             referenceKey: "PRE-2",
@@ -560,7 +529,11 @@ public class PromotionQueueAssigneeFilterTests
         return new PendingQueueResponse(tickets, assignees, roles);
     }
 
-    private async Task<(Guid eventId, string candidateId)> IngestDeployAsync(
+    // Create a Pending staging→prod promotion candidate carrying a single work-item reference.
+    // The pending-queue assignee filter sources its per-ticket participants from the candidate's
+    // own data now (reference-level nested participants + promotion-level participants) — no deploy
+    // event, no overrides (D19). Returns the new candidate id.
+    private async Task<string> CreatePromotionWithReferenceAsync(
         string product,
         string service,
         string referenceKey,
@@ -588,11 +561,9 @@ public class PromotionQueueAssigneeFilterTests
         {
             product,
             service,
-            environment = "staging",
+            sourceEnv = "staging",
+            targetEnv = "prod",
             version,
-            source = "integration-test",
-            deployedAt = DateTimeOffset.UtcNow,
-            status = "succeeded",
             references = refsArr,
             // triggered-by is intentionally NOT in the default assignee role set, so it
             // doesn't trip the "assigned" check.
@@ -602,59 +573,41 @@ public class PromotionQueueAssigneeFilterTests
             },
         };
 
-        var ingest = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", payload);
-        Assert.Equal(HttpStatusCode.Created, ingest.StatusCode);
-        var ingestBody = await Deserialize(ingest);
-        var eventId = Guid.Parse(ingestBody.GetProperty("id").GetString()!);
-
-        var listResp = await _adminClient.GetAsync(
-            $"/api/promotions/?product={product}&service={service}&targetEnv=prod&status=Pending");
-        var list = await Deserialize(listResp);
-        var candidate = FindCandidateByVersion(list.GetProperty("candidates"), version, "prod");
-        Assert.NotNull(candidate);
-        var candidateId = candidate.Value.GetProperty("id").GetString()!;
-        return (eventId, candidateId);
+        var create = await _apiKeyClient.PostAsJsonAsync("/api/promotions", payload);
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        var createBody = await Deserialize(create);
+        return createBody.GetProperty("id").GetString()!;
     }
 
-    private static JsonElement? FindCandidateByVersion(JsonElement candidates, string version, string targetEnv)
+    // Topology was removed (D19): policy resolution is the edge guard. Enable the flag and seed a
+    // per-product gated step-tree policy (one InfraPortal.Admin approver) so created candidates are
+    // born Pending and land in the approval queue.
+    private async Task SeedPolicyAsync(string product)
     {
-        foreach (var c in candidates.EnumerateArray())
-        {
-            if (c.GetProperty("version").GetString() == version
-                && c.GetProperty("targetEnv").GetString() == targetEnv)
-                return c;
-        }
-        return null;
-    }
-
-    private async Task SeedTopologyAsync()
-    {
-        await _adminClient.PutAsJsonAsync("/api/promotions/admin/topology", new
-        {
-            environments = new[] { "dev", "staging", "prod" },
-            edges = new[]
-            {
-                new { from = "dev", to = "staging" },
-                new { from = "staging", to = "prod" },
-            },
-        });
         await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
-    }
-
-    private async Task SeedTopologyAndPolicyAsync(string product)
-    {
-        await SeedTopologyAsync();
-        // Per-product / per-target-env policy with no excluded role and InfraPortal.Admin
-        // as the approver group — admin@localhost is in that group via the seeded local user.
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
         {
             product,
             service = (string?)null,
             targetEnv = "prod",
-            approverGroup = "InfraPortal.Admin",
-            strategy = "Any",
-            minApprovers = 1,
-            excludeRole = (string?)null,
+            steps = new[]
+            {
+                new
+                {
+                    name = "Release Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Approvers",
+                            groups = new[] { "InfraPortal.Admin" },
+                            users = Array.Empty<string>(),
+                            minApprovers = 1,
+                        },
+                    },
+                },
+            },
+            gate = "PromotionOnly",
             timeoutHours = 24,
             escalationGroup = (string?)null,
         });

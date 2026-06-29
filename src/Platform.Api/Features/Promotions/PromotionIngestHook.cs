@@ -19,15 +19,22 @@ public interface IPromotionIngestHook
 }
 
 /// <summary>
-/// Wires the promotion machinery into deploy-event ingestion. Two responsibilities:
+/// Wires the promotion machinery into deploy-event ingestion.
+///
+/// <para>Promotion candidates are no longer auto-generated on ingest (D18/D19) — they are created
+/// externally via the create-promotion API (an external system POSTs the authoritative net change
+/// set). The hook keeps two ingest-driven concerns:</para>
 ///
 /// <list type="number">
-///   <item><b>Candidate generation (P3.B):</b> for each target environment reachable from the
-///   ingested event's source environment, create a <see cref="PromotionCandidate"/>.</item>
+///   <item><b>Work-item sync:</b> projects the event's <c>work-item</c> references into
+///   <see cref="DeployEventWorkItem"/> for deploy-history ("which builds carry ticket X"). This no
+///   longer feeds the promotion gate (that reads <see cref="PromotionWorkItem"/>), but the table
+///   has other readers (backfill, history).</item>
 ///
-///   <item><b>Completion matching (P3.C):</b> when a deploy event lands on a target environment
-///   and matches an in-flight candidate by <c>(product, service, target_env, version)</c>, mark
-///   that candidate <see cref="PromotionStatus.Deployed"/>.</item>
+///   <item><b>Completion matching (D18):</b> when a deploy event lands on a target environment and
+///   matches an in-flight candidate by <c>(product, service, target_env, version)</c>, mark that
+///   candidate <see cref="PromotionStatus.Deployed"/>. Ingestion stops <i>creating</i> promotions
+///   but still <i>closes</i> them.</item>
 /// </list>
 ///
 /// <para>All work is gated behind the <c>features.promotions</c> flag — the hook early-exits
@@ -36,7 +43,6 @@ public interface IPromotionIngestHook
 public class PromotionIngestHook : IPromotionIngestHook
 {
     private readonly IFeatureFlags _flags;
-    private readonly PromotionTopologyService _topology;
     private readonly PromotionService _promotions;
     private readonly RollbackService _rollbacks;
     private readonly WorkItemSyncService _workItemSync;
@@ -45,7 +51,6 @@ public class PromotionIngestHook : IPromotionIngestHook
 
     public PromotionIngestHook(
         IFeatureFlags flags,
-        PromotionTopologyService topology,
         PromotionService promotions,
         RollbackService rollbacks,
         WorkItemSyncService workItemSync,
@@ -53,7 +58,6 @@ public class PromotionIngestHook : IPromotionIngestHook
         ILogger<PromotionIngestHook> logger)
     {
         _flags = flags;
-        _topology = topology;
         _promotions = promotions;
         _rollbacks = rollbacks;
         _workItemSync = workItemSync;
@@ -73,43 +77,28 @@ public class PromotionIngestHook : IPromotionIngestHook
 
             if (promotionsOn)
             {
-                // 1) Project work-item references into the relational index used by the gate evaluator.
+                // 1) Project work-item references into the deploy-history index (DeployEventWorkItem).
+                //    No longer feeds the promotion gate — kept for deploy-history readers.
                 await _workItemSync.SyncAsync(deployEvent, ct);
                 await _db.SaveChangesAsync(ct);
 
-                // 2) Match any in-flight promotion candidate that this event completes.
+                // 2) Match any in-flight promotion candidate that this event completes (D18).
                 await MatchCompletionAsync(deployEvent, ct);
             }
 
-            // 3) Match any in-flight rollback this event completes (true if it did) — even when the
-            //    operator forgot to set IsRollback on the deploy.
-            var rollbackMatched = false;
+            // 3) Match any in-flight rollback this event completes — even when the operator forgot
+            //    to set IsRollback on the deploy.
             if (await _flags.IsEnabled(FeatureFlagKeys.Rollbacks, ct))
-                rollbackMatched = await _rollbacks.MatchCompletionAsync(deployEvent, ct);
+                await _rollbacks.MatchCompletionAsync(deployEvent, ct);
 
-            // 4) Generate new promotion candidates for downstream environments. For a rollback we
-            //    still offer to promote the rolled-back-to version when it differs from the target
-            //    env (e.g. staging rolled back to 2.0 while prod is on 1.5 — 2.0 is still shippable);
-            //    CreateCandidateAsync skips only when it already matches the target.
-            if (promotionsOn)
-                await GenerateCandidatesAsync(deployEvent, treatAsRollback: rollbackMatched, ct);
+            // Candidate generation removed (D19): promotions are created externally via the
+            // create-promotion API, not derived from deploy events.
         }
         catch (Exception ex)
         {
             // Swallow and log: ingestion must never 500 because of promotion bookkeeping.
             _logger.LogError(ex,
                 "Promotion ingest hook failed for deploy event {EventId}", deployEvent.Id);
-        }
-    }
-
-    private async Task GenerateCandidatesAsync(DeployEvent source, bool treatAsRollback, CancellationToken ct)
-    {
-        var nexts = await _topology.GetNextEnvironmentsAsync(source.Environment, ct);
-        if (nexts.Count == 0) return;
-
-        foreach (var target in nexts)
-        {
-            await _promotions.CreateCandidateAsync(source, target, treatAsRollback, ct);
         }
     }
 

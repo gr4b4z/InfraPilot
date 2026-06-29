@@ -264,8 +264,8 @@ public class RollbackService
         var snapshot = ReadSnapshot(request);
         if (snapshot.IsAutoApprove)
             throw new InvalidOperationException("This rollback does not require approval");
-        if (!await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
-            throw new UnauthorizedAccessException("You are not in the approver group for this rollback");
+        if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _user.Email, ct))
+            throw new UnauthorizedAccessException("You are not authorized to approve this rollback");
         if (await _db.RollbackApprovals.AnyAsync(a => a.RequestId == id && a.ApproverEmail == _user.Email, ct))
             throw new InvalidOperationException("You have already made a decision on this rollback");
 
@@ -294,17 +294,35 @@ public class RollbackService
         if (request.Status != RollbackStatus.Pending) return request;
 
         var snapshot = ReadSnapshot(request);
-        var approvedCount = await _db.RollbackApprovals
-            .CountAsync(a => a.RequestId == id && a.Decision == PromotionDecision.Approved, ct);
-        var required = snapshot.Strategy == PromotionStrategy.NOfM ? Math.Max(1, snapshot.MinApprovers) : 1;
-        if (approvedCount < required) return request;
+        var requirements = snapshot.AllRequirements;
+        if (requirements.Count == 0) return request; // auto-approve never reaches Pending here
+
+        var approverEmails = await _db.RollbackApprovals.AsNoTracking()
+            .Where(a => a.RequestId == id && a.Decision == PromotionDecision.Approved)
+            .Select(a => a.ApproverEmail)
+            .ToListAsync(ct);
+        var distinct = approverEmails
+            .Where(e => !string.IsNullOrEmpty(e))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Same distinct-person, per-requirement matching as promotions. We can't resolve recorded
+        // approvers' live group membership, but each was authorized for some requirement at record
+        // time — so an approver matches a requirement if listed explicitly OR the requirement carries
+        // groups (membership can't be disproven). Preserves legacy single-group NOfM counting while
+        // honouring user-only requirements.
+        var match = ApprovalMatcher.Match(requirements, distinct, (email, req) =>
+            req.Users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase))
+            || req.Groups.Count > 0);
+        if (!match.AllSatisfied) return request;
 
         request.Status = RollbackStatus.Approved;
         request.ApprovedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log("rollbacks", "rollback.approved",
-            "system", "System (gate satisfied)", "system", "RollbackRequest", id, null, new { approvedCount, required });
+            "system", "System (gate satisfied)", "system", "RollbackRequest", id, null,
+            new { approvedCount = distinct.Count, requirements = requirements.Count });
         _logger.LogInformation("Rollback request {Id} → Approved", id);
 
         await DispatchWebhookAsync(request, "rollback.approved", ct);
@@ -315,8 +333,8 @@ public class RollbackService
     {
         var request = await LoadPendingAsync(id, ct);
         var snapshot = ReadSnapshot(request);
-        if (!snapshot.IsAutoApprove && !await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
-            throw new UnauthorizedAccessException("You are not in the approver group for this rollback");
+        if (!snapshot.IsAutoApprove && !await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _user.Email, ct))
+            throw new UnauthorizedAccessException("You are not authorized to approve this rollback");
 
         _db.RollbackApprovals.Add(new RollbackApproval
         {
@@ -457,7 +475,7 @@ public class RollbackService
         if (snapshot.IsAutoApprove) return false;
         if (await _db.RollbackApprovals.AsNoTracking().AnyAsync(a => a.RequestId == request.Id && a.ApproverEmail == _user.Email, ct))
             return false;
-        return await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct);
+        return await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _user.Email, ct);
     }
 
     // ---------------------------------------------------------------------

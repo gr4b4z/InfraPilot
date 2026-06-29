@@ -21,7 +21,6 @@ export function ReleaseNoteTemplateSettings() {
   const [resolvedFromFallback, setResolvedFromFallback] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
@@ -71,7 +70,6 @@ export function ReleaseNoteTemplateSettings() {
   // clobber rendering). Instead we can't really delete without a backend route,
   // so until that lands the button is hidden.
   // TODO: add DELETE /api/release-notes/template?product&environment to drop a row.
-  void deleting;
 
   const productOptions = ['', ...products.map((p) => p.product)];
   const envOptions = product

@@ -5,10 +5,10 @@ import { Loader2, CheckCircle, ArrowLeft, FileText, Shield, Send } from 'lucide-
 import { useConversationStore } from '@/stores/conversationStore';
 import { api } from '@/lib/api';
 import { buildAgentUrl } from '@/lib/runtimeConfig';
-import type { A2UIComponent } from '@/lib/types';
+import type { A2UIComponent, CatalogItem } from '@/lib/types';
 
 interface CatalogDetail {
-  item: { id: string; slug: string; name: string; description: string; category: string; icon: string };
+  item: CatalogItem;
   inputs: Array<{
     id: string;
     component: string;

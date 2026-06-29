@@ -28,6 +28,15 @@ public class PromotionPolicyResolverTests : IDisposable
         Assert.Null(result);
     }
 
+    // Helper: a single-step / single-requirement policy using the given group + minApprovers.
+    private static List<ApprovalStep> Steps(string group, int minApprovers = 1) => new()
+    {
+        new("Release Approval", new()
+        {
+            new ApproverRequirement("Approvers", new() { new GroupRef(group, group) }, new(), minApprovers),
+        }),
+    };
+
     [Fact]
     public async Task ResolveAsync_ProductDefaultOnly_ReturnsIt()
     {
@@ -37,8 +46,7 @@ public class PromotionPolicyResolverTests : IDisposable
             Product = "acme",
             Service = null,
             TargetEnv = "prod",
-            ApproverGroup = "ops",
-            Strategy = PromotionStrategy.Any,
+            ApprovalSteps = Steps("ops"),
         };
         _db.PromotionPolicies.Add(policy);
         await _db.SaveChangesAsync();
@@ -57,8 +65,7 @@ public class PromotionPolicyResolverTests : IDisposable
             Product = "acme",
             Service = null,
             TargetEnv = "prod",
-            ApproverGroup = "ops",
-            Strategy = PromotionStrategy.Any,
+            ApprovalSteps = Steps("ops"),
         };
         var specific = new PromotionPolicy
         {
@@ -66,9 +73,7 @@ public class PromotionPolicyResolverTests : IDisposable
             Product = "acme",
             Service = "api",
             TargetEnv = "prod",
-            ApproverGroup = "api-leads",
-            Strategy = PromotionStrategy.NOfM,
-            MinApprovers = 2,
+            ApprovalSteps = Steps("api-leads", minApprovers: 2),
         };
         _db.PromotionPolicies.AddRange(productDefault, specific);
         await _db.SaveChangesAsync();
@@ -76,7 +81,7 @@ public class PromotionPolicyResolverTests : IDisposable
         var result = await _sut.ResolveAsync("acme", "api", "prod");
         Assert.NotNull(result);
         Assert.Equal(specific.Id, result!.Id);
-        Assert.Equal("api-leads", result.ApproverGroup);
+        Assert.Equal("api-leads", result.ApprovalSteps.Single().Requirements.Single().Groups.Single().Id);
     }
 
     [Fact]
@@ -84,7 +89,7 @@ public class PromotionPolicyResolverTests : IDisposable
     {
         var snap = await _sut.SnapshotAsync("acme", "api", "prod");
         Assert.Null(snap.PolicyId);
-        Assert.Null(snap.ApproverGroup);
+        Assert.Empty(snap.ApprovalSteps);
         Assert.True(snap.IsAutoApprove);
     }
 
@@ -97,10 +102,8 @@ public class PromotionPolicyResolverTests : IDisposable
             Product = "acme",
             Service = null,
             TargetEnv = "prod",
-            ApproverGroup = "ops",
-            Strategy = PromotionStrategy.NOfM,
-            MinApprovers = 2,
-            ExcludeRole = "triggered-by",
+            ApprovalSteps = Steps("ops", minApprovers: 2),
+            Gate = PromotionGate.PromotionOnly,
             TimeoutHours = 48,
             EscalationGroup = "leads",
         };
@@ -109,10 +112,9 @@ public class PromotionPolicyResolverTests : IDisposable
 
         var snap = await _sut.SnapshotAsync("acme", "api", "prod");
         Assert.Equal(policy.Id, snap.PolicyId);
-        Assert.Equal("ops", snap.ApproverGroup);
-        Assert.Equal(PromotionStrategy.NOfM, snap.Strategy);
-        Assert.Equal(2, snap.MinApprovers);
-        Assert.Equal("triggered-by", snap.ExcludeRole);
+        var req = snap.AllRequirements.Single();
+        Assert.Equal("ops", req.Groups.Single().Id);
+        Assert.Equal(2, req.MinApprovers);
         Assert.Equal(48, snap.TimeoutHours);
         Assert.Equal("leads", snap.EscalationGroup);
         Assert.False(snap.IsAutoApprove);

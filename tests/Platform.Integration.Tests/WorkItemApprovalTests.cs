@@ -143,36 +143,10 @@ public class WorkItemApprovalTests
         }
     }
 
-    [Fact]
-    public async Task Approve_Throws_WhenUserIsExcludedByRole()
-    {
-        await using var factory = new WorkItemTestFactory();
-        factory.Current.Email = "deployer@example.com";
-        factory.Current.Name = "Deployer";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            // Source event lists deployer@example.com under the excluded "deploy-author" role.
-            var participants = new List<ParticipantDto>
-            {
-                new("deploy-author", "Deployer", "deployer@example.com"),
-            };
-            await SeedPolicyEventCandidateAsync(db, "FOO-1",
-                approverGroup: "ReleaseApprovers",
-                excludeRole: "deploy-author",
-                participants: participants);
-        }
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ex = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
-                svc.ApproveAsync("FOO-1", "acme", "prod", null, default));
-            Assert.Contains("excluded", ex.Message, StringComparison.OrdinalIgnoreCase);
-        }
-    }
+    // NOTE: the separation-of-duties "excluded by role" path was removed (D17) along with
+    // PromotionPolicy.ExcludeRole / candidate source-event linkage — anyone authorized for the
+    // promotion may now decide on its tickets. The former Approve_Throws_WhenUserIsExcludedByRole
+    // test exercised behaviour that no longer exists, so it was dropped.
 
     [Fact]
     public async Task Approve_Throws_WhenUserNotInApproverGroup()
@@ -194,7 +168,9 @@ public class WorkItemApprovalTests
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
                 svc.ApproveAsync("FOO-1", "acme", "prod", null, default));
-            Assert.Contains("approver group", ex.Message, StringComparison.OrdinalIgnoreCase);
+            // The unauthorized-approver path now reports against the rule tree, not a single
+            // "approver group" (§8): "You are not authorized to approve this promotion".
+            Assert.Contains("not authorized", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
 
@@ -234,32 +210,17 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            // Two candidates in (acme, prod). Older candidate's bundle includes FOO-1 via a
-            // superseded source event; newer candidate's *own* SourceDeployEvent has FOO-1.
-            // Pre-flight: seed the older candidate first, then the newer one.
-            var (oldEvent, _, oldCandidate) = await SeedPolicyEventCandidateAsync(
+            // Two Pending candidates in (acme, prod), each self-contained and each carrying FOO-1 on
+            // its own work-item index. The lookup must pick the most recently created one.
+            await SeedPolicyEventCandidateAsync(
                 db, "FOO-1",
                 approverGroup: "ReleaseApprovers",
                 createdAt: DateTimeOffset.UtcNow.AddMinutes(-10));
 
-            // Newer event also carries FOO-1; newer candidate inherits oldEvent in its
-            // superseded list so both candidates' bundles match the ticket.
-            var newEvent = NewDeployEvent(participants: null);
-            db.DeployEvents.Add(newEvent);
-            db.DeployEventWorkItems.Add(new DeployEventWorkItem
-            {
-                Id = Guid.NewGuid(),
-                DeployEventId = newEvent.Id,
-                WorkItemKey = "FOO-1",
-                Product = "acme",
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-
-            var newer = NewCandidate(newEvent.Id, approverGroup: "ReleaseApprovers");
-            newer.CreatedAt = DateTimeOffset.UtcNow;
-            newer.SupersededSourceEventIds = new() { oldEvent.Id };
-            db.PromotionCandidates.Add(newer);
-            await db.SaveChangesAsync();
+            var (_, _, newer) = await SeedPolicyEventCandidateAsync(
+                db, "FOO-1",
+                approverGroup: "ReleaseApprovers",
+                createdAt: DateTimeOffset.UtcNow);
             newerCandidateId = newer.Id;
         }
 
@@ -471,40 +432,8 @@ public class WorkItemApprovalTests
         }
     }
 
-    [Fact]
-    public async Task GetPendingForCurrentUser_ExcludesTicketsWhereUserIsExcludedByRole()
-    {
-        await using var factory = new WorkItemTestFactory();
-        factory.Current.Email = "deployer@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            // FOO-1: source event lists me as deploy-author (excluded).
-            await SeedPolicyEventCandidateAsync(db, "FOO-1",
-                approverGroup: "ReleaseApprovers",
-                excludeRole: "deploy-author",
-                participants: new() { new("deploy-author", "Deployer", "deployer@example.com") },
-                service: "a");
-
-            // FOO-2: I'm not on the participant list.
-            await SeedPolicyEventCandidateAsync(db, "FOO-2",
-                approverGroup: "ReleaseApprovers",
-                excludeRole: "deploy-author",
-                participants: new() { new("deploy-author", "Other", "other@example.com") },
-                service: "b");
-        }
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var queue = await svc.GetPendingForCurrentUserAsync(default);
-            var pending = queue.Tickets;
-            Assert.Single(pending);
-            Assert.Equal("FOO-2", pending[0].WorkItemKey);
-        }
-    }
+    // NOTE: GetPendingForCurrentUser_ExcludesTicketsWhereUserIsExcludedByRole was dropped — the
+    // excluded-role (separation-of-duties) filtering it asserted was removed (D17).
 
     // ── Endpoint-level tests (HTTP) ─────────────────────────────────────────
 
@@ -587,27 +516,8 @@ public class WorkItemApprovalTests
             StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public async Task POST_Approvals_Returns403_WhenExcludedRole()
-    {
-        await using var factory = new WorkItemTestFactory();
-        factory.Current.Email = "deployer@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            await SeedPolicyEventCandidateAsync(db, "FOO-1",
-                approverGroup: "ReleaseApprovers",
-                excludeRole: "deploy-author",
-                participants: new() { new("deploy-author", "Deployer", "deployer@example.com") });
-        }
-
-        var client = factory.CreateAdminClient();
-        var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/approvals",
-            new { product = "acme", targetEnv = "prod" });
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-    }
+    // NOTE: POST_Approvals_Returns403_WhenExcludedRole was dropped — the excluded-role (D17)
+    // separation-of-duties path it covered no longer exists.
 
     [Fact]
     public async Task POST_Approvals_Returns403_WhenNotInApproverGroup()
@@ -752,12 +662,11 @@ public class WorkItemApprovalTests
     /// DeployEventWorkItem, and a Pending PromotionCandidate keyed on (acme, prod). Returns
     /// all three so callers can layer extra setup on top.
     /// </summary>
-    private static async Task<(DeployEvent ev, DeployEventWorkItem wi, PromotionCandidate cand)>
+    private static async Task<(DeployEvent ev, PromotionWorkItem wi, PromotionCandidate cand)>
         SeedPolicyEventCandidateAsync(
             PlatformDbContext db,
             string workItemKey,
             string? approverGroup,
-            string? excludeRole = null,
             List<ParticipantDto>? participants = null,
             string product = "acme",
             string service = "api",
@@ -768,19 +677,22 @@ public class WorkItemApprovalTests
         var ev = NewDeployEvent(participants, product, service, sourceEnv);
         db.DeployEvents.Add(ev);
 
-        var wi = new DeployEventWorkItem
-        {
-            Id = Guid.NewGuid(),
-            DeployEventId = ev.Id,
-            WorkItemKey = workItemKey,
-            Product = product,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        db.DeployEventWorkItems.Add(wi);
-
-        var cand = NewCandidate(ev.Id, approverGroup, excludeRole, product, service, sourceEnv, targetEnv);
+        var cand = NewCandidate(approverGroup, product, service, sourceEnv, targetEnv);
         if (createdAt is not null) cand.CreatedAt = createdAt.Value;
         db.PromotionCandidates.Add(cand);
+
+        // The candidate carries its own ticket via the PromotionWorkItem index (keyed on
+        // CandidateId) — this is what the ticket-approval lookup reads to find the candidate.
+        var wi = new PromotionWorkItem
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = cand.Id,
+            WorkItemKey = workItemKey,
+            Product = product,
+            TargetEnv = targetEnv,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.PromotionWorkItems.Add(wi);
 
         await db.SaveChangesAsync();
         return (ev, wi, cand);
@@ -812,22 +724,30 @@ public class WorkItemApprovalTests
     }
 
     private static PromotionCandidate NewCandidate(
-        Guid sourceEventId,
         string? approverGroup,
-        string? excludeRole = null,
         string product = "acme",
         string service = "api",
         string sourceEnv = "staging",
         string targetEnv = "prod")
     {
+        // approverGroup == null ⇒ auto-approve: an empty rule tree (no requirements anywhere).
+        // Otherwise a single "any one member of <approverGroup>" requirement — the §8 rule-tree
+        // equivalent of the legacy single-group / Strategy.Any / MinApprovers=1 policy.
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: approverGroup is null ? null : Guid.NewGuid(),
-            ApproverGroup: approverGroup,
-            Strategy: PromotionStrategy.Any,
-            MinApprovers: 1,
-            ExcludeRole: excludeRole,
             TimeoutHours: 24,
-            EscalationGroup: null);
+            EscalationGroup: null)
+        {
+            ApprovalSteps = approverGroup is null
+                ? new()
+                : new()
+                {
+                    new ApprovalStep("Approval", new()
+                    {
+                        new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), 1),
+                    }),
+                },
+        };
 
         var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions
         {
@@ -842,12 +762,10 @@ public class WorkItemApprovalTests
             SourceEnv = sourceEnv,
             TargetEnv = targetEnv,
             Version = "v1.0.0",
-            SourceDeployEventId = sourceEventId,
             Status = PromotionStatus.Pending,
             PolicyId = snapshot.PolicyId,
             ResolvedPolicyJson = json,
             CreatedAt = DateTimeOffset.UtcNow,
-            SupersededSourceEventIdsJson = "[]",
             ParticipantsJson = "[]",
         };
     }
@@ -994,6 +912,9 @@ public class WorkItemApprovalTests
 
         public Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
+
+        public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<GroupInfo>>(Array.Empty<GroupInfo>());
     }
 
     /// <summary>

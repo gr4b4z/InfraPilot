@@ -1189,7 +1189,7 @@ function ActivityCard({
 
   const resolvedLines = activityTemplate
     .map((line) => ({ text: resolveTemplate(line.template, evt), style: line.style }))
-    .filter((l): l is { text: string; style: string } => l.text !== null);
+    .filter((l): l is typeof l & { text: string } => l.text !== null);
 
   return (
     <div

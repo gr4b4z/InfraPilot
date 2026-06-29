@@ -173,20 +173,25 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     [Fact]
     public async Task StalePromotion_BlockedAfterRollback_ThenReactivatedOnRedeploy()
     {
+        // The source-drift invariant (PromotionService.EvaluateGateAsync) and idempotent
+        // reactivation (re-create on the same natural key → ReevaluateAsync) survive the refactor.
+        // What changed: the staging→prod candidate is created via POST /api/promotions (D19), not
+        // derived from a staging deploy ingest, and "redeploy" is modelled as re-POSTing the create.
         var product = $"promo-{Guid.NewGuid():N}";
         await SeedPromotionTopologyAndPolicyAsync(product);
         await EnableRollbacksAsync();
 
-        // prod already runs 1.0 so rolling staging back to 1.0 matches prod (no new candidate) —
-        // this isolates the drift-block/reactivation behaviour under test.
+        // prod already runs 1.0 so rolling staging back to 1.0 matches prod.
         await IngestAsync(product, "api", "prod", "1.0", Hours(-4));
-        // 1.1 lands in staging → a Pending promotion candidate (staging → prod) is created.
+        // Staging is on 1.1; an external create opens a Pending staging→prod candidate for 1.1.
         await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
         await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        var create = await CreatePromotionAsync(product, "api", "staging", "prod", "1.1");
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
         var candidateId = await GetPendingCandidateIdAsync(product, "prod");
         Assert.NotNull(candidateId);
 
-        // Roll staging back to 1.0 (flagged rollback so it doesn't itself spawn a candidate).
+        // Roll staging back to 1.0 (flagged rollback).
         await IngestAsync(product, "api", "staging", "1.0", Hours(-1), isRollback: true);
 
         // Approving now must NOT promote: the source env no longer runs 1.1 (drifted).
@@ -195,18 +200,24 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         var afterApprove = await Body(await _admin.GetAsync($"/api/promotions/{candidateId}"));
         Assert.Equal("Pending", afterApprove.GetProperty("candidate").GetProperty("status").GetString()); // blocked by drift
 
-        // Redeploy 1.1 to staging → reactivates the same candidate; gate now satisfied → Approved.
+        // Redeploy 1.1 to staging, then the external system re-POSTs the create for the same
+        // natural key → the existing Pending candidate is reactivated and re-evaluated. Drift is
+        // gone and the prior approval already satisfies the gate → Approved.
         await IngestAsync(product, "api", "staging", "1.1", Hours(1));
+        var recreate = await CreatePromotionAsync(product, "api", "staging", "prod", "1.1");
+        Assert.Equal(HttpStatusCode.Created, recreate.StatusCode);
         var afterRedeploy = await Body(await _admin.GetAsync($"/api/promotions/{candidateId}"));
         Assert.Equal("Approved", afterRedeploy.GetProperty("candidate").GetProperty("status").GetString());
     }
 
     [Fact]
-    public async Task RollbackToVersionAheadOfProd_RecreatesPromotionCandidate()
+    public async Task RollbackToVersionAheadOfProd_PromotionCandidateCanBeCreatedForRolledBackVersion()
     {
-        // prod=1.5, staging=2.0 then a broken 2.1 (2.1 candidate supersedes 2.0). Roll staging back
-        // to 2.0 — since 2.0 still differs from prod (1.5), a staging→prod candidate for 2.0 should
-        // reappear so it can be promoted.
+        // Was RollbackToVersionAheadOfProd_RecreatesPromotionCandidate. Candidates are no longer
+        // auto-recreated when a rollback lands (D19 — ingest never generates candidates). The
+        // equivalent new behaviour: after rolling staging back to 2.0 (which still differs from
+        // prod 1.5), the external system opens a fresh staging→prod candidate for 2.0 via the
+        // create API, and it lands Pending under the gated policy.
         var product = $"promo-{Guid.NewGuid():N}";
         await SeedPromotionTopologyAndPolicyAsync(product);
         await EnableRollbacksAsync();
@@ -214,7 +225,7 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
 
         await IngestAsync(product, "api", "prod", "1.5", Hours(-5));
         await IngestAsync(product, "api", "staging", "2.0", Hours(-4));
-        await IngestAsync(product, "api", "staging", "2.1", Hours(-3)); // 2.1 candidate supersedes 2.0
+        await IngestAsync(product, "api", "staging", "2.1", Hours(-3));
 
         // Rollback staging 2.1 → 2.0.
         var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
@@ -223,12 +234,15 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             items = new[] { new { service = "api", toVersion = "2.0" } },
         }));
         var rbId = created.GetProperty("id").GetString();
-        // approve if it isn't auto-approved (policy has an approver group)
         if (created.GetProperty("status").GetString() == "Pending")
             await _admin.PostAsJsonAsync($"/api/rollbacks/{rbId}/approve", new { });
         await IngestAsync(product, "api", "staging", "2.0", Hours(-1), isRollback: true); // rollback lands
 
-        // A fresh staging→prod candidate for 2.0 must now be Pending.
+        // The external system opens a staging→prod candidate for the rolled-back 2.0.
+        var create = await CreatePromotionAsync(product, "api", "staging", "prod", "2.0");
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+
+        // A staging→prod candidate for 2.0 must now be Pending (source still runs 2.0, no drift).
         var promos = await Body(await _admin.GetAsync($"/api/promotions/?product={product}&targetEnv=prod&status=Pending"));
         var cands = promos.GetProperty("candidates").EnumerateArray()
             .Select(c => c.GetProperty("version").GetString()).ToList();
@@ -236,31 +250,58 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     }
 
     [Fact]
-    public async Task RollbackBundle_ReflectsVersionDiff_NotRevertedStories()
+    public async Task PromotionCandidate_CarriesExternallyComputedWorkItemDiff()
     {
-        // prod=1.1; staging ships 1.3 (FOO-3) then 1.4 (FOO-4). Rolling back to 1.3 should carry
-        // only FOO-3 (1.4 was reverted); a later roll-forward to 1.4 should carry FOO-3 + FOO-4.
+        // Was RollbackBundle_ReflectsVersionDiff_NotRevertedStories. The candidate no longer derives
+        // its work-item bundle from deploy-event history (self-contained, D19): the external creator
+        // computes the authoritative net change set vs the target and POSTs it as work-item
+        // references, which populate the candidate's PromotionWorkItem index. This asserts that the
+        // candidate carries exactly the work items it was created with — the 1.3 promotion carries
+        // only FOO-3 (FOO-4 reverted), while the roll-forward 1.4 carries FOO-3 + FOO-4.
         var product = $"promo-{Guid.NewGuid():N}";
         await SeedPromotionTopologyAndPolicyAsync(product);
         await EnableRollbacksAsync();
         await EnrollAsync(product);
 
+        // Establish history: prod=1.1; staging shipped 1.3 then 1.4 (so both versions are valid
+        // rollback targets in staging).
         await IngestAsync(product, "api", "prod", "1.1", Hours(-6));
-        await IngestWithWorkItemAsync(product, "api", "staging", "1.3", "FOO-3", Hours(-5));
-        await IngestWithWorkItemAsync(product, "api", "staging", "1.4", "FOO-4", Hours(-4));
+        await IngestAsync(product, "api", "staging", "1.3", Hours(-5));
+        await IngestAsync(product, "api", "staging", "1.4", Hours(-4));
 
+        // Roll staging back to 1.3 and land it. The external system computes the net change set vs
+        // prod (1.1 → 1.3 carries only FOO-3; 1.4/FOO-4 was reverted) and POSTs the candidate.
         await RollbackAndLand(product, "api", "1.3", Hours(-1));
+        await CreatePromotionAsync(product, "api", "staging", "prod", "1.3", workItemKeys: new[] { "FOO-3" });
         var keys13 = await CandidateWorkItemKeysAsync(product, "prod", "1.3");
         Assert.Contains("FOO-3", keys13);
         Assert.DoesNotContain("FOO-4", keys13); // reverted — must not leak onto the 1.3 promotion
 
+        // Roll forward to 1.4; the net change set vs prod now carries FOO-3 + FOO-4.
         await RollbackAndLand(product, "api", "1.4", Hours(1));
+        await CreatePromotionAsync(product, "api", "staging", "prod", "1.4", workItemKeys: new[] { "FOO-3", "FOO-4" });
         var keys14 = await CandidateWorkItemKeysAsync(product, "prod", "1.4");
         Assert.Contains("FOO-3", keys14);
         Assert.Contains("FOO-4", keys14); // roll-forward carries the full diff vs prod
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    // Create a promotion candidate via the external create API (API-key auth). Optionally carries
+    // work-item references, which populate the candidate's self-contained PromotionWorkItem index.
+    private async Task<HttpResponseMessage> CreatePromotionAsync(
+        string product, string service, string sourceEnv, string targetEnv, string version,
+        string[]? workItemKeys = null)
+    {
+        var references = (workItemKeys ?? Array.Empty<string>())
+            .Select(k => new { type = "work-item", key = k })
+            .ToArray();
+        return await _apiKey.PostAsJsonAsync("/api/promotions", new
+        {
+            product, service, sourceEnv, targetEnv, version,
+            references,
+        });
+    }
 
     private async Task RollbackAndLand(string product, string service, string toVersion, DateTimeOffset landAt)
     {
@@ -275,17 +316,6 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         await IngestAsync(product, service, "staging", toVersion, landAt, isRollback: true);
     }
 
-    private async Task IngestWithWorkItemAsync(string product, string service, string env,
-        string version, string workItemKey, DateTimeOffset deployedAt)
-    {
-        var resp = await _apiKey.PostAsJsonAsync("/api/deployments/events", new
-        {
-            product, service, environment = env, version, source = "rollback-test", deployedAt, status = "succeeded",
-            references = new[] { new { type = "work-item", key = workItemKey } },
-        });
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-    }
-
     private async Task<List<string>> CandidateWorkItemKeysAsync(string product, string targetEnv, string version)
     {
         using var scope = _factory.Services.CreateScope();
@@ -294,9 +324,10 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             .Where(c => c.Product == product && c.TargetEnv == targetEnv && c.Version == version)
             .OrderByDescending(c => c.CreatedAt)
             .FirstAsync();
-        var bundle = new HashSet<Guid>(cand.SupersededSourceEventIds) { cand.SourceDeployEventId };
-        return await db.DeployEventWorkItems
-            .Where(w => bundle.Contains(w.DeployEventId))
+        // The candidate is self-contained: its work items live in the PromotionWorkItem index
+        // keyed on CandidateId (no more DeployEvent bundle to aggregate).
+        return await db.PromotionWorkItems
+            .Where(w => w.CandidateId == cand.Id)
             .Select(w => w.WorkItemKey)
             .ToListAsync();
     }
@@ -373,8 +404,15 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             Product = product,
             Service = null,
             TargetEnv = "prod",
-            ApproverGroup = "release-managers",
-            Strategy = PromotionStrategy.Any,
+            // §8 rule tree: a single "any one member of release-managers" requirement, so candidates
+            // resolved against this policy are born Pending (a human gate exists).
+            ApprovalSteps = new()
+            {
+                new ApprovalStep("Approval", new()
+                {
+                    new ApproverRequirement("Release Managers", new() { new GroupRef("release-managers", "release-managers") }, new(), 1),
+                }),
+            },
             Gate = PromotionGate.PromotionOnly,
         });
         await db.SaveChangesAsync();

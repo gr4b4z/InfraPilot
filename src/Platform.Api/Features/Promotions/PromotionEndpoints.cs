@@ -1,7 +1,9 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -50,22 +52,9 @@ public static class PromotionEndpoints
 
             var candidates = await svc.GetAsync(query);
 
-            // Batch-load source deploy events plus any events inherited from superseded
-            // predecessors so the list card can render refs/people and the reference filter
-            // can search both the candidate's own refs and inherited ones. One query.
-            var ownEventIds = candidates.Select(c => c.SourceDeployEventId);
-            var inheritedEventIds = candidates.SelectMany(c => c.SupersededSourceEventIds);
-            var eventIds = ownEventIds.Concat(inheritedEventIds).Distinct().ToList();
-            var eventData = await db.DeployEvents
-                .AsNoTracking()
-                .Where(e => eventIds.Contains(e.Id))
-                .Select(e => new { e.Id, e.ParticipantsJson, e.EnrichmentJson, e.ReferencesJson })
-                .ToDictionaryAsync(e => e.Id, e => e);
-
-            // Optional reference filter — matches any reference whose key, revision, provider, or
-            // URL contains the search string (case-insensitive). Searches across the candidate's
-            // own source event AND any inherited events so a ticket/PR that landed on a
-            // superseded predecessor still surfaces the current candidate.
+            // The candidate is self-contained — its own References are the net change set. The
+            // reference filter matches any reference whose key, revision, provider, title, or URL
+            // contains the search string (case-insensitive).
             var needle = (reference ?? "").Trim();
             if (needle.Length > 0)
             {
@@ -76,42 +65,23 @@ public static class PromotionEndpoints
                     ContainsIgnoreCase(r.Url, needle) ||
                     ContainsIgnoreCase(r.Title, needle);
 
-                candidates = candidates.Where(c =>
-                {
-                    var eventIdsToCheck = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
-                    foreach (var eid in eventIdsToCheck)
-                    {
-                        var ev = eventData.GetValueOrDefault(eid);
-                        if (ev is null) continue;
-                        if (ExtractSourceReferences(ev.ReferencesJson).Any(RefMatches)) return true;
-                    }
-                    return false;
-                }).ToList();
+                candidates = candidates.Where(c => c.References.Any(RefMatches)).ToList();
             }
 
             var capability = await svc.CanUserApproveManyAsync(candidates);
             var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
 
-            // Operator overrides for everything in the source-event window — applied per
-            // event when projecting the list cards' references.
-            var listOverrides = await db.ReferenceParticipantOverrides.AsNoTracking()
-                .Where(o => eventIds.Contains(o.DeployEventId))
-                .ToListAsync();
-            var listOverridesByEvent = listOverrides
-                .GroupBy(o => o.DeployEventId)
-                .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
-
             return Results.Ok(new
             {
                 candidates = candidates.Select(c =>
                 {
-                    var source = eventData.GetValueOrDefault(c.SourceDeployEventId);
-                    var sourceParticipants = ExtractSourceParticipants(source?.ParticipantsJson, source?.EnrichmentJson);
-                    var rawSourceReferences = ExtractSourceReferences(source?.ReferencesJson);
-                    var sourceOverrides = listOverridesByEvent.GetValueOrDefault(c.SourceDeployEventId, Array.Empty<ReferenceParticipantOverride>());
-                    var sourceReferences = ApplyOverridesToReferenceList(rawSourceReferences, sourceOverrides);
                     targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
-                    return ToDto(c, capability.GetValueOrDefault(c.Id), sourceParticipants, sourceReferences, targetCurrent);
+                    // sourceEventReferences carries the candidate's own net change set so the list
+                    // card keeps rendering refs without a deploy-event join (D14 dropped the link).
+                    return ToDto(c, capability.GetValueOrDefault(c.Id),
+                        sourceEventParticipants: Array.Empty<ParticipantDto>(),
+                        sourceEventReferences: c.References,
+                        targetCurrentVersion: targetCurrent);
                 }),
             });
         });
@@ -123,14 +93,9 @@ public static class PromotionEndpoints
             var c = await svc.GetByIdAsync(id);
             if (c is null) return Results.NotFound();
             var approvals = await svc.GetApprovalsAsync(id);
-            var canApprove = await svc.CanUserApproveAsync(c);
-
-            // Source deploy event carries references (work items, PRs) and participants
-            // (authors, reviewers) — surface them on the detail view. May be absent if the
-            // event was deleted or the candidate predates the link.
-            var sourceEvent = await db.DeployEvents
-                .AsNoTracking()
-                .FirstOrDefaultAsync(e => e.Id == c.SourceDeployEventId);
+            var eligibleRequirements = await svc.GetEligibleRequirementsAsync(c);
+            // canApprove stays a bool for back-compat: true iff the user can approve as ≥1 requirement.
+            var canApprove = eligibleRequirements.Count > 0;
 
             var targetCurrent = await db.DeployEvents
                 .AsNoTracking()
@@ -139,50 +104,18 @@ public static class PromotionEndpoints
                 .Select(e => e.Version)
                 .FirstOrDefaultAsync();
 
-            // Deploy events inherited from superseded predecessors — their refs and participants
-            // surface on the current candidate so the audit trail survives the supersede chain.
-            var inheritedIds = c.SupersededSourceEventIds;
-            var inheritedEvents = inheritedIds.Count == 0
-                ? new List<DeployEvent>()
-                : await db.DeployEvents
-                    .AsNoTracking()
-                    .Where(e => inheritedIds.Contains(e.Id))
-                    .ToListAsync();
-
-            // Operator overrides for source + inherited events — single batch query, then
-            // applied per-event when projecting references for the UI. This is the read
-            // surface where TicketRow renders the "+ Assign" / "Reassign" / "Clear" controls.
-            var allEventIds = new[] { c.SourceDeployEventId }.Concat(inheritedIds).ToList();
-            var allOverrides = await db.ReferenceParticipantOverrides.AsNoTracking()
-                .Where(o => allEventIds.Contains(o.DeployEventId))
-                .ToListAsync();
-            var overridesByEvent = allOverrides
-                .GroupBy(o => o.DeployEventId)
-                .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
-
-            var inheritedRefs = new List<object>();
-            var inheritedParticipants = new List<object>();
-            foreach (var ev in inheritedEvents)
-            {
-                var evOverrides = overridesByEvent.GetValueOrDefault(ev.Id, Array.Empty<ReferenceParticipantOverride>());
-                foreach (var r in ApplyOverridesToReferenceList(ExtractSourceReferences(ev.ReferencesJson), evOverrides))
-                {
-                    inheritedRefs.Add(new { reference = r, fromEventId = ev.Id, fromVersion = ev.Version, fromDeployedAt = ev.DeployedAt });
-                }
-                foreach (var p in ExtractSourceParticipants(ev.ParticipantsJson, ev.EnrichmentJson))
-                {
-                    inheritedParticipants.Add(new { participant = p, fromVersion = ev.Version, fromDeployedAt = ev.DeployedAt });
-                }
-            }
-
             var comments = await svc.GetCommentsAsync(id);
+            var approvalProgress = await svc.GetApprovalProgressAsync(c);
 
-            var sourceOverrides = overridesByEvent.GetValueOrDefault(c.SourceDeployEventId, Array.Empty<ReferenceParticipantOverride>());
+            // The candidate is self-contained (D14): no source deploy event. The change set lives
+            // on the candidate's own References, surfaced as `sourceEvent` so the detail view keeps
+            // rendering work items / PRs without a join.
             return Results.Ok(new
             {
-                candidate = ToDto(c, canApprove, targetCurrentVersion: targetCurrent),
-                inheritedReferences = inheritedRefs,
-                inheritedParticipants,
+                candidate = ToDto(c, canApprove,
+                    sourceEventParticipants: Array.Empty<ParticipantDto>(),
+                    sourceEventReferences: c.References,
+                    targetCurrentVersion: targetCurrent),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -190,10 +123,26 @@ public static class PromotionEndpoints
                     a.ApproverName,
                     a.Comment,
                     decision = a.Decision.ToString(),
+                    a.StepName,
+                    a.RequirementName,
                     a.CreatedAt,
                 }),
-                sourceEvent = sourceEvent is null ? null : ToSourceEventDto(sourceEvent, sourceOverrides),
+                eligibleRequirements = eligibleRequirements.Select(r => new
+                {
+                    stepName = r.StepName,
+                    requirementName = r.RequirementName,
+                }),
+                sourceEvent = new
+                {
+                    id = (Guid?)null,
+                    deployedAt = c.CreatedAt,
+                    source = "external",
+                    references = c.References,
+                    participants = c.Participants,
+                    enrichment = (object?)null,
+                },
                 comments = comments.Select(ToCommentDto),
+                approvalProgress,
             });
         });
 
@@ -253,6 +202,54 @@ public static class PromotionEndpoints
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
                 return Results.Ok(new { users = Array.Empty<object>() });
+            }
+        });
+
+        // Group search for the approval-policy editor's group picker. Mirrors /users/search:
+        // proxies to IIdentityService (Entra Graph when configured, static dev groups otherwise),
+        // skips short queries, and swallows Graph failures into an empty list so the UI falls back
+        // to manual entry.
+        group.MapGet("/groups/search", async (
+            IIdentityService identity,
+            ILoggerFactory loggerFactory,
+            string? q,
+            CancellationToken ct) =>
+        {
+            var log = loggerFactory.CreateLogger("PromotionEndpoints.GroupSearch");
+            var query = (q ?? "").Trim();
+            var loggableQuery = SanitizeForLog(query);
+            if (query.Length < 2)
+            {
+                log.LogInformation("Group search skipped (query too short, length={Length})", query.Length);
+                return Results.Ok(new { groups = Array.Empty<object>() });
+            }
+
+            log.LogInformation(
+                "Group search started (provider={Provider}, query='{Query}')",
+                identity.GetType().Name, loggableQuery);
+
+            try
+            {
+                var groups = await identity.SearchGroups(query, ct);
+                log.LogInformation(
+                    "Group search returned {Count} result(s) for query '{Query}' via {Provider}",
+                    groups.Count, loggableQuery, identity.GetType().Name);
+
+                return Results.Ok(new
+                {
+                    groups = groups.Select(g => new
+                    {
+                        id = g.Id,
+                        displayName = g.DisplayName,
+                    }),
+                });
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex,
+                    "Group search failed for query '{Query}' via {Provider} — returning empty list",
+                    loggableQuery, identity.GetType().Name);
+                return Results.Ok(new { groups = Array.Empty<object>() });
             }
         });
 
@@ -333,11 +330,32 @@ public static class PromotionEndpoints
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
         });
 
-        // Approve.
+        // Approve. The body may pin which requirement the approver approves as (stepName/requirementName)
+        // when they are eligible for more than one open requirement.
         group.MapPost("/{id:guid}/approve", async (
             PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
         {
-            return await RunDecisionAsync(() => svc.ApproveAsync(id, body?.Comment));
+            try
+            {
+                var candidate = await svc.ApproveAsync(id, body?.Comment, body?.StepName, body?.RequirementName);
+                return Results.Ok(ToDto(candidate, canApprove: false));
+            }
+            catch (MultipleEligibleRequirementsException ex)
+            {
+                // 400 + the choices so the UI knows to prompt "approve as...".
+                return Results.BadRequest(new
+                {
+                    error = ex.Message,
+                    eligibleRequirements = ex.Options.Select(o => new { stepName = o.StepName, requirementName = o.RequirementName }),
+                });
+            }
+            catch (RequirementAlreadySatisfiedException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
         // Reject.
@@ -370,7 +388,57 @@ public static class PromotionEndpoints
             return Results.Ok(new { results });
         });
 
+        // Create a promotion candidate from an external system (CI). The external computes the
+        // authoritative net change set (env-to-env diff) and POSTs it; the tool records it verbatim.
+        // Secured with API key + per-key rate limit + product scope — mirrors /api/deployments/events.
+        // TODO(D16): gate behind a distinct promotion:create scope so a key can be granted deploy
+        // ingestion without the ability to open gated releases. Reusing the product-scope guard for
+        // now — adding a real scope to the API-key system is out of scope for Workstream A.
+        group.MapPost("/", async (
+            PromotionService svc, ClaimsPrincipal user, CreatePromotionDto dto, CancellationToken ct) =>
+        {
+            var errors = ValidateCreate(dto);
+            if (errors.Count > 0)
+                return Results.BadRequest(new { errors });
+
+            // Enforce product scope when the key restricts which products it can post for.
+            var allowedProducts = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
+            if (allowedProducts.Count > 0 &&
+                !allowedProducts.Contains(dto.Product, StringComparer.OrdinalIgnoreCase))
+            {
+                return Results.Forbid();
+            }
+
+            var candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            if (candidate is null)
+            {
+                // No policy resolved for this edge — the product isn't enrolled for (product,
+                // service, targetEnv). With topology gone this is the de-facto edge guard.
+                return Results.UnprocessableEntity(new
+                {
+                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' → '{dto.TargetEnv}'",
+                });
+            }
+
+            return Results.Created(
+                $"/api/promotions/{candidate.Id}",
+                new { id = candidate.Id, status = candidate.Status.ToString() });
+        })
+        .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
+        .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
+
         return group;
+    }
+
+    private static List<string> ValidateCreate(CreatePromotionDto dto)
+    {
+        var errors = new List<string>();
+        if (string.IsNullOrWhiteSpace(dto.Product)) errors.Add("product is required");
+        if (string.IsNullOrWhiteSpace(dto.Service)) errors.Add("service is required");
+        if (string.IsNullOrWhiteSpace(dto.SourceEnv)) errors.Add("sourceEnv is required");
+        if (string.IsNullOrWhiteSpace(dto.TargetEnv)) errors.Add("targetEnv is required");
+        if (string.IsNullOrWhiteSpace(dto.Version)) errors.Add("version is required");
+        return errors;
     }
 
     private static async Task<IResult> RunDecisionAsync(Func<Task<PromotionCandidate>> op)
@@ -400,55 +468,6 @@ public static class PromotionEndpoints
         PropertyNameCaseInsensitive = true,
     };
 
-    private static object ToSourceEventDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides = null)
-    {
-        var rawReferences = Deserialize<List<ReferenceDto>>(e.ReferencesJson) ?? [];
-        var references = ApplyOverridesToReferenceList(rawReferences, overrides);
-        var participants = Deserialize<List<ParticipantDto>>(e.ParticipantsJson) ?? [];
-        var enrichment = string.IsNullOrEmpty(e.EnrichmentJson)
-            ? null
-            : Deserialize<EnrichmentDto>(e.EnrichmentJson);
-
-        return new
-        {
-            id = e.Id,
-            deployedAt = e.DeployedAt,
-            source = e.Source,
-            references,
-            participants,
-            enrichment,
-        };
-    }
-
-    /// <summary>
-    /// Applies operator overrides to a list of references, replacing each reference's
-    /// participant list with the merged one. References without overrides pass through.
-    /// Tombstones are filtered out so the UI sees an empty slot.
-    /// </summary>
-    private static List<ReferenceDto> ApplyOverridesToReferenceList(
-        IReadOnlyList<ReferenceDto> references,
-        IReadOnlyList<ReferenceParticipantOverride>? overrides)
-    {
-        if (overrides is null || overrides.Count == 0) return references.ToList();
-        var byKey = overrides
-            .Where(o => !string.IsNullOrEmpty(o.ReferenceKey))
-            .GroupBy(o => o.ReferenceKey, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList(), StringComparer.OrdinalIgnoreCase);
-
-        var result = new List<ReferenceDto>(references.Count);
-        foreach (var r in references)
-        {
-            if (string.IsNullOrEmpty(r.Key) || !byKey.TryGetValue(r.Key, out var matches))
-            {
-                result.Add(r);
-                continue;
-            }
-            var merged = Platform.Api.Features.Deployments.ReferenceParticipantOverrideService.MergeForReference(r, matches);
-            result.Add(r with { Participants = merged });
-        }
-        return result;
-    }
-
     private static T? Deserialize<T>(string? json)
     {
         if (string.IsNullOrEmpty(json)) return default;
@@ -468,6 +487,9 @@ public static class PromotionEndpoints
         sourceEnv = c.SourceEnv,
         targetEnv = c.TargetEnv,
         version = c.Version,
+        // Display/traceability only — the target env's current SHA and the promoted SHA.
+        fromRevision = c.FromRevision,
+        toRevision = c.ToRevision,
         // Version currently deployed in the target environment (what this promotion
         // would replace). Null when the target has no prior deploy for this service.
         targetCurrentVersion,
@@ -477,15 +499,12 @@ public static class PromotionEndpoints
         approvedAt = c.ApprovedAt,
         deployedAt = c.DeployedAt,
         supersededById = c.SupersededById,
-        // Count of source deploy events inherited from superseded predecessors.
-        // Non-empty on candidates that displaced earlier Pending ones on the same edge.
-        inheritedCount = c.SupersededSourceEventIds.Count,
         participants = c.Participants,
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
         // Gate mode from the candidate's resolved policy snapshot. Surfaces "PromotionOnly"
-        // (legacy), "TicketsOnly", or "TicketsAndManual". Defaults to PromotionOnly when the
+        // (legacy), "WorkItemsOnly", or "WorkItemsAndManual". Defaults to PromotionOnly when the
         // candidate has no snapshot or the snapshot can't be deserialised — matches the
         // ResolvedPolicySnapshot.Gate default and keeps the legacy flow intact for old data.
         gate = ReadGate(c).ToString(),
@@ -544,9 +563,6 @@ public static class PromotionEndpoints
             .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.DeployedAt).First().Version);
     }
 
-    private static IReadOnlyList<ReferenceDto> ExtractSourceReferences(string? referencesJson)
-        => Deserialize<List<ReferenceDto>>(referencesJson) ?? new();
-
     private static bool ContainsIgnoreCase(string? haystack, string needle)
         => !string.IsNullOrEmpty(haystack)
            && haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
@@ -568,19 +584,6 @@ public static class PromotionEndpoints
         return sb.ToString();
     }
 
-    // Flattens direct + enrichment participants from a deploy event's JSON into a single list.
-    private static IReadOnlyList<ParticipantDto> ExtractSourceParticipants(
-        string? participantsJson, string? enrichmentJson)
-    {
-        var direct = Deserialize<List<ParticipantDto>>(participantsJson) ?? new();
-        var enrichment = string.IsNullOrEmpty(enrichmentJson)
-            ? null
-            : Deserialize<EnrichmentDto>(enrichmentJson);
-        if (enrichment?.Participants is { Count: > 0 } extra)
-            direct.AddRange(extra);
-        return direct;
-    }
-
     private static object ToCommentDto(PromotionComment c) => new
     {
         id = c.Id,
@@ -593,7 +596,25 @@ public static class PromotionEndpoints
     };
 }
 
-public record PromotionDecisionRequest(string? Comment);
+/// <summary>
+/// External create-promotion payload. The caller (CI) computes the authoritative net change set
+/// and POSTs it. <c>FromRevision</c>/<c>ToRevision</c> are display/traceability only (not gating).
+/// <c>References</c> is the self-contained change set (work-item / pull-request / repository refs);
+/// <c>Participants</c> are promotion-level participants. No idempotency key — a repeat for the same
+/// natural key <c>(Product, Service, SourceEnv, TargetEnv, Version)</c> is a legitimate update (D15).
+/// </summary>
+public record CreatePromotionDto(
+    string Product,
+    string Service,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    string? FromRevision,
+    string? ToRevision,
+    List<ReferenceDto>? References,
+    List<ParticipantDto>? Participants);
+
+public record PromotionDecisionRequest(string? Comment, string? StepName = null, string? RequirementName = null);
 public record PromotionBulkRequest(Guid[] Ids, string? Comment);
 public record UpsertParticipantRequest(string? Role, string? DisplayName, string? Email);
 public record CommentRequest(string? Body);

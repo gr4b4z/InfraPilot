@@ -365,7 +365,7 @@ Reference types the UI recognises with a dedicated icon and label:
 
 | `type` | Icon | Label preference |
 |---|---|---|
-| `work-item` | ticket | `key` (e.g. `PLAT-1234`) — shows the inbound `title` when supplied, otherwise the Jira title fetched server-side |
+| `work-item` | work item | `key` (e.g. `PLAT-1234`) — shows the inbound `title` when supplied, otherwise the Jira title fetched server-side |
 | `pull-request` | PR | `labels.prTitle` → `key` |
 | `repository` | branch | `key` (e.g. `acme/platform-api`) → parsed from `url` → short `revision` |
 | `pipeline` | workflow | `key` → `provider` |

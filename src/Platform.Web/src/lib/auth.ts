@@ -38,7 +38,6 @@ function init(): MsalState {
     },
     cache: {
       cacheLocation: 'sessionStorage',
-      storeAuthStateInCookie: false,
     },
   };
 

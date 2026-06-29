@@ -19,9 +19,7 @@ namespace Platform.Integration.Tests;
 ///
 /// <list type="bullet">
 ///   <item>Roundtrip — nested participants survive ingest and surface back through the
-///         promotion detail endpoint, both on the <c>sourceEvent.references</c> list and on
-///         <c>inheritedReferences</c> when the candidate inherits from a superseded
-///         predecessor.</item>
+///         promotion detail endpoint on the <c>sourceEvent.references</c> list.</item>
 ///   <item>Backwards compat — payloads with no nested participants still ingest and read
 ///         back as before (no new mandatory fields, no shape drift).</item>
 ///   <item>Excluded-role gate — when a policy excludes a role and that role's email lives
@@ -54,22 +52,25 @@ public class ReferenceParticipantsTests
     // ── Roundtrip ───────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Ingest_WithNestedReferenceParticipants_RoundtripsThroughPromotionDetail()
+    public async Task Create_WithNestedReferenceParticipants_RoundtripsThroughPromotionDetail()
     {
-        await SeedTopologyAndPolicyAsync();
+        // Was Ingest_WithNestedReferenceParticipants_RoundtripsThroughPromotionDetail. Candidates
+        // are self-contained now (D19): references (with nested participants) live on the candidate
+        // payload, not on a linked deploy event. The promotion detail's sourceEvent.references is a
+        // projection of candidate.References. We create via POST /api/promotions and assert the
+        // nested participants round-trip.
+        await SeedPolicyAsync();
 
         var service = $"rp-rt-{Guid.NewGuid():N}"[..20];
 
-        // Ingest a deploy event whose references each carry their own participants.
+        // Create a promotion candidate whose references each carry their own participants.
         var payload = new
         {
             product = "acme",
             service,
-            environment = "staging",
+            sourceEnv = "staging",
+            targetEnv = "prod",
             version = "rp-rt-1.0.0",
-            source = "integration-test",
-            deployedAt = DateTimeOffset.UtcNow,
-            status = "succeeded",
             references = new object[]
             {
                 new
@@ -101,11 +102,11 @@ public class ReferenceParticipantsTests
             },
         };
 
-        var ingestResponse = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", payload);
-        Assert.Equal(HttpStatusCode.Created, ingestResponse.StatusCode);
+        var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", payload);
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
         // Read back via the promotion detail endpoint, which surfaces sourceEvent.references
-        // (the read path we're adding back-compat-friendly nested participants to).
+        // (a projection of the candidate's own references with their nested participants).
         var listResponse = await _adminClient.GetAsync(
             $"/api/promotions/?product=acme&service={service}&targetEnv=prod&status=Pending");
         listResponse.EnsureSuccessStatusCode();
@@ -151,22 +152,23 @@ public class ReferenceParticipantsTests
     // ── Backwards compatibility ─────────────────────────────────────────────
 
     [Fact]
-    public async Task Ingest_WithoutNestedParticipants_StillSucceedsAndReadsBack()
+    public async Task Create_WithoutNestedParticipants_StillSucceedsAndReadsBack()
     {
-        await SeedTopologyAndPolicyAsync();
+        // Was Ingest_WithoutNestedParticipants_StillSucceedsAndReadsBack. Same back-compat intent,
+        // now exercised through the external-create path: a reference with no nested participants
+        // must create cleanly and read back without throwing.
+        await SeedPolicyAsync();
 
         var service = $"rp-bc-{Guid.NewGuid():N}"[..20];
 
-        // Old-shape payload — participants only at the top level, references have no nesting.
+        // References carry no nested participants; only a promotion-level participant is supplied.
         var payload = new
         {
             product = "acme",
             service,
-            environment = "staging",
+            sourceEnv = "staging",
+            targetEnv = "prod",
             version = "rp-bc-1.0.0",
-            source = "integration-test",
-            deployedAt = DateTimeOffset.UtcNow,
-            status = "succeeded",
             references = new object[]
             {
                 new { type = "work-item", provider = "jira", key = "BC-1", title = "Old shape" },
@@ -177,8 +179,8 @@ public class ReferenceParticipantsTests
             },
         };
 
-        var ingestResponse = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", payload);
-        Assert.Equal(HttpStatusCode.Created, ingestResponse.StatusCode);
+        var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", payload);
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
         var listResponse = await _adminClient.GetAsync(
             $"/api/promotions/?product=acme&service={service}&targetEnv=prod&status=Pending");
@@ -204,76 +206,11 @@ public class ReferenceParticipantsTests
         }
     }
 
-    // ── Excluded-role gate honours reference-level participants ────────────
-
-    [Fact]
-    public async Task ExcludeRole_OnReferenceLevelParticipant_BlocksApproval()
-    {
-        // Topology: dev → staging → prod; policy on prod requires approver group AND
-        // excludes the "qa" role. The QA email lives ONLY on a reference, not at event level.
-        await SeedTopologyAsync();
-        await CreatePolicyAsync(
-            targetEnv: "prod",
-            approverGroup: "InfraPortal.Admin",
-            excludeRole: "qa");
-
-        var service = $"rp-ex-{Guid.NewGuid():N}"[..20];
-
-        // The admin user is admin@localhost. We tag THEIR email as qa on a reference so
-        // the excluded-role check (which now walks reference-level too) trips on it and
-        // they shouldn't be allowed to approve.
-        var payload = new
-        {
-            product = "acme",
-            service,
-            environment = "staging",
-            version = "rp-ex-1.0.0",
-            source = "integration-test",
-            deployedAt = DateTimeOffset.UtcNow,
-            status = "succeeded",
-            references = new object[]
-            {
-                new
-                {
-                    type = "work-item",
-                    provider = "jira",
-                    key = "EX-1",
-                    participants = new object[]
-                    {
-                        new { role = "qa", displayName = "Admin", email = "admin@localhost" },
-                    },
-                },
-            },
-            // Note: NO event-level participant for admin@localhost. Pre-PR, this would
-            // have left the door open for them to approve their own QA-tagged ticket.
-            participants = new object[]
-            {
-                new { role = "triggered-by", displayName = "Bob", email = "bob@example.com" },
-            },
-        };
-
-        var ingestResponse = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", payload);
-        Assert.Equal(HttpStatusCode.Created, ingestResponse.StatusCode);
-
-        // Find the Pending candidate.
-        var listResponse = await _adminClient.GetAsync(
-            $"/api/promotions/?product=acme&service={service}&targetEnv=prod&status=Pending");
-        listResponse.EnsureSuccessStatusCode();
-        var list = await Deserialize(listResponse);
-        var candidate = FindCandidate(list.GetProperty("candidates"), "rp-ex-1.0.0", "prod");
-        Assert.NotNull(candidate);
-        var candidateId = candidate.Value.GetProperty("id").GetString()!;
-
-        // canApprove must be false for the admin since they're tagged qa on a reference.
-        Assert.False(candidate.Value.GetProperty("canApprove").GetBoolean());
-
-        // And actually trying to approve must be rejected — Forbidden, matching the legacy
-        // behaviour for event-level excluded-role rejections.
-        var approveResponse = await _adminClient.PostAsJsonAsync(
-            $"/api/promotions/{candidateId}/approve",
-            new { comment = "should be blocked" });
-        Assert.Equal(HttpStatusCode.Forbidden, approveResponse.StatusCode);
-    }
+    // Deleted ExcludeRole_OnReferenceLevelParticipant_BlocksApproval: the excluded-role /
+    // separation-of-duties machinery was removed (D17). Anyone authorized for a promotion may
+    // approve it, including a participant on the change set. There is no replacement concept yet
+    // (the plan notes any future SoD will be payload-driven), so this test asserts behaviour that
+    // no longer exists.
 
     // ── Validation ─────────────────────────────────────────────────────────
 
@@ -329,40 +266,35 @@ public class ReferenceParticipantsTests
 
     // ── Setup helpers ───────────────────────────────────────────────────────
 
-    private async Task SeedTopologyAsync()
+    // Topology was removed (D19); policy resolution is the edge guard. Enable the flag and seed a
+    // gated step-tree policy on prod (one InfraPortal.Admin approver) so created candidates are
+    // born Pending.
+    private async Task SeedPolicyAsync()
     {
-        await _adminClient.PutAsJsonAsync("/api/promotions/admin/topology", new
-        {
-            environments = new[] { "dev", "staging", "prod" },
-            edges = new[]
-            {
-                new { from = "dev", to = "staging" },
-                new { from = "staging", to = "prod" },
-            },
-        });
         await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
-    }
-
-    private async Task SeedTopologyAndPolicyAsync()
-    {
-        await SeedTopologyAsync();
-        await CreatePolicyAsync(
-            targetEnv: "prod",
-            approverGroup: "InfraPortal.Admin",
-            excludeRole: null);
-    }
-
-    private async Task CreatePolicyAsync(string targetEnv, string? approverGroup, string? excludeRole)
-    {
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
         {
             product = "acme",
             service = (string?)null,
-            targetEnv,
-            approverGroup,
-            strategy = "Any",
-            minApprovers = approverGroup is null ? 0 : 1,
-            excludeRole,
+            targetEnv = "prod",
+            steps = new[]
+            {
+                new
+                {
+                    name = "Release Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Approvers",
+                            groups = new[] { "InfraPortal.Admin" },
+                            users = Array.Empty<string>(),
+                            minApprovers = 1,
+                        },
+                    },
+                },
+            },
+            gate = "PromotionOnly",
             timeoutHours = 24,
             escalationGroup = (string?)null,
         });

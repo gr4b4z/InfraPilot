@@ -47,4 +47,28 @@ public class StubIdentityService : IIdentityService
             ? users
             : [new UserInfo("user-1", "Dev User", "dev@localhost")];
     }
+
+    // Static dev groups so the policy editor's group picker is usable under local auth. In local
+    // mode the approval-time check matches groups by name against the user's Roles claim, so Id and
+    // DisplayName are intentionally the same value here.
+    private static readonly string[] DevGroups =
+    [
+        "InfraPortal.Admin",
+        "InfraPortal.QA",
+        "InfraPortal.Reviewer",
+        "ACX-PLT-TeamLeads",
+        "ACX-PLT-Engineers",
+    ];
+
+    public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
+    {
+        var matches = DevGroups
+            .Where(g => g.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .Select(g => new GroupInfo(g, g))
+            .ToList();
+        IReadOnlyList<GroupInfo> result = matches.Count > 0
+            ? matches
+            : DevGroups.Select(g => new GroupInfo(g, g)).ToList();
+        return Task.FromResult(result);
+    }
 }

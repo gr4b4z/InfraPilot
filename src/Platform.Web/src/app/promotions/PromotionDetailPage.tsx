@@ -11,8 +11,8 @@ import type {
   PromotionSourceEventParticipant,
   PromotionParticipant,
   PromotionComment,
-  PromotionInheritedReference,
-  PromotionInheritedParticipant,
+  PromotionApprovalProgress,
+  EligibleRequirement,
   WorkItemContext,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
@@ -49,14 +49,13 @@ const PromoReadOnlyCtx = createContext(false);
 
 const GATE_LABEL: Record<PromotionGate, string> = {
   PromotionOnly: 'Promotion only',
-  TicketsOnly: 'Tickets only',
-  TicketsAndManual: 'Tickets + manual',
+  WorkItemsOnly: 'Work items only',
+  WorkItemsAndManual: 'Work items + manual',
 };
 
 // Distinct work-items in the candidate's bundle. Built from the source event's
-// references plus inherited references (which carry forward when an older
-// pending candidate was superseded). Deduped on key. Each entry carries the
-// origin deploy event id so the override-assign PATCH can target the right event.
+// references (the candidate's own references). Deduped on key. Each entry carries
+// the origin deploy event id so the override-assign PATCH can target the right event.
 export interface BundleWorkItem {
   reference: PromotionSourceEventReference;
   /** Deploy event id this reference came from. Needed to PATCH overrides. */
@@ -65,7 +64,6 @@ export interface BundleWorkItem {
 
 function buildBundleWorkItems(
   sourceEvent: PromotionSourceEvent | null,
-  inheritedRefs: PromotionInheritedReference[],
 ): BundleWorkItem[] {
   const out: BundleWorkItem[] = [];
   const seen = new Set<string>();
@@ -77,7 +75,6 @@ function buildBundleWorkItems(
     out.push({ reference: r, deployEventId });
   };
   if (sourceEvent) for (const r of sourceEvent.references) push(r, sourceEvent.id);
-  for (const ir of inheritedRefs) push(ir.reference, ir.fromEventId ?? null);
   return out;
 }
 
@@ -121,9 +118,8 @@ export function PromotionDetailPage() {
   const [approvals, setApprovals] = useState<PromotionApprovalEntry[]>([]);
   const [sourceEvent, setSourceEvent] = useState<PromotionSourceEvent | null>(null);
   const [comments, setComments] = useState<PromotionComment[]>([]);
-  const [inheritedRefs, setInheritedRefs] = useState<PromotionInheritedReference[]>([]);
-  const [inheritedParticipants, setInheritedParticipants] = useState<PromotionInheritedParticipant[]>([]);
-  const [inheritedOpen, setInheritedOpen] = useState(false);
+  const [approvalProgress, setApprovalProgress] = useState<PromotionApprovalProgress | null>(null);
+  const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
@@ -138,8 +134,8 @@ export function PromotionDetailPage() {
         setApprovals(data.approvals || []);
         setSourceEvent(data.sourceEvent ?? null);
         setComments(data.comments || []);
-        setInheritedRefs(data.inheritedReferences || []);
-        setInheritedParticipants(data.inheritedParticipants || []);
+        setApprovalProgress(data.approvalProgress ?? null);
+        setEligibleRequirements(data.eligibleRequirements || []);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -149,11 +145,14 @@ export function PromotionDetailPage() {
     fetchData();
   }, [id]);
 
-  const handleAction = async (action: 'approve' | 'reject') => {
+  const handleAction = async (
+    action: 'approve' | 'reject',
+    target?: EligibleRequirement,
+  ) => {
     setActionLoading(true);
     try {
       if (action === 'approve') {
-        await api.approvePromotion(id!, comment || undefined);
+        await api.approvePromotion(id!, comment || undefined, target);
       } else {
         await api.rejectPromotion(id!, comment || undefined);
       }
@@ -192,7 +191,7 @@ export function PromotionDetailPage() {
 
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
-  const bundleWorkItems = buildBundleWorkItems(sourceEvent, inheritedRefs);
+  const bundleWorkItems = buildBundleWorkItems(sourceEvent);
   const isReadOnly = TERMINAL_STATUSES.includes(candidate.status);
 
   return (
@@ -296,23 +295,27 @@ export function PromotionDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Tickets card — bundle of work-items keyed (key, product, targetEnv).
+          {/* Work items card — bundle of work-items keyed (key, product, targetEnv).
              Per-row Approve / Reject buttons hit the work-item endpoints; after each
              decision we refetch the candidate so the manual card stays in sync. */}
-          <TicketsCard
+          <WorkItemsCard
             candidate={candidate}
             workItems={bundleWorkItems}
             onChanged={fetchData}
           />
 
-          {/* Manual promotion-level approval. Behaviour depends on the candidate's gate. */}
+          {/* Promotion approval — the live gate progress (per step / per requirement) and the
+             approve/reject action shown together in one card. Progress is visible to everyone;
+             the controls appear only when the current user can act. */}
           <PromotionApprovalCard
             candidate={candidate}
+            progress={approvalProgress}
             actionDone={actionDone}
             comment={comment}
             setComment={setComment}
             actionLoading={actionLoading}
             onAction={handleAction}
+            eligibleRequirements={eligibleRequirements}
           />
 
           {/* Approval trail */}
@@ -386,6 +389,31 @@ export function PromotionDetailPage() {
             currentUserEmail={currentUserEmail}
             onChange={setComments}
           />
+
+          {/* References — the change set being promoted (commits / work-items / PRs). Placed at the
+             bottom of the main column because it can be long; the full width keeps it readable. */}
+          {sourceEvent && sourceEvent.references.length > 0 && (
+            <div
+              className="rounded-xl border p-5"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+            >
+              <h2
+                className="text-[11px] font-semibold uppercase tracking-wider mb-4"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                References ({sourceEvent.references.length})
+              </h2>
+              <div className="space-y-2">
+                {sourceEvent.references.map((ref, i) => (
+                  <ReferenceItem
+                    key={i}
+                    reference={ref}
+                    labels={sourceEvent.enrichment?.labels ?? {}}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right column */}
@@ -464,93 +492,6 @@ export function PromotionDetailPage() {
               )}
             </div>
           </div>
-
-          {/* References (from source deploy event) */}
-          {sourceEvent && sourceEvent.references.length > 0 && (
-            <div
-              className="rounded-xl border p-5"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <h2
-                className="text-[11px] font-semibold uppercase tracking-wider mb-4"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                References
-              </h2>
-              <div className="space-y-2">
-                {sourceEvent.references.map((ref, i) => (
-                  <ReferenceItem
-                    key={i}
-                    reference={ref}
-                    labels={sourceEvent.enrichment?.labels ?? {}}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Inherited from superseded predecessors — refs and participants carried forward */}
-          {(inheritedRefs.length > 0 || inheritedParticipants.length > 0) && (
-            <div
-              className="rounded-xl border p-5"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <button
-                type="button"
-                onClick={() => setInheritedOpen((v) => !v)}
-                className="w-full flex items-center justify-between text-left"
-              >
-                <h2
-                  className="text-[11px] font-semibold uppercase tracking-wider"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Inherited from superseded candidates
-                  <span className="ml-2 normal-case font-normal" style={{ color: 'var(--text-muted)' }}>
-                    ({inheritedRefs.length} refs, {inheritedParticipants.length} people)
-                  </span>
-                </h2>
-                <span style={{ color: 'var(--text-muted)' }}>{inheritedOpen ? '−' : '+'}</span>
-              </button>
-              {inheritedOpen && (
-                <div className="mt-4 space-y-3">
-                  {inheritedRefs.length > 0 && (
-                    <div className="space-y-2">
-                      {inheritedRefs.map((ir, i) => (
-                        <div key={`ir-${i}`} className="flex items-center gap-2">
-                          <ReferenceItem reference={ir.reference} labels={{}} />
-                          <span
-                            className="text-[10px] px-1.5 py-0.5 rounded font-mono"
-                            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-                            title={`Carried from v${ir.fromVersion}`}
-                          >
-                            v{ir.fromVersion}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {inheritedParticipants.length > 0 && (
-                    <div className="space-y-1 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
-                      {inheritedParticipants.map((ip, i) => (
-                        <div key={`ip-${i}`} className="flex items-center gap-2">
-                          <span style={{ color: 'var(--text-muted)' }}>{roleDisplay({ role: ip.participant.role })}</span>
-                          <span>{ip.participant.displayName ?? ip.participant.email ?? '—'}</span>
-                          <CopyEmailButton email={ip.participant.email} />
-                          <span
-                            className="ml-auto text-[10px] px-1.5 py-0.5 rounded font-mono"
-                            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-                            title={`Carried from v${ip.fromVersion}`}
-                          >
-                            v{ip.fromVersion}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* People — event-level participants (read-only) + promotion-level (editable).
               Reference-level participants are shown nested under each reference above. */}
@@ -1214,39 +1155,59 @@ function CommentsCard({
 // Mirrors the legacy single-block approval UI but adapts to the candidate's
 // gate mode:
 //   - PromotionOnly: as today
-//   - TicketsAndManual: as today, with an explanatory "Manual + Tickets" line
-//   - TicketsOnly: disabled with the same wording the API returns on a 400
+//   - WorkItemsAndManual: as today, with an explanatory "Manual + Work items" line
+//   - WorkItemsOnly: disabled with the same wording the API returns on a 400
 // ─────────────────────────────────────────────────────────────────────────
 function PromotionApprovalCard({
   candidate,
+  progress,
   actionDone,
   comment,
   setComment,
   actionLoading,
   onAction,
+  eligibleRequirements,
 }: {
   candidate: PromotionCandidate;
+  progress: PromotionApprovalProgress | null;
   actionDone: string | null;
   comment: string;
   setComment: (v: string) => void;
   actionLoading: boolean;
-  onAction: (action: 'approve' | 'reject') => void;
+  onAction: (action: 'approve' | 'reject', target?: EligibleRequirement) => void;
+  eligibleRequirements: EligibleRequirement[];
 }) {
   const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
-  const ticketsOnly = gate === 'TicketsOnly';
+  const workItemsOnly = gate === 'WorkItemsOnly';
   const showActions = candidate.canApprove && !actionDone;
+  const showProgress = !!progress?.requiresApproval;
   const [showCommentBox, setShowCommentBox] = useState(false);
 
-  // Hide the card entirely when there's nothing actionable: not your decision
-  // and not a TicketsOnly candidate (where we want to surface the explainer
+  // When the approver is eligible for more than one open requirement they must choose which one
+  // they approve as. Key by `${stepName}\u0000${requirementName}` so step+requirement is unique.
+  const reqKey = (r: EligibleRequirement) => `${r.stepName}\u0000${r.requirementName}`;
+  const [selectedKey, setSelectedKey] = useState<string>('');
+  // Always offer the "Approve as" radios. With exactly one eligible requirement, preselect it
+  // (one pre-checked radio) so the UI is uniform; with more than one, the approver must pick.
+  const selected =
+    eligibleRequirements.find((r) => reqKey(r) === selectedKey)
+    ?? (eligibleRequirements.length === 1 ? eligibleRequirements[0] : null);
+
+  // Hide the card entirely only when there's nothing to show: no progress to surface,
+  // not your decision, and not a WorkItemsOnly candidate (whose explainer we keep visible
   // even for non-approvers so the gating is discoverable).
-  if (!showActions && !ticketsOnly) return null;
+  if (!showActions && !workItemsOnly && !showProgress) return null;
 
   const handleAction = (action: 'approve' | 'reject') => {
-    onAction(action);
+    // For approvals: pass the chosen requirement (preselected when only one is eligible).
+    const target = action === 'approve' ? selected ?? undefined : undefined;
+    onAction(action, target);
     setShowCommentBox(false);
     setComment('');
   };
+
+  // Block the Approve button until a requirement is selected (the single case is preselected).
+  const approveBlocked = !selected;
 
   return (
     <div
@@ -1271,18 +1232,72 @@ function PromotionApprovalCard({
         )}
       </div>
 
-      {ticketsOnly && (
+      {workItemsOnly && (
         <p
           className="text-[12px] mb-3 p-3 rounded-lg"
           style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
         >
-          This candidate auto-promotes when all tickets are signed off — approve the
-          tickets, not the promotion.
+          This candidate auto-promotes when all work items are signed off — approve the
+          work items, not the promotion.
         </p>
+      )}
+
+      {/* Live gate progress (per step / requirement). Shown to everyone who can see the card;
+         a divider separates it from the action controls when those are present. */}
+      {showProgress && progress && (
+        <div
+          className={showActions ? 'mb-4 pb-4 border-b' : ''}
+          style={showActions ? { borderColor: 'var(--border-color)' } : undefined}
+        >
+          <ApprovalProgressBody progress={progress} />
+        </div>
       )}
 
       {showActions && (
         <>
+          {/* "Approve as" selector — always shown when the user is eligible for any open
+             requirement. A single eligible requirement is preselected (one pre-checked radio);
+             with more than one the approver must pick before the Approve button enables. */}
+          {eligibleRequirements.length > 0 && (
+            <div className="mb-3">
+              <p
+                className="text-[12px] font-medium mb-1.5"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Approve as
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {eligibleRequirements.map((r) => {
+                  const key = reqKey(r);
+                  const active = selected != null && reqKey(selected) === key;
+                  return (
+                    <label
+                      key={key}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-[13px] transition-colors"
+                      style={{
+                        borderColor: active ? 'var(--accent)' : 'var(--border-color)',
+                        backgroundColor: active ? 'var(--bg-secondary)' : 'transparent',
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="approve-as"
+                        value={key}
+                        checked={active}
+                        onChange={() => setSelectedKey(key)}
+                      />
+                      <span className="font-medium">{r.requirementName}</span>
+                      {r.stepName && (
+                        <span style={{ color: 'var(--text-muted)' }}>· {r.stepName}</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {showCommentBox && (
             <textarea
               value={comment}
@@ -1300,14 +1315,20 @@ function PromotionApprovalCard({
           <div className="flex items-center gap-2">
             <button
               onClick={() => handleAction('approve')}
-              disabled={actionLoading || ticketsOnly}
-              title={ticketsOnly ? 'Disabled under TicketsOnly gate' : undefined}
+              disabled={actionLoading || workItemsOnly || approveBlocked}
+              title={
+                workItemsOnly
+                  ? 'Disabled under Work items only gate'
+                  : approveBlocked
+                    ? 'Select which requirement you are approving as'
+                    : undefined
+              }
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--success)',
                 color: '#fff',
-                opacity: actionLoading || ticketsOnly ? 0.5 : 1,
-                cursor: ticketsOnly ? 'not-allowed' : 'pointer',
+                opacity: actionLoading || workItemsOnly || approveBlocked ? 0.5 : 1,
+                cursor: workItemsOnly || approveBlocked ? 'not-allowed' : 'pointer',
               }}
             >
               <CheckCircle size={14} />
@@ -1315,20 +1336,20 @@ function PromotionApprovalCard({
             </button>
             <button
               onClick={() => handleAction('reject')}
-              disabled={actionLoading || ticketsOnly}
-              title={ticketsOnly ? 'Disabled under TicketsOnly gate' : undefined}
+              disabled={actionLoading || workItemsOnly}
+              title={workItemsOnly ? 'Disabled under Work items only gate' : undefined}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--danger)',
                 color: '#fff',
-                opacity: actionLoading || ticketsOnly ? 0.5 : 1,
-                cursor: ticketsOnly ? 'not-allowed' : 'pointer',
+                opacity: actionLoading || workItemsOnly ? 0.5 : 1,
+                cursor: workItemsOnly ? 'not-allowed' : 'pointer',
               }}
             >
               <XCircle size={14} />
               Reject
             </button>
-            {!ticketsOnly && (
+            {!workItemsOnly && (
               <button
                 type="button"
                 onClick={() => {
@@ -1349,17 +1370,163 @@ function PromotionApprovalCard({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Tickets (work-item) card
+// Approval progress card
 //
-// Lists every work-item in the candidate's bundle (own source-event refs +
-// inherited from superseded predecessors, deduped on key). Per-row buttons
+// Surfaces the live promotion gate (GET /promotions/{id} → approvalProgress)
+// as a per-step / per-requirement breakdown of "how many approvals are in vs.
+// required". The counts come straight from the backend matcher so the panel
+// always mirrors the real gate — it never recomputes progress. Approver names
+// live in the Approval Trail; this panel is counts + status only.
+// ─────────────────────────────────────────────────────────────────────────
+function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgress }) {
+  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate } = progress;
+  const remaining = Math.max(0, totalRequired - totalApproved);
+
+  return (
+    <div>
+      <div className="flex items-center justify-end mb-3">
+        <span
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium"
+          style={{ color: allSatisfied ? 'var(--success)' : 'var(--warning)' }}
+        >
+          {allSatisfied ? (
+            <>
+              <CheckCircle size={14} />
+              All approvals met
+            </>
+          ) : (
+            <>
+              <Clock size={14} />
+              {totalApproved} of {totalRequired} approvals
+              {remaining > 0 ? ` · needs ${remaining} more` : ''}
+            </>
+          )}
+        </span>
+      </div>
+
+      <div className="space-y-4">
+        {steps.map((step, si) => (
+          <div key={`${step.name}-${si}`}>
+            <div className="flex items-center gap-1.5 mb-2">
+              {step.satisfied ? (
+                <CheckCircle size={13} style={{ color: 'var(--success)' }} />
+              ) : (
+                <Clock size={13} style={{ color: 'var(--warning)' }} />
+              )}
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                {step.name}
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {step.requirements.map((req, ri) => {
+                // Who can satisfy this requirement: group names + explicitly-listed users.
+                const approvers = [...req.groups.map((g) => g.name), ...req.users];
+                const approversText = approvers.join(' · ');
+                return (
+                  <div
+                    key={`${req.name}-${ri}`}
+                    className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                  >
+                    <div className="min-w-0">
+                      <span
+                        className="inline-flex items-center gap-2 text-[13px] min-w-0"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {req.satisfied ? (
+                          <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+                        ) : (
+                          <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                        )}
+                        <span className="truncate">{req.name}</span>
+                      </span>
+                      {approversText && (
+                        <p
+                          className="text-[11px] mt-0.5 ml-6 truncate"
+                          style={{ color: 'var(--text-muted)' }}
+                          title={`Can approve: ${approversText}`}
+                        >
+                          Approvers: {approversText}
+                        </p>
+                      )}
+                    </div>
+                    <span
+                      className="text-[12px] font-medium whitespace-nowrap"
+                      style={{ color: req.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
+                    >
+                      {req.approved} of {req.required} approved
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        {/* The "all work items resolved" gate condition — shown when the policy requires every
+           work item signed off, so the approver can see whether that condition is fulfilled. */}
+        {workItemGate && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-2">
+              {workItemGate.satisfied ? (
+                <CheckCircle size={13} style={{ color: 'var(--success)' }} />
+              ) : (
+                <Clock size={13} style={{ color: 'var(--warning)' }} />
+              )}
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                Work items
+              </span>
+            </div>
+            <div
+              className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+            >
+              <div className="min-w-0">
+                <span
+                  className="inline-flex items-center gap-2 text-[13px] min-w-0"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {workItemGate.satisfied ? (
+                    <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+                  ) : (
+                    <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                  )}
+                  <span className="truncate">All work items resolved</span>
+                </span>
+                {workItemGate.autoApprove && (
+                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
+                    {workItemGate.satisfied
+                      ? 'Auto-approved the promotion'
+                      : 'Resolving all work items auto-approves this promotion'}
+                  </p>
+                )}
+              </div>
+              <span
+                className="text-[12px] font-medium whitespace-nowrap"
+                style={{ color: workItemGate.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
+              >
+                {workItemGate.approved} of {workItemGate.total} approved
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Work items card
+//
+// Lists every work-item in the candidate's bundle (the candidate's own
+// source-event refs, deduped on key). Per-row buttons
 // drive POST /api/work-items/{key}/approvals|rejections. Authority is decided
 // by GET /api/work-items/{key}?product=&targetEnv= so we surface the same
 // blockedReason wording the API would return on a failed POST.
 //
-// Empty bundle: explicit message, plus a hint about the TicketsOnly fallback.
+// Empty bundle: explicit message, plus a hint about the WorkItemsOnly fallback.
 // ─────────────────────────────────────────────────────────────────────────
-function TicketsCard({
+function WorkItemsCard({
   candidate,
   workItems,
   onChanged,
@@ -1380,7 +1547,7 @@ function TicketsCard({
           className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5"
           style={{ color: 'var(--text-muted)' }}
         >
-          <Ticket size={12} /> Tickets ({workItems.length})
+          <Ticket size={12} /> Work items ({workItems.length})
         </h2>
       </div>
 
@@ -1390,9 +1557,9 @@ function TicketsCard({
           style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
         >
           No work-items on this candidate.
-          {gate === 'TicketsOnly' && (
+          {gate === 'WorkItemsOnly' && (
             <span className="block mt-1" style={{ color: 'var(--text-muted)' }}>
-              Under the TicketsOnly gate the candidate falls back to manual signoff — see the
+              Under the Work items only gate the candidate falls back to manual signoff — see the
               promotion approval card.
             </span>
           )}
@@ -1444,7 +1611,7 @@ function TicketRow({
       const next = await api.getWorkItemContext(key, candidate.product, candidate.targetEnv);
       setCtx(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load ticket state');
+      setError(err instanceof Error ? err.message : 'Failed to load work item state');
     } finally {
       setLoading(false);
     }

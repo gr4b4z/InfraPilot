@@ -958,20 +958,14 @@ public class CatalogAgent
 
                     var candidates = await _promotionService.GetAsync(query);
 
-                    // Optional reference filter — applied in-memory because references live in
-                    // the source deploy event's JSON. Matches key/revision/provider/url substring.
+                    // Optional reference filter — applied in-memory against the candidate's own
+                    // (self-contained) references. Matches key/revision/provider/url substring.
                     if (!string.IsNullOrWhiteSpace(reference))
                     {
                         var needle = reference.Trim();
-                        var sourceIds = candidates.Select(c => c.SourceDeployEventId).Distinct().ToList();
-                        var events = await _db.DeployEvents.AsNoTracking()
-                            .Where(e => sourceIds.Contains(e.Id))
-                            .Select(e => new { e.Id, e.ReferencesJson })
-                            .ToListAsync();
-                        var refMap = events.ToDictionary(e => e.Id, e => e.ReferencesJson);
                         candidates = candidates.Where(c =>
                         {
-                            var json = refMap.GetValueOrDefault(c.SourceDeployEventId);
+                            var json = c.ReferencesJson;
                             if (string.IsNullOrWhiteSpace(json)) return false;
                             return json.Contains(needle, StringComparison.OrdinalIgnoreCase);
                         }).ToList();
@@ -1005,23 +999,17 @@ public class CatalogAgent
 
                     var approvals = await _promotionService.GetApprovalsAsync(cid);
                     var comments = await _promotionService.GetCommentsAsync(cid);
-                    var sourceEvent = await _db.DeployEvents.AsNoTracking()
-                        .FirstOrDefaultAsync(e => e.Id == candidate.SourceDeployEventId);
 
-                    object? sourceEventData = null;
-                    if (sourceEvent is not null)
+                    // The candidate is self-contained (D14): no source deploy event. Its own
+                    // references are the net change set, surfaced as `sourceEvent` for shape parity.
+                    object? sourceEventData = new
                     {
-                        var refs = SafeDeserialize<List<ReferenceDto>>(sourceEvent.ReferencesJson) ?? new();
-                        var srcParts = SafeDeserialize<List<ParticipantDto>>(sourceEvent.ParticipantsJson) ?? new();
-                        sourceEventData = new
-                        {
-                            id = sourceEvent.Id,
-                            deployedAt = sourceEvent.DeployedAt,
-                            source = sourceEvent.Source,
-                            references = refs,
-                            participants = srcParts,
-                        };
-                    }
+                        id = (Guid?)null,
+                        deployedAt = candidate.CreatedAt,
+                        source = "external",
+                        references = candidate.References,
+                        participants = candidate.Participants,
+                    };
 
                     var resultJson = JsonSerializer.Serialize(new
                     {
@@ -1033,6 +1021,8 @@ public class CatalogAgent
                             candidate.SourceEnv,
                             candidate.TargetEnv,
                             candidate.Version,
+                            candidate.FromRevision,
+                            candidate.ToRevision,
                             status = candidate.Status.ToString(),
                             candidate.ExternalRunUrl,
                             candidate.CreatedAt,

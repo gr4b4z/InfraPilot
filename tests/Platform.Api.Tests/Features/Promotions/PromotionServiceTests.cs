@@ -44,7 +44,7 @@ public class PromotionServiceTests : IDisposable
 
         var resolver = new PromotionPolicyResolver(_db);
         var auth = new PromotionApprovalAuthorizer(
-            _db, _currentUser, _identity,
+            _currentUser, _identity,
             Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
         _sut = new PromotionService(
             _db, resolver, auth, _currentUser, _audit,
@@ -59,9 +59,15 @@ public class PromotionServiceTests : IDisposable
     // Helpers
     // ---------------------------------------------------------------------
 
+    /// <summary>
+    /// Seeds a staging deploy event for (acme, service, version). Used to control the source-drift
+    /// invariant in <c>EvaluateGateAsync</c>: the source env must run the candidate's version (or
+    /// have no history) for a candidate to be promotable. Seed a matching version to clear drift.
+    /// </summary>
     private DeployEvent SeedDeploy(
         string env = "staging",
         string version = "v1.2.3",
+        string service = "api",
         bool rollback = false,
         string status = "succeeded",
         string? deployerEmail = "bob@example.com")
@@ -74,7 +80,7 @@ public class PromotionServiceTests : IDisposable
         {
             Id = Guid.NewGuid(),
             Product = "acme",
-            Service = "api",
+            Service = service,
             Environment = env,
             Version = version,
             Status = status,
@@ -89,70 +95,95 @@ public class PromotionServiceTests : IDisposable
         return e;
     }
 
+    /// <summary>
+    /// Seeds a promotion policy for (acme, service, prod). When <paramref name="approverGroup"/> is
+    /// null the policy has no requirements ⇒ auto-approve. Otherwise it carries one step with one
+    /// requirement satisfied by <paramref name="approverGroup"/> needing <paramref name="minApprovers"/>
+    /// distinct approvers — the §8 tree equivalent of the legacy ApproverGroup/MinApprovers pair.
+    /// </summary>
     private PromotionPolicy SeedPolicy(
-        string approverGroup = "ops",
-        PromotionStrategy strategy = PromotionStrategy.Any,
+        string? approverGroup = "ops",
         int minApprovers = 1,
-        string? excludeRole = "triggered-by",
         string? service = null)
     {
+        var steps = approverGroup is null
+            ? new List<ApprovalStep>()
+            : new List<ApprovalStep>
+            {
+                new("Approval", new()
+                {
+                    new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), minApprovers),
+                }),
+            };
+
         var p = new PromotionPolicy
         {
             Id = Guid.NewGuid(),
             Product = "acme",
             Service = service,
             TargetEnv = "prod",
-            ApproverGroup = approverGroup,
-            Strategy = strategy,
-            MinApprovers = minApprovers,
-            ExcludeRole = excludeRole,
+            ApprovalSteps = steps,
         };
         _db.PromotionPolicies.Add(p);
         _db.SaveChanges();
         return p;
     }
 
+    /// <summary>
+    /// Seeds a policy with one step ("Signoff") carrying TWO requirements ("ReleaseManager" and "QA"),
+    /// both satisfiable by group "ops" (which Alice is in via Graph) and each needing one approver.
+    /// Used to exercise the multi-eligible "approve as" choice path.
+    /// </summary>
+    private PromotionPolicy SeedMultiReqPolicy()
+    {
+        var steps = new List<ApprovalStep>
+        {
+            new("Signoff", new()
+            {
+                new ApproverRequirement("ReleaseManager", new() { new GroupRef("ops", "ops") }, new(), 1),
+                new ApproverRequirement("QA", new() { new GroupRef("ops", "ops") }, new(), 1),
+            }),
+        };
+        var p = new PromotionPolicy
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = null,
+            TargetEnv = "prod",
+            ApprovalSteps = steps,
+        };
+        _db.PromotionPolicies.Add(p);
+        _db.SaveChanges();
+        return p;
+    }
+
+    /// <summary>
+    /// Builds a <see cref="CreatePromotionDto"/> for the (acme, api, staging→prod) edge and calls the
+    /// external create path — the only way candidates are born now (the old DeployEvent-driven
+    /// <c>CreateCandidateAsync</c> was removed).
+    /// </summary>
+    private Task<PromotionCandidate?> CreateAsync(
+        string version = "v1.2.3", string service = "api")
+        => _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme",
+            Service: service,
+            SourceEnv: "staging",
+            TargetEnv: "prod",
+            Version: version,
+            FromRevision: null,
+            ToRevision: null,
+            References: null,
+            Participants: null));
+
     // ---------------------------------------------------------------------
-    // CreateCandidateAsync
+    // CreateExternalCandidateAsync
     // ---------------------------------------------------------------------
-
-    [Fact]
-    public async Task Create_RollbackEvent_MatchingTarget_Skipped()
-    {
-        // Rolling back to the version prod already runs → nothing to promote → skip.
-        SeedPolicy();
-        SeedDeploy(env: "prod", version: "v1.2.3");
-        var e = SeedDeploy(rollback: true, version: "v1.2.3");
-        var c = await _sut.CreateCandidateAsync(e, "prod");
-        Assert.Null(c);
-    }
-
-    [Fact]
-    public async Task Create_RollbackEvent_AheadOfTarget_CreatesCandidate()
-    {
-        // Rolling back to a version that still differs from prod (e.g. staging 2.0 vs prod 1.5)
-        // is still shippable, so a promotion candidate should be created.
-        SeedPolicy();
-        SeedDeploy(env: "prod", version: "v1.5.0");
-        var e = SeedDeploy(rollback: true, version: "v2.0.0");
-        var c = await _sut.CreateCandidateAsync(e, "prod");
-        Assert.NotNull(c);
-        Assert.Equal("v2.0.0", c!.Version);
-    }
-
-    [Fact]
-    public async Task Create_FailedEvent_Skipped()
-    {
-        var e = SeedDeploy(status: "failed");
-        var c = await _sut.CreateCandidateAsync(e, "prod");
-        Assert.Null(c);
-    }
 
     [Fact]
     public async Task Create_NoPolicy_Skipped()
     {
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        // No policy resolves for the edge → external create returns null (→ 422 at the endpoint).
+        var c = await CreateAsync();
 
         Assert.Null(c);
         Assert.Empty(_db.PromotionCandidates);
@@ -161,9 +192,8 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Create_AutoApprovePolicy_ApprovedImmediately()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: null); // empty ApprovalSteps ⇒ auto-approve
+        var c = await CreateAsync();
 
         Assert.NotNull(c);
         Assert.Equal(PromotionStatus.Approved, c!.Status);
@@ -174,9 +204,8 @@ public class PromotionServiceTests : IDisposable
     public async Task Create_WithPolicy_Pending()
     {
         SeedPolicy();
-        var e = SeedDeploy();
+        var c = await CreateAsync();
 
-        var c = await _sut.CreateCandidateAsync(e, "prod");
         Assert.NotNull(c);
         Assert.Equal(PromotionStatus.Pending, c!.Status);
         Assert.Null(c.ApprovedAt);
@@ -186,11 +215,8 @@ public class PromotionServiceTests : IDisposable
     public async Task Create_SecondCandidateSupersedesFirst()
     {
         SeedPolicy();
-        var e1 = SeedDeploy(version: "v1");
-        var c1 = await _sut.CreateCandidateAsync(e1, "prod");
-
-        var e2 = SeedDeploy(version: "v2");
-        var c2 = await _sut.CreateCandidateAsync(e2, "prod");
+        var c1 = await CreateAsync(version: "v1");
+        var c2 = await CreateAsync(version: "v2");
 
         var reloaded1 = await _db.PromotionCandidates.FindAsync(c1!.Id);
         Assert.Equal(PromotionStatus.Superseded, reloaded1!.Status);
@@ -198,19 +224,17 @@ public class PromotionServiceTests : IDisposable
         Assert.Equal(PromotionStatus.Pending, c2.Status);
     }
 
-    // (Removed Create_CapturesDeployerEmail — SourceDeployerEmail was dropped from
-    //  PromotionCandidate in the DropPromotionCandidateDeployerFields migration.)
-
     // ---------------------------------------------------------------------
     // ApproveAsync
     // ---------------------------------------------------------------------
 
     [Fact]
-    public async Task Approve_AnyStrategy_OneApprovalFlipsToApproved()
+    public async Task Approve_SingleRequirement_OneApprovalFlipsToApproved()
     {
-        SeedPolicy(strategy: PromotionStrategy.Any);
-        var e = SeedDeploy(deployerEmail: "bob@example.com"); // not Alice
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        // One requirement (group "ops", MinApprovers:1). Alice is in "ops" via Graph; one approval
+        // satisfies the gate. No conflicting staging deploy → no source drift to block.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
 
         var updated = await _sut.ApproveAsync(c!.Id, "lgtm");
 
@@ -220,11 +244,11 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Approve_NOfM_NotEnoughApprovals_StaysPending()
+    public async Task Approve_NotEnoughApprovals_StaysPending()
     {
-        SeedPolicy(strategy: PromotionStrategy.NOfM, minApprovers: 2);
-        var e = SeedDeploy(deployerEmail: "bob@example.com");
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        // MinApprovers:2 but only one distinct approver → requirement unmet → stays Pending.
+        SeedPolicy(approverGroup: "ops", minApprovers: 2);
+        var c = await CreateAsync();
 
         var updated = await _sut.ApproveAsync(c!.Id, null);
 
@@ -233,22 +257,11 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Approve_Deployer_RejectedByExcludeDeployer()
-    {
-        SeedPolicy(excludeRole: "triggered-by");
-        var e = SeedDeploy(deployerEmail: "alice@example.com"); // Alice is the deployer
-        var c = await _sut.CreateCandidateAsync(e, "prod");
-
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(
-            () => _sut.ApproveAsync(c!.Id, null));
-    }
-
-    [Fact]
     public async Task Approve_NotInGroup_Unauthorized()
     {
+        // Requirement is satisfiable only by "other-team", which Alice is not in (no Graph members).
         SeedPolicy(approverGroup: "other-team");
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        var c = await CreateAsync();
 
         await Assert.ThrowsAsync<UnauthorizedAccessException>(
             () => _sut.ApproveAsync(c!.Id, null));
@@ -257,9 +270,8 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Approve_SameUserTwice_Throws()
     {
-        SeedPolicy(strategy: PromotionStrategy.NOfM, minApprovers: 5);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: "ops", minApprovers: 5);
+        var c = await CreateAsync();
 
         await _sut.ApproveAsync(c!.Id, null);
         await Assert.ThrowsAsync<InvalidOperationException>(
@@ -269,13 +281,69 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Approve_AdminAlwaysQualifies()
     {
+        // Admin bypasses group checks (IsInApproverGroupAsync honours IsAdmin).
         _currentUser.IsAdmin.Returns(true);
         SeedPolicy(approverGroup: "team-admins-never-heard-of");
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        var c = await CreateAsync();
 
         var updated = await _sut.ApproveAsync(c!.Id, null);
         Assert.Equal(PromotionStatus.Approved, updated.Status);
+    }
+
+    [Fact]
+    public async Task Approve_SingleEligible_AutoPicksAndRecordsAttribution()
+    {
+        // One requirement Alice is eligible for → no choice needed; attribution auto-recorded.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        var updated = await _sut.ApproveAsync(c!.Id, "lgtm");
+
+        Assert.Equal(PromotionStatus.Approved, updated.Status);
+        var row = _db.PromotionApprovals.Single();
+        Assert.Equal("Approval", row.StepName);
+        Assert.Equal("Approvers", row.RequirementName);
+    }
+
+    [Fact]
+    public async Task Approve_MultiEligible_WithoutChoice_Throws_WithOptions()
+    {
+        // Two requirements, both satisfiable by Alice (group "ops"). With no explicit choice she's
+        // eligible for >1 open requirement → service asks the caller to choose.
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+
+        var ex = await Assert.ThrowsAsync<MultipleEligibleRequirementsException>(
+            () => _sut.ApproveAsync(c!.Id, null));
+
+        Assert.Equal(2, ex.Options.Count);
+        Assert.Empty(_db.PromotionApprovals); // nothing recorded when we bail for a choice
+    }
+
+    [Fact]
+    public async Task Approve_MultiEligible_WithChoice_RecordsPinnedRequirement()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+
+        // Pin to the QA requirement explicitly.
+        var updated = await _sut.ApproveAsync(c!.Id, "as qa", stepName: "Signoff", requirementName: "QA");
+
+        var row = _db.PromotionApprovals.Single();
+        Assert.Equal("Signoff", row.StepName);
+        Assert.Equal("QA", row.RequirementName);
+        // Two requirements each need 1; Alice covers only one → still Pending.
+        Assert.Equal(PromotionStatus.Pending, updated.Status);
+    }
+
+    [Fact]
+    public async Task Approve_ChoiceNotEligible_Throws()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "NoSuchReq"));
     }
 
     // ---------------------------------------------------------------------
@@ -285,12 +353,71 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task Reject_SingleRejection_TerminatesCandidate()
     {
-        SeedPolicy(strategy: PromotionStrategy.NOfM, minApprovers: 5);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: "ops", minApprovers: 5);
+        var c = await CreateAsync();
 
         var updated = await _sut.RejectAsync(c!.Id, "no thanks");
         Assert.Equal(PromotionStatus.Rejected, updated.Status);
+    }
+
+    // ---------------------------------------------------------------------
+    // GetApprovalProgressAsync
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task Progress_AutoApprove_RequiresApprovalFalse()
+    {
+        // No requirements ⇒ auto-approve ⇒ panel hidden.
+        SeedPolicy(approverGroup: null);
+        var c = await CreateAsync();
+
+        var progress = await _sut.GetApprovalProgressAsync(c!);
+
+        Assert.False(progress.RequiresApproval);
+        Assert.True(progress.AllSatisfied);
+        Assert.Empty(progress.Steps);
+        Assert.Equal(0, progress.TotalRequired);
+    }
+
+    [Fact]
+    public async Task Progress_TwoOfTwo_PartialCountsReflectMatcher()
+    {
+        // One requirement needing 2 distinct approvers; only Alice has approved → 1 of 2, unsatisfied.
+        SeedPolicy(approverGroup: "ops", minApprovers: 2);
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null); // Alice approves; stays Pending (needs 2)
+        var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
+
+        var progress = await _sut.GetApprovalProgressAsync(reloaded!);
+
+        Assert.True(progress.RequiresApproval);
+        Assert.False(progress.AllSatisfied);
+        Assert.Equal(2, progress.TotalRequired);
+        Assert.Equal(1, progress.TotalApproved);
+        var step = Assert.Single(progress.Steps);
+        Assert.False(step.Satisfied);
+        var req = Assert.Single(step.Requirements);
+        Assert.Equal(2, req.Required);
+        Assert.Equal(1, req.Approved);
+        Assert.False(req.Satisfied);
+    }
+
+    [Fact]
+    public async Task Progress_Satisfied_WhenRequirementMet()
+    {
+        // MinApprovers:1, Alice (in "ops") approves → requirement satisfied, AllSatisfied true.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null);
+        var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
+
+        var progress = await _sut.GetApprovalProgressAsync(reloaded!);
+
+        Assert.True(progress.RequiresApproval);
+        Assert.True(progress.AllSatisfied);
+        Assert.Equal(1, progress.TotalRequired);
+        Assert.Equal(1, progress.TotalApproved);
+        Assert.True(Assert.Single(progress.Steps).Satisfied);
     }
 
     // ---------------------------------------------------------------------
@@ -300,9 +427,8 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeploying_FromApproved_Works()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null); // auto-approve policy
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: null); // auto-approve policy
+        var c = await CreateAsync();
 
         var updated = await _sut.MarkDeployingAsync(c!.Id, "https://ci/run/1");
         Assert.Equal(PromotionStatus.Deploying, updated.Status);
@@ -313,8 +439,7 @@ public class PromotionServiceTests : IDisposable
     public async Task MarkDeploying_FromPending_Throws()
     {
         SeedPolicy();
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        var c = await CreateAsync();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.MarkDeployingAsync(c!.Id, null));
@@ -323,9 +448,8 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task MarkDeployed_FromDeploying_Works()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: null);
+        var c = await CreateAsync();
         await _sut.MarkDeployingAsync(c!.Id, null);
 
         var updated = await _sut.MarkDeployedAsync(c.Id);
@@ -341,8 +465,7 @@ public class PromotionServiceTests : IDisposable
     public async Task CanApprove_Pending_InGroup_True()
     {
         SeedPolicy();
-        var e = SeedDeploy(deployerEmail: "bob@example.com");
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        var c = await CreateAsync();
 
         Assert.True(await _sut.CanUserApproveAsync(c!));
     }
@@ -350,18 +473,16 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_AutoApprove_False()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: null);
+        var c = await CreateAsync();
         Assert.False(await _sut.CanUserApproveAsync(c!));
     }
 
     [Fact]
     public async Task CanApprove_NotPending_False()
     {
-        SeedPolicy(approverGroup: null!, minApprovers: 0, excludeRole: null);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: null);
+        var c = await CreateAsync();
         c!.Status = PromotionStatus.Rejected;
         await _db.SaveChangesAsync();
         Assert.False(await _sut.CanUserApproveAsync(c));
@@ -370,9 +491,8 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApprove_AlreadyDecided_False()
     {
-        SeedPolicy(strategy: PromotionStrategy.NOfM, minApprovers: 5);
-        var e = SeedDeploy();
-        var c = await _sut.CreateCandidateAsync(e, "prod");
+        SeedPolicy(approverGroup: "ops", minApprovers: 5);
+        var c = await CreateAsync();
 
         await _sut.ApproveAsync(c!.Id, null);
         var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
@@ -382,32 +502,16 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task CanApproveMany_BulkProbe_MatchesPerCandidateResult()
     {
-        // Seed a product-level policy (Service=null) so it applies to all services.
+        // Product-level policy (Service=null) applies to all services.
         SeedPolicy();
 
-        // Two different services so the second candidate doesn't supersede the first.
-        var e1 = new DeployEvent
-        {
-            Id = Guid.NewGuid(), Product = "acme", Service = "api", Environment = "staging",
-            Version = "v1", Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = "bob@example.com" } }),
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        var e2 = new DeployEvent
-        {
-            Id = Guid.NewGuid(), Product = "acme", Service = "web", Environment = "staging",
-            Version = "v1", Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow,
-            ParticipantsJson = JsonSerializer.Serialize(new[] { new { role = "triggered-by", email = "alice@example.com" } }),
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.DeployEvents.AddRange(e1, e2);
-        await _db.SaveChangesAsync();
-
-        var c1 = await _sut.CreateCandidateAsync(e1, "prod");
-        var c2 = await _sut.CreateCandidateAsync(e2, "prod"); // Alice is deployer → excluded
+        // Two different services so the second candidate doesn't supersede the first. The probe is a
+        // pure capability check (group membership), so both are approvable by Alice (in "ops").
+        var c1 = await CreateAsync(service: "api");
+        var c2 = await CreateAsync(service: "web");
 
         var map = await _sut.CanUserApproveManyAsync(new[] { c1!, c2! });
         Assert.True(map[c1!.Id]);
-        Assert.False(map[c2!.Id]);
+        Assert.True(map[c2!.Id]);
     }
 }

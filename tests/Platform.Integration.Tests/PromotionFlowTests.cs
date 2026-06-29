@@ -15,9 +15,14 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Integration.Tests;
 
 /// <summary>
-/// End-to-end integration tests for the deployment ingest → promotion flow.
-/// Exercises the full HTTP pipeline: API key auth → ingest → promotion hook →
-/// candidate creation → webhook dispatch → approve/reject → completion matching.
+/// End-to-end integration tests for the external promotion-creation flow.
+/// Exercises the full HTTP pipeline: API key auth → POST /api/promotions →
+/// candidate creation → webhook dispatch → approve/reject → completion matching
+/// via a target-env deploy event.
+///
+/// <para>Promotion candidates are no longer auto-generated from deploy-event ingest (D19):
+/// they are created explicitly via <c>POST /api/promotions</c>. Deploy-event ingest only
+/// records the deployment and, for a target-env landing, completes a matching candidate.</para>
 /// </summary>
 public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>, IDisposable
 {
@@ -45,46 +50,50 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
     // ── Setup helpers ───────────────────────────────────────────────────────
 
-    private async Task SeedTopologyAndPoliciesAsync()
+    // Topology was removed (D19): policy resolution is now the edge guard. We seed step-tree
+    // policies (§8) directly. An empty steps[] list means auto-approve; a single group
+    // requirement means a human gate (candidate born Pending).
+    private async Task SeedPoliciesAsync()
     {
-        // Save topology: dev → staging → prod
-        await _adminClient.PutAsJsonAsync("/api/promotions/admin/topology", new
-        {
-            environments = new[] { "dev", "staging", "prod" },
-            edges = new[]
-            {
-                new { from = "dev", to = "staging" },
-                new { from = "staging", to = "prod" },
-            },
-        });
-
         // Enable the promotions feature flag.
         await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
 
-        // Policy: dev → staging = auto-approve (no approver group).
+        // Policy: → staging = auto-approve (empty step tree).
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
         {
             product = "acme",
             service = (string?)null,
             targetEnv = "staging",
-            approverGroup = (string?)null,
-            strategy = "Any",
-            minApprovers = 0,
-            excludeRole = (string?)null,
+            steps = Array.Empty<object>(),
+            gate = "PromotionOnly",
             timeoutHours = 24,
             escalationGroup = (string?)null,
         });
 
-        // Policy: staging → prod = gated, 1 approver required.
+        // Policy: → prod = gated, one InfraPortal.Admin approver required.
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
         {
             product = "acme",
             service = (string?)null,
             targetEnv = "prod",
-            approverGroup = "InfraPortal.Admin",
-            strategy = "Any",
-            minApprovers = 1,
-            excludeRole = (string?)null,
+            steps = new[]
+            {
+                new
+                {
+                    name = "Release Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Approvers",
+                            groups = new[] { "InfraPortal.Admin" },
+                            users = Array.Empty<string>(),
+                            minApprovers = 1,
+                        },
+                    },
+                },
+            },
+            gate = "PromotionOnly",
             timeoutHours = 48,
             escalationGroup = (string?)null,
         });
@@ -111,6 +120,28 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             },
         };
 
+    // Create a promotion candidate via the external create endpoint (API-key auth + product
+    // scope). Candidates are no longer derived from deploy events (D19); the external CI POSTs
+    // the net change set here.
+    private Task<HttpResponseMessage> CreatePromotionAsync(
+        string sourceEnv,
+        string targetEnv,
+        string version,
+        string product = "acme",
+        string service = "api") =>
+        _apiKeyClient.PostAsJsonAsync("/api/promotions", new
+        {
+            product,
+            service,
+            sourceEnv,
+            targetEnv,
+            version,
+            participants = new[]
+            {
+                new { role = "PR Author", displayName = "Bob Builder", email = "bob@example.com" },
+            },
+        });
+
     // ── Tests ───────────────────────────────────────────────────────────────
 
     [Fact]
@@ -128,15 +159,15 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Ingest_WithTopologyAndPolicy_CreatesPromotionCandidate()
+    public async Task Create_WithAutoApprovePolicy_CreatesApprovedCandidate()
     {
-        await SeedTopologyAndPoliciesAsync();
+        // Was Ingest_WithTopologyAndPolicy_CreatesPromotionCandidate. Candidates are no longer
+        // derived from deploy ingest (D19) — they're created via POST /api/promotions. The staging
+        // policy has an empty step tree, so the candidate is born Approved (auto-approve).
+        await SeedPoliciesAsync();
 
-        // Act: ingest a succeeded deploy to dev → should create a promotion candidate for staging.
-        var ingestResponse = await _apiKeyClient.PostAsJsonAsync(
-            "/api/deployments/events",
-            MakeDeployPayload("dev", version: "v2.0.0"));
-        Assert.Equal(HttpStatusCode.Created, ingestResponse.StatusCode);
+        var createResponse = await CreatePromotionAsync(sourceEnv: "dev", targetEnv: "staging", version: "v2.0.0");
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
         // Assert: a promotion candidate exists for staging.
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=staging");
@@ -152,15 +183,16 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Ingest_WithoutPolicy_DoesNotCreateCandidate()
+    public async Task Create_WithoutPolicy_IsRejected()
     {
-        // Topology exists from prior test, but use a product with no policy.
-        await SeedTopologyAndPoliciesAsync();
+        // Was Ingest_WithoutPolicy_DoesNotCreateCandidate. With topology gone, the policy-resolution
+        // miss is the edge guard: a create for a product with no policy is rejected (422) rather
+        // than silently dropped, and no candidate is recorded.
+        await SeedPoliciesAsync();
 
-        var ingestResponse = await _apiKeyClient.PostAsJsonAsync(
-            "/api/deployments/events",
-            MakeDeployPayload("dev", version: "v3.0.0", product: "no-policy-product"));
-        Assert.Equal(HttpStatusCode.Created, ingestResponse.StatusCode);
+        var createResponse = await CreatePromotionAsync(
+            sourceEnv: "dev", targetEnv: "staging", version: "v3.0.0", product: "no-policy-product");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, createResponse.StatusCode);
 
         // Assert: no candidates for this product.
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=no-policy-product");
@@ -172,15 +204,14 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Ingest_AutoApprovePolicy_DispatchesPromotionApprovedWebhook()
+    public async Task Create_AutoApprovePolicy_DispatchesPromotionApprovedWebhook()
     {
-        await SeedTopologyAndPoliciesAsync();
+        // Was Ingest_AutoApprovePolicy_DispatchesPromotionApprovedWebhook. Auto-approve now fires
+        // on external create (born Approved), not on deploy ingest.
+        await SeedPoliciesAsync();
         _factory.WebhookDispatcher.ClearReceivedCalls();
 
-        // Act: ingest to dev → auto-approve creates candidate for staging.
-        await _apiKeyClient.PostAsJsonAsync(
-            "/api/deployments/events",
-            MakeDeployPayload("dev", version: "v4.0.0"));
+        await CreatePromotionAsync(sourceEnv: "dev", targetEnv: "staging", version: "v4.0.0");
 
         // Assert: promotion.approved was dispatched (auto-approve).
         await _factory.WebhookDispatcher.Received().DispatchAsync(
@@ -190,17 +221,15 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Ingest_GatedPolicy_ApproveEmitsWebhook()
+    public async Task Create_GatedPolicy_ApproveEmitsWebhook()
     {
-        await SeedTopologyAndPoliciesAsync();
+        await SeedPoliciesAsync();
 
         // Use a unique service to avoid interference with other tests.
         var service = $"approve-svc-{Guid.NewGuid():N}"[..20];
 
-        // Ingest to staging → creates a Pending candidate for prod (gated policy).
-        await _apiKeyClient.PostAsJsonAsync(
-            "/api/deployments/events",
-            MakeDeployPayload("staging", version: "v5.0.0", service: service));
+        // Create a Pending candidate for prod (gated policy).
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v5.0.0", service: service);
 
         // Find the pending candidate.
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
@@ -226,17 +255,15 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Ingest_GatedPolicy_RejectEmitsWebhook()
+    public async Task Create_GatedPolicy_RejectEmitsWebhook()
     {
-        await SeedTopologyAndPoliciesAsync();
+        await SeedPoliciesAsync();
 
         // Use a unique service name to avoid interference with other tests' candidates.
         var service = $"reject-svc-{Guid.NewGuid():N}"[..20];
 
-        // Ingest to staging → creates Pending candidate for prod.
-        await _apiKeyClient.PostAsJsonAsync(
-            "/api/deployments/events",
-            MakeDeployPayload("staging", version: "v6.0.0", service: service));
+        // Create a Pending candidate for prod.
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v6.0.0", service: service);
 
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
         listResponse.EnsureSuccessStatusCode();
@@ -261,17 +288,18 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Ingest_InTargetEnv_ClosesPromotionAsDeployed()
+    public async Task Create_ThenDeployInTargetEnv_ClosesPromotionAsDeployed()
     {
-        await SeedTopologyAndPoliciesAsync();
+        // Was Ingest_InTargetEnv_ClosesPromotionAsDeployed. The completion-match on a target-env
+        // deploy event still exists (PromotionIngestHook.MatchCompletionAsync); only the candidate's
+        // origin changed — it's now created via POST /api/promotions instead of derived from ingest.
+        await SeedPoliciesAsync();
 
         // Use a unique service to avoid interference with other tests.
         var service = $"close-svc-{Guid.NewGuid():N}"[..20];
 
-        // 1. Ingest to staging → creates Pending candidate for prod.
-        await _apiKeyClient.PostAsJsonAsync(
-            "/api/deployments/events",
-            MakeDeployPayload("staging", version: "v7.0.0", service: service));
+        // 1. Create a Pending candidate for prod.
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.0.0", service: service);
 
         // 2. Find and approve the candidate.
         var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");

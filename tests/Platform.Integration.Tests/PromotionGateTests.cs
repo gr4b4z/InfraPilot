@@ -33,10 +33,10 @@ namespace Platform.Integration.Tests;
 /// </summary>
 public class PromotionGateTests
 {
-    // ── 1. TicketsOnly_SingleTicket_AutoPromotesWhenApproved ────────────────
+    // ── 1. WorkItemsOnly_SingleTicket_AutoPromotesWhenApproved ────────────────
 
     [Fact]
-    public async Task TicketsOnly_SingleTicket_AutoPromotesWhenApproved()
+    public async Task WorkItemsOnly_SingleTicket_AutoPromotesWhenApproved()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -47,7 +47,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: new[] { "FOO-1" });
             candidateId = c.Id;
         }
@@ -75,7 +75,7 @@ public class PromotionGateTests
             Assert.Equal("system", coarse.ActorType);
             // Trigger + mode live on AfterState (the audit logger's "what changed" payload).
             Assert.Contains("gate-evaluator", coarse.AfterState!);
-            Assert.Contains("TicketsOnly", coarse.AfterState!);
+            Assert.Contains("WorkItemsOnly", coarse.AfterState!);
 
             // Ticket-level audit emitted alongside.
             var ticket = await db.AuditLog.AsNoTracking()
@@ -94,10 +94,10 @@ public class PromotionGateTests
             Arg.Any<WebhookEventFilters>());
     }
 
-    // ── 2. TicketsOnly_TwoTickets_DoesNotPromoteUntilAllApproved ────────────
+    // ── 2. WorkItemsOnly_TwoTickets_DoesNotPromoteUntilAllApproved ────────────
 
     [Fact]
-    public async Task TicketsOnly_TwoTickets_DoesNotPromoteUntilAllApproved()
+    public async Task WorkItemsOnly_TwoTickets_DoesNotPromoteUntilAllApproved()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -107,7 +107,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: new[] { "FOO-1", "FOO-2" });
             candidateId = c.Id;
         }
@@ -143,10 +143,10 @@ public class PromotionGateTests
         }
     }
 
-    // ── 3. TicketsOnly_ManualApprove_ThrowsInvalidOperation ─────────────────
+    // ── 3. WorkItemsOnly_ManualApprove_ThrowsInvalidOperation ─────────────────
 
     [Fact]
-    public async Task TicketsOnly_ManualApprove_ThrowsInvalidOperation()
+    public async Task WorkItemsOnly_ManualApprove_ThrowsInvalidOperation()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -156,7 +156,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: new[] { "FOO-1" });
             candidateId = c.Id;
         }
@@ -166,19 +166,19 @@ public class PromotionGateTests
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 svc.ApproveAsync(candidateId, "ship it", default));
-            Assert.Contains("auto-promotes from ticket approvals", ex.Message,
+            Assert.Contains("auto-promotes from work-item approvals", ex.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
     }
 
-    // ── 4. TicketsOnly_NoTickets_FallsBackToPromotionOnlyEvaluation ─────────
+    // ── 4. WorkItemsOnly_NoTickets_FallsBackToPromotionOnlyEvaluation ─────────
     //
-    // A TicketsOnly candidate with an empty bundle has no tickets to gate on, so the
+    // A WorkItemsOnly candidate with an empty bundle has no tickets to gate on, so the
     // gate falls back to PromotionOnly evaluation and ApproveAsync becomes a viable
     // path forward — otherwise such a candidate would be permanently un-promotable.
 
     [Fact]
-    public async Task TicketsOnly_NoTickets_FallsBackToPromotionOnlyEvaluation()
+    public async Task WorkItemsOnly_NoTickets_FallsBackToPromotionOnlyEvaluation()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -189,7 +189,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: Array.Empty<string>());
             candidateId = c.Id;
         }
@@ -210,10 +210,10 @@ public class PromotionGateTests
         }
     }
 
-    // ── 5. TicketsOnly_TicketRejected_VetoesCandidate ───────────────────────
+    // ── 5. WorkItemsOnly_TicketRejected_VetoesCandidate ───────────────────────
 
     [Fact]
-    public async Task TicketsOnly_TicketRejected_VetoesCandidate()
+    public async Task WorkItemsOnly_TicketRejected_VetoesCandidate()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "rejector@example.com";
@@ -224,7 +224,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: new[] { "FOO-1", "FOO-2" });
             candidateId = c.Id;
         }
@@ -263,10 +263,10 @@ public class PromotionGateTests
             Arg.Any<WebhookEventFilters>());
     }
 
-    // ── 6. TicketsAndManual_RequiresBothTicketsAndManualApproval ────────────
+    // ── 6. WorkItemsAndManual_RequiresBothWorkItemsAndManualApproval ────────────
 
     [Fact]
-    public async Task TicketsAndManual_RequiresBothTicketsAndManualApproval()
+    public async Task WorkItemsAndManual_RequiresBothWorkItemsAndManualApproval()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -277,7 +277,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsAndManual,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsAndManual,
                 workItemKeys: new[] { "FOO-1" });
             candidateId = c.Id;
         }
@@ -322,10 +322,10 @@ public class PromotionGateTests
         }
     }
 
-    // ── 7. TicketsAndManual_ManualApproveAlone_DoesNotPromote ───────────────
+    // ── 7. WorkItemsAndManual_ManualApproveAlone_DoesNotPromote ───────────────
 
     [Fact]
-    public async Task TicketsAndManual_ManualApproveAlone_DoesNotPromote()
+    public async Task WorkItemsAndManual_ManualApproveAlone_DoesNotPromote()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -336,7 +336,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsAndManual,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsAndManual,
                 workItemKeys: new[] { "FOO-1" });
             candidateId = c.Id;
         }
@@ -436,6 +436,12 @@ public class PromotionGateTests
     }
 
     // ── 9. SupersededCandidate_TicketsCarryForward_NewCandidateUsesAccumulatedTickets ──
+    //
+    // Adjusted for the self-contained-candidate refactor: a candidate no longer inherits a
+    // predecessor's source events. Supersede is a pure state flip and the fresh candidate carries
+    // its own (already-accumulated) ticket set via PromotionWorkItem rows. Here the superseding
+    // candidate Cb carries BOTH T1 (from the predecessor) and T2 (newly added), and only promotes
+    // once both are approved.
 
     [Fact]
     public async Task SupersededCandidate_TicketsCarryForward_NewCandidateUsesAccumulatedTickets()
@@ -449,29 +455,16 @@ public class PromotionGateTests
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
-            // Older candidate Ca with T1.
-            var (oldEvent, _, oldCandidate) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            // Older candidate Ca with T1, now superseded.
+            var (_, _, oldCandidate) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: new[] { "T1" },
                 createdAt: DateTimeOffset.UtcNow.AddMinutes(-10));
-
-            // Simulate supersede: Cb on a new event with T2, inheriting the old event's id so its
-            // bundle includes T1 too.
             oldCandidate.Status = PromotionStatus.Superseded;
 
-            var newEvent = NewDeployEvent();
-            db.DeployEvents.Add(newEvent);
-            db.DeployEventWorkItems.Add(new DeployEventWorkItem
-            {
-                Id = Guid.NewGuid(),
-                DeployEventId = newEvent.Id,
-                WorkItemKey = "T2",
-                Product = "acme",
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-
-            var newer = NewCandidate(newEvent.Id, gate: PromotionGate.TicketsOnly);
-            newer.SupersededSourceEventIds = new() { oldEvent.Id };
-            db.PromotionCandidates.Add(newer);
+            // Cb supersedes Ca and carries the accumulated bundle (T1 + T2) on its own work-item
+            // index — self-contained, no event-id inheritance.
+            var (_, _, newer) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
+                workItemKeys: new[] { "T1", "T2" });
             oldCandidate.SupersededById = newer.Id;
             await db.SaveChangesAsync();
             newerCandidateId = newer.Id;
@@ -509,7 +502,7 @@ public class PromotionGateTests
         }
     }
 
-    // ── 10. TicketsOnly_OrphanedTicketSignoff_NoActiveCandidate_RejectsRecord ──
+    // ── 10. WorkItemsOnly_OrphanedTicketSignoff_NoActiveCandidate_RejectsRecord ──
 
     // Adjusted from spec: the spec asks us to verify against actual Phase 3B
     // behaviour. RecordAsync throws InvalidOperationException("No Pending promotion
@@ -517,7 +510,7 @@ public class PromotionGateTests
     // does NOT persist a row, NOT emit ticket audit, NOT emit webhook. We assert that.
 
     [Fact]
-    public async Task TicketsOnly_OrphanedTicketSignoff_NoActiveCandidate_ThrowsAndPersistsNothing()
+    public async Task WorkItemsOnly_OrphanedTicketSignoff_NoActiveCandidate_ThrowsAndPersistsNothing()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -528,7 +521,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.TicketsOnly,
+            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
                 workItemKeys: new[] { "ORPH-1" });
             c.Status = PromotionStatus.Approved;
             await db.SaveChangesAsync();
@@ -570,7 +563,7 @@ public class PromotionGateTests
     /// DeployEvent. The snapshot's <see cref="ResolvedPolicySnapshot.Gate"/> is set to
     /// <paramref name="gate"/> so each test can dial in the mode under test.
     /// </summary>
-    private static async Task<(DeployEvent ev, List<DeployEventWorkItem> workItems, PromotionCandidate cand)>
+    private static async Task<(DeployEvent ev, List<PromotionWorkItem> workItems, PromotionCandidate cand)>
         SeedAsync(
             PlatformDbContext db,
             PromotionGate gate,
@@ -582,27 +575,33 @@ public class PromotionGateTests
             string targetEnv = "prod",
             DateTimeOffset? createdAt = null)
     {
+        // Source deploy event for the candidate's version. Keeping its version equal to the
+        // candidate version means the gate's source-drift check never blocks (no drift).
         var ev = NewDeployEvent(product, service, sourceEnv);
         db.DeployEvents.Add(ev);
 
-        var items = new List<DeployEventWorkItem>();
+        var cand = NewCandidate(gate, approverGroup, product, service, sourceEnv, targetEnv);
+        if (createdAt is not null) cand.CreatedAt = createdAt.Value;
+        db.PromotionCandidates.Add(cand);
+
+        // The candidate is self-contained: it carries its own tickets via the PromotionWorkItem
+        // index (keyed on CandidateId), which is what the gate evaluator and the ticket-approval
+        // lookup read.
+        var items = new List<PromotionWorkItem>();
         foreach (var key in workItemKeys)
         {
-            var wi = new DeployEventWorkItem
+            var wi = new PromotionWorkItem
             {
                 Id = Guid.NewGuid(),
-                DeployEventId = ev.Id,
+                CandidateId = cand.Id,
                 WorkItemKey = key,
                 Product = product,
+                TargetEnv = targetEnv,
                 CreatedAt = DateTimeOffset.UtcNow,
             };
             items.Add(wi);
-            db.DeployEventWorkItems.Add(wi);
+            db.PromotionWorkItems.Add(wi);
         }
-
-        var cand = NewCandidate(ev.Id, gate, approverGroup, product, service, sourceEnv, targetEnv);
-        if (createdAt is not null) cand.CreatedAt = createdAt.Value;
-        db.PromotionCandidates.Add(cand);
 
         await db.SaveChangesAsync();
         return (ev, items, cand);
@@ -631,7 +630,6 @@ public class PromotionGateTests
     }
 
     private static PromotionCandidate NewCandidate(
-        Guid sourceEventId,
         PromotionGate gate,
         string approverGroup = "ReleaseApprovers",
         string product = "acme",
@@ -639,15 +637,20 @@ public class PromotionGateTests
         string sourceEnv = "staging",
         string targetEnv = "prod")
     {
+        // A single "any one member of <approverGroup>" requirement — the §8 rule-tree equivalent of
+        // the legacy single-group / Strategy.Any / MinApprovers=1 policy.
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: Guid.NewGuid(),
-            ApproverGroup: approverGroup,
-            Strategy: PromotionStrategy.Any,
-            MinApprovers: 1,
-            ExcludeRole: null,
             TimeoutHours: 24,
             EscalationGroup: null)
         {
+            ApprovalSteps = new()
+            {
+                new ApprovalStep("Approval", new()
+                {
+                    new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), 1),
+                }),
+            },
             Gate = gate,
         };
 
@@ -664,12 +667,10 @@ public class PromotionGateTests
             SourceEnv = sourceEnv,
             TargetEnv = targetEnv,
             Version = "v1.0.0",
-            SourceDeployEventId = sourceEventId,
             Status = PromotionStatus.Pending,
             PolicyId = snapshot.PolicyId,
             ResolvedPolicyJson = json,
             CreatedAt = DateTimeOffset.UtcNow,
-            SupersededSourceEventIdsJson = "[]",
             ParticipantsJson = "[]",
         };
     }

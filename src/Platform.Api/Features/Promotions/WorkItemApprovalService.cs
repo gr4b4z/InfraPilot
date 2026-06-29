@@ -109,15 +109,10 @@ public class WorkItemApprovalService
         if (snapshot.IsAutoApprove)
             throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
 
-        if (await _auth.IsEmailExcludedByRoleAsync(
-                snapshot, candidate.SourceDeployEventId, candidate.SupersededSourceEventIds, _currentUser.Email, ct))
-        {
-            throw new UnauthorizedAccessException(
-                $"You cannot decide on this ticket — the '{snapshot.ExcludeRole}' role is excluded from approving this promotion.");
-        }
-
-        if (!await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
-            throw new UnauthorizedAccessException("You are not in the approver group for this promotion");
+        // Separation-of-duties (ExcludeRole) removed (D17): anyone authorized for any requirement on
+        // the promotion's rule tree may decide on its tickets.
+        if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
+            throw new UnauthorizedAccessException("You are not authorized to approve this promotion");
 
         // Duplicate guard. The unique index enforces this at the DB; the in-app check turns the
         // race-loser case into a clean 400 instead of a 500 with an obscure constraint message.
@@ -167,7 +162,7 @@ public class WorkItemApprovalService
             decision, key, prod, env, _currentUser.Email, candidate.Id);
 
         // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
-        // TicketsOnly / TicketsAndManual conditions are met). Reject → veto cascade: terminate
+        // WorkItemsOnly / WorkItemsAndManual conditions are met). Reject → veto cascade: terminate
         // the candidate directly with the rejecting user as the actor.
         if (decision == PromotionDecision.Approved)
         {
@@ -299,10 +294,12 @@ public class WorkItemApprovalService
                 tracked.SourceEnv,
                 tracked.TargetEnv,
                 tracked.Version,
-                tracked.SourceDeployEventId,
+                tracked.FromRevision,
+                tracked.ToRevision,
                 status = tracked.Status.ToString(),
                 tracked.ApprovedAt,
                 participants = tracked.Participants,
+                references = tracked.References,
                 change = new { trigger = "ticket-veto" },
             };
             var filters = new WebhookEventFilters(Product: tracked.Product, Environment: tracked.TargetEnv);
@@ -372,14 +369,9 @@ public class WorkItemApprovalService
             {
                 blockedReason = "Already decided";
             }
-            else if (await _auth.IsEmailExcludedByRoleAsync(
-                snapshot, candidate.SourceDeployEventId, candidate.SupersededSourceEventIds, _currentUser.Email, ct))
+            else if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
             {
-                blockedReason = "Excluded role";
-            }
-            else if (!await _auth.IsInApproverGroupAsync(snapshot.ApproverGroup!, ct))
-            {
-                blockedReason = "Not in approver group";
+                blockedReason = "Not authorized to approve this promotion";
             }
             else
             {
@@ -456,14 +448,11 @@ public class WorkItemApprovalService
             ? new HashSet<string>(new[] { canonicalRoleFilter! }, StringComparer.OrdinalIgnoreCase)
             : assigneeRoleSet;
 
-        // Bundle → all event ids that contribute work-items to a candidate.
-        var allEventIds = pending
-            .SelectMany(c => new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds))
-            .Distinct()
-            .ToList();
-
-        var workItems = await _db.DeployEventWorkItems.AsNoTracking()
-            .Where(w => allEventIds.Contains(w.DeployEventId))
+        // Candidate-scoped work-item index — the candidate is self-contained, so its tickets come
+        // from PromotionWorkItem by candidate id (not from deploy-event bundles).
+        var candidateIds = pending.Select(c => c.Id).ToList();
+        var workItems = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => candidateIds.Contains(w.CandidateId))
             .ToListAsync(ct);
         if (workItems.Count == 0)
         {
@@ -479,38 +468,19 @@ public class WorkItemApprovalService
             .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
             .ToHashSet();
 
-        // Source-event participants + references for excluded-role checks (two-level lookup).
-        // Pulled once for all Pending sources to avoid N+1.
-        var sourceJsonByEvent = await _db.DeployEvents.AsNoTracking()
-            .Where(e => allEventIds.Contains(e.Id))
-            .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson, e.EnrichmentJson })
-            .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson, e.EnrichmentJson), ct);
-
-        // Operator overrides for those same events — same batch shape so the per-candidate
-        // exclusion check below can consult overrides without an extra query per row.
-        var overridesRows = await _db.ReferenceParticipantOverrides.AsNoTracking()
-            .Where(o => allEventIds.Contains(o.DeployEventId))
-            .ToListAsync(ct);
-        var overridesByEvent = overridesRows
-            .GroupBy(o => o.DeployEventId)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
-
         // Cache approver-group membership across distinct groups.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
-        // Index work-items by their event for fast lookup.
-        var workItemsByEvent = workItems
-            .GroupBy(w => w.DeployEventId)
+        // Index work-items by their candidate for fast lookup.
+        var workItemsByCandidate = workItems
+            .GroupBy(w => w.CandidateId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // Build (key, product, targetEnv) -> count of Pending candidates whose bundle carries it.
+        // Build (key, product, targetEnv) -> count of Pending candidates carrying it.
         var blockingCount = new Dictionary<(string Key, string Product, string Env), int>();
         foreach (var c in pending)
         {
-            var bundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
-            var keys = bundle
-                .SelectMany(eid => workItemsByEvent.GetValueOrDefault(eid) ?? new())
-                .Where(w => string.Equals(w.Product, c.Product, StringComparison.Ordinal))
+            var keys = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
                 .Select(w => w.WorkItemKey)
                 .Distinct();
             foreach (var k in keys)
@@ -523,11 +493,8 @@ public class WorkItemApprovalService
         var result = new List<PendingTicketView>();
         var emitted = new HashSet<(string Key, Guid CandidateId)>();
 
-        // (email, role) → set of candidate ids it appears on, plus best displayName seen.
-        // The set guarantees one increment per distinct candidate even if the same person shows
-        // up across reference + event-level layers within the bundle. Counts feed the assignee
-        // summary; displayName is taken from the first non-empty value seen (a tighter "best
-        // by count" tiebreak isn't worth the bookkeeping).
+        // (email, role) → count + best displayName seen. Counts feed the assignee summary;
+        // displayName is taken from the first non-empty value seen.
         var assigneeAccumulator = new Dictionary<(string Email, string Role), AssigneeAccumulator>();
 
         // Order Pending candidates newest-first so the most recent candidate "owns" the inbox row
@@ -538,55 +505,43 @@ public class WorkItemApprovalService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) continue;
 
-            // Group membership cached per distinct group.
-            var group = snapshot.ApproverGroup!;
-            if (!groupMembership.TryGetValue(group, out var member))
+            // Authorized for at least one requirement on this candidate's rule tree? Group membership
+            // is cached per distinct group across all candidates to avoid N+1 Graph calls; the
+            // explicit user-list check is free.
+            var authorized = false;
+            foreach (var req in snapshot.AllRequirements)
             {
-                member = await _auth.IsInApproverGroupAsync(group, ct);
-                groupMembership[group] = member;
-            }
-            if (!member) continue;
-
-            // Excluded-role: precomputed JSON dict so this is in-memory only. Pass both
-            // event-level participants and references so reference-level roles count too.
-            // Walk the supersede bundle so an excluded participant on an inherited event also trips.
-            if (!string.IsNullOrWhiteSpace(snapshot.ExcludeRole))
-            {
-                var exclBundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
-                var excluded = false;
-                foreach (var eid in exclBundle)
+                if (req.Users.Any(u => string.Equals(u, _currentUser.Email, StringComparison.OrdinalIgnoreCase)))
                 {
-                    var (partsJson, refsJson, _) = sourceJsonByEvent.GetValueOrDefault(eid);
-                    var evOverrides = overridesByEvent.GetValueOrDefault(eid, Array.Empty<ReferenceParticipantOverride>());
-                    if (PromotionApprovalAuthorizer.EmailMatchesExcludedRole(
-                            partsJson, refsJson, evOverrides, snapshot.ExcludeRole, _currentUser.Email))
-                    {
-                        excluded = true; break;
-                    }
+                    authorized = true;
+                    break;
                 }
-                if (excluded) continue;
+                foreach (var group in req.Groups)
+                {
+                    if (!groupMembership.TryGetValue(group.Id, out var member))
+                    {
+                        member = await _auth.IsInApproverGroupAsync(group, ct);
+                        groupMembership[group.Id] = member;
+                    }
+                    if (member) { authorized = true; break; }
+                }
+                if (authorized) break;
             }
+            if (!authorized) continue;
 
-            var bundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
-            // Distinct work items in the bundle (a ticket may appear on multiple events in the chain).
-            var bundleItems = bundle
-                .SelectMany(eid => workItemsByEvent.GetValueOrDefault(eid) ?? new())
-                .Where(w => string.Equals(w.Product, c.Product, StringComparison.Ordinal))
+            // Separation-of-duties (ExcludeRole) removed (D17) — no per-candidate exclusion check.
+
+            // Distinct work items on this candidate.
+            var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
                 .GroupBy(w => w.WorkItemKey)
                 .Select(g => g.First());
 
-            // Build the merged participant view across the candidate's full bundle. Always
-            // computed here — this row is in the authorized list, so its merged participants
-            // feed the assignee summary even when no role/person filter is in play.
-            // Tombstones are honoured via FindByRoleWithOverrides so suppressed roles don't
-            // count as "assigned".
-            var bundleAssignees = BuildMergedAssignees(
-                new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds),
-                sourceJsonByEvent, overridesByEvent, assigneeRoleSet);
+            // Merged participant view comes from the candidate's own data: reference-level
+            // participants nested under each reference, plus promotion-level participants.
+            var bundleAssignees = BuildMergedAssignees(c, assigneeRoleSet);
 
-            // Update the assignee summary BEFORE narrowing — see method-level XML for why this
-            // is computed against the unfiltered authorized list. Dedupe per (email, role) within
-            // a candidate so the same person on event-level + reference-level only counts once.
+            // Update the assignee summary BEFORE narrowing — computed against the unfiltered
+            // authorized list. Dedupe per (email, role) within a candidate.
             var seenInCandidate = new HashSet<(string Email, string Role)>();
             foreach (var p in bundleAssignees)
             {
@@ -643,8 +598,7 @@ public class WorkItemApprovalService
                 if (decidedSet.Contains(tup)) continue;
                 if (!emitted.Add((w.WorkItemKey, c.Id))) continue;
 
-                var ticketParticipants = GetWorkItemParticipants(
-                    w.WorkItemKey, c.SourceDeployEventId, sourceJsonByEvent, overridesByEvent);
+                var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
 
                 result.Add(new PendingTicketView(
                     WorkItemKey: w.WorkItemKey,
@@ -658,7 +612,6 @@ public class WorkItemApprovalService
                     Version: c.Version,
                     SourceEnv: c.SourceEnv,
                     BlockingPromotions: blockingCount.GetValueOrDefault(tup, 1),
-                    SourceDeployEventId: c.SourceDeployEventId,
                     Participants: ticketParticipants));
             }
         }
@@ -684,11 +637,10 @@ public class WorkItemApprovalService
     /// Rejected; pass <c>null</c> for both. <paramref name="since"/> caps the query to recent
     /// decisions (recommended — full history is unbounded).
     ///
-    /// <para>For each <see cref="WorkItemApproval"/>, picks the most recent candidate whose
-    /// bundle contains the ticket (any candidate status — including Approved, Deployed,
-    /// Rejected, Superseded). The returned <see cref="PendingQueueResult.Assignees"/> and
-    /// <see cref="PendingQueueResult.Roles"/> are empty — those dropdowns only narrow the
-    /// pending inbox.</para>
+    /// <para>For each <see cref="WorkItemApproval"/>, picks the most recent candidate that carries
+    /// the ticket (any candidate status — including Approved, Deployed, Rejected, Superseded). The
+    /// returned <see cref="PendingQueueResult.Assignees"/> and <see cref="PendingQueueResult.Roles"/>
+    /// are empty — those dropdowns only narrow the pending inbox.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetDecidedAsync(
         PromotionDecision? decision,
@@ -705,107 +657,44 @@ public class WorkItemApprovalService
         if (approvals.Count == 0)
             return new PendingQueueResult(new(), new(), Array.Empty<string>());
 
-        // Find the most recent candidate per (Product, TargetEnv) that carries each work-item
-        // key. We need candidates regardless of status because the user may want to see what
-        // they approved that's now Deployed, or what they rejected that's now in Rejected.
-        var productEnvPairs = approvals
-            .Select(a => (a.Product, a.TargetEnv))
-            .Distinct()
-            .ToList();
-
-        // Pull all candidates in those (product, env) buckets — small set in practice.
-        var candidatesQuery = _db.PromotionCandidates.AsNoTracking().AsQueryable();
-        var preds = productEnvPairs
-            .Select(pair => (Func<PromotionCandidate, bool>)(c =>
-                c.Product == pair.Product && c.TargetEnv == pair.TargetEnv));
-        var allCandidates = await _db.PromotionCandidates.AsNoTracking()
-            .Where(c => productEnvPairs
-                .Select(p => p.Product).Contains(c.Product))
+        // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
+        var keys = approvals.Select(a => a.WorkItemKey).Distinct().ToList();
+        var products = approvals.Select(a => a.Product).Distinct().ToList();
+        var envs = approvals.Select(a => a.TargetEnv).Distinct().ToList();
+        var workItems = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => keys.Contains(w.WorkItemKey) && products.Contains(w.Product) && envs.Contains(w.TargetEnv))
             .ToListAsync(ct);
-        // Filter further in-memory for the (product, env) AND-pair — EF can't translate the
-        // multi-pair predicate cleanly across providers.
-        var candidatesByPair = allCandidates
-            .Where(c => productEnvPairs.Any(p =>
-                string.Equals(p.Product, c.Product, StringComparison.Ordinal)
-                && string.Equals(p.TargetEnv, c.TargetEnv, StringComparison.Ordinal)))
-            .ToList();
 
-        // Bundle map: which event ids contribute to which candidate.
-        // Then: for each work-item key, find the latest candidate whose bundle includes an event
-        // that holds that key.
-        var allEventIds = candidatesByPair
-            .SelectMany(c => new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds))
-            .Distinct()
-            .ToList();
-
-        var workItems = allEventIds.Count == 0
-            ? new List<DeployEventWorkItem>()
-            : await _db.DeployEventWorkItems.AsNoTracking()
-                .Where(w => allEventIds.Contains(w.DeployEventId))
-                .ToListAsync(ct);
-        var keysByEvent = workItems
-            .GroupBy(w => w.DeployEventId)
-            .ToDictionary(g => g.Key, g => g.Select(w => w.WorkItemKey).ToHashSet(StringComparer.OrdinalIgnoreCase));
-
-        // Source JSON + overrides for participant rendering.
-        var sourceJsonByEvent = allEventIds.Count == 0
-            ? new Dictionary<Guid, (string ParticipantsJson, string ReferencesJson, string? EnrichmentJson)>()
-            : await _db.DeployEvents.AsNoTracking()
-                .Where(e => allEventIds.Contains(e.Id))
-                .Select(e => new { e.Id, e.ParticipantsJson, e.ReferencesJson, e.EnrichmentJson })
-                .ToDictionaryAsync(e => e.Id, e => (e.ParticipantsJson, e.ReferencesJson, e.EnrichmentJson), ct);
-        var overridesRows = allEventIds.Count == 0
-            ? new List<ReferenceParticipantOverride>()
-            : await _db.ReferenceParticipantOverrides.AsNoTracking()
-                .Where(o => allEventIds.Contains(o.DeployEventId))
-                .ToListAsync(ct);
-        var overridesByEvent = overridesRows
-            .GroupBy(o => o.DeployEventId)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<ReferenceParticipantOverride>)g.ToList());
+        // The candidates referenced by those rows — pulled in full (small set) so we can pick the
+        // most recent one carrying each (key, product, env) regardless of status.
+        var candidateIds = workItems.Select(w => w.CandidateId).Distinct().ToList();
+        var candidatesById = candidateIds.Count == 0
+            ? new Dictionary<Guid, PromotionCandidate>()
+            : (await _db.PromotionCandidates.AsNoTracking()
+                .Where(c => candidateIds.Contains(c.Id))
+                .ToListAsync(ct))
+              .ToDictionary(c => c.Id);
 
         var result = new List<PendingTicketView>();
         foreach (var a in approvals)
         {
-            // Find candidates in (product, env) whose bundle contains this work item, then pick
-            // the most recently created one. None found → still surface the row, just without
-            // candidate context (the approval row stands on its own).
-            var matching = candidatesByPair
-                .Where(c => string.Equals(c.Product, a.Product, StringComparison.Ordinal)
-                         && string.Equals(c.TargetEnv, a.TargetEnv, StringComparison.Ordinal))
-                .Where(c =>
-                {
-                    var bundle = new[] { c.SourceDeployEventId }.Concat(c.SupersededSourceEventIds);
-                    return bundle.Any(eid =>
-                        keysByEvent.TryGetValue(eid, out var keys) && keys.Contains(a.WorkItemKey));
-                })
-                .OrderByDescending(c => c.CreatedAt)
+            // Candidate rows carrying this exact (key, product, env), newest candidate first.
+            var rows = workItems
+                .Where(w => string.Equals(w.WorkItemKey, a.WorkItemKey, StringComparison.OrdinalIgnoreCase)
+                         && string.Equals(w.Product, a.Product, StringComparison.Ordinal)
+                         && string.Equals(w.TargetEnv, a.TargetEnv, StringComparison.Ordinal))
+                .Select(w => (Row: w, Candidate: candidatesById.GetValueOrDefault(w.CandidateId)))
+                .Where(t => t.Candidate is not null)
+                .OrderByDescending(t => t.Candidate!.CreatedAt)
                 .ToList();
 
-            var c2 = matching.FirstOrDefault();
-
-            // Lookup work-item display fields on whichever event registered it. Prefer the
-            // chosen candidate's source event; fall back to any event that holds the key.
-            DeployEventWorkItem? wi = null;
-            if (c2 is not null)
-            {
-                wi = workItems.FirstOrDefault(w => w.DeployEventId == c2.SourceDeployEventId
-                                              && string.Equals(w.WorkItemKey, a.WorkItemKey, StringComparison.OrdinalIgnoreCase));
-                wi ??= c2.SupersededSourceEventIds
-                    .Select(eid => workItems.FirstOrDefault(w => w.DeployEventId == eid
-                                                            && string.Equals(w.WorkItemKey, a.WorkItemKey, StringComparison.OrdinalIgnoreCase)))
-                    .FirstOrDefault(w => w is not null);
-            }
-            wi ??= workItems.FirstOrDefault(w =>
-                string.Equals(w.WorkItemKey, a.WorkItemKey, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(w.Product, a.Product, StringComparison.Ordinal));
+            var c2 = rows.FirstOrDefault().Candidate;
+            var wi = rows.FirstOrDefault().Row;
 
             // Participants (best-effort — only meaningful when we have a candidate).
-            IReadOnlyList<ParticipantDto> ticketParticipants = Array.Empty<ParticipantDto>();
-            if (c2 is not null)
-            {
-                ticketParticipants = GetWorkItemParticipants(
-                    a.WorkItemKey, c2.SourceDeployEventId, sourceJsonByEvent, overridesByEvent);
-            }
+            IReadOnlyList<ParticipantDto> ticketParticipants = c2 is null
+                ? Array.Empty<ParticipantDto>()
+                : GetWorkItemParticipants(c2, a.WorkItemKey);
 
             result.Add(new PendingTicketView(
                 WorkItemKey: a.WorkItemKey,
@@ -819,7 +708,6 @@ public class WorkItemApprovalService
                 Version: c2?.Version ?? "",
                 SourceEnv: c2?.SourceEnv ?? "",
                 BlockingPromotions: 0,
-                SourceDeployEventId: c2?.SourceDeployEventId ?? Guid.Empty,
                 Participants: ticketParticipants,
                 CandidateStatus: c2?.Status.ToString() ?? "Unknown",
                 Decision: a.Decision.ToString(),
@@ -837,192 +725,104 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Picks the candidate whose policy will gate the decision. A ticket can appear in multiple
-    /// Pending candidates (different services or envs); we pick the most recently created
-    /// candidate in <c>(product, targetEnv)</c> whose bundle includes the ticket. Most-recent
-    /// because it represents the freshest state of the world — a newer Pending candidate either
-    /// superseded an older one on the same edge, or it's a parallel edge whose approver group
-    /// is the same anyway in the common case (per-product policy).
+    /// Picks the candidate whose policy will gate the decision. A ticket can appear on multiple
+    /// Pending candidates (different services or envs); we pick the most recently created Pending
+    /// candidate in <c>(product, targetEnv)</c> whose <see cref="PromotionWorkItem"/> rows include
+    /// the ticket. Most-recent because it represents the freshest state of the world.
     /// </summary>
     private async Task<PromotionCandidate?> FindPendingCandidateForTicketAsync(
         string workItemKey, string product, string targetEnv, CancellationToken ct)
     {
-        // 1. Find all events that carry this ticket in this product.
-        var eventIds = await _db.DeployEventWorkItems.AsNoTracking()
-            .Where(w => w.WorkItemKey == workItemKey && w.Product == product)
-            .Select(w => w.DeployEventId)
+        // 1. Candidate ids whose work-item index carries this ticket for (product, targetEnv).
+        var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv)
+            .Select(w => w.CandidateId)
             .Distinct()
             .ToListAsync(ct);
-        if (eventIds.Count == 0) return null;
+        if (candidateIds.Count == 0) return null;
 
-        // 2. Pending candidates in (product, targetEnv) — small set, fetch in full and match
-        //    bundle membership client-side (SupersededSourceEventIds is JSON, can't filter in SQL
-        //    portably).
-        var pending = await _db.PromotionCandidates.AsNoTracking()
-            .Where(c => c.Product == product
+        // 2. Among those, the most recently created Pending candidate in (product, targetEnv).
+        return await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => candidateIds.Contains(c.Id)
+                     && c.Product == product
                      && c.TargetEnv == targetEnv
                      && c.Status == PromotionStatus.Pending)
             .OrderByDescending(c => c.CreatedAt)
-            .ToListAsync(ct);
-
-        var eventIdSet = eventIds.ToHashSet();
-        return pending.FirstOrDefault(c =>
-            eventIdSet.Contains(c.SourceDeployEventId)
-            || c.SupersededSourceEventIds.Any(eventIdSet.Contains));
+            .FirstOrDefaultAsync(ct);
     }
 
     /// <summary>
-    /// Returns the effective participant list for <paramref name="workItemKey"/> on the given
-    /// source event, following the same three-layer precedence as
-    /// <see cref="ParticipantResolver.FindByRoleWithOverrides"/>:
+    /// Returns the effective participant list for <paramref name="workItemKey"/> on the candidate.
+    /// The candidate is self-contained, so people come from its own data (no deploy-event join, no
+    /// operator overrides):
     /// <list type="bullet">
-    ///   <item>Override rows scoped to the reference — highest precedence; tombstones suppress
-    ///         lower layers for the same canonical role.</item>
-    ///   <item>Reference-level participants nested in <c>ReferencesJson</c> for the matching
-    ///         work-item entry.</item>
-    ///   <item>Event-level participants from <c>ParticipantsJson</c> — for any role not yet
-    ///         resolved by the two layers above. This is the common case: most pipeline payloads
-    ///         put people at the top-level event rather than nesting them under a reference.</item>
+    ///   <item>Reference-level participants nested in the matching work-item entry of
+    ///         <see cref="PromotionCandidate.References"/>.</item>
+    ///   <item>Promotion-level participants (<see cref="PromotionCandidate.Participants"/>) — for
+    ///         any role not already resolved by the reference-level layer.</item>
     /// </list>
-    /// Each canonical role appears at most once. Tombstoned slots are excluded.
+    /// Each canonical role appears at most once.
     /// </summary>
     private static IReadOnlyList<ParticipantDto> GetWorkItemParticipants(
-        string workItemKey,
-        Guid sourceEventId,
-        Dictionary<Guid, (string ParticipantsJson, string ReferencesJson, string? EnrichmentJson)> sourceJsonByEvent,
-        Dictionary<Guid, IReadOnlyList<ReferenceParticipantOverride>> overridesByEvent)
+        PromotionCandidate candidate, string workItemKey)
     {
-        var (partsJson, refsJson, enrichJson) = sourceJsonByEvent.GetValueOrDefault(sourceEventId);
-
-        // ── Layer 1 + 2: reference-level (overrides applied) ────────────────
         var merged = new List<ParticipantDto>();
         var seenCanonical = new HashSet<string>(StringComparer.Ordinal);
 
-        if (!string.IsNullOrEmpty(refsJson))
+        // ── Layer 1: reference-level participants on the matching work-item reference ──
+        var matchedRef = candidate.References.FirstOrDefault(r =>
+            string.Equals(r.Key, workItemKey, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
+        if (matchedRef?.Participants is { Count: > 0 } refParticipants)
         {
-            List<ReferenceDto>? refs;
-            try { refs = JsonSerializer.Deserialize<List<ReferenceDto>>(refsJson, JsonOptions); }
-            catch { refs = null; }
-
-            var matchedRef = refs?.FirstOrDefault(r =>
-                string.Equals(r.Key, workItemKey, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
-
-            if (matchedRef is not null)
+            foreach (var p in refParticipants)
             {
-                var refOverrides = overridesByEvent.GetValueOrDefault(sourceEventId, Array.Empty<ReferenceParticipantOverride>())
-                    .Where(o => string.Equals(o.ReferenceKey, workItemKey, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                foreach (var p in ReferenceParticipantOverrideService.MergeForReference(matchedRef, refOverrides))
-                {
-                    var canonical = RoleNormalizer.Normalize(p.Role);
-                    if (seenCanonical.Add(canonical))
-                        merged.Add(p);
-                }
+                var canonical = RoleNormalizer.Normalize(p.Role);
+                if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
+                merged.Add(p);
             }
         }
 
-        // ── Layer 3: event-level fallback (direct + enrichment) ─────────────
-        // Include participants from ParticipantsJson and EnrichmentJson for any role not
-        // already covered. Enrichment participants are auto-populated by the enricher
-        // (e.g. from Jira / Azure DevOps) and are what the detail page surfaces in PeopleCard.
-        foreach (var p in GetAllEventParticipants(partsJson, enrichJson))
+        // ── Layer 2: promotion-level participants for any role not yet covered ──
+        foreach (var p in candidate.Participants)
         {
             var canonical = RoleNormalizer.Normalize(p.Role);
             if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
-            merged.Add(p);
+            merged.Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
         }
 
         return merged;
     }
 
-    /// <para>Only participants whose role canonicalises into <paramref name="assigneeRoleSet"/>
-    /// are returned — the filter cares about a specific subset of roles and we don't need to
-    /// surface anything else.</para>
-    ///
-    /// <para>DisplayName is preserved alongside the canonicalised role + lower-cased email so
-    /// the queue endpoint can populate the assignee dropdown without a second DB roundtrip.</para>
-    /// </summary>
     /// <summary>
-    /// Combines direct event-level participants (<c>ParticipantsJson</c>) with enrichment
-    /// participants (<c>EnrichmentJson</c>). Mirrors the merge done by
-    /// <c>ExtractSourceParticipants</c> in <c>PromotionEndpoints</c> so the queue and the
-    /// detail page see the same set of people.
+    /// Builds the merged assignee view for a candidate from its own data: reference-level
+    /// participants nested under each work-item reference, plus promotion-level participants. Only
+    /// participants whose role canonicalises into <paramref name="assigneeRoleSet"/> are returned.
     /// </summary>
-    private static IReadOnlyList<ParticipantDto> GetAllEventParticipants(
-        string? participantsJson, string? enrichmentJson)
-    {
-        var direct = ParticipantResolver.GetEventParticipants(participantsJson);
-        if (string.IsNullOrEmpty(enrichmentJson)) return direct;
-        EnrichmentDto? enrichment;
-        try { enrichment = JsonSerializer.Deserialize<EnrichmentDto>(enrichmentJson, JsonOptions); }
-        catch { return direct; }
-        if (enrichment?.Participants is not { Count: > 0 } extra) return direct;
-        var combined = new List<ParticipantDto>(direct);
-        combined.AddRange(extra);
-        return combined;
-    }
-
     private static List<MergedParticipant> BuildMergedAssignees(
-        IEnumerable<Guid> bundleEventIds,
-        Dictionary<Guid, (string ParticipantsJson, string ReferencesJson, string? EnrichmentJson)> sourceJsonByEvent,
-        Dictionary<Guid, IReadOnlyList<ReferenceParticipantOverride>> overridesByEvent,
-        HashSet<string> assigneeRoleSet)
+        PromotionCandidate candidate, HashSet<string> assigneeRoleSet)
     {
         var result = new List<MergedParticipant>();
         if (assigneeRoleSet.Count == 0) return result;
 
-        foreach (var eid in bundleEventIds.Distinct())
+        void Add(ParticipantDto p)
         {
-            var (partsJson, refsJson, enrichJson) = sourceJsonByEvent.GetValueOrDefault(eid);
-            var evOverrides = overridesByEvent.GetValueOrDefault(eid, Array.Empty<ReferenceParticipantOverride>());
-
-            // Walk every (referenceKey, role-in-set) cell — ParticipantResolver handles override
-            // precedence + tombstones for us. The set of reference keys to walk is the union of
-            // ReferencesJson keys and any override-only reference keys.
-            var refs = ParticipantResolver.GetReferenceParticipants(refsJson);
-            var refKeys = refs
-                .Select(rp => rp.Ref.Key ?? "")
-                .Where(k => !string.IsNullOrEmpty(k))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var o in evOverrides)
-            {
-                if (!string.IsNullOrEmpty(o.ReferenceKey)) refKeys.Add(o.ReferenceKey);
-            }
-
-            foreach (var refKey in refKeys)
-            {
-                foreach (var role in assigneeRoleSet)
-                {
-                    var lookup = ParticipantResolver.FindByRoleWithOverrides(
-                        partsJson, refsJson, evOverrides, role, refKey);
-                    // Tombstone => slot is explicitly empty for this (refKey, role); skip.
-                    if (lookup.Suppressed) continue;
-                    if (lookup.Found is { } p && !string.IsNullOrEmpty(p.Email))
-                    {
-                        result.Add(new MergedParticipant(
-                            Role: RoleNormalizer.Normalize(p.Role),
-                            Email: p.Email!.Trim().ToLowerInvariant(),
-                            DisplayName: p.DisplayName));
-                    }
-                }
-            }
-
-            // Event-level participants (direct + enrichment): surface any whose role is in the
-            // set. These are not reference-scoped so reference overrides don't displace them.
-            foreach (var p in GetAllEventParticipants(partsJson, enrichJson))
-            {
-                var canon = RoleNormalizer.Normalize(p.Role);
-                if (canon.Length == 0) continue;
-                if (!assigneeRoleSet.Contains(canon)) continue;
-                if (string.IsNullOrEmpty(p.Email)) continue;
-                result.Add(new MergedParticipant(
-                    Role: canon,
-                    Email: p.Email!.Trim().ToLowerInvariant(),
-                    DisplayName: p.DisplayName));
-            }
+            var canon = RoleNormalizer.Normalize(p.Role);
+            if (canon.Length == 0 || !assigneeRoleSet.Contains(canon)) return;
+            if (string.IsNullOrEmpty(p.Email)) return;
+            result.Add(new MergedParticipant(canon, p.Email!.Trim().ToLowerInvariant(), p.DisplayName));
         }
+
+        // Reference-level participants nested under each reference.
+        foreach (var r in candidate.References)
+        {
+            if (r.Participants is not { Count: > 0 } refParticipants) continue;
+            foreach (var p in refParticipants) Add(p);
+        }
+
+        // Promotion-level participants.
+        foreach (var p in candidate.Participants)
+            Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
 
         return result;
     }
@@ -1073,7 +873,6 @@ public record PendingTicketView(
     string Version,
     string SourceEnv,
     int BlockingPromotions,
-    Guid SourceDeployEventId,
     IReadOnlyList<ParticipantDto> Participants,
     // Status of the candidate this row represents. "Pending" for the inbox; for decision-history
     // rows the candidate may have moved on (Approved / Deploying / Deployed / Rejected /

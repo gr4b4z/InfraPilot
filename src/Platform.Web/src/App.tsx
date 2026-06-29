@@ -50,8 +50,8 @@ function App() {
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
-          {/* "My queue" — tickets awaiting the current user's signoff across products/envs. */}
-          <Route path="/me/tickets" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
+          {/* "My queue" — work items awaiting the current user's signoff across products/envs. */}
+          <Route path="/me/work-items" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
           <Route path="/rollbacks" element={<FeatureRoute flag={FeatureFlag.Rollbacks}><RollbacksPage /></FeatureRoute>} />
           <Route path="/release-notes" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesIndexPage /></FeatureRoute>} />
           <Route path="/release-notes/:product" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesPage /></FeatureRoute>} />

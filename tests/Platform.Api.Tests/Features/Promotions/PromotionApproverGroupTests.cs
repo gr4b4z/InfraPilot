@@ -49,7 +49,7 @@ public class PromotionApproverGroupTests : IDisposable
 
         var resolver = new PromotionPolicyResolver(_db);
         var auth = new PromotionApprovalAuthorizer(
-            _db, _currentUser, _identity,
+            _currentUser, _identity,
             Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
         _sut = new PromotionService(
             _db, resolver, auth, _currentUser, _audit,
@@ -62,88 +62,57 @@ public class PromotionApproverGroupTests : IDisposable
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    private static readonly JsonSerializerOptions JsonOpts =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
+
+    // A single-step / single-requirement policy: the §8 tree equivalent of the legacy
+    // "ApproverGroup + MinApprovers" pair (one requirement satisfied by the group, N distinct people).
     private PromotionCandidate SeedPendingCandidate(string approverGroup = "release-approvers")
-    {
-        var policy = new PromotionPolicy
-        {
-            Id = Guid.NewGuid(),
-            Product = "acme",
-            Service = null,
-            TargetEnv = "prod",
-            ApproverGroup = approverGroup,
-            Strategy = PromotionStrategy.Any,
-            MinApprovers = 1,
-            ExcludeRole = null,
-        };
-        _db.PromotionPolicies.Add(policy);
-
-        var snapshot = new ResolvedPolicySnapshot(
-            PolicyId: policy.Id,
-            ApproverGroup: approverGroup,
-            Strategy: PromotionStrategy.Any,
-            MinApprovers: 1,
-            ExcludeRole: null,
-            TimeoutHours: 0,
-            EscalationGroup: null);
-
-        var candidate = new PromotionCandidate
-        {
-            Id = Guid.NewGuid(),
-            Product = "acme",
-            Service = "api",
-            SourceEnv = "staging",
-            TargetEnv = "prod",
-            Version = $"v{Guid.NewGuid():N}"[..10],
-            SourceDeployEventId = Guid.NewGuid(),
-            Status = PromotionStatus.Pending,
-            PolicyId = policy.Id,
-            ResolvedPolicyJson = JsonSerializer.Serialize(snapshot,
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.PromotionCandidates.Add(candidate);
-        _db.SaveChanges();
-        return candidate;
-    }
+        => SeedCandidate(approverGroup, minApprovers: 1, service: "api");
 
     private PromotionCandidate SeedNOfMCandidate(
         string approverGroup = "release-approvers", int minApprovers = 2)
+        => SeedCandidate(approverGroup, minApprovers, service: $"svc-{Guid.NewGuid():N}"[..12]);
+
+    private PromotionCandidate SeedCandidate(string approverGroup, int minApprovers, string service)
     {
+        var steps = new List<ApprovalStep>
+        {
+            new("Release Approval", new()
+            {
+                new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), minApprovers),
+            }),
+        };
+
         var policy = new PromotionPolicy
         {
             Id = Guid.NewGuid(),
             Product = "acme",
-            Service = $"svc-{Guid.NewGuid():N}"[..12],
+            Service = service,
             TargetEnv = "prod",
-            ApproverGroup = approverGroup,
-            Strategy = PromotionStrategy.NOfM,
-            MinApprovers = minApprovers,
-            ExcludeRole = null,
+            ApprovalSteps = steps,
         };
         _db.PromotionPolicies.Add(policy);
 
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
-            ApproverGroup: approverGroup,
-            Strategy: PromotionStrategy.NOfM,
-            MinApprovers: minApprovers,
-            ExcludeRole: null,
             TimeoutHours: 0,
-            EscalationGroup: null);
+            EscalationGroup: null)
+        {
+            ApprovalSteps = steps,
+        };
 
         var candidate = new PromotionCandidate
         {
             Id = Guid.NewGuid(),
             Product = "acme",
-            Service = policy.Service,
+            Service = service,
             SourceEnv = "staging",
             TargetEnv = "prod",
             Version = $"v{Guid.NewGuid():N}"[..10],
-            SourceDeployEventId = Guid.NewGuid(),
             Status = PromotionStatus.Pending,
             PolicyId = policy.Id,
-            ResolvedPolicyJson = JsonSerializer.Serialize(snapshot,
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
+            ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOpts),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.PromotionCandidates.Add(candidate);
@@ -403,38 +372,27 @@ public class PromotionApproverGroupTests : IDisposable
         Assert.Equal(PromotionStatus.Approved, afterSecond.Status);
     }
 
-    // ── QA role bypass ──────────────────────────────────────────────────────
+    // ── QA role bypass removed (D11) ──────────────────────────────────────────
+    // The blanket IsQA shortcut was dropped: QA is now just a group on a requirement, configured
+    // explicitly per policy. A QA user with no matching role/group claim is therefore unauthorized.
 
     [Fact]
-    public async Task Approve_ViaQARole_Succeeds()
+    public async Task Approve_ViaQARole_NoLongerBypasses_ThrowsUnauthorized()
     {
-        // QA role qualifies for any approver group, like admin.
-        _currentUser.IsQA.Returns(true);
+        _currentUser.IsQA.Returns(true); // no role/group claim for "release-approvers"
 
         var candidate = SeedPendingCandidate("release-approvers");
-        var result = await _sut.ApproveAsync(candidate.Id, "qa approved");
 
-        Assert.Equal(PromotionStatus.Approved, result.Status);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => _sut.ApproveAsync(candidate.Id, "qa approved"));
     }
 
     [Fact]
-    public async Task Approve_QARole_GraphNeverCalled()
+    public async Task CanApprove_ViaQARole_NoLongerBypasses_ReturnsFalse()
     {
         _currentUser.IsQA.Returns(true);
 
         var candidate = SeedPendingCandidate("release-approvers");
-        await _sut.ApproveAsync(candidate.Id, null);
-
-        await _identity.DidNotReceive()
-            .GetGroupMembers(Arg.Any<string>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task CanApprove_ViaQARole_ReturnsTrue()
-    {
-        _currentUser.IsQA.Returns(true);
-
-        var candidate = SeedPendingCandidate("release-approvers");
-        Assert.True(await _sut.CanUserApproveAsync(candidate));
+        Assert.False(await _sut.CanUserApproveAsync(candidate));
     }
 }
