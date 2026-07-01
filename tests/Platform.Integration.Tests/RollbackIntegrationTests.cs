@@ -414,7 +414,6 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
                     new ApproverRequirement("Release Managers", new() { new GroupRef("release-managers", "release-managers") }, new(), 1),
                 }),
             },
-            Gate = PromotionGate.PromotionOnly,
         });
         await db.SaveChangesAsync();
     }

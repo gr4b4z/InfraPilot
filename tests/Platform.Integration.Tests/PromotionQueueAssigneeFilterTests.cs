@@ -621,7 +621,6 @@ public class PromotionQueueAssigneeFilterTests
                     },
                 },
             },
-            gate = "PromotionOnly",
             timeoutHours = 24,
             escalationGroup = (string?)null,
         });

@@ -30,12 +30,6 @@ public record ResolvedPolicySnapshot(
     /// <summary>True when no human approval is required for this edge (no requirements anywhere).</summary>
     public bool IsAutoApprove => ApprovalSteps.All(s => s.Requirements.Count == 0);
 
-    /// <summary>
-    /// How the candidate's approval is evaluated. Defaults to <see cref="PromotionGate.PromotionOnly"/>
-    /// so JSON payloads written before this field existed deserialise to the legacy behaviour.
-    /// </summary>
-    public PromotionGate Gate { get; init; } = PromotionGate.PromotionOnly;
-
     // ── Work-item-gate options (default false so old snapshot JSON is backward-compatible) ──
 
     /// <inheritdoc cref="PromotionPolicy.RequireAllWorkItemsApproved"/>

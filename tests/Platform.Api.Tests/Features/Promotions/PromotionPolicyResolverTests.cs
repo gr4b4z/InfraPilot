@@ -151,7 +151,6 @@ public class PromotionPolicyResolverTests : IDisposable
             SourceEnv = "staging",
             TargetEnv = "prod",
             ApprovalSteps = Steps("ops", minApprovers: 2),
-            Gate = PromotionGate.PromotionOnly,
             TimeoutHours = 48,
             EscalationGroup = "leads",
         };

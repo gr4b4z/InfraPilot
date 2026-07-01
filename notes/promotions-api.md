@@ -179,7 +179,6 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
       ]
     }
   ],
-  "gate": "PromotionOnly",              // "PromotionOnly" | "WorkItemsOnly" | "WorkItemsAndManual"
   "timeoutHours": 48,
   "escalationGroup": "SRE-OnCall",      // optional
   "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed off
@@ -198,7 +197,9 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
 - **Group membership is evaluated live** (token claims, then Microsoft Graph) at fetch/approval
   time — never snapshotted — so added/removed approvers take effect immediately. The *policy* is
   snapshotted onto the candidate at creation, but *who is in a group* is always current-state.
-- **Work-item gate**: when `requireAllWorkItemsApproved` (or a `WorkItems*` gate mode) is set and
-  the candidate has work items, all must be approved; `autoApproveOnAllWorkItemsApproved` (or a
-  `WorkItemsOnly` gate) promotes automatically once they are.
+- **Gating is expressed by two orthogonal things**: the human approver tree (`steps[]` — an empty
+  tree means no human gate) and the work-item flags below.
+- **Work-item gate**: when `requireAllWorkItemsApproved` is set and the candidate has work items,
+  all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
+  promotes automatically once every work item is approved, regardless of the human approver tree.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).

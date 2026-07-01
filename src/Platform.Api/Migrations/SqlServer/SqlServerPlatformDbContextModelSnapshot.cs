@@ -608,13 +608,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
-                    b.Property<string>("Gate")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)")
-                        .HasDefaultValue("PromotionOnly");
-
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)

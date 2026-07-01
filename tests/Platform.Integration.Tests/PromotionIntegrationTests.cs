@@ -79,7 +79,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
                     },
                 },
             },
-            gate = "PromotionOnly",
             timeoutHours = 48,
             escalationGroup = (string?)null,
         };

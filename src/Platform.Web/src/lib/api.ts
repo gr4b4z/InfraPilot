@@ -774,9 +774,6 @@ export type PromotionStatus =
   | 'Superseded'
   | 'Rejected';
 
-/** Gate mode read from the candidate's resolved policy snapshot. */
-export type PromotionGate = 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
-
 export interface PromotionCandidate {
   id: string;
   product: string;
@@ -796,11 +793,6 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
-  /**
-   * Gate mode from the candidate's resolved policy snapshot. Defaults to
-   * PromotionOnly for old candidates / missing snapshots — matches the API.
-   */
-  gate?: PromotionGate;
 }
 
 export interface WorkItemApproval {
@@ -1025,7 +1017,6 @@ export interface PromotionPolicy {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
-  gate: 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
   timeoutHours: number;
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
@@ -1041,7 +1032,6 @@ export interface UpsertPromotionPolicyPayload {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
-  gate: 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
   timeoutHours: number;
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;

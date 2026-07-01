@@ -5,7 +5,6 @@ import type {
   PromotionCandidate,
   PromotionApprovalEntry,
   PromotionStatus,
-  PromotionGate,
   PromotionSourceEvent,
   PromotionSourceEventReference,
   PromotionSourceEventParticipant,
@@ -46,12 +45,6 @@ const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Supersede
 // Context that gates all interactive controls on the detail page.
 // Set to true when the candidate is in a terminal state.
 const PromoReadOnlyCtx = createContext(false);
-
-const GATE_LABEL: Record<PromotionGate, string> = {
-  PromotionOnly: 'Promotion only',
-  WorkItemsOnly: 'Work items only',
-  WorkItemsAndManual: 'Work items + manual',
-};
 
 // Distinct work-items in the candidate's bundle. Built from the source event's
 // references (the candidate's own references). Deduped on key. Each entry carries
@@ -229,16 +222,6 @@ export function PromotionDetailPage() {
                 ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
                 : candidate.version}
             </span>
-            {candidate.gate && (
-              <span
-                className="badge"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
-                title="Promotion gate mode from the resolved policy snapshot"
-              >
-                <Ticket size={10} />
-                {GATE_LABEL[candidate.gate]}
-              </span>
-            )}
           </div>
         </div>
         <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
@@ -1152,11 +1135,9 @@ function CommentsCard({
 // ─────────────────────────────────────────────────────────────────────────
 // Promotion approval (manual) card
 //
-// Mirrors the legacy single-block approval UI but adapts to the candidate's
-// gate mode:
-//   - PromotionOnly: as today
-//   - WorkItemsAndManual: as today, with an explanatory "Manual + Work items" line
-//   - WorkItemsOnly: disabled with the same wording the API returns on a 400
+// Shows the live gate progress plus the approve/reject controls. When a policy
+// has no manual approver requirements there is nothing to manually approve —
+// the approver has no eligible requirements — so the controls simply don't render.
 // ─────────────────────────────────────────────────────────────────────────
 function PromotionApprovalCard({
   candidate,
@@ -1177,8 +1158,6 @@ function PromotionApprovalCard({
   onAction: (action: 'approve' | 'reject', target?: EligibleRequirement) => void;
   eligibleRequirements: EligibleRequirement[];
 }) {
-  const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
-  const workItemsOnly = gate === 'WorkItemsOnly';
   const showActions = candidate.canApprove && !actionDone;
   const showProgress = !!progress?.requiresApproval;
   const [showCommentBox, setShowCommentBox] = useState(false);
@@ -1193,10 +1172,9 @@ function PromotionApprovalCard({
     eligibleRequirements.find((r) => reqKey(r) === selectedKey)
     ?? (eligibleRequirements.length === 1 ? eligibleRequirements[0] : null);
 
-  // Hide the card entirely only when there's nothing to show: no progress to surface,
-  // not your decision, and not a WorkItemsOnly candidate (whose explainer we keep visible
-  // even for non-approvers so the gating is discoverable).
-  if (!showActions && !workItemsOnly && !showProgress) return null;
+  // Hide the card entirely when there's nothing to show: no progress to surface and
+  // no action available to the current user.
+  if (!showActions && !showProgress) return null;
 
   const handleAction = (action: 'approve' | 'reject') => {
     // For approvals: pass the chosen requirement (preselected when only one is eligible).
@@ -1221,26 +1199,7 @@ function PromotionApprovalCard({
         >
           Promotion approval
         </h2>
-        {gate !== 'PromotionOnly' && (
-          <span
-            className="badge"
-            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
-            title="Gate mode"
-          >
-            {GATE_LABEL[gate]}
-          </span>
-        )}
       </div>
-
-      {workItemsOnly && (
-        <p
-          className="text-[12px] mb-3 p-3 rounded-lg"
-          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
-        >
-          This candidate auto-promotes when all work items are signed off — approve the
-          work items, not the promotion.
-        </p>
-      )}
 
       {/* Live gate progress (per step / requirement). Shown to everyone who can see the card;
          a divider separates it from the action controls when those are present. */}
@@ -1315,20 +1274,18 @@ function PromotionApprovalCard({
           <div className="flex items-center gap-2">
             <button
               onClick={() => handleAction('approve')}
-              disabled={actionLoading || workItemsOnly || approveBlocked}
+              disabled={actionLoading || approveBlocked}
               title={
-                workItemsOnly
-                  ? 'Disabled under Work items only gate'
-                  : approveBlocked
-                    ? 'Select which requirement you are approving as'
-                    : undefined
+                approveBlocked
+                  ? 'Select which requirement you are approving as'
+                  : undefined
               }
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--success)',
                 color: '#fff',
-                opacity: actionLoading || workItemsOnly || approveBlocked ? 0.5 : 1,
-                cursor: workItemsOnly || approveBlocked ? 'not-allowed' : 'pointer',
+                opacity: actionLoading || approveBlocked ? 0.5 : 1,
+                cursor: approveBlocked ? 'not-allowed' : 'pointer',
               }}
             >
               <CheckCircle size={14} />
@@ -1336,32 +1293,29 @@ function PromotionApprovalCard({
             </button>
             <button
               onClick={() => handleAction('reject')}
-              disabled={actionLoading || workItemsOnly}
-              title={workItemsOnly ? 'Disabled under Work items only gate' : undefined}
+              disabled={actionLoading}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--danger)',
                 color: '#fff',
-                opacity: actionLoading || workItemsOnly ? 0.5 : 1,
-                cursor: workItemsOnly ? 'not-allowed' : 'pointer',
+                opacity: actionLoading ? 0.5 : 1,
+                cursor: 'pointer',
               }}
             >
               <XCircle size={14} />
               Reject
             </button>
-            {!workItemsOnly && (
-              <button
-                type="button"
-                onClick={() => {
-                  setShowCommentBox((v) => !v);
-                  if (showCommentBox) setComment('');
-                }}
-                className="text-[13px] transition-opacity hover:opacity-80"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                {showCommentBox ? 'Hide comment' : 'Add comment'}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                setShowCommentBox((v) => !v);
+                if (showCommentBox) setComment('');
+              }}
+              className="text-[13px] transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {showCommentBox ? 'Hide comment' : 'Add comment'}
+            </button>
           </div>
         </>
       )}
@@ -1524,7 +1478,7 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
 // by GET /api/work-items/{key}?product=&targetEnv= so we surface the same
 // blockedReason wording the API would return on a failed POST.
 //
-// Empty bundle: explicit message, plus a hint about the WorkItemsOnly fallback.
+// Empty bundle: explicit message.
 // ─────────────────────────────────────────────────────────────────────────
 function WorkItemsCard({
   candidate,
@@ -1535,8 +1489,6 @@ function WorkItemsCard({
   workItems: BundleWorkItem[];
   onChanged: () => void;
 }) {
-  const gate: PromotionGate = candidate.gate ?? 'PromotionOnly';
-
   return (
     <div
       className="rounded-xl border p-5"
@@ -1557,12 +1509,6 @@ function WorkItemsCard({
           style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
         >
           No work-items on this candidate.
-          {gate === 'WorkItemsOnly' && (
-            <span className="block mt-1" style={{ color: 'var(--text-muted)' }}>
-              Under the Work items only gate the candidate falls back to manual signoff — see the
-              promotion approval card.
-            </span>
-          )}
         </div>
       ) : (
         <div className="space-y-2">

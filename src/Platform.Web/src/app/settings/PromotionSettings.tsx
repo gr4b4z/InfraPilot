@@ -28,7 +28,6 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   sourceEnv: '',
   targetEnv: '',
   steps: [],
-  gate: 'PromotionOnly',
   timeoutHours: 24,
   escalationGroup: null,
   requireAllWorkItemsApproved: false,
@@ -427,7 +426,6 @@ export function PromotionSettings() {
           minApprovers: r.minApprovers,
         })),
       })),
-      gate: p.gate ?? 'PromotionOnly',
       timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
@@ -580,7 +578,6 @@ export function PromotionSettings() {
                       <th className="pb-2 pr-3">Service</th>
                       <th className="pb-2 pr-3">Edge</th>
                       <th className="pb-2 pr-3">Approval Steps</th>
-                      <th className="pb-2 pr-3">Gate</th>
                       <th className="pb-2">Actions</th>
                     </tr>
                   </thead>
@@ -607,7 +604,6 @@ export function PromotionSettings() {
                         >
                           {summarizeSteps(p.steps)}
                         </td>
-                        <td className="py-2 pr-3">{p.gate}</td>
                         <td className="py-2">
                           <div className="flex items-center gap-1.5">
                             <button
@@ -761,25 +757,6 @@ export function PromotionSettings() {
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     />
-                  </div>
-
-                  {/* Approval Gate */}
-                  <div className="space-y-1">
-                    <label className={labelClass} style={labelStyle}>
-                      Approval Gate
-                    </label>
-                    <select
-                      value={form.gate}
-                      onChange={(e) =>
-                        setField('gate', e.target.value as UpsertPromotionPolicyPayload['gate'])
-                      }
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    >
-                      <option value="PromotionOnly">Promotion only (manual)</option>
-                      <option value="WorkItemsOnly">Work items only (auto when all approved)</option>
-                      <option value="WorkItemsAndManual">Work items + manual</option>
-                    </select>
                   </div>
                 </div>
 

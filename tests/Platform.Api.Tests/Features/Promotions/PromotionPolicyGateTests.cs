@@ -191,8 +191,9 @@ public class PromotionPolicyGateTests : IDisposable
     public void LegacySnapshotJson_WithoutApprovalSteps_DeserializesAsAutoApprove()
     {
         // JSON shape written before the §8 refactor (single ApproverGroup/Strategy/MinApprovers,
-        // no approvalSteps array). Gate was serialized as the default numeric enum (0 =
-        // PromotionOnly). Tolerant init defaults must apply.
+        // no approvalSteps array) and before the gate enum was dropped (it carried a "gate" field).
+        // Both the legacy single-group fields and the removed "gate" field must be ignored as
+        // unknown members. Tolerant init defaults must apply.
         const string legacy = """
             {"policyId":"3f1d4b6e-0000-0000-0000-000000000001","approverGroup":"ops",
              "strategy":1,"minApprovers":2,"excludeRole":"triggered-by",
@@ -206,7 +207,6 @@ public class PromotionPolicyGateTests : IDisposable
         Assert.True(snap.IsAutoApprove);          // no requirements ⇒ no human gate
         Assert.Equal(48, snap.TimeoutHours);
         Assert.Equal("leads", snap.EscalationGroup);
-        Assert.Equal(PromotionGate.PromotionOnly, snap.Gate);
     }
 
     [Fact]

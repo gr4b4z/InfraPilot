@@ -90,7 +90,6 @@ public class PromotionPolicyResolver
             EscalationGroup: policy.EscalationGroup)
         {
             ApprovalSteps = policy.ApprovalSteps,
-            Gate = policy.Gate,
             RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
             AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
             AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,

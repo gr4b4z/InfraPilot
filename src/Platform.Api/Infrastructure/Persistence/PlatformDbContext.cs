@@ -347,7 +347,6 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             var approvalStepsJson = e.Property(x => x.ApprovalStepsJson).HasDefaultValue("[]");
             if (jsonType != null) approvalStepsJson.HasColumnType(jsonType);
             e.Ignore(x => x.ApprovalSteps);
-            e.Property(x => x.Gate).HasMaxLength(30).IsRequired().HasConversion<string>().HasDefaultValue(PromotionGate.PromotionOnly);
             e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
