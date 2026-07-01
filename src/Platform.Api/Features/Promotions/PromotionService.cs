@@ -100,16 +100,24 @@ public class PromotionService
         var references = dto.References ?? new List<ReferenceDto>();
         var participants = CanonicaliseParticipants(dto.Participants);
 
-        // No policy → product is not enrolled in promotions for this edge (→ 422). This is the only
-        // edge guard now that topology is gone; sourceEnv is recorded, not validated.
-        var policy = await _resolver.ResolveAsync(product, service, targetEnv, ct);
+        // No policy → product is not enrolled in promotions for this source→target edge (→ 422).
+        var policy = await _resolver.ResolveAsync(product, service, sourceEnv, targetEnv, ct);
         if (policy is null)
         {
             _logger.LogDebug(
-                "No promotion policy for {Product}/{Service} → {TargetEnv}; rejecting external create",
-                LogSanitizer.Clean(product), LogSanitizer.Clean(service), LogSanitizer.Clean(targetEnv));
+                "No promotion policy for {Product}/{Service} {SourceEnv} → {TargetEnv}; rejecting external create",
+                LogSanitizer.Clean(product), LogSanitizer.Clean(service),
+                LogSanitizer.Clean(sourceEnv), LogSanitizer.Clean(targetEnv));
             return null;
         }
+
+        // Ground the promotion in real source state: the exact version must have a succeeded deploy
+        // in the source environment. Blocks promotions from an unknown / never-shipped source.
+        var sourceDeployed = await _db.DeployEvents.AsNoTracking().AnyAsync(e =>
+            e.Product == product && e.Service == service && e.Environment == sourceEnv
+            && e.Version == version && e.Status == "succeeded", ct);
+        if (!sourceDeployed)
+            throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
 
         // Natural-key reuse-and-update (D15): a non-terminal candidate for this exact edge+version
         // is updated in place rather than duplicated.
@@ -121,7 +129,7 @@ public class PromotionService
         if (existing is not null)
             return await UpdateExistingCandidateAsync(existing, dto, references, participants, ct);
 
-        var snapshot = await _resolver.SnapshotAsync(product, service, targetEnv, ct);
+        var snapshot = await _resolver.SnapshotAsync(product, service, sourceEnv, targetEnv, ct);
 
         // AutoApproveWhenNoWorkItems: probe reads the PAYLOAD references (not DeployEventWorkItems) —
         // the candidate is self-contained, so "no work items" means the payload carries none.
@@ -650,9 +658,9 @@ public class PromotionService
     /// separate from the candidate-level transition concerns owned by re-evaluation, which Phase 3B
     /// will also drive from the work item-approval flow.</para>
     ///
-    /// <para>For <see cref="PromotionGate.WorkItemsOnly"/> the candidate is not approvable through
-    /// this flow at all — the only path forward is approving the underlying work items — so we reject
-    /// with a 400-friendly <see cref="InvalidOperationException"/>.</para>
+    /// <para>When a policy has no human approver requirements there is nothing to manually approve;
+    /// that path is handled by eligibility (an empty requirement tree yields no eligible
+    /// requirements) rather than a dedicated guard here.</para>
     /// </summary>
     public async Task<PromotionCandidate> ApproveAsync(
         Guid candidateId, string? comment,
@@ -660,13 +668,6 @@ public class PromotionService
     {
         var candidate = await LoadPendingAsync(candidateId, ct);
         var snapshot = ReadSnapshot(candidate);
-
-        // WorkItemsOnly candidates auto-promote from work item approvals; the manual approval surface
-        // is intentionally inert — UNLESS the bundle has no work items to gate on, in which case the
-        // gate falls back to PromotionOnly evaluation and a manual signoff is the only way forward.
-        if (snapshot.Gate == PromotionGate.WorkItemsOnly && await CandidateHasWorkItemsAsync(candidate, ct))
-            throw new InvalidOperationException(
-                "This candidate auto-promotes from work-item approvals; approve the work items, not the promotion.");
 
         // RequireAllWorkItemsApproved: the policy says every work item must be signed off before a
         // human release manager can approve the promotion. When the bundle has work items and at least
@@ -793,10 +794,10 @@ public class PromotionService
             "promotions", "promotion.approved",
             "system", "System (gate satisfied)", "system",
             "PromotionCandidate", candidate.Id, null,
-            new { trigger = "gate-evaluator", mode = snapshot.Gate.ToString() });
+            new { trigger = "gate-evaluator" });
 
         _logger.LogInformation(
-            "Candidate {Id} → Approved via gate evaluator (mode={Mode})", candidate.Id, snapshot.Gate);
+            "Candidate {Id} → Approved via gate evaluator", candidate.Id);
 
         await DispatchWebhookAsync(candidate, "promotion.approved", ct);
 
@@ -810,23 +811,20 @@ public class PromotionService
     /// directly when surfacing "what's missing on this candidate".
     /// </summary>
     /// <remarks>
-    /// Behaviour by gate mode:
-    /// <list type="bullet">
-    ///   <item><see cref="PromotionGate.PromotionOnly"/> — Approved <see cref="PromotionApproval"/>
-    ///         rows are matched against the policy's <see cref="ResolvedPolicySnapshot.ApprovalSteps"/>
+    /// Evaluated in order, using two orthogonal signals — the human approver tree
+    /// (<see cref="ResolvedPolicySnapshot.ApprovalSteps"/>) and the work-item flags:
+    /// <list type="number">
+    ///   <item>If <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> and the bundle has
+    ///         work items that are not all approved → blocked.</item>
+    ///   <item>If <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/> and every
+    ///         work item is approved → satisfied, regardless of any manual approver requirements.</item>
+    ///   <item>If there are no human approver requirements (empty requirement tree) → satisfied.</item>
+    ///   <item>Otherwise, Approved <see cref="PromotionApproval"/> rows are matched against the
     ///         requirement tree; satisfied when every requirement has enough distinct eligible
     ///         approvers (see <see cref="ApprovalMatcher"/>).</item>
-    ///   <item><see cref="PromotionGate.WorkItemsOnly"/> — every distinct work-item key on the
-    ///         candidate (its self-contained <see cref="PromotionWorkItem"/> set) must have at least
-    ///         one Approved <see cref="WorkItemApproval"/> row for
-    ///         <c>(WorkItemKey, Product, TargetEnv)</c> and zero Rejected rows. A candidate with zero
-    ///         work-items falls back to the <see cref="PromotionGate.PromotionOnly"/> rules — there's
-    ///         nothing to gate on, so the only way forward is a manual signoff.</item>
-    ///   <item><see cref="PromotionGate.WorkItemsAndManual"/> — WorkItemsOnly rules AND the full
-    ///         requirement tree satisfied by manual <see cref="PromotionApproval"/> rows.</item>
     /// </list>
-    /// Auto-approve policies (empty requirement tree) short-circuit to satisfied — though such
-    /// candidates are never created Pending so this branch rarely runs.
+    /// A work item counts as approved when it has at least one Approved <see cref="WorkItemApproval"/>
+    /// row for <c>(WorkItemKey, Product, TargetEnv)</c> and zero Rejected rows.
     /// </remarks>
     internal async Task<GateResult> EvaluateGateAsync(
         PromotionCandidate candidate,
@@ -855,25 +853,28 @@ public class PromotionService
                 $"(now {sourceCurrent}) — promotion is stale until redeployed",
             });
 
+        // 1. Work items REQUIRED but not all approved → blocked.
+        if (snapshot.RequireAllWorkItemsApproved
+            && await CandidateHasWorkItemsAsync(candidate, ct)
+            && !await AreAllWorkItemsApprovedAsync(candidate, ct))
+        {
+            return new GateResult(false, new[] { "All work items must be approved before this promotion can proceed" });
+        }
+
+        // 2. Accelerator: all work items approved auto-promotes, regardless of manual steps.
+        if (snapshot.AutoApproveOnAllWorkItemsApproved
+            && await CandidateHasWorkItemsAsync(candidate, ct)
+            && await AreAllWorkItemsApprovedAsync(candidate, ct))
+        {
+            return new GateResult(true, Array.Empty<string>());
+        }
+
+        // 3. No human approver requirements → satisfied (any required work-item gate already passed above).
         if (snapshot.IsAutoApprove)
             return new GateResult(true, Array.Empty<string>());
 
-        // AutoApproveOnAllWorkItemsApproved: independent of Gate mode — as soon as every work item in the
-        // bundle has an Approved WorkItemApproval the gate is satisfied, regardless of whether a human
-        // has also clicked Approve on the promotion itself. Only activates when the bundle has work items
-        // (no work items → fall through to the regular gate so a human signoff is still required).
-        if (snapshot.AutoApproveOnAllWorkItemsApproved && await CandidateHasWorkItemsAsync(candidate, ct))
-        {
-            if (await AreAllWorkItemsApprovedAsync(candidate, ct))
-                return new GateResult(true, Array.Empty<string>());
-        }
-
-        return snapshot.Gate switch
-        {
-            PromotionGate.WorkItemsOnly => await EvaluateWorkItemsGateAsync(candidate, snapshot, requireManual: false, ct),
-            PromotionGate.WorkItemsAndManual => await EvaluateWorkItemsGateAsync(candidate, snapshot, requireManual: true, ct),
-            _ => await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct),
-        };
+        // 4. Human approver requirements must be satisfied.
+        return await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct);
     }
 
     private async Task<GateResult> EvaluatePromotionOnlyGateAsync(
@@ -1081,22 +1082,20 @@ public class PromotionService
     /// <summary>
     /// Computes the "all work items resolved" gate condition for a candidate, or <c>null</c> when the
     /// policy doesn't gate on work items (neither <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>
-    /// nor a Work items* gate mode) or the candidate carries no work items. A work item counts as resolved when it
-    /// has an Approved <see cref="WorkItemApproval"/> and no Rejected one.
+    /// nor <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>) or the candidate carries no
+    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and no
+    /// Rejected one.
     /// </summary>
     private async Task<WorkItemGateProgress?> GetWorkItemGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
     {
         var gatesOnWorkItems = snapshot.RequireAllWorkItemsApproved
-            || snapshot.AutoApproveOnAllWorkItemsApproved
-            || snapshot.Gate is PromotionGate.WorkItemsOnly or PromotionGate.WorkItemsAndManual;
+            || snapshot.AutoApproveOnAllWorkItemsApproved;
         if (!gatesOnWorkItems) return null;
 
         // Whether resolving all work items auto-promotes the candidate (no human sign-off needed):
-        // the explicit AutoApproveOnAllWorkItemsApproved flag, or a WorkItemsOnly gate (which promotes
-        // from work item approvals alone). WorkItemsAndManual still needs a manual approval, so not auto.
-        var autoApprove = snapshot.AutoApproveOnAllWorkItemsApproved
-            || snapshot.Gate == PromotionGate.WorkItemsOnly;
+        // the explicit AutoApproveOnAllWorkItemsApproved flag promotes from work-item approvals alone.
+        var autoApprove = snapshot.AutoApproveOnAllWorkItemsApproved;
 
         var workItemKeys = await _db.PromotionWorkItems.AsNoTracking()
             .Where(w => w.CandidateId == candidate.Id)
@@ -1206,73 +1205,6 @@ public class PromotionService
         }
 
         return true;
-    }
-
-    private async Task<GateResult> EvaluateWorkItemsGateAsync(
-        PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, bool requireManual, CancellationToken ct)
-    {
-        // The candidate's self-contained work-item set. Work item signoffs are scoped to
-        // (key, product, target_env) so they survive a supersede onto a fresh candidate.
-        var workItemKeys = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => w.CandidateId == candidate.Id)
-            .Select(w => w.WorkItemKey)
-            .Distinct()
-            .ToListAsync(ct);
-
-        // No work items to gate on. Per design we fall back to PromotionOnly so a
-        // human signoff (in WorkItemsAndManual or as a one-off in WorkItemsOnly) remains a viable
-        // path forward; otherwise the candidate would be permanently un-promotable.
-        if (workItemKeys.Count == 0)
-            return await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct);
-
-        var approvals = await _db.WorkItemApprovals.AsNoTracking()
-            .Where(a => workItemKeys.Contains(a.WorkItemKey)
-                     && a.Product == candidate.Product
-                     && a.TargetEnv == candidate.TargetEnv)
-            .ToListAsync(ct);
-
-        var blockers = new List<string>();
-        var pendingWorkItems = new List<string>();
-
-        foreach (var key in workItemKeys)
-        {
-            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
-            if (rows.Any(a => a.Decision == PromotionDecision.Rejected))
-            {
-                // A rejected work item vetoes the candidate. Phase 3B turns this into a candidate
-                // rejection cascade; for the evaluator alone, it's just an unsatisfiable blocker.
-                blockers.Add($"Work item {key} was rejected");
-                continue;
-            }
-            if (!rows.Any(a => a.Decision == PromotionDecision.Approved))
-                pendingWorkItems.Add(key);
-        }
-
-        // Cap pending-work item blockers at 5 to keep error payloads bounded; tail collapses to
-        // "...and N more" so callers can still see the magnitude.
-        const int MaxPendingShown = 5;
-        if (pendingWorkItems.Count > 0)
-        {
-            foreach (var key in pendingWorkItems.Take(MaxPendingShown))
-                blockers.Add($"Awaiting signoff on {key}");
-            if (pendingWorkItems.Count > MaxPendingShown)
-                blockers.Add($"...and {pendingWorkItems.Count - MaxPendingShown} more");
-        }
-
-        if (requireManual)
-        {
-            // The manual side of WorkItemsAndManual is now the full requirement tree: every
-            // requirement must be satisfied by distinct approvers, same as PromotionOnly.
-            var requirements = snapshot.AllRequirements;
-            if (requirements.Count > 0)
-            {
-                var match = await EvaluateRequirementMatchAsync(candidate, requirements, ct);
-                if (!match.AllSatisfied)
-                    blockers.Add("Manual release-manager approval required");
-            }
-        }
-
-        return new GateResult(blockers.Count == 0, blockers);
     }
 
     /// <summary>
@@ -1620,4 +1552,19 @@ public class MultipleEligibleRequirementsException : InvalidOperationException
 public class RequirementAlreadySatisfiedException : InvalidOperationException
 {
     public RequirementAlreadySatisfiedException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Thrown by <see cref="PromotionService.CreateExternalCandidateAsync"/> when the promotion's
+/// (product, service, source env, version) does not correspond to a succeeded deployment already
+/// ingested — i.e. an attempt to promote a version that never shipped to the source env. Maps to a
+/// 422 at the endpoint.
+/// </summary>
+public class SourceDeploymentNotFoundException : InvalidOperationException
+{
+    public SourceDeploymentNotFoundException(string product, string service, string sourceEnv, string version)
+        : base($"No succeeded deployment of {version} found in {sourceEnv} for {product}/{service} — "
+             + "cannot promote an unknown source.")
+    {
+    }
 }

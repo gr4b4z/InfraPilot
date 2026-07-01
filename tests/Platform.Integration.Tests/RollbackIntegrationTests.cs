@@ -403,6 +403,7 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             Id = Guid.NewGuid(),
             Product = product,
             Service = null,
+            SourceEnv = "staging",
             TargetEnv = "prod",
             // §8 rule tree: a single "any one member of release-managers" requirement, so candidates
             // resolved against this policy are born Pending (a human gate exists).
@@ -413,7 +414,6 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
                     new ApproverRequirement("Release Managers", new() { new GroupRef("release-managers", "release-managers") }, new(), 1),
                 }),
             },
-            Gate = PromotionGate.PromotionOnly,
         });
         await db.SaveChangesAsync();
     }

@@ -409,14 +409,23 @@ public static class PromotionEndpoints
                 return Results.Forbid();
             }
 
-            var candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            PromotionCandidate? candidate;
+            try
+            {
+                candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            }
+            catch (SourceDeploymentNotFoundException ex)
+            {
+                // The (product, service, sourceEnv, version) has no succeeded deployment — cannot
+                // promote an unknown source.
+                return Results.UnprocessableEntity(new { error = ex.Message });
+            }
             if (candidate is null)
             {
-                // No policy resolved for this edge — the product isn't enrolled for (product,
-                // service, targetEnv). With topology gone this is the de-facto edge guard.
+                // No policy resolved for this source→target edge — the product isn't enrolled.
                 return Results.UnprocessableEntity(new
                 {
-                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' → '{dto.TargetEnv}'",
+                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
                 });
             }
 
@@ -503,31 +512,7 @@ public static class PromotionEndpoints
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
-        // Gate mode from the candidate's resolved policy snapshot. Surfaces "PromotionOnly"
-        // (legacy), "WorkItemsOnly", or "WorkItemsAndManual". Defaults to PromotionOnly when the
-        // candidate has no snapshot or the snapshot can't be deserialised — matches the
-        // ResolvedPolicySnapshot.Gate default and keeps the legacy flow intact for old data.
-        gate = ReadGate(c).ToString(),
     };
-
-    // Best-effort read of the candidate's gate mode from its policy snapshot. Returns the
-    // PromotionOnly default when the snapshot is missing or malformed; the candidate's actual
-    // approval flow ultimately depends on the snapshot read deeper in the service layer, so
-    // this is purely a UI hint and a hard read failure here doesn't break anything.
-    private static PromotionGate ReadGate(PromotionCandidate c)
-    {
-        if (string.IsNullOrEmpty(c.ResolvedPolicyJson)) return PromotionGate.PromotionOnly;
-        try
-        {
-            var snap = JsonSerializer.Deserialize<ResolvedPolicySnapshot>(
-                c.ResolvedPolicyJson, SourceEventJsonOptions);
-            return snap?.Gate ?? PromotionGate.PromotionOnly;
-        }
-        catch
-        {
-            return PromotionGate.PromotionOnly;
-        }
-    }
 
     // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)
     // triple across the candidate set. Single query; returns a dictionary keyed by the triple.

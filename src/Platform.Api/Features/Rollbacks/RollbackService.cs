@@ -196,7 +196,9 @@ public class RollbackService
         // Phase 1: one request-level gate resolved from the (product, target env) promotion policy,
         // using the first eligible service as representative (service-specific → product-default →
         // auto-approve). Per-service policy divergence within one request is a future refinement.
-        var snapshot = await _resolver.SnapshotAsync(dto.Product, eligible[0].Service, dto.TargetEnv, ct);
+        // Rollback is in-place within one env, so it has no source→target edge — resolve by target
+        // only (any configured source policy for the env) rather than the edge-scoped ResolveAsync.
+        var snapshot = await _resolver.SnapshotForTargetAsync(dto.Product, eligible[0].Service, dto.TargetEnv, ct);
         var autoApprove = snapshot.IsAutoApprove;
 
         var now = DateTimeOffset.UtcNow;

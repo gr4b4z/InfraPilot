@@ -60,6 +60,7 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         {
             product = "my-product",
             service = "my-service",
+            sourceEnv = "staging",
             targetEnv = "prod",
             steps = new[]
             {
@@ -78,7 +79,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
                     },
                 },
             },
-            gate = "PromotionOnly",
             timeoutHours = 48,
             escalationGroup = (string?)null,
         };
@@ -89,6 +89,7 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         var body = await Deserialize(response);
         Assert.Equal("my-product", body.GetProperty("product").GetString());
         Assert.Equal("my-service", body.GetProperty("service").GetString());
+        Assert.Equal("staging", body.GetProperty("sourceEnv").GetString());
         Assert.Equal("prod", body.GetProperty("targetEnv").GetString());
         Assert.Equal(48, body.GetProperty("timeoutHours").GetInt32());
 

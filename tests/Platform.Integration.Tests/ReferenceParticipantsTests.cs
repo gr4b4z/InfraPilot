@@ -102,6 +102,8 @@ public class ReferenceParticipantsTests
             },
         };
 
+        await SeedSourceDeployAsync(service, "rp-rt-1.0.0");
+
         var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", payload);
         Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
 
@@ -178,6 +180,8 @@ public class ReferenceParticipantsTests
                 new { role = "triggered-by", displayName = "Bob", email = "bob@example.com" },
             },
         };
+
+        await SeedSourceDeployAsync(service, "rp-bc-1.0.0");
 
         var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", payload);
         Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
@@ -276,6 +280,7 @@ public class ReferenceParticipantsTests
         {
             product = "acme",
             service = (string?)null,
+            sourceEnv = "staging",
             targetEnv = "prod",
             steps = new[]
             {
@@ -294,11 +299,23 @@ public class ReferenceParticipantsTests
                     },
                 },
             },
-            gate = "PromotionOnly",
             timeoutHours = 24,
             escalationGroup = (string?)null,
         });
     }
+
+    // Source validation requires a succeeded deploy of the version in the source env (staging).
+    private Task SeedSourceDeployAsync(string service, string version) =>
+        _apiKeyClient.PostAsJsonAsync("/api/deployments/events", new
+        {
+            product = "acme",
+            service,
+            environment = "staging",
+            version,
+            source = "integration-test",
+            deployedAt = DateTimeOffset.UtcNow,
+            status = "succeeded",
+        });
 
     // ── Utility ────────────────────────────────────────────────────────────
 

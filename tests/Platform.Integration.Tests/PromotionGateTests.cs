@@ -18,8 +18,10 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Integration.Tests;
 
 /// <summary>
-/// Integration tests for Phase 3 of PR3: the gate evaluator on
-/// <see cref="ResolvedPolicySnapshot.Gate"/>. Drives candidates through
+/// Integration tests for Phase 3 of PR3: the gate evaluator driven by the work-item flags
+/// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> /
+/// <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>) plus the human approver
+/// step tree. Drives candidates through
 /// <see cref="PromotionService.ApproveAsync"/>, <see cref="PromotionService.ReevaluateAsync"/>
 /// and <see cref="WorkItemApprovalService.ApproveAsync"/> /
 /// <see cref="WorkItemApprovalService.RejectAsync"/> and asserts the candidate-level transitions,
@@ -47,8 +49,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: new[] { "FOO-1" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
@@ -73,9 +76,8 @@ public class PromotionGateTests
                 .FirstAsync(a => a.Action == "promotion.approved" && a.EntityId == candidateId);
             Assert.Equal("system", coarse.ActorId);
             Assert.Equal("system", coarse.ActorType);
-            // Trigger + mode live on AfterState (the audit logger's "what changed" payload).
+            // Trigger marker lives on AfterState (the audit logger's "what changed" payload).
             Assert.Contains("gate-evaluator", coarse.AfterState!);
-            Assert.Contains("WorkItemsOnly", coarse.AfterState!);
 
             // Ticket-level audit emitted alongside.
             var ticket = await db.AuditLog.AsNoTracking()
@@ -107,8 +109,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: new[] { "FOO-1", "FOO-2" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1", "FOO-2" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
@@ -143,10 +146,12 @@ public class PromotionGateTests
         }
     }
 
-    // ── 3. WorkItemsOnly_ManualApprove_ThrowsInvalidOperation ─────────────────
+    // ── 3. WorkItemsRequired_ManualApproveBeforeTicketsApproved_ThrowsInvalidOperation ─────────
 
+    // With RequireAllWorkItemsApproved set, a human cannot manually approve the promotion until
+    // every work item is signed off; ApproveAsync rejects the premature attempt.
     [Fact]
-    public async Task WorkItemsOnly_ManualApprove_ThrowsInvalidOperation()
+    public async Task WorkItemsRequired_ManualApproveBeforeTicketsApproved_ThrowsInvalidOperation()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -156,8 +161,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: new[] { "FOO-1" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
@@ -166,19 +172,20 @@ public class PromotionGateTests
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 svc.ApproveAsync(candidateId, "ship it", default));
-            Assert.Contains("auto-promotes from work-item approvals", ex.Message,
+            Assert.Contains("All work items must be approved", ex.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
     }
 
-    // ── 4. WorkItemsOnly_NoTickets_FallsBackToPromotionOnlyEvaluation ─────────
+    // ── 4. WorkItemFlags_NoTickets_ManualApprovalStillPromotes ─────────
     //
-    // A WorkItemsOnly candidate with an empty bundle has no tickets to gate on, so the
-    // gate falls back to PromotionOnly evaluation and ApproveAsync becomes a viable
-    // path forward — otherwise such a candidate would be permanently un-promotable.
+    // A candidate with the work-item flags set but an empty bundle has no tickets to gate on, so
+    // neither the required-work-items block nor the auto-approve accelerator fire. The human
+    // approver step is still the way forward, and ApproveAsync promotes it — otherwise such a
+    // candidate would be permanently un-promotable.
 
     [Fact]
-    public async Task WorkItemsOnly_NoTickets_FallsBackToPromotionOnlyEvaluation()
+    public async Task WorkItemFlags_NoTickets_ManualApprovalStillPromotes()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -189,8 +196,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: Array.Empty<string>());
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: Array.Empty<string>(),
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
@@ -224,8 +232,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: new[] { "FOO-1", "FOO-2" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1", "FOO-2" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
@@ -277,8 +286,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsAndManual,
-                workItemKeys: new[] { "FOO-1" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
@@ -322,10 +332,13 @@ public class PromotionGateTests
         }
     }
 
-    // ── 7. WorkItemsAndManual_ManualApproveAlone_DoesNotPromote ───────────────
+    // ── 7. WorkItemsRequiredAndManual_TicketThenManual_Promotes ───────────────
 
+    // With RequireAllWorkItemsApproved + a human step (and no auto-approve), a manual approval is
+    // blocked until the tickets are signed off; once the ticket is approved the manual signoff
+    // takes the candidate the rest of the way. This mirrors the old WorkItemsAndManual behaviour.
     [Fact]
-    public async Task WorkItemsAndManual_ManualApproveAlone_DoesNotPromote()
+    public async Task WorkItemsRequiredAndManual_TicketThenManual_Promotes()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -336,17 +349,20 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsAndManual,
-                workItemKeys: new[] { "FOO-1" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true);
             candidateId = c.Id;
         }
 
+        // Manual approval before the ticket is signed off is rejected by the require-work-items guard.
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
-            // Approve manually but no ticket signoff → still pending.
-            var result = await svc.ApproveAsync(candidateId, "ship", default);
-            Assert.Equal(PromotionStatus.Pending, result.Status);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                svc.ApproveAsync(candidateId, "ship", default));
+            Assert.Contains("All work items must be approved", ex.Message,
+                StringComparison.OrdinalIgnoreCase);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -356,19 +372,15 @@ public class PromotionGateTests
                 .FirstAsync(c => c.Id == candidateId);
             Assert.Equal(PromotionStatus.Pending, candidate.Status);
 
-            // The granular per-row signoff was recorded — manual signoff happened, gate just
-            // wasn't satisfied because the ticket is still pending.
-            Assert.Single(await db.AuditLog.AsNoTracking()
+            // Nothing recorded, nothing promoted — the guard rejected the premature attempt.
+            Assert.Empty(await db.AuditLog.AsNoTracking()
                 .Where(a => a.Action == "promotion.approval.recorded").ToListAsync());
-
-            // No coarse promotion.approved entry yet — gate isn't satisfied.
-            var coarse = await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "promotion.approved" && a.EntityId == candidateId).ToListAsync();
-            Assert.Empty(coarse);
+            Assert.Empty(await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.approved" && a.EntityId == candidateId).ToListAsync());
         }
 
-        // Now approve the ticket. The gate becomes satisfied (manual + ticket both done) and
-        // the candidate transitions — proving the missing piece really was the ticket signoff.
+        // Approve the ticket. The required-work-items block clears, but with no auto-approve the
+        // human step still gates → still Pending.
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
@@ -380,7 +392,15 @@ public class PromotionGateTests
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var candidate = await db.PromotionCandidates.AsNoTracking()
                 .FirstAsync(c => c.Id == candidateId);
-            Assert.Equal(PromotionStatus.Approved, candidate.Status);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
+        }
+
+        // Now the manual signoff is allowed and satisfies the human step → Approved.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var result = await svc.ApproveAsync(candidateId, "ship", default);
+            Assert.Equal(PromotionStatus.Approved, result.Status);
         }
     }
 
@@ -398,7 +418,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.PromotionOnly,
+            var (_, _, c) = await SeedAsync(db,
                 workItemKeys: new[] { "FOO-1" });
             candidateId = c.Id;
         }
@@ -456,15 +476,17 @@ public class PromotionGateTests
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
             // Older candidate Ca with T1, now superseded.
-            var (_, _, oldCandidate) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
+            var (_, _, oldCandidate) = await SeedAsync(db,
                 workItemKeys: new[] { "T1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
                 createdAt: DateTimeOffset.UtcNow.AddMinutes(-10));
             oldCandidate.Status = PromotionStatus.Superseded;
 
             // Cb supersedes Ca and carries the accumulated bundle (T1 + T2) on its own work-item
             // index — self-contained, no event-id inheritance.
-            var (_, _, newer) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: new[] { "T1", "T2" });
+            var (_, _, newer) = await SeedAsync(db,
+                workItemKeys: new[] { "T1", "T2" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             oldCandidate.SupersededById = newer.Id;
             await db.SaveChangesAsync();
             newerCandidateId = newer.Id;
@@ -521,8 +543,9 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            var (_, _, c) = await SeedAsync(db, gate: PromotionGate.WorkItemsOnly,
-                workItemKeys: new[] { "ORPH-1" });
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "ORPH-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
             c.Status = PromotionStatus.Approved;
             await db.SaveChangesAsync();
         }
@@ -560,14 +583,16 @@ public class PromotionGateTests
 
     /// <summary>
     /// Seeds a Pending PromotionCandidate carrying zero or more ticket keys on its source
-    /// DeployEvent. The snapshot's <see cref="ResolvedPolicySnapshot.Gate"/> is set to
-    /// <paramref name="gate"/> so each test can dial in the mode under test.
+    /// DeployEvent. Gating is expressed via the two work-item flags
+    /// (<paramref name="requireAllWorkItemsApproved"/> / <paramref name="autoApproveOnAllWorkItemsApproved"/>)
+    /// on top of a fixed single-approver step tree, so each test can dial in the mode under test.
     /// </summary>
     private static async Task<(DeployEvent ev, List<PromotionWorkItem> workItems, PromotionCandidate cand)>
         SeedAsync(
             PlatformDbContext db,
-            PromotionGate gate,
             IEnumerable<string> workItemKeys,
+            bool requireAllWorkItemsApproved = false,
+            bool autoApproveOnAllWorkItemsApproved = false,
             string approverGroup = "ReleaseApprovers",
             string product = "acme",
             string service = "api",
@@ -580,7 +605,9 @@ public class PromotionGateTests
         var ev = NewDeployEvent(product, service, sourceEnv);
         db.DeployEvents.Add(ev);
 
-        var cand = NewCandidate(gate, approverGroup, product, service, sourceEnv, targetEnv);
+        var cand = NewCandidate(
+            requireAllWorkItemsApproved, autoApproveOnAllWorkItemsApproved,
+            approverGroup, product, service, sourceEnv, targetEnv);
         if (createdAt is not null) cand.CreatedAt = createdAt.Value;
         db.PromotionCandidates.Add(cand);
 
@@ -630,7 +657,8 @@ public class PromotionGateTests
     }
 
     private static PromotionCandidate NewCandidate(
-        PromotionGate gate,
+        bool requireAllWorkItemsApproved,
+        bool autoApproveOnAllWorkItemsApproved,
         string approverGroup = "ReleaseApprovers",
         string product = "acme",
         string service = "api",
@@ -638,7 +666,8 @@ public class PromotionGateTests
         string targetEnv = "prod")
     {
         // A single "any one member of <approverGroup>" requirement — the §8 rule-tree equivalent of
-        // the legacy single-group / Strategy.Any / MinApprovers=1 policy.
+        // the legacy single-group / Strategy.Any / MinApprovers=1 policy. Gating on top of this
+        // human step is expressed by the two orthogonal work-item flags.
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: Guid.NewGuid(),
             TimeoutHours: 24,
@@ -651,7 +680,8 @@ public class PromotionGateTests
                     new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), 1),
                 }),
             },
-            Gate = gate,
+            RequireAllWorkItemsApproved = requireAllWorkItemsApproved,
+            AutoApproveOnAllWorkItemsApproved = autoApproveOnAllWorkItemsApproved,
         };
 
         var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions

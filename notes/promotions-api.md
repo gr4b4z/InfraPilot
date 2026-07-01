@@ -36,7 +36,7 @@ candidate; it does **not** recompute or infer the bundle.
 {
   "product":      "checkout",          // required
   "service":      "checkout-api",      // required
-  "sourceEnv":    "staging",           // required (recorded; not validated against a topology)
+  "sourceEnv":    "staging",           // required; must match a succeeded deployment (else 422, see below)
   "targetEnv":    "production",        // required
   "version":      "1.3.0",             // required
   "fromRevision": "a1b2c3d",           // optional — target env's current SHA (display/traceability)
@@ -64,7 +64,8 @@ candidate; it does **not** recompute or infer the bundle.
 | Status | Meaning | Body |
 |---|---|---|
 | `201 Created` | Candidate created (or an existing one for the same edge+version reused/updated) | `{ "id": "<guid>", "status": "Pending" \| "Approved" }` |
-| `422 Unprocessable Entity` | **No promotion policy** exists for `(product, service, targetEnv)` — the product isn't enrolled for this edge. With no topology, this is the edge guard. | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | **No promotion policy** exists for the `(product, service, sourceEnv, targetEnv)` edge — the product isn't enrolled for this edge. | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | **Unknown source** — no *succeeded* deployment of `version` exists in `sourceEnv` for `product`/`service`. You can only promote something that actually shipped to the source env. | `{ "error": "..." }` |
 | `400 Bad Request` | Missing required fields | `{ "errors": [ ... ] }` |
 | `403 Forbidden` | API key not scoped to `product` | — |
 
@@ -149,9 +150,10 @@ Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
 
 ## Approval policy (admin) — `/api/promotions/admin/policies`
 
-A policy is keyed by `(product, service?, targetEnv)`. Resolution for a candidate: the
-service-specific row wins, else the product-level row (`service: null`); **no row ⇒ the product
-is not enrolled for that edge** (create returns `422`).
+A policy is **edge-scoped**, keyed by `(product, service?, sourceEnv, targetEnv)`. Resolution for a
+candidate: the service-specific row wins, else the product-level row (`service: null`); both must
+match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not enrolled for that edge**
+(create returns `422`). (Rollbacks, being in-place within one env, resolve a policy by target only.)
 
 `GET /policies`, `GET /policies/{id}`, `POST /policies`, `PUT /policies/{id}`,
 `DELETE /policies/{id}`.
@@ -162,6 +164,7 @@ is not enrolled for that edge** (create returns `422`).
 {
   "product":   "checkout",
   "service":   null,                    // null/"" ⇒ product-level default
+  "sourceEnv": "staging",               // required — the edge's source env
   "targetEnv": "production",
   "steps": [                            // ordered for display; evaluated in parallel (all must pass)
     {
@@ -176,7 +179,6 @@ is not enrolled for that edge** (create returns `422`).
       ]
     }
   ],
-  "gate": "PromotionOnly",              // "PromotionOnly" | "WorkItemsOnly" | "WorkItemsAndManual"
   "timeoutHours": 48,
   "escalationGroup": "SRE-OnCall",      // optional
   "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed off
@@ -195,7 +197,9 @@ is not enrolled for that edge** (create returns `422`).
 - **Group membership is evaluated live** (token claims, then Microsoft Graph) at fetch/approval
   time — never snapshotted — so added/removed approvers take effect immediately. The *policy* is
   snapshotted onto the candidate at creation, but *who is in a group* is always current-state.
-- **Work-item gate**: when `requireAllWorkItemsApproved` (or a `WorkItems*` gate mode) is set and
-  the candidate has work items, all must be approved; `autoApproveOnAllWorkItemsApproved` (or a
-  `WorkItemsOnly` gate) promotes automatically once they are.
+- **Gating is expressed by two orthogonal things**: the human approver tree (`steps[]` — an empty
+  tree means no human gate) and the work-item flags below.
+- **Work-item gate**: when `requireAllWorkItemsApproved` is set and the candidate has work items,
+  all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
+  promotes automatically once every work item is approved, regardless of the human approver tree.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).

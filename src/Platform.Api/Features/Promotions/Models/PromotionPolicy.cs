@@ -20,6 +20,7 @@ public class PromotionPolicy
     // Scope
     public string Product { get; set; } = "";
     public string? Service { get; set; }
+    public string SourceEnv { get; set; } = "";
     public string TargetEnv { get; set; } = "";
 
     // ── Authorization (rule tree) ────────────────────────────────────────────
@@ -44,10 +45,6 @@ public class PromotionPolicy
         set => ApprovalStepsJson = JsonSerializer.Serialize(value, JsonOpts);
     }
 
-    // How approvals are evaluated for candidates resolved against this policy.
-    // Default preserves legacy behaviour; work-item-level modes are read by the gate evaluator.
-    public PromotionGate Gate { get; set; } = PromotionGate.PromotionOnly;
-
     // ── Work-item-gate options ─────────────────────────────────────────────────
     // These three flags are independent and can be combined freely.
 
@@ -60,8 +57,8 @@ public class PromotionPolicy
 
     /// <summary>
     /// When <c>true</c>, the candidate is automatically promoted the moment all work items
-    /// in the bundle have been approved. Works alongside any Gate mode — the first path that
-    /// satisfies the gate wins.
+    /// in the bundle have been approved, regardless of any human approver requirements — the
+    /// first path that satisfies the gate wins.
     /// </summary>
     public bool AutoApproveOnAllWorkItemsApproved { get; set; } = false;
 
@@ -84,18 +81,4 @@ public class PromotionPolicy
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
     };
-}
-
-/// <summary>
-/// Controls how a promotion candidate's approval is evaluated.
-/// PromotionOnly is the legacy/default behaviour; the other modes layer in work-item sign-off.
-/// </summary>
-public enum PromotionGate
-{
-    /// <summary>Candidate's PromotionApproval rows are matched against the policy's requirement tree.</summary>
-    PromotionOnly,
-    /// <summary>Auto-approve when every work-item in the bundle has an Approved WorkItemApproval row.</summary>
-    WorkItemsOnly,
-    /// <summary>Work items approved AND the requirement tree satisfied by manual PromotionApproval rows.</summary>
-    WorkItemsAndManual,
 }

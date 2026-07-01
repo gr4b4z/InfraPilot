@@ -557,6 +557,19 @@ public class PromotionQueueAssigneeFilterTests
             };
 
         var version = $"v{Guid.NewGuid():N}"[..10];
+
+        // Source validation requires a succeeded deploy of this version in the source env (staging).
+        await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", new
+        {
+            product,
+            service,
+            environment = "staging",
+            version,
+            source = "integration-test",
+            deployedAt = DateTimeOffset.UtcNow,
+            status = "succeeded",
+        });
+
         var payload = new
         {
             product,
@@ -589,6 +602,7 @@ public class PromotionQueueAssigneeFilterTests
         {
             product,
             service = (string?)null,
+            sourceEnv = "staging",
             targetEnv = "prod",
             steps = new[]
             {
@@ -607,7 +621,6 @@ public class PromotionQueueAssigneeFilterTests
                     },
                 },
             },
-            gate = "PromotionOnly",
             timeoutHours = 24,
             escalationGroup = (string?)null,
         });

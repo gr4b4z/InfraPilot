@@ -36,15 +36,16 @@ public static class PromotionAdminEndpoints
             var error = ValidatePolicyRequest(request);
             if (error is not null) return Results.BadRequest(new { error });
 
-            // Duplicate-check: the DB-level unique index on (Product, Service, TargetEnv) is the
-            // hard guard; this pre-check lets us return a friendly 409 instead of a 500 from EF.
+            // Duplicate-check: the DB-level unique index on (Product, Service, SourceEnv, TargetEnv)
+            // is the hard guard; this pre-check lets us return a friendly 409 instead of a 500 from EF.
             var existing = await db.PromotionPolicies
                 .FirstOrDefaultAsync(p =>
                     p.Product == request.Product
                     && p.Service == request.Service
+                    && p.SourceEnv == request.SourceEnv
                     && p.TargetEnv == request.TargetEnv);
             if (existing is not null)
-                return Results.Conflict(new { error = "A policy for this (product, service, target_env) already exists" });
+                return Results.Conflict(new { error = "A policy for this (product, service, source_env, target_env) already exists" });
 
             var now = DateTimeOffset.UtcNow;
             var policy = new PromotionPolicy
@@ -52,9 +53,9 @@ public static class PromotionAdminEndpoints
                 Id = Guid.NewGuid(),
                 Product = request.Product,
                 Service = string.IsNullOrWhiteSpace(request.Service) ? null : request.Service,
+                SourceEnv = request.SourceEnv,
                 TargetEnv = request.TargetEnv,
                 ApprovalSteps = MapSteps(request.Steps),
-                Gate = request.Gate,
                 TimeoutHours = Math.Max(0, request.TimeoutHours),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
                 RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved,
@@ -80,9 +81,9 @@ public static class PromotionAdminEndpoints
 
             policy.Product = request.Product;
             policy.Service = string.IsNullOrWhiteSpace(request.Service) ? null : request.Service;
+            policy.SourceEnv = request.SourceEnv;
             policy.TargetEnv = request.TargetEnv;
             policy.ApprovalSteps = MapSteps(request.Steps);
-            policy.Gate = request.Gate;
             policy.TimeoutHours = Math.Max(0, request.TimeoutHours);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
             policy.RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved;
@@ -114,6 +115,7 @@ public static class PromotionAdminEndpoints
         id = p.Id,
         product = p.Product,
         service = p.Service,
+        sourceEnv = p.SourceEnv,
         targetEnv = p.TargetEnv,
         steps = p.ApprovalSteps.Select(s => new
         {
@@ -126,7 +128,6 @@ public static class PromotionAdminEndpoints
                 minApprovers = r.MinApprovers,
             }),
         }),
-        gate = p.Gate.ToString(),
         timeoutHours = p.TimeoutHours,
         escalationGroup = p.EscalationGroup,
         requireAllWorkItemsApproved = p.RequireAllWorkItemsApproved,
@@ -175,6 +176,7 @@ public static class PromotionAdminEndpoints
     private static string? ValidatePolicyRequest(UpsertPolicyRequest r)
     {
         if (string.IsNullOrWhiteSpace(r.Product)) return "Product is required";
+        if (string.IsNullOrWhiteSpace(r.SourceEnv)) return "SourceEnv is required";
         if (string.IsNullOrWhiteSpace(r.TargetEnv)) return "TargetEnv is required";
 
         // An empty step tree is valid — it means auto-approve. But a requirement that lists neither
@@ -207,9 +209,9 @@ public static class PromotionAdminEndpoints
 public record UpsertPolicyRequest(
     string Product,
     string? Service,
+    string SourceEnv,
     string TargetEnv,
     List<UpsertStepRequest>? Steps,
-    PromotionGate Gate,
     int TimeoutHours,
     string? EscalationGroup,
     bool RequireAllWorkItemsApproved = false,

@@ -25,9 +25,9 @@ const emptyStep = (): PromotionPolicyStep => ({
 const emptyForm: UpsertPromotionPolicyPayload = {
   product: '',
   service: null,
+  sourceEnv: '',
   targetEnv: '',
   steps: [],
-  gate: 'PromotionOnly',
   timeoutHours: 24,
   escalationGroup: null,
   requireAllWorkItemsApproved: false,
@@ -414,6 +414,7 @@ export function PromotionSettings() {
     setForm({
       product: p.product,
       service: p.service,
+      sourceEnv: p.sourceEnv,
       targetEnv: p.targetEnv,
       // Deep clone so edits don't mutate the list row.
       steps: p.steps.map((s) => ({
@@ -425,7 +426,6 @@ export function PromotionSettings() {
           minApprovers: r.minApprovers,
         })),
       })),
-      gate: p.gate ?? 'PromotionOnly',
       timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
@@ -576,9 +576,8 @@ export function PromotionSettings() {
                     >
                       <th className="pb-2 pr-3">Product</th>
                       <th className="pb-2 pr-3">Service</th>
-                      <th className="pb-2 pr-3">Target Env</th>
+                      <th className="pb-2 pr-3">Edge</th>
                       <th className="pb-2 pr-3">Approval Steps</th>
-                      <th className="pb-2 pr-3">Gate</th>
                       <th className="pb-2">Actions</th>
                     </tr>
                   </thead>
@@ -596,7 +595,7 @@ export function PromotionSettings() {
                         >
                           {p.service || '—'}
                         </td>
-                        <td className="py-2 pr-3">{p.targetEnv}</td>
+                        <td className="py-2 pr-3">{p.sourceEnv} → {p.targetEnv}</td>
                         <td
                           className="py-2 pr-3"
                           style={{
@@ -605,7 +604,6 @@ export function PromotionSettings() {
                         >
                           {summarizeSteps(p.steps)}
                         </td>
-                        <td className="py-2 pr-3">{p.gate}</td>
                         <td className="py-2">
                           <div className="flex items-center gap-1.5">
                             <button
@@ -701,6 +699,21 @@ export function PromotionSettings() {
                     />
                   </div>
 
+                  {/* Source Env */}
+                  <div className="space-y-1">
+                    <label className={labelClass} style={labelStyle}>
+                      Source Env *
+                    </label>
+                    <input
+                      type="text"
+                      value={form.sourceEnv}
+                      onChange={(e) => setField('sourceEnv', e.target.value)}
+                      placeholder="e.g. staging"
+                      className={`${inputClass} w-full`}
+                      style={inputStyle}
+                    />
+                  </div>
+
                   {/* Target Env */}
                   <div className="space-y-1">
                     <label className={labelClass} style={labelStyle}>
@@ -744,25 +757,6 @@ export function PromotionSettings() {
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     />
-                  </div>
-
-                  {/* Approval Gate */}
-                  <div className="space-y-1">
-                    <label className={labelClass} style={labelStyle}>
-                      Approval Gate
-                    </label>
-                    <select
-                      value={form.gate}
-                      onChange={(e) =>
-                        setField('gate', e.target.value as UpsertPromotionPolicyPayload['gate'])
-                      }
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    >
-                      <option value="PromotionOnly">Promotion only (manual)</option>
-                      <option value="WorkItemsOnly">Work items only (auto when all approved)</option>
-                      <option value="WorkItemsAndManual">Work items + manual</option>
-                    </select>
                   </div>
                 </div>
 
@@ -1016,7 +1010,7 @@ export function PromotionSettings() {
                 <div className="flex items-center gap-2 pt-1">
                   <button
                     onClick={handleSavePolicy}
-                    disabled={formSaving || !form.product.trim() || !form.targetEnv.trim()}
+                    disabled={formSaving || !form.product.trim() || !form.sourceEnv.trim() || !form.targetEnv.trim()}
                     className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
                     style={{ backgroundColor: 'var(--accent)' }}
                   >

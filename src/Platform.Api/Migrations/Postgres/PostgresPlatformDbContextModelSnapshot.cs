@@ -608,13 +608,6 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(400)
                         .HasColumnType("character varying(400)");
 
-                    b.Property<string>("Gate")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)")
-                        .HasDefaultValue("PromotionOnly");
-
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -628,6 +621,11 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<string>("Service")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<string>("SourceEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<string>("TargetEnv")
                         .IsRequired()
@@ -644,7 +642,7 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.HasIndex("Product", "TargetEnv");
 
-                    b.HasIndex("Product", "Service", "TargetEnv")
+                    b.HasIndex("Product", "Service", "SourceEnv", "TargetEnv")
                         .IsUnique();
 
                     b.ToTable("promotion_policies", (string)null);

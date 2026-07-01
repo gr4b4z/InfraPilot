@@ -5,8 +5,10 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Api.Features.Promotions;
 
 /// <summary>
-/// Resolves which <see cref="PromotionPolicy"/> applies to a given (product, service, target_env)
-/// tuple. Lookup order: service-specific row → product-default (<c>Service IS NULL</c>) → no row.
+/// Resolves which <see cref="PromotionPolicy"/> applies to a given
+/// (product, service, source_env, target_env) tuple. Lookup order: service-specific row →
+/// product-default (<c>Service IS NULL</c>) → no row. Policies are edge-scoped: a policy only
+/// resolves for the exact source→target edge it was configured for.
 /// </summary>
 public class PromotionPolicyResolver
 {
@@ -23,18 +25,20 @@ public class PromotionPolicyResolver
     /// callers should skip candidate creation entirely rather than auto-approving.
     /// </summary>
     public async Task<PromotionPolicy?> ResolveAsync(
-        string product, string service, string targetEnv, CancellationToken ct = default)
+        string product, string service, string sourceEnv, string targetEnv, CancellationToken ct = default)
     {
         // Service-specific wins if present.
         var specific = await _db.PromotionPolicies.AsNoTracking()
             .FirstOrDefaultAsync(p =>
-                p.Product == product && p.Service == service && p.TargetEnv == targetEnv, ct);
+                p.Product == product && p.Service == service
+                && p.SourceEnv == sourceEnv && p.TargetEnv == targetEnv, ct);
         if (specific is not null) return specific;
 
         // Fall back to product-default (Service column is NULL).
         return await _db.PromotionPolicies.AsNoTracking()
             .FirstOrDefaultAsync(p =>
-                p.Product == product && p.Service == null && p.TargetEnv == targetEnv, ct);
+                p.Product == product && p.Service == null
+                && p.SourceEnv == sourceEnv && p.TargetEnv == targetEnv, ct);
     }
 
     /// <summary>
@@ -44,29 +48,48 @@ public class PromotionPolicyResolver
     /// auto-approve snapshot for backwards compatibility.
     /// </summary>
     public async Task<ResolvedPolicySnapshot> SnapshotAsync(
+        string product, string service, string sourceEnv, string targetEnv, CancellationToken ct = default)
+        => Project(await ResolveAsync(product, service, sourceEnv, targetEnv, ct));
+
+    /// <summary>
+    /// Target-only resolution (ignores source env): the first policy configured for this target,
+    /// service-specific then product-default. Used by rollbacks — an in-place revert within a single
+    /// environment has no source→target edge, so it just needs whatever gate guards that env.
+    /// </summary>
+    public async Task<PromotionPolicy?> ResolveForTargetAsync(
         string product, string service, string targetEnv, CancellationToken ct = default)
     {
-        var policy = await ResolveAsync(product, service, targetEnv, ct);
-        if (policy is null)
-        {
-            // Implicit auto-approve: no policy row means "no approval gate configured". Empty
-            // ApprovalSteps ⇒ IsAutoApprove.
-            return new ResolvedPolicySnapshot(
-                PolicyId: null,
-                TimeoutHours: 0,
-                EscalationGroup: null);
-        }
+        var specific = await _db.PromotionPolicies.AsNoTracking()
+            .FirstOrDefaultAsync(p =>
+                p.Product == product && p.Service == service && p.TargetEnv == targetEnv, ct);
+        if (specific is not null) return specific;
 
-        // Project the policy's rule tree and gate forward so the evaluator sees the configured
-        // requirements + work-item-level mode for newly created candidates. Old candidates whose
-        // snapshot JSON predates a field deserialise to its default — preserving today's flow.
+        return await _db.PromotionPolicies.AsNoTracking()
+            .FirstOrDefaultAsync(p =>
+                p.Product == product && p.Service == null && p.TargetEnv == targetEnv, ct);
+    }
+
+    /// <summary>Snapshot variant of <see cref="ResolveForTargetAsync"/> for the rollback gate.</summary>
+    public async Task<ResolvedPolicySnapshot> SnapshotForTargetAsync(
+        string product, string service, string targetEnv, CancellationToken ct = default)
+        => Project(await ResolveForTargetAsync(product, service, targetEnv, ct));
+
+    /// <summary>
+    /// Projects a resolved policy into the snapshot stored on the candidate. A <c>null</c> policy
+    /// yields an auto-approve snapshot (empty ApprovalSteps ⇒ IsAutoApprove) — "no gate configured".
+    /// Old candidates whose snapshot JSON predates a field deserialise to its default.
+    /// </summary>
+    private static ResolvedPolicySnapshot Project(PromotionPolicy? policy)
+    {
+        if (policy is null)
+            return new ResolvedPolicySnapshot(PolicyId: null, TimeoutHours: 0, EscalationGroup: null);
+
         return new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
             TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup)
         {
             ApprovalSteps = policy.ApprovalSteps,
-            Gate = policy.Gate,
             RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
             AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
             AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
