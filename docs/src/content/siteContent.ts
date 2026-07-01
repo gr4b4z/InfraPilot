@@ -149,7 +149,7 @@ export const featureCards: FeatureCard[] = [
     points: [
       'API-key protected deployment ingest endpoint',
       'Rollback-aware version history and previous version lookup',
-      'Promotion candidates created from successful deployments',
+      'Promotions created via API from your pipeline\'s computed change set',
     ],
   },
   {
@@ -457,14 +457,14 @@ executor:
     title: 'Deployment and promotions setup',
     summary: 'Deployment ingest and promotions are most useful when configured as one operational path instead of separate features.',
     paragraphs: [
-      'The deployment ingest API should be wired into the CI/CD systems that already know when deployments happen. Once those events are arriving, InfraPilot can build current state, rollback target history, and promotion candidates from them.',
-      'Promotion setup then adds the environment topology and policy layer on top of that event stream. This is where teams define target environments, approval strategy, minimum approvers, whether the pipeline triggerer is excluded from approving their own promotion, and escalation behavior.',
+      'The deployment ingest API should be wired into the CI/CD systems that already know when deployments happen. Once those events are arriving, InfraPilot can build current state and rollback target history from them, and complete in-flight promotions when a version lands on its target environment.',
+      'Promotions are created explicitly by your pipeline via `POST /api/promotions` with the authoritative change set it computed — InfraPilot does not auto-generate them from the deploy stream. Promotion setup then adds the per-edge approval policy on top: for each (product, service, target environment) you define an ordered step → requirement approval tree, the approval gate mode, work-item rules, timeout, and escalation behavior.',
     ],
     bullets: [
       'Send deployment events from CI/CD to `/api/deployments/events`',
-      'Configure promotion topology to describe environment flow',
+      'Create promotions from your pipeline via `POST /api/promotions` (API key)',
       'Create promotion policies per product or service and target environment',
-      'Use successful deployments as the source of truth for promotions and rollback targets',
+      'Successful deployments complete matching promotions and serve as rollback targets',
     ],
   },
   {
@@ -658,15 +658,32 @@ X-Api-Key: <your-api-key>
     slug: 'promotions-api',
     group: 'API',
     title: 'Promotions API',
-    summary: 'Promotions endpoints expose promotion candidates, detail views, decision actions, free-form participants, comments, directory search, and admin configuration for promotion policies and topology.',
+    summary: 'Promotions endpoints let an external system create promotion candidates, expose detail views, decision actions, free-form participants, comments, directory search, and admin configuration for the step → requirement approval policy.',
     paragraphs: [
-      'Promotion candidates are created from deployment ingest and then processed through approval and deployment flows. The non-admin endpoints focus on queue operations and review actions.',
-      'Each candidate carries deploy-event references (pull requests, work items, commits) and participants (author, reviewer, `triggered-by`) pulled from its source deploy event, plus promotion-level participants added in the portal (QA, release manager, or any custom role) and a free-text comment thread. Role strings are canonicalised on write; display names are controlled by an admin-managed role dictionary in Settings — the same pattern used for environment display names.',
-      'Listing supports filtering by status, product, target environment, substring service search, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped.',
-      'A directory-search endpoint proxies Entra ID (via Microsoft Graph) when configured and falls back to local users otherwise, so the portal can resolve real people when assigning participants.',
-      'Two invariants keep candidates honest against rollbacks. Source-drift: a candidate can only be approved while its source environment still runs the candidate version — if the source is rolled back off that version the gate blocks it as stale. Idempotent reactivation: redeploying that exact version to the source reactivates the original candidate (clearing the drift block) instead of creating a duplicate. See "Promotion and rollback logic" for the full model.',
-      'Admin endpoints configure the policy and topology model that drives the promotion machinery.',
+      'A promotion candidate represents "service X version V should move from a source env to a target env." Candidates are created by an external system — typically the pipeline that computed the env-to-env diff — via `POST /api/promotions`, authenticated with an API key (`X-Api-Key`) and scoped to the product. InfraPilot does not auto-generate candidates from the deploy stream, and there is no promotion topology.',
+      'Each candidate is self-contained: the create request supplies the authoritative net change set as `references` (work items, PRs, commits) plus `fromRevision`/`toRevision`, so the candidate carries everything it needs rather than pulling it from a deploy event. Only `work-item` references feed the approval gate; PR and commit references are stored for display and traceability. The create request may also carry promotion-level participants, and references may carry their own reference-scoped participants (a ticket\'s QA, a PR\'s reviewer). Role strings are canonicalised on write; display names are controlled by an admin-managed role dictionary in Settings.',
+      'The non-admin endpoints are queue and review actions: list, detail, approve, reject, bulk approve, comments, and participants. Listing supports filtering by status, product, service, target environment, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped. Each candidate carries a `canApprove` flag for the current user, and the detail response adds `approvalProgress` (the live gate state) and `eligibleRequirements` (the open requirements the current user may approve).',
+      'A directory-search endpoint proxies Entra ID (via Microsoft Graph) when configured and falls back to local users otherwise, so the portal can resolve real people and groups when assigning participants or configuring policies.',
+      'Create is idempotent on the natural key `(product, service, sourceEnv, targetEnv, version)`: re-posting the same version updates the existing non-terminal candidate rather than duplicating it, and posting a newer version on the same edge marks the prior still-Pending candidate `Superseded` (a pure state flip — the new candidate is self-contained and inherits nothing). The gate still blocks approval while the source environment has drifted off the candidate version. See "Promotion and rollback logic" for the full model.',
+      'Admin endpoints configure the per-edge approval policy that drives the gate.',
     ],
+    code: `POST /api/promotions
+X-Api-Key: <your-api-key>
+Content-Type: application/json
+
+{
+  "product": "checkout",
+  "service": "checkout-api",
+  "sourceEnv": "staging",
+  "targetEnv": "production",
+  "version": "1.3.0",
+  "references": [
+    { "type": "work-item", "provider": "jira", "key": "CHK-451",
+      "title": "Add express checkout", "url": "https://jira/CHK-451" },
+    { "type": "pull-request", "provider": "github", "key": "2087",
+      "url": "https://github.com/o/r/pull/2087" }
+  ]
+}`,
   },
   {
     slug: 'rollbacks-api',
@@ -787,24 +804,24 @@ POST /api/rollbacks
     slug: 'promotion-and-rollback-logic',
     group: 'Operations',
     title: 'Promotion and rollback logic',
-    summary: 'How InfraPilot turns deploy events into promotion candidates, gates them, detects drift, and runs rollbacks as the inverse — including what happens to candidates and stories across a rollback.',
+    summary: 'How InfraPilot gates externally-created promotion candidates, detects source drift, completes them from deploy events, and runs rollbacks as the inverse.',
     paragraphs: [
-      'Both promotions and rollbacks are driven by one input: the stream of deploy events ingested from CI/CD. A promotion answers "this version reached environment A — should it move forward to B?" A rollback answers "environment A is on the wrong version — put it back to a known-good one it ran before." Rollback reuses the promotion policy/approval machinery; the difference is that the environment stays fixed and the version moves backward.',
-      'Promotion candidates. When a successful, non-rollback deploy lands in a source environment and a promotion policy exists for the (product, target env) edge, a candidate is created. Its lifecycle is Pending → Approved → Deploying → Deployed, with Superseded and Rejected as terminal off-ramps. A newer version on the same edge supersedes any still-Pending candidate and inherits its work items / PRs / participants, so the latest candidate always carries the full set of forward changes. Completion is matched from the deploy event of the target environment itself (same product/service/env/version), which flips the candidate to Deployed.',
-      'The gate. Approval is evaluated against the policy snapshot taken at creation time: an approver group with an Any or N-of-M strategy, optional role exclusion (e.g. the pipeline triggerer cannot approve their own promotion), and optional ticket gates (every work item approved, or auto-approve when there are no tickets). With no approver group the candidate auto-approves.',
-      'Source-drift invariant. A candidate is only promotable while its source environment still runs the candidate version. If the source is rolled back (or otherwise moves off that version), the gate blocks the candidate as stale rather than letting it promote a version no live environment runs. Drift is judged on positive evidence — a differing source deploy exists — so an absence of history never blocks. Redeploying that exact version to the source reactivates the original candidate (clearing the block) instead of minting a duplicate.',
-      'Rollbacks. A rollback request reverts one or more services in one environment to an earlier version that previously ran there. It is approved through the same policy/gate as a promotion (auto-approve when there is no approver group), then your executor performs the deploy on the rollback.approved webhook. Completion is inferred from the resulting deploy event; cancel is only allowed while Pending, because once approved the work has already been dispatched.',
-      'What a rollback does to promotions. When a rollback lands, InfraPilot decides whether the rolled-back version is still worth promoting: if it differs from the current version of the target environment it (re)creates a promotion candidate for it; if it already matches the target, forward promotion is suppressed (there is nothing to ship). This is why rolling staging back to 2.0 while prod runs 1.5 brings the 2.0 promotion back, but rolling staging down to match prod does not.',
-      'What a rollback does to stories. A rollback-created candidate does not inherit the stories of the reverted (newer) candidate — those changes were undone. Instead it bundles the true diff against the target: every work item from source-env deploys for versions introduced after the current target version, up to and including the rolled-back-to version. Ordering uses the first-seen deploy time of each version in the source environment, so rolling back to 1.3 after 1.4 shipped carries only the 1.3 stories, while a later roll-forward to 1.4 carries 1.3 + 1.4.',
+      'A promotion answers "this version should move from environment A forward to B" and a rollback answers "environment A is on the wrong version — put it back to a known-good one it ran before." Rollback reuses the promotion policy/approval machinery; the difference is that the environment stays fixed and the version moves backward.',
+      'Promotion candidates. Candidates are created by an external system (typically the pipeline that computed the env-to-env diff) via `POST /api/promotions` — InfraPilot does not auto-generate them from deploy events, and there is no promotion topology. Create requires a promotion policy to exist for the (product, service, target env) edge, otherwise it returns 422. The lifecycle is Pending → Approved → Deploying → Deployed, with Superseded and Rejected as terminal off-ramps. Create is idempotent on the natural key (product, service, sourceEnv, targetEnv, version): re-posting the same version updates the existing non-terminal candidate, and posting a newer version on the same edge marks the prior still-Pending candidate Superseded — a pure state flip, with the new candidate self-contained (it inherits nothing; the caller supplies its own references). Completion is matched from a succeeded deploy event that lands the version on the target environment, which flips the candidate to Deployed.',
+      'The gate. Approval is evaluated against the policy snapshot taken at creation time: an ordered set of steps, each with one or more requirements. A requirement names groups and/or users and a minApprovers count, and is satisfied by a group member or a listed user; every requirement in every step must be satisfied (each person counts toward at most one requirement). The gate mode (PromotionOnly, WorkItemsOnly, or WorkItemsAndManual) plus the work-item options (requireAllWorkItemsApproved, autoApproveOnAllWorkItemsApproved, autoApproveWhenNoWorkItems) control how work-item sign-off interacts with manual approval. An empty step tree auto-approves. Group membership is evaluated live at approval time, so added or removed approvers take effect immediately.',
+      'Source-drift invariant. A candidate is only promotable while its source environment still runs the candidate version. If the source moves off that version, the gate blocks the candidate as stale rather than letting it promote a version no live environment runs. Drift is judged on positive evidence — a differing source deploy exists — so an absence of history never blocks.',
+      'Rollbacks. A rollback request reverts one or more services in one environment to an earlier version that previously ran there. It is approved through the same policy/gate as a promotion (auto-approve when the policy has no requirements), then your executor performs the deploy on the rollback.approved webhook. Completion is inferred from the resulting deploy event; cancel is only allowed while Pending, because once approved the work has already been dispatched.',
+      'What a rollback does to promotions. A rollback does not automatically create a promotion candidate — promotions are always created externally. If a rolled-back version is itself worth promoting forward, the external system that owns promotion creation must post that candidate via `POST /api/promotions`; the landed rollback deploy event on its own does not mint one.',
     ],
     bullets: [
-      'Promotion candidate lifecycle: Pending → Approved → Deploying → Deployed; Superseded / Rejected are terminal',
-      'Newer version supersedes a pending candidate and inherits its work items, PRs, and participants',
-      'Gate = approver group + Any/N-of-M strategy + optional role exclusion and ticket gates; no group ⇒ auto-approve',
-      'Source-drift: a candidate is blocked while its source env no longer runs the version; a redeploy reactivates it idempotently',
+      'Candidates are created externally via `POST /api/promotions`, not auto-generated from deploy events; no topology',
+      'Lifecycle: Pending → Approved → Deploying → Deployed; Superseded / Rejected are terminal',
+      'Create is idempotent on (product, service, sourceEnv, targetEnv, version); a newer version supersedes a pending candidate (pure state flip, no inheritance)',
+      'Gate = ordered steps of requirements (groups/users + minApprovers) + gate mode + work-item options; empty tree ⇒ auto-approve',
+      'Source-drift: a candidate is blocked while its source env no longer runs the version',
+      'Completion: a succeeded deploy landing the version on the target env flips the candidate to Deployed',
       'Rollback safety rule: target version must have previously run in that environment and differ from what is running now',
-      'Rollback recreates a promotion only when the rolled-back version differs from the target env (otherwise suppressed)',
-      'Rollback story bundle = the version diff vs the target (first-seen ordering), never the stories of the reverted version',
+      'A landed rollback is promoted forward only if the external system creates that promotion',
       'Cancel a rollback only while Pending; once Approved the rollback.approved webhook has dispatched it',
     ],
     note: 'Gated by `features.rollbacks` plus per-product enrollment, on top of promotion enrollment. Manage enrollment in Settings — Rollbacks.',
@@ -1133,7 +1150,7 @@ export const deploymentApiStatusColumns: TableColumn[] = [
 export const deploymentApiStatusRows: TableRow[] = [
   {
     value: '`succeeded`',
-    meaning: 'Deployment completed successfully. Only this status creates promotion candidates and counts as a rollback target.',
+    meaning: 'Deployment completed successfully. Eligible as a rollback target, and the status that completes a matching in-flight promotion when the version lands on its target environment. It does not create promotion candidates — those are created via `POST /api/promotions`.',
   },
   {
     value: '`failed`',
@@ -1647,6 +1664,52 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
   ],
   'promotions-api': [
     {
+      title: 'Create a promotion',
+      columns: defaultEndpointColumns,
+      rows: [
+        { method: '`POST`', path: '`/api/promotions`', auth: 'API key (`X-Api-Key`)', description: 'External create endpoint used by CI / pipelines. Product-scoped from the key\'s claims and rate-limited per key. Returns `422` when no promotion policy exists for the (product, service, target env) edge.' },
+      ],
+    },
+    {
+      title: 'Create body',
+      columns: bodyFieldColumns,
+      rows: [
+        { field: '`product`', type: 'string', required: 'Yes', description: 'Product identifier.' },
+        { field: '`service`', type: 'string', required: 'Yes', description: 'Service being promoted.' },
+        { field: '`sourceEnv`', type: 'string', required: 'Yes', description: 'Source environment (recorded; not validated against a topology).' },
+        { field: '`targetEnv`', type: 'string', required: 'Yes', description: 'Target environment the version is moving to.' },
+        { field: '`version`', type: 'string', required: 'Yes', description: 'Version being promoted.' },
+        { field: '`fromRevision`', type: 'string', required: 'No', description: 'Target env\'s current SHA. Display / traceability only.' },
+        { field: '`toRevision`', type: 'string', required: 'No', description: 'SHA being promoted. Display / traceability only.' },
+        { field: '`references`', type: 'array', required: 'No', description: 'The authoritative net change set: work-item, pull-request, and commit/repository refs. Only `work-item` references feed the approval gate; the rest are stored for display. May carry reference-scoped participants.' },
+        { field: '`participants`', type: 'array', required: 'No', description: 'Promotion-level people ({ role, displayName?, email? }).' },
+      ],
+    },
+    {
+      title: 'Create example',
+      code: `POST /api/promotions
+X-Api-Key: <your-api-key>
+Content-Type: application/json
+
+{
+  "product": "checkout",
+  "service": "checkout-api",
+  "sourceEnv": "staging",
+  "targetEnv": "production",
+  "version": "1.3.0",
+  "fromRevision": "a1b2c3d",
+  "toRevision": "f9e8d7c",
+  "references": [
+    { "type": "work-item", "provider": "jira", "key": "CHK-451",
+      "title": "Add express checkout", "url": "https://jira/CHK-451" },
+    { "type": "pull-request", "provider": "github", "key": "2087",
+      "url": "https://github.com/o/r/pull/2087" },
+    { "type": "repository", "provider": "github", "revision": "f9e8d7c",
+      "url": "https://github.com/o/r" }
+  ]
+}`,
+    },
+    {
       title: 'Queue and decision endpoints',
       columns: defaultEndpointColumns,
       rows: [
@@ -1665,7 +1728,7 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
         { name: '`product`', type: 'string', description: 'Optional product filter.' },
         { name: '`service`', type: 'string', description: 'Optional service filter.' },
         { name: '`targetEnv`', type: 'string', description: 'Optional target environment filter.' },
-        { name: '`limit`', type: 'integer', description: 'Optional result cap. Defaults to 200 when omitted or invalid.' },
+        { name: '`reference`', type: 'string', description: 'Optional reference-key filter (e.g. a work-item or PR key).' },
       ],
     },
     {
@@ -1673,6 +1736,8 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       columns: bodyFieldColumns,
       rows: [
         { field: '`comment`', type: 'string', required: 'No', description: 'Optional comment for single approve or reject requests.' },
+        { field: '`stepName`', type: 'string', required: 'No', description: 'Approve-as selection: the step to approve under. Auto-picked when the caller is eligible for exactly one open requirement.' },
+        { field: '`requirementName`', type: 'string', required: 'No', description: 'Approve-as selection: the requirement to approve under (paired with `stepName`).' },
         { field: '`ids`', type: 'Guid[]', required: 'Yes', description: 'Required for bulk approve; list of candidate ids to process.' },
       ],
     },
@@ -1685,8 +1750,6 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
         { method: '`POST`', path: '`/api/promotions/admin/policies`', auth: 'Catalog admin', description: 'Create a promotion policy.' },
         { method: '`PUT`', path: '`/api/promotions/admin/policies/{id}`', auth: 'Catalog admin', description: 'Update a promotion policy.' },
         { method: '`DELETE`', path: '`/api/promotions/admin/policies/{id}`', auth: 'Catalog admin', description: 'Delete a promotion policy.' },
-        { method: '`GET`', path: '`/api/promotions/admin/topology`', auth: 'Catalog admin', description: 'Fetch the promotion topology.' },
-        { method: '`PUT`', path: '`/api/promotions/admin/topology`', auth: 'Catalog admin', description: 'Replace the promotion topology definition.' },
       ],
     },
     {
@@ -1694,15 +1757,20 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       columns: bodyFieldColumns,
       rows: [
         { field: '`product`', type: 'string', required: 'Yes', description: 'Product identifier for the policy.' },
-        { field: '`service`', type: 'string', required: 'No', description: 'Optional service identifier. Null or empty means product default.' },
+        { field: '`service`', type: 'string', required: 'No', description: 'Optional service identifier. Null or empty means the product-level default (a service-specific row wins over it).' },
         { field: '`targetEnv`', type: 'string', required: 'Yes', description: 'Target environment for the promotion policy.' },
-        { field: '`approverGroup`', type: 'string', required: 'No', description: 'Optional approver group name.' },
-        { field: '`strategy`', type: 'enum', required: 'Yes', description: 'Promotion strategy enum. NOfM requires minApprovers >= 1.' },
-        { field: '`minApprovers`', type: 'integer', required: 'Yes', description: 'Minimum approver count. Clamped to at least 1.' },
-        { field: '`excludeRole`', type: 'string \\| null', required: 'No', description: 'When set, anyone tagged with this role on the source deploy event cannot approve. Typically `triggered-by`. Null disables the rule.' },
+        { field: '`steps`', type: 'array', required: 'No', description: 'Ordered list of approval steps. Each step has a `name` and `requirements[]`; a requirement has a `name`, `groups[]` of `{ id, name }`, `users[]` (emails), and `minApprovers`. A requirement is satisfiable by a group member OR a listed user. All requirements in all steps must be satisfied. An empty tree auto-approves.' },
+        { field: '`gate`', type: 'enum', required: 'Yes', description: 'Gate mode: `PromotionOnly` | `WorkItemsOnly` | `WorkItemsAndManual`.' },
+        { field: '`requireAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Block manual approval until every work item is signed off.' },
+        { field: '`autoApproveOnAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Auto-promote once all work items are signed off.' },
+        { field: '`autoApproveWhenNoWorkItems`', type: 'boolean', required: 'No', description: 'Auto-approve at create time when the payload carries no work items.' },
         { field: '`timeoutHours`', type: 'integer', required: 'Yes', description: 'Timeout in hours. Clamped to 0 or higher.' },
         { field: '`escalationGroup`', type: 'string', required: 'No', description: 'Optional escalation group.' },
       ],
+    },
+    {
+      title: 'Decision body',
+      description: 'The single-approve endpoint `POST /api/promotions/{id}/approve` accepts `{ comment?, stepName?, requirementName? }`; `stepName`/`requirementName` pick which open requirement the caller is approving as (auto-picked when the caller is eligible for exactly one). The detail response (`GET /api/promotions/{id}`) includes `approvalProgress` (the live gate state) and `eligibleRequirements` (the requirements the current user may approve).',
     },
   ],
   'webhooks-api': [
