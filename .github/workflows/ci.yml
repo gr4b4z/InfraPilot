@@ -2,16 +2,33 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore InfraPilot.slnx
+
+      - name: Build
+        run: dotnet build InfraPilot.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test InfraPilot.slnx -c Release --no-build --verbosity normal
+
   validate-image-build:
     runs-on: ubuntu-latest
 

@@ -1,6 +1,20 @@
 name: Release
 
+# Two entry points:
+#  • Automatic — on every push to main (i.e. every merged PR). Verifies the solution, then bumps
+#    the patch version and cuts a release.
+#  • Manual   — workflow_dispatch, to cut a minor/major (or explicit patch) release on demand.
+#
+# The trigger is push:main (a trusted context — pushing to main requires merge rights) rather than
+# workflow_run, so there is no privileged checkout of untrusted code. The verify job re-runs the
+# test suite on the exact commit being released, so we never tag/publish a broken main. The tag job
+# then pushes the next vX.Y.Z tag and hands off to release-image.yml (via workflow_call) to build
+# and publish the image — invoked directly because a tag pushed with GITHUB_TOKEN does not itself
+# trigger further workflows.
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       bump:
@@ -16,8 +30,35 @@ permissions:
   contents: write
   packages: write
 
+# Serialize releases so two closely-spaced merges can't compute the same next version and collide
+# on the tag push.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore InfraPilot.slnx
+
+      - name: Build
+        run: dotnet build InfraPilot.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test InfraPilot.slnx -c Release --no-build --verbosity normal
+
   tag:
+    needs: verify
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.bump.outputs.version }}
@@ -29,6 +70,9 @@ jobs:
 
       - name: Compute next version and push tag
         id: bump
+        env:
+          # Automatic releases (push to main) are always a patch bump; manual dispatch picks the part.
+          BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
         run: |
           set -euo pipefail
           latest=$(git tag --list 'v*' --sort=-v:refname | head -n1)
@@ -38,7 +82,7 @@ jobs:
           ver=${latest#v}
           IFS='.' read -r major minor patch <<< "$ver"
 
-          case "${{ inputs.bump }}" in
+          case "$BUMP" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
             minor) minor=$((minor + 1)); patch=0 ;;
             patch) patch=$((patch + 1)) ;;
