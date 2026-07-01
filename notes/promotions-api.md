@@ -36,7 +36,7 @@ candidate; it does **not** recompute or infer the bundle.
 {
   "product":      "checkout",          // required
   "service":      "checkout-api",      // required
-  "sourceEnv":    "staging",           // required (recorded; not validated against a topology)
+  "sourceEnv":    "staging",           // required; must match a succeeded deployment (else 422, see below)
   "targetEnv":    "production",        // required
   "version":      "1.3.0",             // required
   "fromRevision": "a1b2c3d",           // optional — target env's current SHA (display/traceability)
@@ -64,7 +64,8 @@ candidate; it does **not** recompute or infer the bundle.
 | Status | Meaning | Body |
 |---|---|---|
 | `201 Created` | Candidate created (or an existing one for the same edge+version reused/updated) | `{ "id": "<guid>", "status": "Pending" \| "Approved" }` |
-| `422 Unprocessable Entity` | **No promotion policy** exists for `(product, service, targetEnv)` — the product isn't enrolled for this edge. With no topology, this is the edge guard. | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | **No promotion policy** exists for the `(product, service, sourceEnv, targetEnv)` edge — the product isn't enrolled for this edge. | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | **Unknown source** — no *succeeded* deployment of `version` exists in `sourceEnv` for `product`/`service`. You can only promote something that actually shipped to the source env. | `{ "error": "..." }` |
 | `400 Bad Request` | Missing required fields | `{ "errors": [ ... ] }` |
 | `403 Forbidden` | API key not scoped to `product` | — |
 
@@ -149,9 +150,10 @@ Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
 
 ## Approval policy (admin) — `/api/promotions/admin/policies`
 
-A policy is keyed by `(product, service?, targetEnv)`. Resolution for a candidate: the
-service-specific row wins, else the product-level row (`service: null`); **no row ⇒ the product
-is not enrolled for that edge** (create returns `422`).
+A policy is **edge-scoped**, keyed by `(product, service?, sourceEnv, targetEnv)`. Resolution for a
+candidate: the service-specific row wins, else the product-level row (`service: null`); both must
+match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not enrolled for that edge**
+(create returns `422`). (Rollbacks, being in-place within one env, resolve a policy by target only.)
 
 `GET /policies`, `GET /policies/{id}`, `POST /policies`, `PUT /policies/{id}`,
 `DELETE /policies/{id}`.
@@ -162,6 +164,7 @@ is not enrolled for that edge** (create returns `422`).
 {
   "product":   "checkout",
   "service":   null,                    // null/"" ⇒ product-level default
+  "sourceEnv": "staging",               // required — the edge's source env
   "targetEnv": "production",
   "steps": [                            // ordered for display; evaluated in parallel (all must pass)
     {

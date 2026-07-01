@@ -121,6 +121,7 @@ public class PromotionServiceTests : IDisposable
             Id = Guid.NewGuid(),
             Product = "acme",
             Service = service,
+            SourceEnv = "staging",
             TargetEnv = "prod",
             ApprovalSteps = steps,
         };
@@ -149,6 +150,7 @@ public class PromotionServiceTests : IDisposable
             Id = Guid.NewGuid(),
             Product = "acme",
             Service = null,
+            SourceEnv = "staging",
             TargetEnv = "prod",
             ApprovalSteps = steps,
         };
@@ -160,11 +162,15 @@ public class PromotionServiceTests : IDisposable
     /// <summary>
     /// Builds a <see cref="CreatePromotionDto"/> for the (acme, api, staging→prod) edge and calls the
     /// external create path — the only way candidates are born now (the old DeployEvent-driven
-    /// <c>CreateCandidateAsync</c> was removed).
+    /// <c>CreateCandidateAsync</c> was removed). Seeds a matching succeeded source deploy first so the
+    /// source-validation invariant passes (tests that exercise the missing-source path call the DTO
+    /// path directly instead).
     /// </summary>
     private Task<PromotionCandidate?> CreateAsync(
         string version = "v1.2.3", string service = "api")
-        => _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+    {
+        SeedDeploy(env: "staging", version: version, service: service, status: "succeeded");
+        return _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
             Product: "acme",
             Service: service,
             SourceEnv: "staging",
@@ -174,6 +180,7 @@ public class PromotionServiceTests : IDisposable
             ToRevision: null,
             References: null,
             Participants: null));
+    }
 
     // ---------------------------------------------------------------------
     // CreateExternalCandidateAsync
@@ -209,6 +216,46 @@ public class PromotionServiceTests : IDisposable
         Assert.NotNull(c);
         Assert.Equal(PromotionStatus.Pending, c!.Status);
         Assert.Null(c.ApprovedAt);
+    }
+
+    [Fact]
+    public async Task Create_NoSucceededSourceDeploy_Throws()
+    {
+        // Policy exists but no succeeded staging deploy of v1.2.3 → source validation blocks create.
+        SeedPolicy();
+
+        await Assert.ThrowsAsync<SourceDeploymentNotFoundException>(
+            () => _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+                Product: "acme",
+                Service: "api",
+                SourceEnv: "staging",
+                TargetEnv: "prod",
+                Version: "v1.2.3",
+                FromRevision: null,
+                ToRevision: null,
+                References: null,
+                Participants: null)));
+    }
+
+    [Fact]
+    public async Task Create_WithSucceededSourceDeploy_Succeeds()
+    {
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme",
+            Service: "api",
+            SourceEnv: "staging",
+            TargetEnv: "prod",
+            Version: "v1.2.3",
+            FromRevision: null,
+            ToRevision: null,
+            References: null,
+            Participants: null));
+
+        Assert.NotNull(c);
+        Assert.Equal(PromotionStatus.Pending, c!.Status);
     }
 
     [Fact]

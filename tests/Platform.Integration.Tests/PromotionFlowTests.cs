@@ -58,11 +58,12 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         // Enable the promotions feature flag.
         await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
 
-        // Policy: → staging = auto-approve (empty step tree).
+        // Policy: dev → staging = auto-approve (empty step tree).
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
         {
             product = "acme",
             service = (string?)null,
+            sourceEnv = "dev",
             targetEnv = "staging",
             steps = Array.Empty<object>(),
             gate = "PromotionOnly",
@@ -70,11 +71,12 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             escalationGroup = (string?)null,
         });
 
-        // Policy: → prod = gated, one InfraPortal.Admin approver required.
+        // Policy: staging → prod = gated, one InfraPortal.Admin approver required.
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
         {
             product = "acme",
             service = (string?)null,
+            sourceEnv = "staging",
             targetEnv = "prod",
             steps = new[]
             {
@@ -123,13 +125,19 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     // Create a promotion candidate via the external create endpoint (API-key auth + product
     // scope). Candidates are no longer derived from deploy events (D19); the external CI POSTs
     // the net change set here.
-    private Task<HttpResponseMessage> CreatePromotionAsync(
+    private async Task<HttpResponseMessage> CreatePromotionAsync(
         string sourceEnv,
         string targetEnv,
         string version,
         string product = "acme",
-        string service = "api") =>
-        _apiKeyClient.PostAsJsonAsync("/api/promotions", new
+        string service = "api")
+    {
+        // Source validation now requires a succeeded deploy of this exact version in the source env.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload(sourceEnv, version: version, status: "succeeded", product: product, service: service));
+
+        return await _apiKeyClient.PostAsJsonAsync("/api/promotions", new
         {
             product,
             service,
@@ -141,6 +149,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
                 new { role = "PR Author", displayName = "Bob Builder", email = "bob@example.com" },
             },
         });
+    }
 
     // ── Tests ───────────────────────────────────────────────────────────────
 

@@ -629,6 +629,11 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("SourceEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -644,7 +649,7 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasIndex("Product", "TargetEnv");
 
-                    b.HasIndex("Product", "Service", "TargetEnv")
+                    b.HasIndex("Product", "Service", "SourceEnv", "TargetEnv")
                         .IsUnique()
                         .HasFilter("[Service] IS NOT NULL");
 

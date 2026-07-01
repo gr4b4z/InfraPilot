@@ -409,14 +409,23 @@ public static class PromotionEndpoints
                 return Results.Forbid();
             }
 
-            var candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            PromotionCandidate? candidate;
+            try
+            {
+                candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            }
+            catch (SourceDeploymentNotFoundException ex)
+            {
+                // The (product, service, sourceEnv, version) has no succeeded deployment — cannot
+                // promote an unknown source.
+                return Results.UnprocessableEntity(new { error = ex.Message });
+            }
             if (candidate is null)
             {
-                // No policy resolved for this edge — the product isn't enrolled for (product,
-                // service, targetEnv). With topology gone this is the de-facto edge guard.
+                // No policy resolved for this source→target edge — the product isn't enrolled.
                 return Results.UnprocessableEntity(new
                 {
-                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' → '{dto.TargetEnv}'",
+                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
                 });
             }
 

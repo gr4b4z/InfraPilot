@@ -340,6 +340,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasKey(x => x.Id);
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
             e.Property(x => x.Service).HasMaxLength(200);
+            e.Property(x => x.SourceEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             // Approval rule tree, persisted as a JSON string column ("[]" ⇒ auto-approve). The
             // computed ApprovalSteps property is not mapped.
@@ -351,10 +352,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
-            // Unique per (product, service?, target_env). SQL Server and Postgres both treat
-            // NULL as distinct from NULL in unique indexes, which is the semantics we want:
-            // one product-default row AND any number of service-specific rows.
-            e.HasIndex(x => new { x.Product, x.Service, x.TargetEnv }).IsUnique();
+            // Unique per (product, service?, source_env, target_env). SQL Server and Postgres both
+            // treat NULL as distinct from NULL in unique indexes, which is the semantics we want:
+            // one product-default row AND any number of service-specific rows per source→target edge.
+            e.HasIndex(x => new { x.Product, x.Service, x.SourceEnv, x.TargetEnv }).IsUnique();
             e.HasIndex(x => new { x.Product, x.TargetEnv });
         });
 

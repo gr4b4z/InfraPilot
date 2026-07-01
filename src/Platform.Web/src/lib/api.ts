@@ -1022,6 +1022,7 @@ export interface PromotionPolicy {
   id: string;
   product: string;
   service: string | null;
+  sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
   gate: 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';
@@ -1037,6 +1038,7 @@ export interface PromotionPolicy {
 export interface UpsertPromotionPolicyPayload {
   product: string;
   service: string | null;
+  sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
   gate: 'PromotionOnly' | 'WorkItemsOnly' | 'WorkItemsAndManual';

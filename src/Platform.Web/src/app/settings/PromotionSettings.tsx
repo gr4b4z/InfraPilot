@@ -25,6 +25,7 @@ const emptyStep = (): PromotionPolicyStep => ({
 const emptyForm: UpsertPromotionPolicyPayload = {
   product: '',
   service: null,
+  sourceEnv: '',
   targetEnv: '',
   steps: [],
   gate: 'PromotionOnly',
@@ -414,6 +415,7 @@ export function PromotionSettings() {
     setForm({
       product: p.product,
       service: p.service,
+      sourceEnv: p.sourceEnv,
       targetEnv: p.targetEnv,
       // Deep clone so edits don't mutate the list row.
       steps: p.steps.map((s) => ({
@@ -576,7 +578,7 @@ export function PromotionSettings() {
                     >
                       <th className="pb-2 pr-3">Product</th>
                       <th className="pb-2 pr-3">Service</th>
-                      <th className="pb-2 pr-3">Target Env</th>
+                      <th className="pb-2 pr-3">Edge</th>
                       <th className="pb-2 pr-3">Approval Steps</th>
                       <th className="pb-2 pr-3">Gate</th>
                       <th className="pb-2">Actions</th>
@@ -596,7 +598,7 @@ export function PromotionSettings() {
                         >
                           {p.service || '—'}
                         </td>
-                        <td className="py-2 pr-3">{p.targetEnv}</td>
+                        <td className="py-2 pr-3">{p.sourceEnv} → {p.targetEnv}</td>
                         <td
                           className="py-2 pr-3"
                           style={{
@@ -696,6 +698,21 @@ export function PromotionSettings() {
                       value={form.service ?? ''}
                       onChange={(e) => setField('service', e.target.value || null)}
                       placeholder="empty = product-default"
+                      className={`${inputClass} w-full`}
+                      style={inputStyle}
+                    />
+                  </div>
+
+                  {/* Source Env */}
+                  <div className="space-y-1">
+                    <label className={labelClass} style={labelStyle}>
+                      Source Env *
+                    </label>
+                    <input
+                      type="text"
+                      value={form.sourceEnv}
+                      onChange={(e) => setField('sourceEnv', e.target.value)}
+                      placeholder="e.g. staging"
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     />
@@ -1016,7 +1033,7 @@ export function PromotionSettings() {
                 <div className="flex items-center gap-2 pt-1">
                   <button
                     onClick={handleSavePolicy}
-                    disabled={formSaving || !form.product.trim() || !form.targetEnv.trim()}
+                    disabled={formSaving || !form.product.trim() || !form.sourceEnv.trim() || !form.targetEnv.trim()}
                     className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
                     style={{ backgroundColor: 'var(--accent)' }}
                   >

@@ -100,16 +100,24 @@ public class PromotionService
         var references = dto.References ?? new List<ReferenceDto>();
         var participants = CanonicaliseParticipants(dto.Participants);
 
-        // No policy → product is not enrolled in promotions for this edge (→ 422). This is the only
-        // edge guard now that topology is gone; sourceEnv is recorded, not validated.
-        var policy = await _resolver.ResolveAsync(product, service, targetEnv, ct);
+        // No policy → product is not enrolled in promotions for this source→target edge (→ 422).
+        var policy = await _resolver.ResolveAsync(product, service, sourceEnv, targetEnv, ct);
         if (policy is null)
         {
             _logger.LogDebug(
-                "No promotion policy for {Product}/{Service} → {TargetEnv}; rejecting external create",
-                LogSanitizer.Clean(product), LogSanitizer.Clean(service), LogSanitizer.Clean(targetEnv));
+                "No promotion policy for {Product}/{Service} {SourceEnv} → {TargetEnv}; rejecting external create",
+                LogSanitizer.Clean(product), LogSanitizer.Clean(service),
+                LogSanitizer.Clean(sourceEnv), LogSanitizer.Clean(targetEnv));
             return null;
         }
+
+        // Ground the promotion in real source state: the exact version must have a succeeded deploy
+        // in the source environment. Blocks promotions from an unknown / never-shipped source.
+        var sourceDeployed = await _db.DeployEvents.AsNoTracking().AnyAsync(e =>
+            e.Product == product && e.Service == service && e.Environment == sourceEnv
+            && e.Version == version && e.Status == "succeeded", ct);
+        if (!sourceDeployed)
+            throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
 
         // Natural-key reuse-and-update (D15): a non-terminal candidate for this exact edge+version
         // is updated in place rather than duplicated.
@@ -121,7 +129,7 @@ public class PromotionService
         if (existing is not null)
             return await UpdateExistingCandidateAsync(existing, dto, references, participants, ct);
 
-        var snapshot = await _resolver.SnapshotAsync(product, service, targetEnv, ct);
+        var snapshot = await _resolver.SnapshotAsync(product, service, sourceEnv, targetEnv, ct);
 
         // AutoApproveWhenNoWorkItems: probe reads the PAYLOAD references (not DeployEventWorkItems) —
         // the candidate is self-contained, so "no work items" means the payload carries none.
@@ -1620,4 +1628,19 @@ public class MultipleEligibleRequirementsException : InvalidOperationException
 public class RequirementAlreadySatisfiedException : InvalidOperationException
 {
     public RequirementAlreadySatisfiedException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Thrown by <see cref="PromotionService.CreateExternalCandidateAsync"/> when the promotion's
+/// (product, service, source env, version) does not correspond to a succeeded deployment already
+/// ingested — i.e. an attempt to promote a version that never shipped to the source env. Maps to a
+/// 422 at the endpoint.
+/// </summary>
+public class SourceDeploymentNotFoundException : InvalidOperationException
+{
+    public SourceDeploymentNotFoundException(string product, string service, string sourceEnv, string version)
+        : base($"No succeeded deployment of {version} found in {sourceEnv} for {product}/{service} — "
+             + "cannot promote an unknown source.")
+    {
+    }
 }

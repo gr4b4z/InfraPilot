@@ -58,11 +58,25 @@ public class PromotionServiceDispatchTests : IDisposable
 
     /// <summary>
     /// Builds a <see cref="CreatePromotionDto"/> for the (acme, api, staging→prod) edge and calls the
-    /// external create path. No staging DeployEvent is seeded, so the source-drift invariant never
-    /// blocks (no source history ⇒ can't conclude drift).
+    /// external create path. Seeds a matching succeeded staging deploy first so source validation passes.
     /// </summary>
     private Task<PromotionCandidate?> CreateAsync(string version = "v1")
-        => _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+    {
+        _db.DeployEvents.Add(new DeployEvent
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = "api",
+            Environment = "staging",
+            Version = version,
+            Status = "succeeded",
+            Source = "ci",
+            DeployedAt = DateTimeOffset.UtcNow,
+            ParticipantsJson = "[]",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        _db.SaveChanges();
+        return _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
             Product: "acme",
             Service: "api",
             SourceEnv: "staging",
@@ -72,6 +86,7 @@ public class PromotionServiceDispatchTests : IDisposable
             ToRevision: null,
             References: null,
             Participants: null));
+    }
 
     /// <summary>
     /// Seeds a product-level policy (Service=null) for prod. A null <paramref name="approverGroup"/>
@@ -95,6 +110,7 @@ public class PromotionServiceDispatchTests : IDisposable
             Id = Guid.NewGuid(),
             Product = "acme",
             Service = null,
+            SourceEnv = "staging",
             TargetEnv = "prod",
             ApprovalSteps = steps,
         });

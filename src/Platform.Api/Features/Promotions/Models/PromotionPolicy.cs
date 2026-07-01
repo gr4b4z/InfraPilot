@@ -20,6 +20,7 @@ public class PromotionPolicy
     // Scope
     public string Product { get; set; } = "";
     public string? Service { get; set; }
+    public string SourceEnv { get; set; } = "";
     public string TargetEnv { get; set; } = "";
 
     // ── Authorization (rule tree) ────────────────────────────────────────────

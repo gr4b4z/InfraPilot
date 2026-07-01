@@ -89,6 +89,7 @@ public class PromotionApproverGroupTests : IDisposable
             Id = Guid.NewGuid(),
             Product = "acme",
             Service = service,
+            SourceEnv = "staging",
             TargetEnv = "prod",
             ApprovalSteps = steps,
         };
