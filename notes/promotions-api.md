@@ -66,6 +66,7 @@ candidate; it does **not** recompute or infer the bundle.
 | `201 Created` | Candidate created (or an existing one for the same edge+version reused/updated) | `{ "id": "<guid>", "status": "Pending" \| "Approved" }` |
 | `422 Unprocessable Entity` | **No promotion policy** exists for the `(product, service, sourceEnv, targetEnv)` edge — the product isn't enrolled for this edge. | `{ "error": "..." }` |
 | `422 Unprocessable Entity` | **Unknown source** — no *succeeded* deployment of `version` exists in `sourceEnv` for `product`/`service`. You can only promote something that actually shipped to the source env. | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | **Target already at version** — the target env's *current* version is already `version` (via a prior promotion, a rollback, or an out-of-band deploy). Nothing to promote. Compared against the target's latest succeeded deploy, so rollback-then-re-promote is still allowed. | `{ "error": "..." }` |
 | `400 Bad Request` | Missing required fields | `{ "errors": [ ... ] }` |
 | `403 Forbidden` | API key not scoped to `product` | — |
 

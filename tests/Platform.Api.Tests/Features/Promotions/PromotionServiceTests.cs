@@ -70,7 +70,8 @@ public class PromotionServiceTests : IDisposable
         string service = "api",
         bool rollback = false,
         string status = "succeeded",
-        string? deployerEmail = "bob@example.com")
+        string? deployerEmail = "bob@example.com",
+        DateTimeOffset? deployedAt = null)
     {
         var participants = deployerEmail is null
             ? "[]"
@@ -86,7 +87,7 @@ public class PromotionServiceTests : IDisposable
             Status = status,
             Source = "ci",
             IsRollback = rollback,
-            DeployedAt = DateTimeOffset.UtcNow,
+            DeployedAt = deployedAt ?? DateTimeOffset.UtcNow,
             ParticipantsJson = participants,
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -242,6 +243,56 @@ public class PromotionServiceTests : IDisposable
     {
         SeedPolicy();
         SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme",
+            Service: "api",
+            SourceEnv: "staging",
+            TargetEnv: "prod",
+            Version: "v1.2.3",
+            FromRevision: null,
+            ToRevision: null,
+            References: null,
+            Participants: null));
+
+        Assert.NotNull(c);
+        Assert.Equal(PromotionStatus.Pending, c!.Status);
+    }
+
+    [Fact]
+    public async Task Create_TargetAlreadyAtVersion_Throws()
+    {
+        // Source has v1.2.3 AND the target env's current version is already v1.2.3 → redundant
+        // promotion; reject with the target-already-at-version 422.
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.2.3", service: "api", status: "succeeded");
+
+        await Assert.ThrowsAsync<TargetAlreadyAtVersionException>(
+            () => _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+                Product: "acme",
+                Service: "api",
+                SourceEnv: "staging",
+                TargetEnv: "prod",
+                Version: "v1.2.3",
+                FromRevision: null,
+                ToRevision: null,
+                References: null,
+                Participants: null)));
+
+        Assert.Empty(_db.PromotionCandidates);
+    }
+
+    [Fact]
+    public async Task Create_TargetRolledBackFromVersion_Succeeds()
+    {
+        // Target ran v1.2.3, then rolled back to v1.0.0 (its CURRENT version). Re-promoting v1.2.3
+        // must be allowed — the check compares current target version, not history.
+        var t0 = DateTimeOffset.UtcNow;
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.2.3", service: "api", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", rollback: true, deployedAt: t0.AddMinutes(5));
 
         var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
             Product: "acme",

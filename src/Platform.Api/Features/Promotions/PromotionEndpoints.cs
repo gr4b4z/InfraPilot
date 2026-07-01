@@ -420,6 +420,11 @@ public static class PromotionEndpoints
                 // promote an unknown source.
                 return Results.UnprocessableEntity(new { error = ex.Message });
             }
+            catch (TargetAlreadyAtVersionException ex)
+            {
+                // The target env already runs this version — nothing to promote.
+                return Results.UnprocessableEntity(new { error = ex.Message });
+            }
             if (candidate is null)
             {
                 // No policy resolved for this source→target edge — the product isn't enrolled.

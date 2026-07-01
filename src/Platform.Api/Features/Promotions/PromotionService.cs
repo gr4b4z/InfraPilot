@@ -119,6 +119,21 @@ public class PromotionService
         if (!sourceDeployed)
             throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
 
+        // Reject redundant promotions: if the target env is already running this exact version
+        // (via a prior promotion, a rollback, or an out-of-band deploy) there is nothing to promote.
+        // Compare against the target's CURRENT version (latest succeeded deploy), NOT its history, so
+        // that rollback-then-re-promote still works: target had v2 → rolled back to v1 → promote v2.
+        // (This also guards a stuck-state bug: completion only fires when a NEW succeeded deploy lands
+        // the version on the target; a promotion into an already-current target would never complete.)
+        var targetCurrentVersion = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == product && e.Service == service
+                     && e.Environment == targetEnv && e.Status == "succeeded")
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => e.Version)
+            .FirstOrDefaultAsync(ct);
+        if (targetCurrentVersion == version)
+            throw new TargetAlreadyAtVersionException(product, service, targetEnv, version);
+
         // Natural-key reuse-and-update (D15): a non-terminal candidate for this exact edge+version
         // is updated in place rather than duplicated.
         var existing = await _db.PromotionCandidates.FirstOrDefaultAsync(c =>
@@ -1565,6 +1580,20 @@ public class SourceDeploymentNotFoundException : InvalidOperationException
     public SourceDeploymentNotFoundException(string product, string service, string sourceEnv, string version)
         : base($"No succeeded deployment of {version} found in {sourceEnv} for {product}/{service} — "
              + "cannot promote an unknown source.")
+    {
+    }
+}
+
+/// <summary>
+/// Thrown by <see cref="PromotionService.CreateExternalCandidateAsync"/> when the target environment
+/// is already running the exact version being promoted (its latest succeeded deploy matches) — a
+/// redundant promotion that has nothing to move and would never complete. Maps to a 422 at the
+/// endpoint.
+/// </summary>
+public class TargetAlreadyAtVersionException : InvalidOperationException
+{
+    public TargetAlreadyAtVersionException(string product, string service, string targetEnv, string version)
+        : base($"{targetEnv} is already running {version} for {product}/{service} — nothing to promote.")
     {
     }
 }
