@@ -211,6 +211,35 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
+    public async Task Create_WithoutSucceededSourceDeploy_IsRejected()
+    {
+        // The other cross-API guard: even for a policy-enrolled edge, you can only promote a version
+        // that actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded
+        // deploy of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound)
+        // and no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
+        // CreatePromotionAsync helper, which would seed the source deploy that this test omits.)
+        await SeedPoliciesAsync();
+
+        var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", new
+        {
+            product = "acme",
+            service = "api",
+            sourceEnv = "dev",
+            targetEnv = "staging",
+            version = "v-never-shipped",
+        });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, createResponse.StatusCode);
+
+        // Assert: no candidate was recorded for the unshipped version.
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=staging");
+        listResponse.EnsureSuccessStatusCode();
+
+        var body = await Deserialize(listResponse);
+        var candidates = body.GetProperty("candidates");
+        Assert.Null(FindCandidate(candidates, "v-never-shipped", "staging"));
+    }
+
+    [Fact]
     public async Task Create_AutoApprovePolicy_DispatchesPromotionApprovedWebhook()
     {
         // Was Ingest_AutoApprovePolicy_DispatchesPromotionApprovedWebhook. Auto-approve now fires
