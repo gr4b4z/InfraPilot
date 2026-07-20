@@ -114,6 +114,7 @@ export function PromotionDetailPage() {
   const [comments, setComments] = useState<PromotionComment[]>([]);
   const [approvalProgress, setApprovalProgress] = useState<PromotionApprovalProgress | null>(null);
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
+  const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
@@ -130,6 +131,7 @@ export function PromotionDetailPage() {
         setComments(data.comments || []);
         setApprovalProgress(data.approvalProgress ?? null);
         setEligibleRequirements(data.eligibleRequirements || []);
+        setBypass(data.bypass ?? null);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -325,6 +327,28 @@ export function PromotionDetailPage() {
             isAdmin={isAdmin}
             eligibleRequirements={eligibleRequirements}
           />
+
+          {/* Admin bypass banner — a bypass leaves no approval row, so this is the only trace of
+             who force-approved the promotion and why. Shown in the approval area. */}
+          {bypass && (
+            <div
+              className="rounded-xl border p-4 flex items-start gap-3"
+              style={{ borderColor: 'var(--warning)', backgroundColor: 'var(--warning-bg, rgba(234,179,8,0.1))' }}
+            >
+              <Rocket size={18} style={{ color: 'var(--warning)', flexShrink: 0, marginTop: 1 }} />
+              <div className="text-[13px]">
+                <p style={{ color: 'var(--text-primary)' }}>
+                  Approval gate <b>bypassed</b> by <b>{bypass.byName}</b>
+                  {' '}on {format(new Date(bypass.at), 'MMM d, yyyy HH:mm')} — force-approved without satisfying the gate.
+                </p>
+                {bypass.reason && (
+                  <p className="mt-1" style={{ color: 'var(--text-secondary)' }}>
+                    Reason: {bypass.reason}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Approval trail */}
           {approvals.length > 0 && (

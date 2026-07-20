@@ -303,6 +303,7 @@ class ApiClient {
       comments: PromotionComment[];
       approvalProgress: PromotionApprovalProgress;
       eligibleRequirements: EligibleRequirement[];
+      bypass: { byName: string; at: string; reason: string | null } | null;
     }>(`/promotions/${id}`);
   }
 

@@ -107,6 +107,30 @@ public static class PromotionEndpoints
             var comments = await svc.GetCommentsAsync(id);
             var approvalProgress = await svc.GetApprovalProgressAsync(c);
 
+            // Surface an admin bypass, if any. A bypass records NO approval row, so without this a
+            // force-approved candidate would show an empty approval trail with no trace of who did it
+            // or why. Read the latest promotion.bypassed audit entry (the canonical record).
+            var bypassEntry = await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.bypassed" && a.EntityId == id)
+                .OrderByDescending(a => a.Timestamp)
+                .Select(a => new { a.ActorName, a.Timestamp, a.AfterState })
+                .FirstOrDefaultAsync();
+            object? bypass = null;
+            if (bypassEntry is not null)
+            {
+                string? reason = null;
+                if (!string.IsNullOrEmpty(bypassEntry.AfterState))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(bypassEntry.AfterState);
+                        if (doc.RootElement.TryGetProperty("reason", out var r)) reason = r.GetString();
+                    }
+                    catch { /* best-effort — a malformed payload just yields a null reason */ }
+                }
+                bypass = new { byName = bypassEntry.ActorName, at = bypassEntry.Timestamp, reason };
+            }
+
             // The candidate is self-contained (D14): no source deploy event. The change set lives
             // on the candidate's own References, surfaced as `sourceEvent` so the detail view keeps
             // rendering work items / PRs without a join.
@@ -143,6 +167,7 @@ public static class PromotionEndpoints
                 },
                 comments = comments.Select(ToCommentDto),
                 approvalProgress,
+                bypass,
             });
         });
 
