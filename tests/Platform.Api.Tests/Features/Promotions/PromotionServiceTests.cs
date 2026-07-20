@@ -377,6 +377,27 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Approve_SameUser_DifferentEmailCasing_IsDeduped()
+    {
+        // The identity claim can arrive with different casing across tokens (UPN vs Graph mail).
+        // Authorization here is group-based (matched by Id via Graph), so casing doesn't affect it —
+        // this isolates the dedup: the second attempt must still be rejected as "already decided",
+        // and the stored ApproverEmail must be the canonical lower-invariant form.
+        SeedPolicy(approverGroup: "ops", minApprovers: 5);
+        var c = await CreateAsync();
+
+        _currentUser.Email.Returns("Alice@Example.com");
+        await _sut.ApproveAsync(c!.Id, null);
+
+        _currentUser.Email.Returns("alice@example.com");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.ApproveAsync(c.Id, null));
+
+        var row = Assert.Single(_db.PromotionApprovals);
+        Assert.Equal("alice@example.com", row.ApproverEmail);
+    }
+
+    [Fact]
     public async Task Approve_AdminAlwaysQualifies()
     {
         // Admin bypasses group checks (IsInApproverGroupAsync honours IsAdmin).
