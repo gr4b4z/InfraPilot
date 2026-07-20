@@ -746,7 +746,7 @@ public class PromotionService
         {
             Id = Guid.NewGuid(),
             CandidateId = candidateId,
-            ApproverEmail = _currentUser.Email,
+            ApproverEmail = NormalizeEmail(_currentUser.Email),
             ApproverName = _currentUser.Name,
             Comment = comment,
             Decision = PromotionDecision.Approved,
@@ -1155,9 +1155,11 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove || snapshot.AllRequirements.Count == 0) return Array.Empty<RequirementRef>();
 
-        // Already decided? Nothing further to offer.
+        // Already decided? Nothing further to offer. Compare against the canonical stored form so a
+        // differently-cased email claim (e.g. UPN vs Graph mail) can't slip past the dedup.
+        var normalizedEmail = NormalizeEmail(_currentUser.Email);
         var already = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == _currentUser.Email, ct);
+            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == normalizedEmail, ct);
         if (already) return Array.Empty<RequirementRef>();
 
         // Which requirements are still OPEN (not yet satisfied) per the live matcher.
@@ -1239,7 +1241,7 @@ public class PromotionService
         {
             Id = Guid.NewGuid(),
             CandidateId = candidateId,
-            ApproverEmail = _currentUser.Email,
+            ApproverEmail = NormalizeEmail(_currentUser.Email),
             ApproverName = _currentUser.Name,
             Comment = comment,
             Decision = PromotionDecision.Rejected,
@@ -1370,9 +1372,10 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove) return false; // nothing to approve
 
-        // Already decided? Can't approve again.
+        // Already decided? Can't approve again. Match the canonical stored form.
+        var normalizedEmail = NormalizeEmail(_currentUser.Email);
         var already = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == _currentUser.Email, ct);
+            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == normalizedEmail, ct);
         if (already) return false;
 
         // Authorized for some requirement of this candidate's rule tree.
@@ -1391,9 +1394,11 @@ public class PromotionService
         var list = candidates.ToList();
 
         // Precompute "already decided" set for the current user across all candidates in one query.
+        // Match the canonical stored form so casing can't cause a missed dedup.
         var ids = list.Select(c => c.Id).ToList();
+        var normalizedEmail = NormalizeEmail(_currentUser.Email);
         var alreadyDecided = await _db.PromotionApprovals.AsNoTracking()
-            .Where(a => ids.Contains(a.CandidateId) && a.ApproverEmail == _currentUser.Email)
+            .Where(a => ids.Contains(a.CandidateId) && a.ApproverEmail == normalizedEmail)
             .Select(a => a.CandidateId)
             .ToListAsync(ct);
         var decidedSet = alreadyDecided.ToHashSet();
@@ -1478,11 +1483,21 @@ public class PromotionService
 
     private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)
     {
+        var normalizedEmail = NormalizeEmail(email);
         var dup = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidateId && a.ApproverEmail == email, ct);
+            .AnyAsync(a => a.CandidateId == candidateId && a.ApproverEmail == normalizedEmail, ct);
         if (dup)
             throw new InvalidOperationException("You have already made a decision on this promotion");
     }
+
+    /// <summary>
+    /// Canonical form used for storing and comparing approver emails: trimmed + lower-invariant.
+    /// Applied to the stored <see cref="PromotionApproval.ApproverEmail"/> and to the current-user
+    /// email on every dedup read, so a differently-cased identity claim (e.g. UPN in one token,
+    /// Graph <c>mail</c> in another) resolves to the same key. Authorization matching against the
+    /// policy <c>Users</c> list is unaffected — that stays a case-insensitive in-memory compare.
+    /// </summary>
+    private static string NormalizeEmail(string? email) => (email ?? "").Trim().ToLowerInvariant();
 }
 
 /// <summary>
