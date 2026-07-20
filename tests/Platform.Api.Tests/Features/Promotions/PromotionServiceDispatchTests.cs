@@ -179,4 +179,50 @@ public class PromotionServiceDispatchTests : IDisposable
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
     }
+
+    [Fact]
+    public async Task Bypass_ForcesApproved_AndFiresExistingPromotionApprovedWebhook()
+    {
+        // A gated candidate that no one has approved. The admin bypass must flip it to Approved and
+        // fire the SAME promotion.approved webhook a normal approval does — so downstream is unchanged.
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Pending, candidate!.Status);
+
+        var bypassed = await _sut.BypassAsync(candidate.Id, reason: "hotfix — incident INC-42");
+
+        Assert.Equal(PromotionStatus.Approved, bypassed.Status);
+        Assert.NotNull(bypassed.ApprovedAt);
+        // Bypass records no approver row — it's an escape hatch, not a manufactured approval.
+        Assert.Empty(_db.PromotionApprovals);
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    [Fact]
+    public async Task Bypass_WithoutReason_Throws_AndDoesNotDispatch()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _sut.BypassAsync(candidate!.Id, reason: "   "));
+
+        Assert.Equal(PromotionStatus.Pending, _db.PromotionCandidates.Single().Status);
+        await _webhookDispatcher.DidNotReceive().DispatchAsync(
+            Arg.Any<string>(), Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+    }
+
+    [Fact]
+    public async Task Bypass_NonPendingCandidate_Throws()
+    {
+        SeedPolicy(approverGroup: null); // auto-approve ⇒ candidate is born Approved
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, candidate!.Status);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.BypassAsync(candidate.Id, reason: "too late"));
+    }
 }

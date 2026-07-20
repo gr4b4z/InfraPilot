@@ -820,6 +820,49 @@ public class PromotionService
     }
 
     /// <summary>
+    /// Administrator escape hatch: force a Pending candidate to <see cref="PromotionStatus.Approved"/>
+    /// without satisfying its configured approval gate. A <paramref name="reason"/> is required and is
+    /// audited. Fires the SAME <c>promotion.approved</c> webhook a normal approval does — so downstream
+    /// automation triggers identically — tagged with <c>trigger=administrator-bypass</c> so consumers
+    /// and the audit trail can distinguish a bypass from a gate-satisfied approval. Records a distinct
+    /// <c>promotion.bypassed</c> audit action rather than manufacturing an approver row.
+    /// <para>Authorization is enforced at the endpoint: this lives under <c>/api/promotions/admin</c>,
+    /// gated by <see cref="AuthorizationPolicies.CatalogAdmin"/> (the <c>InfraPortal.Admin</c> role).</para>
+    /// </summary>
+    public async Task<PromotionCandidate> BypassAsync(
+        Guid candidateId, string reason, CancellationToken ct = default)
+    {
+        var trimmedReason = (reason ?? "").Trim();
+        if (trimmedReason.Length == 0)
+            throw new ArgumentException("A reason is required to bypass a promotion.", nameof(reason));
+
+        // LoadPendingAsync throws KeyNotFoundException (missing) or InvalidOperationException (already
+        // in a terminal/in-flight state) — both surfaced as 404/400 by the endpoint.
+        var candidate = await LoadPendingAsync(candidateId, ct);
+
+        candidate.Status = PromotionStatus.Approved;
+        candidate.ApprovedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.bypassed",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { reason = trimmedReason });
+
+        _logger.LogWarning(
+            "Candidate {Id} bypassed to Approved by {UserId} ({Email}); reason: {Reason}",
+            candidate.Id, _currentUser.Id, _currentUser.Email, trimmedReason);
+
+        // Keep the existing promotion.approved webhook so downstream automation fires as usual;
+        // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
+        await DispatchWebhookAsync(candidate, "promotion.approved", ct,
+            new { trigger = "administrator-bypass", reason = trimmedReason });
+
+        return candidate;
+    }
+
+    /// <summary>
     /// Evaluates whether a Pending candidate's policy gate is satisfied. Pure(ish): reads
     /// <see cref="PromotionApproval"/> / <see cref="WorkItemApproval"/> / <see cref="PromotionWorkItem"/>
     /// rows but never mutates state. Returned blockers are human-readable strings the UI can render

@@ -14,6 +14,28 @@ public static class PromotionAdminEndpoints
 {
     public static RouteGroupBuilder MapPromotionAdminEndpoints(this RouteGroupBuilder group)
     {
+        // ── Candidate bypass (admin escape hatch) ───────────────────────────
+        // Force a Pending candidate to Approved without satisfying its gate. Admin-only via the
+        // group's CatalogAdmin policy. A reason is required; the existing promotion.approved webhook
+        // still fires so downstream automation is unchanged.
+        group.MapPost("/candidates/{id:guid}/bypass", async (
+            PromotionService service, Guid id, BypassPromotionRequest? request, CancellationToken ct) =>
+        {
+            try
+            {
+                var candidate = await service.BypassAsync(id, request?.Reason ?? "", ct);
+                return Results.Ok(new { candidate.Id, status = candidate.Status.ToString() });
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound();
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
         // ── Policies ────────────────────────────────────────────────────────
 
         group.MapGet("/policies", async (PlatformDbContext db) =>
@@ -227,3 +249,6 @@ public record UpsertRequirementRequest(
     List<GroupRef>? Groups,
     List<string>? Users,
     int MinApprovers = 1);
+
+/// <summary>Body for the admin bypass endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
+public record BypassPromotionRequest(string? Reason);

@@ -390,6 +390,18 @@ class ApiClient {
     });
   }
 
+  /**
+   * Admin escape hatch: force a Pending promotion to Approved without satisfying its gate.
+   * Requires a reason. Hits the admin-only endpoint (CatalogAdmin); the backend still fires the
+   * existing promotion.approved webhook so downstream automation is unchanged.
+   */
+  bypassPromotion(id: string, reason: string) {
+    return this.request<{ id: string; status: string }>(
+      `/promotions/admin/candidates/${id}/bypass`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    );
+  }
+
   bulkApprovePromotions(ids: string[], comment?: string) {
     return this.request<{ results: Array<{ id: string; ok: boolean; status?: string; error?: string }> }>(
       `/promotions/bulk/approve`,
