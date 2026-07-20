@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
-import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2 } from 'lucide-react';
+import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2, PlusCircle } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
+import { useAuthStore } from '@/stores/authStore';
+import { api } from '@/lib/api';
 import { CopyEmailButton } from './CopyEmailButton';
 import type { DeploymentStateEntry, DeployReference, DeployParticipant } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
@@ -11,6 +14,8 @@ interface Props {
   entry: DeploymentStateEntry;
   product: string;
   onClose: () => void;
+  /** Called after a manual deployment is created so the parent can refresh state. */
+  onChanged?: () => void;
 }
 
 const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
@@ -20,9 +25,40 @@ const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
 };
 
-export function DeployEventDetail({ entry, product, onClose }: Props) {
+export function DeployEventDetail({ entry, product, onClose, onChanged }: Props) {
   const { getDisplayName } = useSettingsStore();
   const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+
+  // Manual deployment entry (admin only): create a new deploy based on this one, changing
+  // version/status. A note is required. Server stamps Source="manual" + triggered-by = the user.
+  const [showManualForm, setShowManualForm] = useState(false);
+  const [manualVersion, setManualVersion] = useState(entry.version);
+  const [manualStatus, setManualStatus] = useState(entry.status ?? 'succeeded');
+  const [manualNote, setManualNote] = useState('');
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+
+  const submitManual = async () => {
+    setManualSaving(true);
+    setManualError(null);
+    try {
+      await api.createManualDeploy({
+        product,
+        service: entry.service,
+        environment: entry.environment,
+        version: manualVersion.trim(),
+        status: manualStatus.trim() || undefined,
+        note: manualNote.trim(),
+      });
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : 'Failed to create manual deployment');
+    } finally {
+      setManualSaving(false);
+    }
+  };
 
   // Event-level participants (no reference context — rare with the new model but kept for
   // backward compat with legacy payloads that put everything at event level).
@@ -151,7 +187,86 @@ export function DeployEventDetail({ entry, product, onClose }: Props) {
               Roll back
             </Link>
           )}
+
+          {/* Manual deploy — admin only. Records a new deploy based on this one, attributed to
+              the signed-in user (Source="manual"), not CI. */}
+          {isAdmin && !showManualForm && (
+            <button
+              onClick={() => setShowManualForm(true)}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--accent)' }}
+            >
+              <PlusCircle size={12} />
+              New manual deploy
+            </button>
+          )}
         </div>
+
+        {/* Manual deploy form */}
+        {isAdmin && showManualForm && (
+          <div className="space-y-2 pt-3 border-t" style={{ borderColor: 'var(--border-color)' }}>
+            <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Records a <b>new</b> deployment based on this one, attributed to you (not CI). A note is required.
+            </p>
+            <label className="block text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Version
+              <input
+                value={manualVersion}
+                onChange={(e) => setManualVersion(e.target.value)}
+                className="mt-1 w-full rounded-lg border px-3 py-1.5 text-[13px] font-mono"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              />
+            </label>
+            <label className="block text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Status
+              <input
+                value={manualStatus}
+                onChange={(e) => setManualStatus(e.target.value)}
+                placeholder="succeeded"
+                className="mt-1 w-full rounded-lg border px-3 py-1.5 text-[13px]"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              />
+            </label>
+            <label className="block text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Note (required)
+              <textarea
+                value={manualNote}
+                onChange={(e) => setManualNote(e.target.value)}
+                rows={2}
+                placeholder="Why are you recording this manually?"
+                className="mt-1 w-full rounded-lg border px-3 py-1.5 text-[13px] resize-none"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              />
+            </label>
+            {manualError && (
+              <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{manualError}</p>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={submitManual}
+                disabled={manualSaving || manualVersion.trim().length === 0 || manualNote.trim().length === 0}
+                title={manualNote.trim().length === 0 ? 'A note is required' : undefined}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity"
+                style={{
+                  backgroundColor: 'var(--accent)',
+                  color: '#fff',
+                  opacity: manualSaving || manualVersion.trim().length === 0 || manualNote.trim().length === 0 ? 0.5 : 1,
+                  cursor: manualVersion.trim().length === 0 || manualNote.trim().length === 0 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <PlusCircle size={13} />
+                {manualSaving ? 'Creating…' : 'Create deployment'}
+              </button>
+              <button
+                onClick={() => { setShowManualForm(false); setManualNote(''); setManualError(null); }}
+                className="text-[13px] transition-opacity hover:opacity-80"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -787,6 +787,7 @@ export function ProductDeploymentsPage() {
           entry={selected}
           product={product!}
           onClose={() => setSelected(null)}
+          onChanged={() => fetchState(product!)}
         />
       )}
     </div>
