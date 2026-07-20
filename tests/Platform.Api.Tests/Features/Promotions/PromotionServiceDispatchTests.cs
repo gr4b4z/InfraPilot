@@ -165,6 +165,44 @@ public class PromotionServiceDispatchTests : IDisposable
     }
 
     [Fact]
+    public async Task PromotionApprovedWebhook_CarriesApprovedBy_TaggedApproval()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.ApproveAsync(candidate!.Id, comment: null);
+
+        // The payload must carry an approvedBy entry naming the approver, tagged via="approval".
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Is<object>(o =>
+                JsonSerializer.Serialize(o).Contains("approvedBy")
+                && JsonSerializer.Serialize(o).Contains("alice@example.com")
+                && JsonSerializer.Serialize(o).Contains("\"via\":\"approval\"")),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    [Fact]
+    public async Task BypassWebhook_CarriesBypasserInApprovedBy_TaggedBypass()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.BypassAsync(candidate!.Id, reason: "INC-1234 hotfix");
+
+        // A bypass records no approver row, but the bypasser must still appear in approvedBy,
+        // tagged via="bypass" with the reason — one list answers "who caused this to be approved".
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Is<object>(o =>
+                JsonSerializer.Serialize(o).Contains("approvedBy")
+                && JsonSerializer.Serialize(o).Contains("\"via\":\"bypass\"")
+                && JsonSerializer.Serialize(o).Contains("alice@example.com")
+                && JsonSerializer.Serialize(o).Contains("INC-1234 hotfix")),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    [Fact]
     public async Task Reject_DispatchesPromotionRejectedWebhook()
     {
         SeedPolicy(approverGroup: "ops");

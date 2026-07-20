@@ -857,7 +857,8 @@ public class PromotionService
         // Keep the existing promotion.approved webhook so downstream automation fires as usual;
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
-            new { trigger = "administrator-bypass", reason = trimmedReason });
+            new { trigger = "administrator-bypass", reason = trimmedReason },
+            bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason));
 
         return candidate;
     }
@@ -1363,10 +1364,46 @@ public class PromotionService
     /// failure but never throws — the state transition has already been persisted.
     /// </summary>
     private async Task DispatchWebhookAsync(
-        PromotionCandidate candidate, string eventType, CancellationToken ct, object? change = null)
+        PromotionCandidate candidate, string eventType, CancellationToken ct, object? change = null,
+        (string Name, string Email, DateTimeOffset At, string Reason)? bypass = null)
     {
         try
         {
+            // Who caused this candidate to be approved, oldest first — a single list so a consumer
+            // never has to look in two places. From the promotion's point of view a bypass IS an
+            // approval; each entry carries `via` so governance-minded consumers can still tell a
+            // policy-satisfying sign-off ("approval", with the requirement) from an admin override
+            // ("bypass", with the reason). Empty for auto-approve.
+            var rows = await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => a.CandidateId == candidate.Id && a.Decision == PromotionDecision.Approved)
+                .OrderBy(a => a.CreatedAt)
+                .Select(a => new { a.ApproverName, a.ApproverEmail, a.CreatedAt, a.StepName, a.RequirementName })
+                .ToListAsync(ct);
+
+            var approvedBy = new List<object>();
+            foreach (var r in rows)
+                approvedBy.Add(new
+                {
+                    name = r.ApproverName,
+                    email = r.ApproverEmail,
+                    at = r.CreatedAt,
+                    via = "approval",
+                    stepName = r.StepName,
+                    requirementName = r.RequirementName,
+                    reason = (string?)null,
+                });
+            if (bypass is { } b)
+                approvedBy.Add(new
+                {
+                    name = b.Name,
+                    email = b.Email,
+                    at = b.At,
+                    via = "bypass",
+                    stepName = (string?)null,
+                    requirementName = (string?)null,
+                    reason = (string?)b.Reason,
+                });
+
             // The candidate is self-contained: its References are the authoritative net change set,
             // so the webhook reads them directly rather than re-aggregating from deploy events.
             var payload = new
@@ -1381,6 +1418,8 @@ public class PromotionService
                 candidate.ToRevision,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
+                // Who approved this candidate — approvals and any admin bypass, tagged by `via`.
+                approvedBy,
                 // Promotion-level participants (manually assigned QA/reviewer etc.)
                 participants = candidate.Participants,
                 // The candidate's own net change set (work items / PRs / repository refs).
