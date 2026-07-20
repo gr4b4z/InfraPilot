@@ -857,7 +857,7 @@ public class PromotionService
         // Keep the existing promotion.approved webhook so downstream automation fires as usual;
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
-            new { trigger = "administrator-bypass", reason = trimmedReason });
+            new { trigger = "administrator-bypass", reason = trimmedReason, bypassedBy = _currentUser.Name, bypassedByEmail = _currentUser.Email });
 
         return candidate;
     }
@@ -1367,6 +1367,23 @@ public class PromotionService
     {
         try
         {
+            // Who signed off: the Approved decisions recorded on this candidate, oldest first. Lets a
+            // consumer of promotion.approved see exactly who approved (and as which requirement) without
+            // a follow-up call. Empty for auto-approve and for an admin bypass (a bypass records no
+            // approver row — the change block's trigger=administrator-bypass identifies those instead).
+            var approvedBy = await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => a.CandidateId == candidate.Id && a.Decision == PromotionDecision.Approved)
+                .OrderBy(a => a.CreatedAt)
+                .Select(a => new
+                {
+                    name = a.ApproverName,
+                    email = a.ApproverEmail,
+                    at = a.CreatedAt,
+                    stepName = a.StepName,
+                    requirementName = a.RequirementName,
+                })
+                .ToListAsync(ct);
+
             // The candidate is self-contained: its References are the authoritative net change set,
             // so the webhook reads them directly rather than re-aggregating from deploy events.
             var payload = new
@@ -1381,6 +1398,8 @@ public class PromotionService
                 candidate.ToRevision,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
+                // Who approved this candidate (empty for auto-approve / bypass — see note above).
+                approvedBy,
                 // Promotion-level participants (manually assigned QA/reviewer etc.)
                 participants = candidate.Participants,
                 // The candidate's own net change set (work items / PRs / repository refs).

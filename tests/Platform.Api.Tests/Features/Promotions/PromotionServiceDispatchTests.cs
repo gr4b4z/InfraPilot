@@ -165,6 +165,23 @@ public class PromotionServiceDispatchTests : IDisposable
     }
 
     [Fact]
+    public async Task PromotionApprovedWebhook_CarriesApprovedBy()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.ApproveAsync(candidate!.Id, comment: null);
+
+        // The dispatched payload must carry an approvedBy entry naming the approver.
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Is<object>(o =>
+                JsonSerializer.Serialize(o).Contains("approvedBy")
+                && JsonSerializer.Serialize(o).Contains("alice@example.com")),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    [Fact]
     public async Task Reject_DispatchesPromotionRejectedWebhook()
     {
         SeedPolicy(approverGroup: "ops");
