@@ -107,6 +107,7 @@ const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
 export function PromotionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
   const [candidate, setCandidate] = useState<PromotionCandidate | null>(null);
   const [approvals, setApprovals] = useState<PromotionApprovalEntry[]>([]);
   const [sourceEvent, setSourceEvent] = useState<PromotionSourceEvent | null>(null);
@@ -154,6 +155,22 @@ export function PromotionDetailPage() {
       fetchData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Admin escape hatch: force-approve a Pending candidate without satisfying its gate. The reason is
+  // required (the button that calls this is disabled until it's non-empty).
+  const handleBypass = async (reason: string) => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      await api.bypassPromotion(id!, reason);
+      setActionDone('Bypassed');
+      fetchData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bypass failed');
     } finally {
       setActionLoading(false);
     }
@@ -230,24 +247,30 @@ export function PromotionDetailPage() {
         </span>
       </div>
 
-      {/* Success banner */}
-      {actionDone && (
-        <div
-          className="flex items-center gap-3 p-4 rounded-xl border"
-          style={{
-            backgroundColor: actionDone === 'Approved' ? 'var(--success-bg)' : 'var(--danger-bg)',
-            borderColor: actionDone === 'Approved' ? 'var(--success)' : 'var(--danger)',
-            color: actionDone === 'Approved' ? 'var(--success)' : 'var(--danger)',
-          }}
-        >
-          {actionDone === 'Approved' ? <CheckCircle size={18} /> : <XCircle size={18} />}
-          <span className="text-[13px] font-medium">
-            {actionDone === 'Approved'
-              ? 'You approved this promotion.'
-              : 'You rejected this promotion.'}
-          </span>
-        </div>
-      )}
+      {/* Success banner. Approved and Bypassed are both positive outcomes (the candidate advanced);
+         Rejected is negative. */}
+      {actionDone && (() => {
+        const positive = actionDone === 'Approved' || actionDone === 'Bypassed';
+        const message =
+          actionDone === 'Approved'
+            ? 'You approved this promotion.'
+            : actionDone === 'Bypassed'
+              ? 'You bypassed the approval gate — this promotion was force-approved.'
+              : 'You rejected this promotion.';
+        return (
+          <div
+            className="flex items-center gap-3 p-4 rounded-xl border"
+            style={{
+              backgroundColor: positive ? 'var(--success-bg)' : 'var(--danger-bg)',
+              borderColor: positive ? 'var(--success)' : 'var(--danger)',
+              color: positive ? 'var(--success)' : 'var(--danger)',
+            }}
+          >
+            {positive ? <CheckCircle size={18} /> : <XCircle size={18} />}
+            <span className="text-[13px] font-medium">{message}</span>
+          </div>
+        );
+      })()}
 
       {/* Error banner */}
       {error && candidate && (
@@ -298,6 +321,8 @@ export function PromotionDetailPage() {
             setComment={setComment}
             actionLoading={actionLoading}
             onAction={handleAction}
+            onBypass={handleBypass}
+            isAdmin={isAdmin}
             eligibleRequirements={eligibleRequirements}
           />
 
@@ -1147,6 +1172,8 @@ function PromotionApprovalCard({
   setComment,
   actionLoading,
   onAction,
+  onBypass,
+  isAdmin,
   eligibleRequirements,
 }: {
   candidate: PromotionCandidate;
@@ -1156,11 +1183,18 @@ function PromotionApprovalCard({
   setComment: (v: string) => void;
   actionLoading: boolean;
   onAction: (action: 'approve' | 'reject', target?: EligibleRequirement) => void;
+  onBypass: (reason: string) => void;
+  isAdmin: boolean;
   eligibleRequirements: EligibleRequirement[];
 }) {
   const showActions = candidate.canApprove && !actionDone;
   const showProgress = !!progress?.requiresApproval;
+  // Admin escape hatch: available on any Pending candidate regardless of whether this admin is an
+  // eligible approver — that's the point of a bypass.
+  const showBypass = isAdmin && candidate.status === 'Pending' && !actionDone;
   const [showCommentBox, setShowCommentBox] = useState(false);
+  const [showBypassBox, setShowBypassBox] = useState(false);
+  const [bypassReason, setBypassReason] = useState('');
 
   // When the approver is eligible for more than one open requirement they must choose which one
   // they approve as. Key by `${stepName}\u0000${requirementName}` so step+requirement is unique.
@@ -1172,9 +1206,9 @@ function PromotionApprovalCard({
     eligibleRequirements.find((r) => reqKey(r) === selectedKey)
     ?? (eligibleRequirements.length === 1 ? eligibleRequirements[0] : null);
 
-  // Hide the card entirely when there's nothing to show: no progress to surface and
-  // no action available to the current user.
-  if (!showActions && !showProgress) return null;
+  // Hide the card entirely when there's nothing to show: no progress to surface, no action
+  // available to the current user, and no admin bypass on offer.
+  if (!showActions && !showProgress && !showBypass) return null;
 
   const handleAction = (action: 'approve' | 'reject') => {
     // For approvals: pass the chosen requirement (preselected when only one is eligible).
@@ -1318,6 +1352,76 @@ function PromotionApprovalCard({
             </button>
           </div>
         </>
+      )}
+
+      {/* Admin-only bypass. Shown on any Pending candidate to admins, even when they aren't an
+         eligible approver. Force-approves the candidate without satisfying the gate; the reason is
+         required and the existing promotion.approved webhook still fires. */}
+      {showBypass && (
+        <div
+          className={showActions || showProgress ? 'mt-4 pt-4 border-t' : ''}
+          style={showActions || showProgress ? { borderColor: 'var(--border-color)' } : undefined}
+        >
+          {!showBypassBox ? (
+            <button
+              type="button"
+              onClick={() => setShowBypassBox(true)}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+              style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
+            >
+              <Rocket size={14} />
+              Bypass approval gate
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                Admin bypass force-approves this promotion <b>without</b> satisfying its approval gate.
+                It is audited and still fires the downstream <code>promotion.approved</code> webhook.
+                A reason is required.
+              </p>
+              <textarea
+                value={bypassReason}
+                onChange={(e) => setBypassReason(e.target.value)}
+                placeholder="Reason for bypassing (required)…"
+                rows={2}
+                className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                }}
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onBypass(bypassReason.trim())}
+                  disabled={actionLoading || bypassReason.trim().length === 0}
+                  title={bypassReason.trim().length === 0 ? 'Enter a reason first' : undefined}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
+                  style={{
+                    backgroundColor: 'var(--warning)',
+                    color: '#fff',
+                    opacity: actionLoading || bypassReason.trim().length === 0 ? 0.5 : 1,
+                    cursor: bypassReason.trim().length === 0 ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <Rocket size={14} />
+                  Confirm bypass
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowBypassBox(false);
+                    setBypassReason('');
+                  }}
+                  className="text-[13px] transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
