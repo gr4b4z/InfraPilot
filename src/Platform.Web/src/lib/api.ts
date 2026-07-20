@@ -160,6 +160,25 @@ class ApiClient {
     return this.request<import('./types').DeployEvent[]>(`/deployments/recent/${product}${query}`);
   }
 
+  /**
+   * Manual deployment entry: create a new deploy based on the latest one for
+   * (product, service, environment), changing version/status. Server stamps Source="manual"
+   * and triggered-by = the caller. `note` is required. Admin-only for human callers.
+   */
+  createManualDeploy(body: {
+    product: string;
+    service: string;
+    environment: string;
+    version: string;
+    note: string;
+    status?: string;
+  }) {
+    return this.request<{ id: string; version: string; previousVersion: string | null; status: string; source: string }>(
+      '/deployments/manual',
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  }
+
   // Deployment admin — duplicate cleanup (admin only)
   getDeploymentDuplicatesPreview() {
     return this.request<{ groups: number; rows: number }>('/deployments/admin/duplicates');

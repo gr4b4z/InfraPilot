@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 
 namespace Platform.Api.Features.Deployments;
@@ -28,6 +29,56 @@ public static class DeploymentEndpoints
         })
         .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
         .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
+
+        // Manual deployment entry — a human (UI) or an agent (API) records a new deploy based on the
+        // latest one, changing only version/status. Distinct from CI ingest: the server stamps
+        // Source="manual" + triggered-by = the caller, so it's always attributable. A note is required.
+        // Inherits the group's CanApprove gate (Bearer OR ApiKey, authenticated); finer checks below:
+        // a human must be admin; an API key is product-scoped exactly like ingest.
+        group.MapPost("/manual", async (
+            DeploymentService service, ICurrentUser currentUser, IAuditLogger audit,
+            ClaimsPrincipal user, CreateManualDeployRequest req, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Product) || string.IsNullOrWhiteSpace(req.Service)
+                || string.IsNullOrWhiteSpace(req.Environment) || string.IsNullOrWhiteSpace(req.Version))
+                return Results.BadRequest(new { error = "product, service, environment and version are required" });
+            if (string.IsNullOrWhiteSpace(req.Note))
+                return Results.BadRequest(new { error = "note is required for a manual deployment" });
+
+            var isApiKey = user.Identities.Any(i => i.AuthenticationType == ApiKeyAuthHandler.SchemeName);
+            ManualDeployActor actor;
+            if (isApiKey)
+            {
+                // Product scope: honour the key's allowed_product claims exactly as /events does.
+                var allowed = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
+                if (allowed.Count > 0 && !allowed.Contains(req.Product, StringComparer.OrdinalIgnoreCase))
+                    return Results.Forbid();
+                var keyName = user.FindFirstValue(ClaimTypes.Name) ?? "api-key";
+                actor = new ManualDeployActor($"apikey:{keyName}", keyName, null, "api-key");
+            }
+            else
+            {
+                // Human caller: creating deploy records that drive promotions is admin-only.
+                if (!currentUser.IsAdmin) return Results.Forbid();
+                actor = new ManualDeployActor(currentUser.Id, currentUser.Name, currentUser.Email, "user");
+            }
+
+            try
+            {
+                var ev = await service.CreateManualEventAsync(req, actor, ct);
+                await audit.Log(
+                    "deployments", "deployment.manual.created",
+                    actor.Id, actor.DisplayName, actor.ActorType,
+                    "DeployEvent", ev.Id, null,
+                    new { ev.Product, ev.Service, ev.Environment, ev.Version, ev.PreviousVersion, ev.Status, note = req.Note });
+                return Results.Created($"/api/deployments/events/{ev.Id}",
+                    new { ev.Id, ev.Version, ev.PreviousVersion, ev.Status, ev.Source });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Results.NotFound(new { error = ex.Message });
+            }
+        });
 
         // Product overview
         group.MapGet("/products", async (DeploymentService service, CancellationToken ct) =>

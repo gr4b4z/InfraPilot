@@ -37,6 +37,58 @@ public class DeploymentService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Creates a NEW deploy event as a manual, human/agent-authored entry based on the most recent
+    /// event for <c>(Product, Service, Environment)</c>. Only <c>Version</c> and <c>Status</c> come
+    /// from the request; references/participants are carried over from the latest event. Attribution
+    /// is stamped by the server: <c>Source="manual"</c> and a <c>triggered-by</c> participant set to
+    /// <paramref name="actor"/> (any inherited <c>triggered-by</c> is dropped first) — the caller can't
+    /// pass it off as a CI event. Runs through <see cref="IngestEvent"/> so PreviousVersion derivation,
+    /// the deployment webhook, and promotion-candidate generation all behave exactly as for CI.
+    /// <para>Throws <see cref="KeyNotFoundException"/> when the target has no prior deployment to base on.</para>
+    /// </summary>
+    public async Task<DeployEvent> CreateManualEventAsync(
+        CreateManualDeployRequest req, ManualDeployActor actor, CancellationToken ct = default)
+    {
+        var environment = _normalization.CurrentValue.ApplyEnvironment(req.Environment);
+
+        var latest = await _db.DeployEvents
+            .Where(e => e.Product == req.Product && e.Service == req.Service && e.Environment == environment)
+            .OrderByDescending(e => e.DeployedAt)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException(
+                $"No existing deployment for {req.Product}/{req.Service} in {req.Environment} to base a manual entry on.");
+
+        // Carry references/participants from the latest event verbatim (same JSON shape as the DTOs),
+        // then force the attribution: drop any inherited triggered-by and set it to the actual caller.
+        var references = JsonSerializer.Deserialize<List<ReferenceDto>>(latest.ReferencesJson, JsonOptions) ?? [];
+        var participants = (JsonSerializer.Deserialize<List<ParticipantDto>>(latest.ParticipantsJson, JsonOptions) ?? [])
+            .Where(p => !string.Equals(p.Role, "triggered-by", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        participants.Insert(0, new ParticipantDto("triggered-by", actor.DisplayName, actor.Email));
+
+        var metadata = latest.Metadata ?? new Dictionary<string, object>();
+        metadata["manualEntry"] = true;
+        metadata["basedOnEventId"] = latest.Id.ToString();
+        metadata["note"] = req.Note;
+
+        var dto = new CreateDeployEventDto(
+            Product: req.Product,
+            Service: req.Service,
+            Environment: environment,
+            Version: req.Version,
+            Source: "manual",
+            DeployedAt: DateTimeOffset.UtcNow,
+            References: references,
+            Participants: participants,
+            Metadata: metadata,
+            Status: req.Status ?? latest.Status,
+            IsRollback: false,
+            PreviousVersion: null); // let IngestEvent derive it from the current latest
+
+        return await IngestEvent(dto, ct);
+    }
+
     public async Task<DeployEvent> IngestEvent(CreateDeployEventDto dto, CancellationToken ct = default)
     {
         var norm = _normalization.CurrentValue;
