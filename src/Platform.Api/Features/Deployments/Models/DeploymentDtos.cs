@@ -16,6 +16,23 @@ public record CreateDeployEventDto(
     bool IsRollback = false,
     string? PreviousVersion = null);
 
+/// <summary>
+/// Human/agent-authored manual deployment. Creates a NEW <c>DeployEvent</c> based on the latest one
+/// for <c>(Product, Service, Environment)</c>, changing only <c>Version</c> and <c>Status</c>. The
+/// server stamps human/agent attribution (Source="manual" + triggered-by = caller) — the body cannot
+/// spoof it — so it's always clear this was manual, not a CI report. <c>Note</c> is required.
+/// </summary>
+public record CreateManualDeployRequest(
+    string Product,
+    string Service,
+    string Environment,
+    string Version,
+    string Note,
+    string? Status = null);
+
+/// <summary>Resolved identity of whoever authored a manual deployment (a signed-in user or an API key).</summary>
+public record ManualDeployActor(string Id, string DisplayName, string? Email, string ActorType);
+
 public record ReferenceDto(
     string Type,
     string? Url = null,
