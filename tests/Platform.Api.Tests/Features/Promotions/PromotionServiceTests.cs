@@ -423,6 +423,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task UpsertReferenceParticipant_AssignsOnTheWorkItemReference()
     {
+        _currentUser.IsQA.Returns(true); // work-item assignment is the QA role's jurisdiction
         var c = SeedCandidateWithWorkItem("OBS-1");
 
         var participants = await _sut.UpsertReferenceParticipantAsync(
@@ -438,6 +439,7 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task UpsertReferenceParticipant_NullAssignee_ClearsTheRole()
     {
+        _currentUser.IsQA.Returns(true);
         var c = SeedCandidateWithWorkItem("OBS-1");
         await _sut.UpsertReferenceParticipantAsync(
             c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com"));
@@ -450,10 +452,21 @@ public class PromotionServiceTests : IDisposable
     [Fact]
     public async Task UpsertReferenceParticipant_UnknownReference_Throws()
     {
+        _currentUser.IsQA.Returns(true);
         var c = SeedCandidateWithWorkItem("OBS-1");
         await Assert.ThrowsAsync<KeyNotFoundException>(
             () => _sut.UpsertReferenceParticipantAsync(
                 c.Id, "DOES-NOT-EXIST", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com")));
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_NonQaNonAdmin_Unauthorized()
+    {
+        // Default alice is neither QA nor Admin — work-item assignment must be refused.
+        var c = SeedCandidateWithWorkItem("OBS-1");
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => _sut.UpsertReferenceParticipantAsync(
+                c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com")));
     }
 
     [Fact]

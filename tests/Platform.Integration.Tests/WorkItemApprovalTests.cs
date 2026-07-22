@@ -46,7 +46,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver User";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -96,7 +96,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         // No setup — no candidate carries FOO-999.
         using var scope = factory.Services.CreateScope();
@@ -112,7 +112,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver User";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -168,9 +168,9 @@ public class WorkItemApprovalTests
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
                 svc.ApproveAsync("FOO-1", "acme", "prod", null, default));
-            // The unauthorized-approver path now reports against the rule tree, not a single
-            // "approver group" (§8): "You are not authorized to approve this promotion".
-            Assert.Contains("not authorized", ex.Message, StringComparison.OrdinalIgnoreCase);
+            // Work-item sign-off is the QA role's jurisdiction: a user without QA/Admin (here just
+            // InfraPortal.User) is refused, regardless of promotion approver-group membership.
+            Assert.Contains("QA", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
 
@@ -179,7 +179,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "any@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -204,7 +204,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid newerCandidateId;
         using (var scope = factory.Services.CreateScope())
@@ -248,7 +248,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -278,7 +278,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
         factory.Current.Name = "Me";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -325,7 +325,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -357,7 +357,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using var scope = factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
@@ -373,7 +373,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -401,7 +401,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -532,7 +532,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -561,7 +561,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         var client = factory.CreateAdminClient();
         var response = await client.PostAsJsonAsync("/api/work-items/NOPE-1/approvals",
@@ -579,7 +579,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -633,7 +633,7 @@ public class WorkItemApprovalTests
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -661,7 +661,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -691,7 +691,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -718,7 +718,7 @@ public class WorkItemApprovalTests
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         using (var scope = factory.Services.CreateScope())
         {
