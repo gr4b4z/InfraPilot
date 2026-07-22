@@ -96,6 +96,49 @@ public class PromotionGateTests
             Arg.Any<WebhookEventFilters>());
     }
 
+    // ── 1b. SharedTicket_ApproveOnce_ReevaluatesAllCandidatesCarryingIt ───────
+
+    [Fact]
+    public async Task SharedTicket_ApproveOnce_AutoPromotesEveryCandidateCarryingIt()
+    {
+        // The same ticket (FOO-1) backs two Pending candidates in acme/prod (different services).
+        // WorkItemApproval is keyed by (key, product, targetEnv), so ONE sign-off counts for both —
+        // and the sign-off must re-evaluate BOTH gates, not just the one the row was attributed to.
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid candA, candB;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, a) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true, service: "api");
+            var (_, _, b) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true, service: "web");
+            candA = a.Id;
+            candB = b.Id;
+        }
+
+        // Sign the ticket off once.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "prod", "ship it", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var a = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candA);
+            var b = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candB);
+            // Both gates satisfied by the single shared approval → both auto-promoted.
+            Assert.Equal(PromotionStatus.Approved, a.Status);
+            Assert.Equal(PromotionStatus.Approved, b.Status);
+        }
+    }
+
     // ── 2. WorkItemsOnly_TwoTickets_DoesNotPromoteUntilAllApproved ────────────
 
     [Fact]
