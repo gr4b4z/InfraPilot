@@ -564,21 +564,19 @@ function CandidateCard({
           )}
         </div>
         <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          <span className="font-medium">{candidate.sourceEnv}</span>
+          <span className="font-medium">
+            {candidate.sourceEnv} ({candidate.version})
+          </span>
           <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
-          <span className="font-medium">{candidate.targetEnv}</span>
           <span
-            className="ml-2 px-1.5 py-0.5 rounded text-[11px] font-mono"
-            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+            className="font-medium"
             title={
               candidate.targetCurrentVersion
                 ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
                 : `First deploy to ${candidate.targetEnv}`
             }
           >
-            {candidate.targetCurrentVersion
-              ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
-              : candidate.version}
+            {candidate.targetEnv} ({candidate.targetCurrentVersion ?? 'new'})
           </span>
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
