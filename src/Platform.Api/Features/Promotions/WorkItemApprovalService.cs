@@ -500,7 +500,10 @@ public class WorkItemApprovalService
         }
 
         var result = new List<PendingTicketView>();
-        var emitted = new HashSet<(string Key, Guid CandidateId)>();
+        // Dedup by (key, product, targetEnv) — the grain at which a work-item sign-off actually
+        // happens (WorkItemApproval is keyed the same way). One shared decision ⇒ one row, even when
+        // the ticket backs several Pending candidates; the row's BlockingPromotions surfaces the count.
+        var emitted = new HashSet<(string Key, string Product, string Env)>();
 
         // (email, role) → count + best displayName seen. Counts feed the assignee summary;
         // displayName is taken from the first non-empty value seen.
@@ -584,7 +587,7 @@ public class WorkItemApprovalService
             {
                 var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
                 if (decidedSet.Contains(tup)) continue;
-                if (!emitted.Add((w.WorkItemKey, c.Id))) continue;
+                if (!emitted.Add((w.WorkItemKey, c.Product, c.TargetEnv))) continue;
 
                 var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
 
