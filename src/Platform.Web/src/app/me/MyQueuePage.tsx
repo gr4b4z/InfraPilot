@@ -56,6 +56,9 @@ export function MyQueuePage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilterValue>(() => loadStatusFilter());
   // Time frame — only meaningful on the "decided" view; defaults to last day.
   const [timeFrame, setTimeFrame] = useState<TimeFrameValue>(() => loadTimeFrame());
+  // Decider narrowing — only meaningful on the "decided" view. Filters by who clicked
+  // Approve / Reject ("Me" = the current user's own decisions). Persisted via localStorage.
+  const [deciderFilter, setDeciderFilter] = useState<DeciderFilterValue>(() => loadDeciderFilter());
   // The auth store already carries the current user's email — same source PromotionDetailPage
   // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
   // server when the user picks "Assigned to me".
@@ -69,11 +72,12 @@ export function MyQueuePage() {
     filter: AssigneeFilterValue,
     status: StatusFilterValue,
     tf: TimeFrameValue,
+    decider: DeciderFilterValue,
   ) => {
     setLoading(true);
     setError(null);
     try {
-      const apiArg = toApiArg(filter, currentUserEmail, status, tf);
+      const apiArg = toApiArg(filter, currentUserEmail, status, tf, decider);
       const res = await api.getMyPendingWorkItems(apiArg);
       setTickets(res.tickets ?? []);
       setAssignees(res.assignees ?? []);
@@ -86,9 +90,9 @@ export function MyQueuePage() {
   };
 
   useEffect(() => {
-    void fetchData(assigneeFilter, statusFilter, timeFrame);
+    void fetchData(assigneeFilter, statusFilter, timeFrame, deciderFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assigneeFilter, statusFilter, timeFrame, currentUserEmail]);
+  }, [assigneeFilter, statusFilter, timeFrame, deciderFilter, currentUserEmail]);
 
   const handleFilterChange = (next: AssigneeFilterValue) => {
     saveAssigneeFilter(next);
@@ -108,6 +112,11 @@ export function MyQueuePage() {
   const handleTimeFrameChange = (next: TimeFrameValue) => {
     saveTimeFrame(next);
     setTimeFrame(next);
+  };
+
+  const handleDeciderChange = (next: DeciderFilterValue) => {
+    saveDeciderFilter(next);
+    setDeciderFilter(next);
   };
 
   // Server-narrowed list × scope filter → what the user actually sees.
@@ -132,9 +141,17 @@ export function MyQueuePage() {
 
       <div className="flex items-center gap-2 flex-wrap">
         <StatusFilter value={statusFilter} onChange={handleStatusChange} />
-        {/* Time frame is only meaningful on the decided view. */}
+        {/* Time frame + decider narrowing are only meaningful on the decided view. */}
         {statusFilter === 'decided' && (
-          <TimeFrameFilter value={timeFrame} onChange={handleTimeFrameChange} />
+          <>
+            <TimeFrameFilter value={timeFrame} onChange={handleTimeFrameChange} />
+            <DeciderFilter
+              value={deciderFilter}
+              onChange={handleDeciderChange}
+              deciders={assignees}
+              currentUserEmail={currentUserEmail}
+            />
+          </>
         )}
         {/* Role/assignee narrowing only meaningful for the pending pool — hide for history views. */}
         {statusFilter === 'pending' && (
@@ -189,12 +206,16 @@ export function MyQueuePage() {
           <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
               ? 'No work items match the current filters.'
-              : emptyStateTitle(assigneeFilter)}
+              : statusFilter === 'decided'
+                ? decidedEmptyTitle(deciderFilter)
+                : emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
               ? 'Widen the product / service / target-env picks to see more rows.'
-              : emptyStateBody(assigneeFilter)}
+              : statusFilter === 'decided'
+                ? 'Try a wider time frame, or switch the decider to "Anyone".'
+                : emptyStateBody(assigneeFilter)}
           </p>
         </div>
       ) : (
@@ -203,7 +224,7 @@ export function MyQueuePage() {
             <TicketRow
               key={`${t.workItemKey}-${t.candidateId}-${t.decidedAt ?? 'pending'}-${t.decidedByEmail ?? ''}`}
               ticket={t}
-              onChanged={() => fetchData(assigneeFilter, statusFilter, timeFrame)}
+              onChanged={() => fetchData(assigneeFilter, statusFilter, timeFrame, deciderFilter)}
             />
           ))}
         </div>
@@ -217,11 +238,15 @@ function toApiArg(
   currentUserEmail: string,
   status: StatusFilterValue,
   timeFrame: TimeFrameValue,
+  decider: DeciderFilterValue,
 ): { role?: string; assignee?: string; status?: 'pending' | 'decided'; since?: string } | undefined {
-  // Decision-history views ignore role/assignee narrowing — the backend short-circuits.
+  // Decision-history views ignore role/participant narrowing but DO honour the decider filter:
+  // `assignee` here means "who decided" (a single email; "Me" → current user). The backend
+  // maps this param to WorkItemApproval.ApproverEmail on the decided path.
   if (status === 'decided') {
     const since = timeFrameToSince(timeFrame);
-    return since ? { status, since } : { status };
+    const decidedBy = deciderToEmail(decider, currentUserEmail);
+    return { status, ...(since ? { since } : {}), ...(decidedBy ? { assignee: decidedBy } : {}) };
   }
 
   const role = filter.role ?? undefined;
@@ -366,6 +391,146 @@ function TimeFrameFilter({
   );
 }
 
+// ── Decider filter (only meaningful on "decided" view) ───────────────────────────────────
+// Narrows the decision history by who clicked Approve / Reject. Distinct from the pending
+// AssigneeFilter (which narrows by work-item participant/role) — a decider has no role and
+// "unassigned" is not a valid choice, so this is its own lightweight picker.
+
+export type DeciderFilterValue =
+  | { mode: 'all' }
+  | { mode: 'me' }
+  | { mode: 'person'; email: string; displayName: string };
+
+const DECIDER_FILTER_STORAGE_KEY = 'me.queue.deciderFilter';
+
+const DECIDER_ANYONE = '__all__';
+const DECIDER_ME = '__me__';
+
+function loadDeciderFilter(): DeciderFilterValue {
+  try {
+    const raw = window.localStorage.getItem(DECIDER_FILTER_STORAGE_KEY);
+    if (!raw) return { mode: 'all' };
+    const parsed = JSON.parse(raw);
+    if (parsed?.mode === 'me') return { mode: 'me' };
+    if (
+      parsed?.mode === 'person' &&
+      typeof parsed.email === 'string' &&
+      typeof parsed.displayName === 'string'
+    ) {
+      return { mode: 'person', email: parsed.email, displayName: parsed.displayName };
+    }
+  } catch {
+    // Ignore — corrupted entry; fall through to default.
+  }
+  return { mode: 'all' };
+}
+
+function saveDeciderFilter(value: DeciderFilterValue): void {
+  try {
+    window.localStorage.setItem(DECIDER_FILTER_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Ignore — quota or disabled storage.
+  }
+}
+
+/** Resolves the decider filter to a single email for the API, or undefined for "Anyone". */
+function deciderToEmail(value: DeciderFilterValue, currentUserEmail: string): string | undefined {
+  if (value.mode === 'me') return currentUserEmail || undefined;
+  if (value.mode === 'person') return value.email;
+  return undefined;
+}
+
+function DeciderFilter({
+  value,
+  onChange,
+  deciders,
+  currentUserEmail,
+}: {
+  value: DeciderFilterValue;
+  onChange: (next: DeciderFilterValue) => void;
+  /** Decider rollup (email, displayName, count) from the decided endpoint, pre-narrowing. */
+  deciders: PendingAssignee[];
+  currentUserEmail: string;
+}) {
+  // Dedupe by email — the decided endpoint already returns one row per decider, but guard
+  // anyway. Exclude the current user from the named list; "Me" covers them.
+  const people = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Array<{ email: string; displayName: string }> = [];
+    for (const d of deciders) {
+      if (!d.email || seen.has(d.email.toLowerCase())) continue;
+      if (d.email.toLowerCase() === currentUserEmail.toLowerCase()) continue;
+      seen.add(d.email.toLowerCase());
+      out.push({ email: d.email, displayName: d.displayName });
+    }
+    return out;
+  }, [deciders, currentUserEmail]);
+
+  // If the persisted person is no longer in the list, render "Anyone" rather than a stale pick.
+  const selectValue = useMemo(() => {
+    if (value.mode === 'me') return DECIDER_ME;
+    if (value.mode === 'person') {
+      const stillVisible = people.some(
+        (p) => p.email.toLowerCase() === value.email.toLowerCase(),
+      );
+      return stillVisible ? `email:${value.email}` : DECIDER_ANYONE;
+    }
+    return DECIDER_ANYONE;
+  }, [value, people]);
+
+  const handleChange = (next: string) => {
+    if (next === DECIDER_ANYONE) return onChange({ mode: 'all' });
+    if (next === DECIDER_ME) return onChange({ mode: 'me' });
+    if (next.startsWith('email:')) {
+      const email = next.slice('email:'.length);
+      const person = people.find((p) => p.email === email);
+      if (person) onChange({ mode: 'person', email: person.email, displayName: person.displayName });
+    }
+  };
+
+  return (
+    <label
+      className="inline-flex items-center gap-1.5 text-[12px]"
+      style={{ color: 'var(--text-muted)' }}
+    >
+      <span>Decided by</span>
+      <select
+        value={selectValue}
+        onChange={(e) => handleChange(e.target.value)}
+        className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+        style={{
+          borderColor: 'var(--border-color)',
+          backgroundColor: 'var(--bg-primary)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        <option value={DECIDER_ANYONE}>Anyone</option>
+        <option value={DECIDER_ME}>Me</option>
+        {people.length > 0 && (
+          <optgroup label="Deciders">
+            {people.map((p) => (
+              <option key={p.email} value={`email:${p.email}`}>
+                {p.displayName}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
+
+function decidedEmptyTitle(decider: DeciderFilterValue): string {
+  switch (decider.mode) {
+    case 'me':
+      return 'No decisions you made in this time frame.';
+    case 'person':
+      return `No decisions by ${decider.displayName} in this time frame.`;
+    default:
+      return 'No decisions recorded in this time frame.';
+  }
+}
+
 function emptyStateTitle(filter: AssigneeFilterValue): string {
   const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
   switch (filter.mode) {
@@ -451,8 +616,8 @@ function TicketRow({
 
   const handleAssign = async (role: string, assignee: { email: string; displayName: string }) => {
     try {
-      const res = await api.assignReferenceParticipant(
-        ticket.sourceDeployEventId,
+      const res = await api.assignPromotionReferenceParticipant(
+        ticket.candidateId,
         ticket.workItemKey,
         role,
         assignee,
@@ -469,8 +634,8 @@ function TicketRow({
   // layers for this (refKey, role). Mirrors PromotionDetailPage's "Clear" action.
   const handleRemove = async (role: string) => {
     try {
-      const res = await api.assignReferenceParticipant(
-        ticket.sourceDeployEventId,
+      const res = await api.assignPromotionReferenceParticipant(
+        ticket.candidateId,
         ticket.workItemKey,
         role,
         null,
