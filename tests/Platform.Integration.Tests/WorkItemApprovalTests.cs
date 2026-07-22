@@ -435,6 +435,95 @@ public class WorkItemApprovalTests
     // NOTE: GetPendingForCurrentUser_ExcludesTicketsWhereUserIsExcludedByRole was dropped — the
     // excluded-role (separation-of-duties) filtering it asserted was removed (D17).
 
+    // ── Decided-history tests (GetDecidedAsync) ─────────────────────────────
+
+    [Fact]
+    public async Task GetDecided_WithNullSince_ReturnsDecisionsOlderThanOneDay()
+    {
+        // Regression: the "All time" time-frame sends no `since`; the endpoint used to coerce a
+        // missing `since` into UtcNow.AddDays(-1), so anything decided > 24h ago silently vanished.
+        // GetDecidedAsync must treat since=null as "no cutoff".
+        await using var factory = new WorkItemTestFactory();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "OLD-1", approverGroup: "ReleaseApprovers", service: "a");
+            await SeedPolicyEventCandidateAsync(db, "NEW-1", approverGroup: "ReleaseApprovers", service: "b");
+            db.WorkItemApprovals.AddRange(
+                new WorkItemApproval
+                {
+                    Id = Guid.NewGuid(),
+                    WorkItemKey = "OLD-1", Product = "acme", TargetEnv = "prod",
+                    ApproverEmail = "me@example.com", ApproverName = "Me",
+                    Decision = PromotionDecision.Approved,
+                    CreatedAt = DateTimeOffset.UtcNow.AddDays(-10),
+                },
+                new WorkItemApproval
+                {
+                    Id = Guid.NewGuid(),
+                    WorkItemKey = "NEW-1", Product = "acme", TargetEnv = "prod",
+                    ApproverEmail = "me@example.com", ApproverName = "Me",
+                    Decision = PromotionDecision.Rejected,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+
+            // null cutoff → both, including the 10-day-old decision.
+            var all = await svc.GetDecidedAsync(decision: null, since: null);
+            var allKeys = all.Tickets.Select(t => t.WorkItemKey).OrderBy(k => k).ToList();
+            Assert.Equal(new[] { "NEW-1", "OLD-1" }, allKeys);
+
+            // 24h cutoff → only the recent one (proves the cutoff still works, so null != default).
+            var recent = await svc.GetDecidedAsync(decision: null, since: DateTimeOffset.UtcNow.AddDays(-1));
+            Assert.Equal(new[] { "NEW-1" }, recent.Tickets.Select(t => t.WorkItemKey).ToList());
+        }
+    }
+
+    [Fact]
+    public async Task GetDecided_DecidedBy_NarrowsToDecider_AndReturnsFullDeciderRollup()
+    {
+        await using var factory = new WorkItemTestFactory();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "K-1", approverGroup: "ReleaseApprovers", service: "a");
+            await SeedPolicyEventCandidateAsync(db, "K-2", approverGroup: "ReleaseApprovers", service: "b");
+            await SeedPolicyEventCandidateAsync(db, "K-3", approverGroup: "ReleaseApprovers", service: "c");
+            db.WorkItemApprovals.AddRange(
+                Approval("K-1", "alice@example.com", "Alice", PromotionDecision.Approved),
+                Approval("K-2", "alice@example.com", "Alice", PromotionDecision.Rejected),
+                Approval("K-3", "bob@example.com", "Bob", PromotionDecision.Approved));
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+
+            // Narrow by Alice (mixed case → case-insensitive match).
+            var aliceOnly = await svc.GetDecidedAsync(decision: null, since: null, decidedBy: "ALICE@example.com");
+            Assert.Equal(new[] { "K-1", "K-2" }, aliceOnly.Tickets.Select(t => t.WorkItemKey).OrderBy(k => k).ToList());
+
+            // The decider rollup is computed BEFORE narrowing, so it still lists Bob too — that's
+            // what keeps the "Decided by" dropdown from hiding people once a pick is active.
+            var rollup = aliceOnly.Assignees.ToDictionary(a => a.Email, a => a.Count, StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(2, rollup["alice@example.com"]);
+            Assert.Equal(1, rollup["bob@example.com"]);
+            Assert.All(aliceOnly.Assignees, a => Assert.Equal("", a.Role));
+
+            // No decidedBy → all three decisions.
+            var everyone = await svc.GetDecidedAsync(decision: null, since: null);
+            Assert.Equal(3, everyone.Tickets.Count);
+        }
+    }
+
     // ── Endpoint-level tests (HTTP) ─────────────────────────────────────────
 
     [Fact]
@@ -662,6 +751,22 @@ public class WorkItemApprovalTests
     /// DeployEventWorkItem, and a Pending PromotionCandidate keyed on (acme, prod). Returns
     /// all three so callers can layer extra setup on top.
     /// </summary>
+    /// <summary>Convenience factory for a <see cref="WorkItemApproval"/> row (created now).</summary>
+    private static WorkItemApproval Approval(
+        string workItemKey, string approverEmail, string approverName, PromotionDecision decision,
+        string product = "acme", string targetEnv = "prod")
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            WorkItemKey = workItemKey,
+            Product = product,
+            TargetEnv = targetEnv,
+            ApproverEmail = approverEmail,
+            ApproverName = approverName,
+            Decision = decision,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+
     private static async Task<(DeployEvent ev, PromotionWorkItem wi, PromotionCandidate cand)>
         SeedPolicyEventCandidateAsync(
             PlatformDbContext db,

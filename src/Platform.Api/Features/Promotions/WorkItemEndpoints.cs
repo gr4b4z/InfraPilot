@@ -38,17 +38,26 @@ public static class WorkItemEndpoints
             CancellationToken ct) =>
         {
             // status: "pending" (default) | "decided" (combined approved + rejected for the user).
-            // For decided views, an optional `since` ISO timestamp narrows to recent decisions —
-            // defaulting to last 24h server-side when the client doesn't pass one.
+            // For decided views, an optional `since` ISO timestamp narrows to recent decisions.
+            // Omitting `since` means "all time" — the client's time-frame picker sends an explicit
+            // cutoff for every bounded choice (last day / 7d / 30d) and nothing for "All time", so a
+            // missing param must pass through as null (no cutoff), not a server-side 24h default.
             var normalized = status?.Trim().ToLowerInvariant();
             DateTimeOffset? sinceCutoff = null;
             if (DateTimeOffset.TryParse(since, out var parsed)) sinceCutoff = parsed;
 
             var queue = normalized switch
             {
+                // On the decided view `assignee` narrows by the decider (who clicked Approve /
+                // Reject) — a single email, resolved client-side ("Me" → current user). The
+                // "unassigned" sentinel is pending-only (a decided row always has a decider), so
+                // ignore it here rather than filter to a literal "unassigned" email.
                 "decided" => await svc.GetDecidedAsync(
                     decision: null,
-                    since: sinceCutoff ?? DateTimeOffset.UtcNow.AddDays(-1),
+                    since: sinceCutoff,
+                    decidedBy: string.Equals(assignee?.Trim(), "unassigned", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : assignee,
                     ct),
                 _ => await svc.GetPendingForCurrentUserAsync(ct, assignee, role),
             };

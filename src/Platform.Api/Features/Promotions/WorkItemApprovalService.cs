@@ -645,6 +645,7 @@ public class WorkItemApprovalService
     public async Task<PendingQueueResult> GetDecidedAsync(
         PromotionDecision? decision,
         DateTimeOffset? since,
+        string? decidedBy = null,
         CancellationToken ct = default)
     {
         var query = _db.WorkItemApprovals.AsNoTracking().AsQueryable();
@@ -656,6 +657,42 @@ public class WorkItemApprovalService
             .ToListAsync(ct);
         if (approvals.Count == 0)
             return new PendingQueueResult(new(), new(), Array.Empty<string>());
+
+        // Decider rollup — computed BEFORE the decidedBy narrowing (mirrors the pending path's
+        // pre-narrow assignee summary) so the front-end "who decided" dropdown never offers a
+        // zero-result person. Deciders carry no role, so Role is left empty. One row per email;
+        // the display name is the first non-empty one seen (approvals are newest-first).
+        var deciderAccumulator = new Dictionary<string, AssigneeAccumulator>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in approvals)
+        {
+            if (string.IsNullOrEmpty(a.ApproverEmail)) continue;
+            if (!deciderAccumulator.TryGetValue(a.ApproverEmail, out var acc))
+                acc = new AssigneeAccumulator(a.ApproverName, 0);
+            else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(a.ApproverName))
+                acc = acc with { DisplayName = a.ApproverName };
+            deciderAccumulator[a.ApproverEmail] = acc with { Count = acc.Count + 1 };
+        }
+        var deciderRows = deciderAccumulator
+            .Select(kv => new PendingAssigneeView(
+                Email: kv.Key,
+                DisplayName: string.IsNullOrEmpty(kv.Value.DisplayName) ? kv.Key : kv.Value.DisplayName!,
+                Role: "",
+                Count: kv.Value.Count))
+            .OrderByDescending(a => a.Count)
+            .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Narrow to a single decider when requested. Case-insensitive, matching the pending
+        // path's email comparison.
+        var trimmedDecider = decidedBy?.Trim();
+        if (!string.IsNullOrEmpty(trimmedDecider))
+        {
+            approvals = approvals
+                .Where(a => string.Equals(a.ApproverEmail, trimmedDecider, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (approvals.Count == 0)
+                return new PendingQueueResult(new(), deciderRows, Array.Empty<string>());
+        }
 
         // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
         var keys = approvals.Select(a => a.WorkItemKey).Distinct().ToList();
@@ -717,7 +754,7 @@ public class WorkItemApprovalService
                 DecisionComment: a.Comment));
         }
 
-        return new PendingQueueResult(result, new(), Array.Empty<string>());
+        return new PendingQueueResult(result, deciderRows, Array.Empty<string>());
     }
 
     // ---------------------------------------------------------------------
