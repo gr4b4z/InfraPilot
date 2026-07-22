@@ -758,7 +758,57 @@ POST /api/rollbacks
       'The `promotion.updated` event fires for editorial changes on a candidate — participant added/removed, a work-item assignee assigned/cleared (`change.changeType = "reference.participant.upserted"` / `"reference.participant.removed"` with the `referenceKey`), and comment added/edited/deleted — carrying a `change.changeType` discriminator plus the full current candidate state, so subscribers can act without re-fetching. Work-item sign-offs are separate: they emit `promotion.ticket.approved` / `promotion.ticket.rejected` (keyed by `workItemKey` + `product` + `targetEnv`, since one ticket can back several promotions), and a sign-off that satisfies a gate then emits `promotion.approved` for each candidate it promotes.',
       'Rollback events are `rollback.approved`, `rollback.rejected`, `rollback.deployed`, and `rollback.cancelled`. `rollback.approved` is the one your executor (e.g. a Logic App) should act on: it carries the `rollbackId`, `product`, `targetEnv`, `mode`, and an `items` array of `{ service, fromVersion, toVersion }` to deploy. `rollback.deployed` fires once every item has been confirmed back via deploy events. See the Rollbacks API page for full payload shapes.',
       'The create endpoint generates a secret once and returns it only in the creation response, which is important to capture at subscription creation time.',
+      'Every delivery is wrapped in an envelope `{ id, eventType, timestamp, data }` (JSON, camelCase). The examples below show the `data` for each promotion event.',
     ],
+    code: `// promotion.approved — a normal, policy-satisfying sign-off completed the gate
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt",
+  "service": "mpt-spotlight",
+  "sourceEnv": "dev",
+  "targetEnv": "test",
+  "version": "6.0.11-gd4134b92",
+  "fromRevision": "a1b2c3d",
+  "toRevision": "f9e8d7c",
+  "status": "Approved",
+  "approvedAt": "2026-07-20T10:12:00Z",
+  "approvedBy": [
+    {
+      "name": "Dana Lee", "email": "dana@acme.com", "at": "2026-07-20T10:11:58Z",
+      "via": "approval", "stepName": "Release Approval", "requirementName": "Release managers", "reason": null
+    }
+  ],
+  "participants": [ { "role": "release-manager", "displayName": "Dana Lee", "email": "dana@acme.com" } ],
+  "references": [ { "type": "work-item", "key": "MPT-4451", "title": "Add express checkout" } ],
+  "change": null
+}
+
+// promotion.approved — an admin BYPASS (gate not satisfied; force-approved)
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt", "targetEnv": "test", "version": "6.0.11-gd4134b92", "status": "Approved",
+  "approvedBy": [
+    { "name": "Sam Admin", "email": "sam@acme.com", "via": "bypass", "reason": "hotfix INC-1234", "stepName": null, "requirementName": null }
+  ],
+  "change": { "trigger": "administrator-bypass", "reason": "hotfix INC-1234" }
+}
+
+// promotion.updated — a work-item assignee was assigned (changeType names the sub-event)
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt", "targetEnv": "test", "status": "Pending",
+  "change": { "changeType": "reference.participant.upserted", "referenceKey": "MPT-4451", "role": "reviewer" }
+}
+
+// promotion.ticket.approved — a work-item sign-off (keyed by workItemKey + product + targetEnv)
+{
+  "workItemKey": "MPT-4451",
+  "product": "mpt",
+  "targetEnv": "test",
+  "candidateId": "8c1e2f9a-...",
+  "approver": "qa@acme.com",
+  "comment": "verified in test"
+}`,
   },
   {
     slug: 'auth-api',
