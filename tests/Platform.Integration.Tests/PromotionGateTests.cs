@@ -43,7 +43,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -103,7 +103,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -155,7 +155,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -190,7 +190,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -226,7 +226,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "rejector@example.com";
         factory.Current.Name = "Rejector";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -280,7 +280,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -343,7 +343,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -412,7 +412,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -468,7 +468,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid newerCandidateId;
         using (var scope = factory.Services.CreateScope())
@@ -536,7 +536,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         // Seed a deploy event + work-item but mark its candidate as already Approved so there's
         // nothing Pending to attach to.
