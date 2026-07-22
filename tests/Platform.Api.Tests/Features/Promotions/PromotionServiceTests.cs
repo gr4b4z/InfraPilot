@@ -397,6 +397,65 @@ public class PromotionServiceTests : IDisposable
         Assert.Equal("alice@example.com", row.ApproverEmail);
     }
 
+    // ---------------------------------------------------------------------
+    // UpsertReferenceParticipantAsync — the work-items queue "Assign" write path
+    // ---------------------------------------------------------------------
+
+    private PromotionCandidate SeedCandidateWithWorkItem(string key = "OBS-1")
+    {
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = "api",
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = "v1",
+            Status = PromotionStatus.Pending,
+            ResolvedPolicyJson = "{}",
+            References = new List<ReferenceDto> { new("work-item", Key: key, Title: "Some ticket") },
+        };
+        _db.PromotionCandidates.Add(candidate);
+        _db.SaveChanges();
+        return candidate;
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_AssignsOnTheWorkItemReference()
+    {
+        var c = SeedCandidateWithWorkItem("OBS-1");
+
+        var participants = await _sut.UpsertReferenceParticipantAsync(
+            c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "Sylwester Grabowski", "syl@softwareone.com"));
+
+        Assert.Contains(participants, p => p.Role == "reviewer" && p.Email == "syl@softwareone.com");
+        // Persisted onto the candidate's work-item reference (what GetWorkItemParticipants reads).
+        var stored = _db.PromotionCandidates.Single(x => x.Id == c.Id)
+            .References.Single(r => r.Key == "OBS-1").Participants;
+        Assert.Contains(stored!, p => p.Role == "reviewer" && p.Email == "syl@softwareone.com");
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_NullAssignee_ClearsTheRole()
+    {
+        var c = SeedCandidateWithWorkItem("OBS-1");
+        await _sut.UpsertReferenceParticipantAsync(
+            c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com"));
+
+        var after = await _sut.UpsertReferenceParticipantAsync(c.Id, "OBS-1", "reviewer", assignee: null);
+
+        Assert.DoesNotContain(after, p => p.Role == "reviewer");
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_UnknownReference_Throws()
+    {
+        var c = SeedCandidateWithWorkItem("OBS-1");
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => _sut.UpsertReferenceParticipantAsync(
+                c.Id, "DOES-NOT-EXIST", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com")));
+    }
+
     [Fact]
     public async Task Approve_AdminAlwaysQualifies()
     {

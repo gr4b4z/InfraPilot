@@ -345,6 +345,23 @@ class ApiClient {
     );
   }
 
+  /**
+   * Assign / reassign / clear a participant on a specific work-item reference of a promotion
+   * candidate. This is what the work-items queue uses (candidates are self-contained — there is no
+   * deploy event to override). Pass `assignee: null` to clear the role on that reference.
+   */
+  assignPromotionReferenceParticipant(
+    candidateId: string,
+    referenceKey: string,
+    role: string,
+    assignee: { email: string; displayName: string } | null,
+  ) {
+    return this.request<{ participants: PromotionSourceEventParticipant[] }>(
+      `/promotions/${candidateId}/references/${encodeURIComponent(referenceKey)}/participants`,
+      { method: 'PATCH', body: JSON.stringify({ role, assignee }) },
+    );
+  }
+
   upsertPromotionParticipant(
     id: string,
     body: {
@@ -473,8 +490,9 @@ class ApiClient {
     assignee?: string;
     /**
      * Status mode — "pending" (default, the inbox awaiting decision) or "decided"
-     * (combined approved + rejected history). On "decided" the role/assignee filters are
-     * ignored; pass `since` to narrow the time window (server defaults to last 24h).
+     * (combined approved + rejected history). On "decided" the `role` filter is ignored and
+     * `assignee` narrows by the decider (WorkItemApproval.ApproverEmail) rather than by
+     * work-item participant; pass `since` to narrow the time window (omit for all time).
      */
     status?: 'pending' | 'decided';
     /** ISO timestamp lower bound on the decision time. Only used when status === 'decided'. */
@@ -862,8 +880,6 @@ export interface PendingTicket {
   version: string;
   sourceEnv: string;
   blockingPromotions: number;
-  /** Source deploy event id — used to PATCH reference participants. */
-  sourceDeployEventId: string;
   /** Participants on this specific work-item reference (overrides applied). */
   participants: PromotionSourceEventParticipant[];
   /**
