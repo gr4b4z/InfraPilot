@@ -167,7 +167,14 @@ public class WorkItemApprovalService
         // the candidate directly with the rejecting user as the actor.
         if (decision == PromotionDecision.Approved)
         {
-            await TryReevaluateCandidateAsync(candidate.Id, ct);
+            // A ticket approval is shared across every candidate carrying it (WorkItemApproval is
+            // keyed by key+product+targetEnv, not by candidate), so re-evaluate ALL pending
+            // candidates that reference this ticket — not just the one the row was attributed to —
+            // so every gate the sign-off satisfies auto-promotes immediately. ReevaluateAsync is
+            // idempotent and no-ops for candidates that aren't Pending or whose gate isn't met.
+            var affected = await FindPendingCandidateIdsForTicketAsync(key, prod, env, ct);
+            foreach (var affectedId in affected)
+                await TryReevaluateCandidateAsync(affectedId, ct);
         }
         else
         {
@@ -748,6 +755,30 @@ public class WorkItemApprovalService
     /// candidate in <c>(product, targetEnv)</c> whose <see cref="PromotionWorkItem"/> rows include
     /// the ticket. Most-recent because it represents the freshest state of the world.
     /// </summary>
+    /// <summary>
+    /// All Pending candidates (in the ticket's product/targetEnv) that carry this work item. A ticket
+    /// can back several promotions at once, and one shared approval counts for all of them — this is
+    /// the fan-out used to re-evaluate every affected gate after a sign-off.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> FindPendingCandidateIdsForTicketAsync(
+        string workItemKey, string product, string targetEnv, CancellationToken ct)
+    {
+        var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv)
+            .Select(w => w.CandidateId)
+            .Distinct()
+            .ToListAsync(ct);
+        if (candidateIds.Count == 0) return Array.Empty<Guid>();
+
+        return await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => candidateIds.Contains(c.Id)
+                     && c.Product == product
+                     && c.TargetEnv == targetEnv
+                     && c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+    }
+
     private async Task<PromotionCandidate?> FindPendingCandidateForTicketAsync(
         string workItemKey, string product, string targetEnv, CancellationToken ct)
     {
