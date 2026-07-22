@@ -109,10 +109,11 @@ public class WorkItemApprovalService
         if (snapshot.IsAutoApprove)
             throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
 
-        // Separation-of-duties (ExcludeRole) removed (D17): anyone authorized for any requirement on
-        // the promotion's rule tree may decide on its tickets.
-        if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
-            throw new UnauthorizedAccessException("You are not authorized to approve this promotion");
+        // Work-item sign-off is the QA role's jurisdiction (Admin included) — distinct from promotion
+        // approval, which is governed by the policy's approver requirements. Any QA/Admin may decide
+        // any candidate's tickets, regardless of whether they're an approver of the promotion itself.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
 
         // Duplicate guard. The unique index enforces this at the DB; the in-app check turns the
         // race-loser case into a clean 400 instead of a 500 with an obscure constraint message.
@@ -369,9 +370,9 @@ public class WorkItemApprovalService
             {
                 blockedReason = "Already decided";
             }
-            else if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
+            else if (!(_currentUser.IsQA || _currentUser.IsAdmin))
             {
-                blockedReason = "Not authorized to approve this promotion";
+                blockedReason = "Work-item sign-off requires the QA or Admin role";
             }
             else
             {
@@ -468,8 +469,9 @@ public class WorkItemApprovalService
             .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
             .ToHashSet();
 
-        // Cache approver-group membership across distinct groups.
-        var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        // Work-item management (view / assign / sign off) is the QA role's jurisdiction (Admin
+        // included) — independent of the promotion's approver requirements.
+        var canManageWorkItems = _currentUser.IsQA || _currentUser.IsAdmin;
 
         // Index work-items by their candidate for fast lookup.
         var workItemsByCandidate = workItems
@@ -505,31 +507,10 @@ public class WorkItemApprovalService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) continue;
 
-            // Authorized for at least one requirement on this candidate's rule tree? Group membership
-            // is cached per distinct group across all candidates to avoid N+1 Graph calls; the
-            // explicit user-list check is free.
-            var authorized = false;
-            foreach (var req in snapshot.AllRequirements)
-            {
-                if (req.Users.Any(u => string.Equals(u, _currentUser.Email, StringComparison.OrdinalIgnoreCase)))
-                {
-                    authorized = true;
-                    break;
-                }
-                foreach (var group in req.Groups)
-                {
-                    if (!groupMembership.TryGetValue(group.Id, out var member))
-                    {
-                        member = await _auth.IsInApproverGroupAsync(group, ct);
-                        groupMembership[group.Id] = member;
-                    }
-                    if (member) { authorized = true; break; }
-                }
-                if (authorized) break;
-            }
-            if (!authorized) continue;
-
-            // Separation-of-duties (ExcludeRole) removed (D17) — no per-candidate exclusion check.
+            // Work items are the QA role's jurisdiction (Admin included): a QA/Admin sees every
+            // pending candidate's tickets so they can triage/assign/sign off, independent of the
+            // promotion's approver requirements. Non-QA/Admin users have no work-item queue.
+            if (!canManageWorkItems) continue;
 
             // Distinct work items on this candidate.
             var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())

@@ -524,6 +524,11 @@ public class PromotionService
     public async Task<IReadOnlyList<ParticipantDto>> UpsertReferenceParticipantAsync(
         Guid candidateId, string referenceKey, string role, ParticipantDto? assignee, CancellationToken ct = default)
     {
+        // Assigning people to work-item references is part of work-item management, which is the QA
+        // role's jurisdiction (Admin included) — not tied to being an approver of the promotion.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Assigning work-item participants requires the QA or Admin role");
+
         var storedRole = _normalization.CurrentValue.ApplyRole(role);
         if (string.IsNullOrEmpty(storedRole))
             throw new InvalidOperationException("Participant role is required");
