@@ -397,6 +397,34 @@ public class WorkItemApprovalTests
     }
 
     [Fact]
+    public async Task GetPendingForCurrentUser_SameTicketOnMultipleCandidates_EmittedOnceWithCount()
+    {
+        // The same ticket backs two Pending candidates (same product/targetEnv, different services).
+        // A sign-off is shared across them, so the queue shows the ticket ONCE, with BlockingPromotions
+        // reflecting how many promotions it unblocks.
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers", service: "a");
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers", service: "b");
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var queue = await svc.GetPendingForCurrentUserAsync(default);
+
+            var row = Assert.Single(queue.Tickets);
+            Assert.Equal("FOO-1", row.WorkItemKey);
+            Assert.Equal(2, row.BlockingPromotions);
+        }
+    }
+
+    [Fact]
     public async Task GetPendingForCurrentUser_ExcludesTicketsAlreadyDecided()
     {
         await using var factory = new WorkItemTestFactory();
