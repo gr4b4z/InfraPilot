@@ -57,9 +57,15 @@ export function PromotionsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
-  // Two-tab view over the loaded Pending set: all pending, or only the ones the
-  // current user can act on right now (per-candidate `canApprove`). No refetch.
-  const [view, setView] = useState<'pending' | 'mine'>('pending');
+  // View over the promotions set:
+  //  - 'pending'         : all Pending (loaded set)
+  //  - 'mine'            : Pending the current user can act on (per-candidate `canApprove`), no refetch
+  //  - 'awaiting-deploy' : Approved but not yet deployed — its own fetch (status=Approved)
+  const [view, setView] = useState<'pending' | 'mine' | 'awaiting-deploy'>('pending');
+  // Approved-awaiting-deploy set. Fetched eagerly (alongside Pending) so the tab
+  // badge shows a live count without the user having to open the tab first.
+  const [awaitingDeploy, setAwaitingDeploy] = useState<PromotionCandidate[]>([]);
+  const [awaitingDeployLoading, setAwaitingDeployLoading] = useState(true);
   // Resolved section — lazy. Only fetched when the user opens it.
   const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
   const [resolvedShown, setResolvedShown] = useState(false);
@@ -84,8 +90,20 @@ export function PromotionsPage() {
       .finally(() => setLoading(false));
   };
 
+  // Approved-but-not-yet-deployed. Separate fetch (single-status ⇒ backend allows up
+  // to 200) so the count is available for the tab badge before the tab is opened.
+  const fetchAwaitingDeploy = () => {
+    setAwaitingDeployLoading(true);
+    api
+      .listPromotions({ status: 'Approved', ...filterParams() })
+      .then((data) => setAwaitingDeploy(data.candidates || []))
+      .catch(() => setAwaitingDeploy([]))
+      .finally(() => setAwaitingDeployLoading(false));
+  };
+
   useEffect(() => {
     fetchData();
+    fetchAwaitingDeploy();
     // A filter change invalidates any loaded resolved set — collapse it so it
     // reloads fresh (with the new filters) if the user reopens it.
     setResolvedShown(false);
@@ -219,9 +237,12 @@ export function PromotionsPage() {
       await api.bulkApprovePromotions(Array.from(selected));
       setSelected(new Set());
       fetchData();
+      // Approved rows leave Pending and land in the awaiting-deploy set — refresh it too.
+      fetchAwaitingDeploy();
     } catch {
       // silently refresh
       fetchData();
+      fetchAwaitingDeploy();
     } finally {
       setBulkLoading(false);
     }
@@ -306,6 +327,7 @@ export function PromotionsPage() {
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
+          { key: 'awaiting-deploy', label: 'Approved · awaiting deploy', count: awaitingDeploy.length, showBadge: true },
         ] as const).map((tab) => {
           const active = view === tab.key;
           return (
@@ -338,7 +360,7 @@ export function PromotionsPage() {
         })}
       </div>
 
-      {loading ? (
+      {loading && view !== 'awaiting-deploy' ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="skeleton h-24" />
@@ -346,8 +368,50 @@ export function PromotionsPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {/* Pending list (or "awaiting my approval" when that tab is active) */}
-          {displayedPending.length > 0 ? (
+          {view === 'awaiting-deploy' ? (
+            /* Approved but not yet deployed. Browse-only: no bulk-approve, no per-row
+               approve action (already approved) — this is a tracking view. */
+            awaitingDeployLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="skeleton h-24" />
+                ))}
+              </div>
+            ) : awaitingDeploy.length > 0 ? (
+              <div>
+                <h2
+                  className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Approved · awaiting deploy ({awaitingDeploy.length})
+                </h2>
+                <div className="space-y-2">
+                  {awaitingDeploy.map((c) => (
+                    <CandidateCard key={c.id} candidate={c} onFilterByReference={setReferenceFilter} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div
+                className="flex flex-col items-center justify-center py-16 rounded-xl border"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+              >
+                <div
+                  className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+                  style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                >
+                  <Rocket size={24} />
+                </div>
+                <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Nothing awaiting deploy
+                </p>
+                <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Approved promotions not yet deployed will appear here.
+                </p>
+              </div>
+            )
+          ) : /* Pending list (or "awaiting my approval" when that tab is active) */
+          displayedPending.length > 0 ? (
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
@@ -522,6 +586,12 @@ function CandidateCard({
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
+  // Inline "+N more" expansion for the chip rows — collapsed by default so a bundle
+  // with many work-items / participants doesn't turn the card into a wall of chips.
+  const [showAllTickets, setShowAllTickets] = useState(false);
+  const [showAllPeople, setShowAllPeople] = useState(false);
+  const MAX_TICKETS = 5;
+  const MAX_PEOPLE = 5;
 
   return (
     <div
@@ -592,9 +662,11 @@ function CandidateCard({
             (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
           );
           if (tickets.length === 0) return null;
+          const visibleTickets = showAllTickets ? tickets : tickets.slice(0, MAX_TICKETS);
+          const hiddenTickets = tickets.length - visibleTickets.length;
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
-              {tickets.map((ref, i) => {
+              {visibleTickets.map((ref, i) => {
                 const filterKey = ref.key ?? '';
                 const href = resolveReferenceHref({
                   type: ref.type,
@@ -639,6 +711,19 @@ function CandidateCard({
                   </span>
                 );
               })}
+              {hiddenTickets > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAllTickets(true);
+                  }}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
+                >
+                  +{hiddenTickets} more
+                </button>
+              )}
             </div>
           );
         })()}
@@ -669,30 +754,77 @@ function CandidateCard({
           }
 
           if (chips.length === 0) return null;
+
+          // Dedupe by person: the same person is often Assignee/Reporter across many
+          // tickets in a bundle, which otherwise repeats their chip a dozen times. Collapse
+          // to one chip per identity (email ?? display name) with their roles aggregated;
+          // the per-ticket "via" attribution moves into the tooltip (full breakdown lives
+          // on the detail page).
+          interface Person {
+            name: string;
+            email?: string | null;
+            roles: string[];
+            vias: string[];
+            fromPromotion: boolean;
+          }
+          const byPerson = new Map<string, Person>();
+          for (const c of chips) {
+            const name = c.displayName ?? c.email ?? '—';
+            const key = (c.email ?? c.displayName ?? name).toLowerCase();
+            const entry = byPerson.get(key) ?? {
+              name,
+              email: c.email,
+              roles: [],
+              vias: [],
+              fromPromotion: false,
+            };
+            const role = roleDisplay({ role: c.role });
+            if (!entry.roles.includes(role)) entry.roles.push(role);
+            if (c.via && !entry.vias.includes(c.via)) entry.vias.push(c.via);
+            if (c.fromPromotion) entry.fromPromotion = true;
+            byPerson.set(key, entry);
+          }
+          const people = Array.from(byPerson.values());
+          const visiblePeople = showAllPeople ? people : people.slice(0, MAX_PEOPLE);
+          const hiddenPeople = people.length - visiblePeople.length;
+
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
-              {chips.map((p, i) => (
-                <span
-                  key={`p-${p.role}-${p.via ?? 'root'}-${i}`}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
-                  style={{
-                    backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
-                    color: 'var(--text-secondary)',
-                    border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
+              {visiblePeople.map((p, i) => {
+                const rolesLabel = p.roles.join(', ');
+                return (
+                  <span
+                    key={`p-${p.email ?? p.name}-${i}`}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
+                    style={{
+                      backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
+                      color: 'var(--text-secondary)',
+                      border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
+                    }}
+                    title={[
+                      `${rolesLabel}: ${p.name}`,
+                      p.vias.length > 0 ? `via ${p.vias.join(', ')}` : null,
+                      p.email ?? null,
+                    ].filter(Boolean).join(' · ')}
+                  >
+                    <span style={{ color: 'var(--text-muted)' }}>{rolesLabel}:</span>
+                    <span className="font-medium">{p.name}</span>
+                  </span>
+                );
+              })}
+              {hiddenPeople > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAllPeople(true);
                   }}
-                  title={[
-                    `${roleDisplay(p)}: ${p.displayName ?? p.email ?? '—'}`,
-                    p.via ? `via ${p.via}` : null,
-                    p.email ?? null,
-                  ].filter(Boolean).join(' · ')}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
                 >
-                  <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
-                  <span className="font-medium">{p.displayName ?? p.email ?? '—'}</span>
-                  {p.via && (
-                    <span style={{ color: 'var(--text-muted)' }}>· {p.via}</span>
-                  )}
-                </span>
-              ))}
+                  +{hiddenPeople} more
+                </button>
+              )}
             </div>
           );
         })()}
