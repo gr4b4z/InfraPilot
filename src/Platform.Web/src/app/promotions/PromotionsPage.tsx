@@ -57,9 +57,15 @@ export function PromotionsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
-  // Two-tab view over the loaded Pending set: all pending, or only the ones the
-  // current user can act on right now (per-candidate `canApprove`). No refetch.
-  const [view, setView] = useState<'pending' | 'mine'>('pending');
+  // View over the promotions set:
+  //  - 'pending'         : all Pending (loaded set)
+  //  - 'mine'            : Pending the current user can act on (per-candidate `canApprove`), no refetch
+  //  - 'awaiting-deploy' : Approved but not yet deployed — its own fetch (status=Approved)
+  const [view, setView] = useState<'pending' | 'mine' | 'awaiting-deploy'>('pending');
+  // Approved-awaiting-deploy set. Fetched eagerly (alongside Pending) so the tab
+  // badge shows a live count without the user having to open the tab first.
+  const [awaitingDeploy, setAwaitingDeploy] = useState<PromotionCandidate[]>([]);
+  const [awaitingDeployLoading, setAwaitingDeployLoading] = useState(true);
   // Resolved section — lazy. Only fetched when the user opens it.
   const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
   const [resolvedShown, setResolvedShown] = useState(false);
@@ -84,8 +90,20 @@ export function PromotionsPage() {
       .finally(() => setLoading(false));
   };
 
+  // Approved-but-not-yet-deployed. Separate fetch (single-status ⇒ backend allows up
+  // to 200) so the count is available for the tab badge before the tab is opened.
+  const fetchAwaitingDeploy = () => {
+    setAwaitingDeployLoading(true);
+    api
+      .listPromotions({ status: 'Approved', ...filterParams() })
+      .then((data) => setAwaitingDeploy(data.candidates || []))
+      .catch(() => setAwaitingDeploy([]))
+      .finally(() => setAwaitingDeployLoading(false));
+  };
+
   useEffect(() => {
     fetchData();
+    fetchAwaitingDeploy();
     // A filter change invalidates any loaded resolved set — collapse it so it
     // reloads fresh (with the new filters) if the user reopens it.
     setResolvedShown(false);
@@ -219,9 +237,12 @@ export function PromotionsPage() {
       await api.bulkApprovePromotions(Array.from(selected));
       setSelected(new Set());
       fetchData();
+      // Approved rows leave Pending and land in the awaiting-deploy set — refresh it too.
+      fetchAwaitingDeploy();
     } catch {
       // silently refresh
       fetchData();
+      fetchAwaitingDeploy();
     } finally {
       setBulkLoading(false);
     }
@@ -306,6 +327,7 @@ export function PromotionsPage() {
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
+          { key: 'awaiting-deploy', label: 'Approved · awaiting deploy', count: awaitingDeploy.length, showBadge: true },
         ] as const).map((tab) => {
           const active = view === tab.key;
           return (
@@ -338,7 +360,7 @@ export function PromotionsPage() {
         })}
       </div>
 
-      {loading ? (
+      {loading && view !== 'awaiting-deploy' ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="skeleton h-24" />
@@ -346,8 +368,50 @@ export function PromotionsPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {/* Pending list (or "awaiting my approval" when that tab is active) */}
-          {displayedPending.length > 0 ? (
+          {view === 'awaiting-deploy' ? (
+            /* Approved but not yet deployed. Browse-only: no bulk-approve, no per-row
+               approve action (already approved) — this is a tracking view. */
+            awaitingDeployLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="skeleton h-24" />
+                ))}
+              </div>
+            ) : awaitingDeploy.length > 0 ? (
+              <div>
+                <h2
+                  className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Approved · awaiting deploy ({awaitingDeploy.length})
+                </h2>
+                <div className="space-y-2">
+                  {awaitingDeploy.map((c) => (
+                    <CandidateCard key={c.id} candidate={c} onFilterByReference={setReferenceFilter} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div
+                className="flex flex-col items-center justify-center py-16 rounded-xl border"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+              >
+                <div
+                  className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+                  style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                >
+                  <Rocket size={24} />
+                </div>
+                <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Nothing awaiting deploy
+                </p>
+                <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Approved promotions not yet deployed will appear here.
+                </p>
+              </div>
+            )
+          ) : /* Pending list (or "awaiting my approval" when that tab is active) */
+          displayedPending.length > 0 ? (
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
