@@ -586,6 +586,12 @@ function CandidateCard({
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
+  // Inline "+N more" expansion for the chip rows — collapsed by default so a bundle
+  // with many work-items / participants doesn't turn the card into a wall of chips.
+  const [showAllTickets, setShowAllTickets] = useState(false);
+  const [showAllPeople, setShowAllPeople] = useState(false);
+  const MAX_TICKETS = 5;
+  const MAX_PEOPLE = 5;
 
   return (
     <div
@@ -656,9 +662,11 @@ function CandidateCard({
             (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
           );
           if (tickets.length === 0) return null;
+          const visibleTickets = showAllTickets ? tickets : tickets.slice(0, MAX_TICKETS);
+          const hiddenTickets = tickets.length - visibleTickets.length;
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
-              {tickets.map((ref, i) => {
+              {visibleTickets.map((ref, i) => {
                 const filterKey = ref.key ?? '';
                 const href = resolveReferenceHref({
                   type: ref.type,
@@ -703,6 +711,19 @@ function CandidateCard({
                   </span>
                 );
               })}
+              {hiddenTickets > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAllTickets(true);
+                  }}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
+                >
+                  +{hiddenTickets} more
+                </button>
+              )}
             </div>
           );
         })()}
@@ -733,30 +754,77 @@ function CandidateCard({
           }
 
           if (chips.length === 0) return null;
+
+          // Dedupe by person: the same person is often Assignee/Reporter across many
+          // tickets in a bundle, which otherwise repeats their chip a dozen times. Collapse
+          // to one chip per identity (email ?? display name) with their roles aggregated;
+          // the per-ticket "via" attribution moves into the tooltip (full breakdown lives
+          // on the detail page).
+          interface Person {
+            name: string;
+            email?: string | null;
+            roles: string[];
+            vias: string[];
+            fromPromotion: boolean;
+          }
+          const byPerson = new Map<string, Person>();
+          for (const c of chips) {
+            const name = c.displayName ?? c.email ?? '—';
+            const key = (c.email ?? c.displayName ?? name).toLowerCase();
+            const entry = byPerson.get(key) ?? {
+              name,
+              email: c.email,
+              roles: [],
+              vias: [],
+              fromPromotion: false,
+            };
+            const role = roleDisplay({ role: c.role });
+            if (!entry.roles.includes(role)) entry.roles.push(role);
+            if (c.via && !entry.vias.includes(c.via)) entry.vias.push(c.via);
+            if (c.fromPromotion) entry.fromPromotion = true;
+            byPerson.set(key, entry);
+          }
+          const people = Array.from(byPerson.values());
+          const visiblePeople = showAllPeople ? people : people.slice(0, MAX_PEOPLE);
+          const hiddenPeople = people.length - visiblePeople.length;
+
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
-              {chips.map((p, i) => (
-                <span
-                  key={`p-${p.role}-${p.via ?? 'root'}-${i}`}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
-                  style={{
-                    backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
-                    color: 'var(--text-secondary)',
-                    border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
+              {visiblePeople.map((p, i) => {
+                const rolesLabel = p.roles.join(', ');
+                return (
+                  <span
+                    key={`p-${p.email ?? p.name}-${i}`}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
+                    style={{
+                      backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
+                      color: 'var(--text-secondary)',
+                      border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
+                    }}
+                    title={[
+                      `${rolesLabel}: ${p.name}`,
+                      p.vias.length > 0 ? `via ${p.vias.join(', ')}` : null,
+                      p.email ?? null,
+                    ].filter(Boolean).join(' · ')}
+                  >
+                    <span style={{ color: 'var(--text-muted)' }}>{rolesLabel}:</span>
+                    <span className="font-medium">{p.name}</span>
+                  </span>
+                );
+              })}
+              {hiddenPeople > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAllPeople(true);
                   }}
-                  title={[
-                    `${roleDisplay(p)}: ${p.displayName ?? p.email ?? '—'}`,
-                    p.via ? `via ${p.via}` : null,
-                    p.email ?? null,
-                  ].filter(Boolean).join(' · ')}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
                 >
-                  <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
-                  <span className="font-medium">{p.displayName ?? p.email ?? '—'}</span>
-                  {p.via && (
-                    <span style={{ color: 'var(--text-muted)' }}>· {p.via}</span>
-                  )}
-                </span>
-              ))}
+                  +{hiddenPeople} more
+                </button>
+              )}
             </div>
           );
         })()}
