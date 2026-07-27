@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { GripVertical, Plus, Trash2, Check } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { GripVertical, Plus, Trash2, Check, ChevronDown, Wand2 } from 'lucide-react';
 import { useSettingsStore, type EnvironmentConfig } from '@/stores/settingsStore';
+import { ENV_COLOR_PRESETS, autoEnvColor, envColorStyles, normalizeHexColor } from '@/lib/envColor';
 
 export function EnvironmentsSettings() {
   const { environments, setEnvironments } = useSettingsStore();
@@ -9,6 +10,8 @@ export function EnvironmentsSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  // Index of the row whose colour picker is open, or null. Only one at a time.
+  const [pickerIndex, setPickerIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setItems(environments);
@@ -17,7 +20,13 @@ export function EnvironmentsSettings() {
   const save = async () => {
     const cleaned = items
       .filter((i) => i.key.trim() !== '')
-      .map((i) => ({ key: i.key.trim(), displayName: i.displayName.trim() }));
+      .map((i) => ({
+        key: i.key.trim(),
+        displayName: i.displayName.trim(),
+        // Normalise here too so a half-typed hex never round-trips as a broken colour; the
+        // server applies the same rule, and null means "derive from the key".
+        color: normalizeHexColor(i.color),
+      }));
     setSaving(true);
     setError(null);
     try {
@@ -32,11 +41,14 @@ export function EnvironmentsSettings() {
     }
   };
 
-  const updateItem = (index: number, field: keyof EnvironmentConfig, value: string) => {
+  const updateItem = (index: number, field: keyof EnvironmentConfig, value: string | null) => {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
   };
-  const removeItem = (index: number) => setItems((prev) => prev.filter((_, i) => i !== index));
-  const addItem = () => setItems((prev) => [...prev, { key: '', displayName: '' }]);
+  const removeItem = (index: number) => {
+    setItems((prev) => prev.filter((_, i) => i !== index));
+    setPickerIndex(null);
+  };
+  const addItem = () => setItems((prev) => [...prev, { key: '', displayName: '', color: null }]);
 
   const handleDragStart = (index: number) => setDragIndex(index);
   const handleDragOver = (e: React.DragEvent, index: number) => {
@@ -49,6 +61,7 @@ export function EnvironmentsSettings() {
       return next;
     });
     setDragIndex(index);
+    setPickerIndex(null);
   };
   const handleDragEnd = () => setDragIndex(null);
 
@@ -62,18 +75,20 @@ export function EnvironmentsSettings() {
           Environments
         </h2>
         <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-          Define the environments and their display order. Drag to reorder.
+          Define the environments and their display order. Drag to reorder. The colour marks every
+          item targeting that environment — promotions, rollbacks, deployment activity.
         </p>
       </div>
 
       <div className="space-y-1.5">
         <div
-          className="grid grid-cols-[28px_1fr_1fr_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
+          className="grid grid-cols-[28px_1fr_1fr_150px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
           style={{ color: 'var(--text-muted)' }}
         >
           <span />
           <span>Key</span>
           <span>Display Name</span>
+          <span>Colour</span>
           <span />
         </div>
 
@@ -84,7 +99,7 @@ export function EnvironmentsSettings() {
             onDragStart={() => handleDragStart(index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragEnd={handleDragEnd}
-            className="grid grid-cols-[28px_1fr_1fr_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
+            className="grid grid-cols-[28px_1fr_1fr_150px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
             style={{ backgroundColor: dragIndex === index ? 'var(--accent-muted)' : undefined }}
           >
             <span className="cursor-grab flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
@@ -113,6 +128,13 @@ export function EnvironmentsSettings() {
                 backgroundColor: 'var(--bg-primary)',
                 color: 'var(--text-primary)',
               }}
+            />
+            <ColorCell
+              env={item}
+              open={pickerIndex === index}
+              onToggle={() => setPickerIndex(pickerIndex === index ? null : index)}
+              onClose={() => setPickerIndex(null)}
+              onChange={(color) => updateItem(index, 'color', color)}
             />
             <button
               onClick={() => removeItem(index)}
@@ -153,5 +175,171 @@ export function EnvironmentsSettings() {
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * Colour cell for one environment row.
+ *
+ * The trigger is a live preview of the badge that will appear across the app, so the admin
+ * picks against the real thing rather than a naked swatch. An environment with no explicit
+ * colour still previews — in its auto-derived colour — and the picker offers "Auto" to
+ * return to it.
+ */
+function ColorCell({
+  env,
+  open,
+  onToggle,
+  onClose,
+  onChange,
+}: {
+  env: EnvironmentConfig;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onChange: (color: string | null) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const explicit = normalizeHexColor(env.color);
+  const resolved = explicit ?? autoEnvColor(env.key);
+  const styles = envColorStyles(resolved);
+  const label = env.displayName.trim() || env.key.trim() || 'Environment';
+
+  // Dismiss on outside click / Escape — a picker left open while the admin edits another row
+  // would obscure it, and there's no explicit "done" action to close it otherwise.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, onClose]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={explicit ? `Colour ${explicit}` : `Auto colour ${resolved} (derived from the key)`}
+        className="w-full flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border text-[13px] transition-colors hover:border-[var(--border-strong)]"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+      >
+        <span
+          className="inline-flex items-center gap-1.5 min-w-0 font-semibold rounded-full px-2 py-0.5"
+          style={{
+            fontSize: 11,
+            color: styles.fg,
+            backgroundColor: styles.bg,
+            border: `1px solid ${styles.border}`,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              backgroundColor: styles.solid,
+              flexShrink: 0,
+            }}
+          />
+          <span className="truncate">{label}</span>
+        </span>
+        <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Pick environment colour"
+          className="absolute right-0 z-20 mt-1 p-3 rounded-xl border shadow-lg space-y-3"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-elevated)',
+            width: 208,
+            boxShadow: 'var(--shadow-lg)',
+          }}
+        >
+          <div className="grid grid-cols-7 gap-1.5">
+            {ENV_COLOR_PRESETS.map((preset) => {
+              const selected = explicit === preset.value;
+              return (
+                <button
+                  key={preset.value}
+                  type="button"
+                  title={preset.name}
+                  aria-label={preset.name}
+                  aria-pressed={selected}
+                  onClick={() => onChange(preset.value)}
+                  className="flex items-center justify-center rounded-md transition-transform hover:scale-110"
+                  style={{
+                    width: 22,
+                    height: 22,
+                    backgroundColor: preset.value,
+                    outline: selected ? '2px solid var(--text-primary)' : 'none',
+                    outlineOffset: 1,
+                  }}
+                >
+                  {selected && <Check size={12} color="#fff" strokeWidth={3} />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <input
+              type="color"
+              value={resolved}
+              onChange={(e) => onChange(e.target.value.toLowerCase())}
+              aria-label="Custom colour"
+              className="rounded border cursor-pointer"
+              style={{
+                width: 28,
+                height: 28,
+                padding: 2,
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+              }}
+            />
+            <input
+              type="text"
+              // Free text while typing (so a partial "#2f" isn't swallowed); normalisation
+              // happens on save and on the server.
+              value={env.color ?? ''}
+              onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
+              placeholder={resolved}
+              spellCheck={false}
+              className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border text-[12px] font-mono outline-none transition-colors focus:border-[var(--accent)]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            disabled={!explicit}
+            className="w-full inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px] font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
+            style={{ color: 'var(--text-secondary)', backgroundColor: 'var(--bg-secondary)' }}
+            title="Derive the colour from the environment key"
+          >
+            <Wand2 size={12} />
+            Auto
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

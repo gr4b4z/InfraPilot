@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { RollbackInput, RollbackPreview, RollbackMode, DeploymentVersion } from '@/lib/api';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { X, ArrowRight, Loader2, AlertTriangle, Undo2 } from 'lucide-react';
 
 interface Prefill {
@@ -46,6 +47,9 @@ export function CreateRollbackPanel({
   const [manualVersion, setManualVersion] = useState('');
   const [services, setServices] = useState<string[]>([]);
   const [versions, setVersions] = useState<DeploymentVersion[]>([]);
+
+  const targetEnvStyle = useEnvControlStyle(targetEnv);
+  const referenceEnvStyle = useEnvControlStyle(referenceEnv);
 
   const [preview, setPreview] = useState<RollbackPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -215,11 +219,13 @@ export function CreateRollbackPanel({
 
           {/* Target env */}
           <Field label="Target environment" hint="The environment that will be rolled back">
+            {/* Coloured once chosen — rolling back the wrong environment is the expensive
+                mistake this form can make, so the choice stays visible. */}
             <select
               value={targetEnv}
               onChange={(e) => setTargetEnv(e.target.value)}
-              className="w-full rounded-lg border px-3 py-2 text-[13px]"
-              style={selectStyle}
+              className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
+              style={targetEnvStyle}
             >
               <option value="">Select an environment…</option>
               {envOptions.map((env) => (
@@ -314,8 +320,8 @@ export function CreateRollbackPanel({
               <select
                 value={referenceEnv}
                 onChange={(e) => setReferenceEnv(e.target.value)}
-                className="w-full rounded-lg border px-3 py-2 text-[13px]"
-                style={selectStyle}
+                className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
+                style={referenceEnvStyle}
               >
                 <option value="">Select a reference…</option>
                 {envOptions

@@ -4,6 +4,7 @@ import { api } from '@/lib/api';
 import type { PendingAssignee, PendingTicket, PromotionSourceEventParticipant } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { roleDisplay } from '@/lib/roleLabel';
+import { EnvBadge } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
 import {
   Ticket,
@@ -700,9 +701,9 @@ function TicketRow({
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
             <span className="inline-flex items-center gap-1">
-              <span className="font-medium">{ticket.sourceEnv}</span>
+              <EnvBadge env={ticket.sourceEnv} size="xs" />
               <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-              <span className="font-medium">{ticket.targetEnv}</span>
+              <EnvBadge env={ticket.targetEnv} size="xs" />
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
             <span>
