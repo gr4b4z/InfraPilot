@@ -419,7 +419,7 @@ function RollbackCard({
                 onClick={onApprove}
                 disabled={busy}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--success)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                style={{ backgroundColor: 'var(--success-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
               >
                 <CheckCircle size={12} />
                 Approve

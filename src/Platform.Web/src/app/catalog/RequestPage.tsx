@@ -279,7 +279,7 @@ export function RequestPage() {
               disabled={submitting}
               className="w-full py-3 text-[13px] font-semibold rounded-lg transition-all flex items-center justify-center gap-2"
               style={{
-                backgroundColor: 'var(--success)',
+                backgroundColor: 'var(--success-solid)',
                 color: 'white',
                 opacity: submitting ? 0.7 : 1,
               }}
