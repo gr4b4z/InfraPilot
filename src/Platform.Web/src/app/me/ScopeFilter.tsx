@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import type { PendingTicket } from '@/lib/api';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 /**
  * Picker for narrowing the My-queue list by product / service / target environment.
@@ -58,6 +60,9 @@ export function ScopeFilter({
     onChange({ ...value, [key]: raw === ANY ? null : raw });
   };
 
+  const envSelectStyle = useEnvControlStyle(value.targetEnv);
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+
   return (
     <>
       <label
@@ -109,19 +114,17 @@ export function ScopeFilter({
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Target env</span>
+        {/* Takes the selected environment's colour so an active env narrowing is visible
+            at a glance alongside the queue rows it filtered. */}
         <select
           value={value.targetEnv ?? ANY}
           onChange={(e) => setField('targetEnv', e.target.value)}
           className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-primary)',
-          }}
+          style={envSelectStyle}
         >
           <option value={ANY}>Any env</option>
           {targetEnvs.map((e) => (
-            <option key={e} value={e}>{e}</option>
+            <option key={e} value={e}>{getDisplayName(e)}</option>
           ))}
         </select>
       </label>

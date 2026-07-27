@@ -696,7 +696,8 @@ class ApiClient {
 }
 
 export interface AppSettingsPayload {
-  environments: { key: string; displayName: string }[];
+  /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values. */
+  environments: { key: string; displayName: string; color?: string | null }[];
   roles: { key: string; displayName: string }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
 }

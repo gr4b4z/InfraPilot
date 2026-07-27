@@ -28,9 +28,9 @@ public class AppSettingsService
     public static readonly AppSettingsDto Defaults = new(
         Environments:
         [
-            new("development", "Development"),
-            new("staging", "Staging"),
-            new("production", "Production"),
+            new("development", "Development", "#2563eb"),
+            new("staging", "Staging", "#d97706"),
+            new("production", "Production", "#dc2626"),
         ],
         Roles:
         [
@@ -44,6 +44,24 @@ public class AppSettingsService
             new("{ref:work-item:key} — {label:workItemTitle}", "secondary"),
             new("PR: {participant:PR Author}  ·  QA: {participant:QA}  ·  {time}", "muted"),
         ]);
+
+    /// <summary>
+    /// Normalise an environment colour to <c>#rrggbb</c>. Accepts <c>#rgb</c> shorthand and any
+    /// casing, with or without the leading hash. Anything else (including blank) returns null,
+    /// which the client reads as "derive a colour from the key" rather than as an error — a
+    /// bad swatch should never block saving the rest of the settings.
+    /// </summary>
+    public static string? NormalizeHexColor(string? value)
+    {
+        var hex = (value ?? "").Trim().TrimStart('#');
+        if (hex.Length is not (3 or 6)) return null;
+        foreach (var c in hex)
+        {
+            if (!Uri.IsHexDigit(c)) return null;
+        }
+        if (hex.Length == 3) hex = string.Concat(hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]);
+        return "#" + hex.ToLowerInvariant();
+    }
 
     private readonly PlatformDbContext _db;
     private readonly ICurrentUser _user;

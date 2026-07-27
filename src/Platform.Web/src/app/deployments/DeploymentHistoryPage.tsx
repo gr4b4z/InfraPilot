@@ -3,6 +3,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
+import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
@@ -178,7 +179,6 @@ function HistoryRow({ event: evt, isSelected, onClick }: {
   isSelected: boolean;
   onClick: () => void;
 }) {
-  const { getDisplayName } = useSettingsStore();
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
 
@@ -199,12 +199,7 @@ function HistoryRow({ event: evt, isSelected, onClick }: {
 
       <StatusBadge status={evt.status} />
 
-      <span
-        className="badge text-[11px]"
-        style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
-      >
-        {getDisplayName(evt.environment)}
-      </span>
+      <EnvBadge env={evt.environment} />
 
       {/* Reference chips — work-item key + PR number */}
       {evt.references
@@ -329,7 +324,7 @@ function EnvironmentFilter({ environments, selected, displayName, onChange }: {
         style={{ color: selected ? 'var(--accent)' : 'var(--text-muted)', border: '1px solid var(--border-color)' }}
       >
         <Filter size={13} />
-        {selected ? displayName(selected) : 'All environments'}
+        {selected ? <EnvLabel env={selected} /> : 'All environments'}
         <ChevronDown size={12} />
       </button>
       {open && (
@@ -343,7 +338,8 @@ function EnvironmentFilter({ environments, selected, displayName, onChange }: {
               All environments
             </button>
             {environments.map((env) => (
-              <button key={env} onClick={() => { onChange(env); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}>
+              <button key={env} onClick={() => { onChange(env); setOpen(false); }} className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}>
+                <EnvDot env={env} />
                 {displayName(env)}
               </button>
             ))}
