@@ -37,6 +37,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { EnvBadge } from '@/components/environments/EnvBadge';
 import { resolveReferenceHref } from '@/lib/refUrl';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
@@ -225,20 +226,17 @@ export function PromotionDetailPage() {
             {candidate.product} / {candidate.service}
           </h1>
           <div className="flex items-center gap-3 mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
-            <span className="font-medium">
-              {candidate.sourceEnv} ({candidate.version})
-            </span>
+            <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
             <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-            <span
-              className="font-medium"
+            <EnvBadge
+              env={candidate.targetEnv}
+              suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
               title={
                 candidate.targetCurrentVersion
                   ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
                   : `First deploy to ${candidate.targetEnv}`
               }
-            >
-              {candidate.targetEnv} ({candidate.targetCurrentVersion ?? 'new'})
-            </span>
+            />
           </div>
         </div>
         <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>

@@ -11,7 +11,13 @@ public record AppSettingsDto(
     List<RoleConfigDto> Roles,
     List<ActivityTemplateLineDto> ActivityTemplate);
 
-public record EnvironmentConfigDto(string Key, string DisplayName);
+/// <summary>
+/// One configured environment. <paramref name="Color"/> is an admin-chosen accent used to
+/// tell environments apart at a glance wherever an item targets one (promotions, rollbacks,
+/// deploy activity). Stored normalised as <c>#rrggbb</c>; null means "no explicit choice",
+/// in which case the client derives a stable colour from the key.
+/// </summary>
+public record EnvironmentConfigDto(string Key, string DisplayName, string? Color = null);
 
 public record RoleConfigDto(string Key, string DisplayName);
 

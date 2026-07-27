@@ -1,8 +1,10 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, type ReactNode } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore, resolveTemplate } from '@/stores/settingsStore';
 import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
+import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
+import { useEnvColorOrNull, useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowLeft,
@@ -519,6 +521,7 @@ export function ProductDeploymentsPage() {
               {allActivityEnvs.map((env) => (
                 <EnvPill
                   key={env}
+                  env={env}
                   label={getDisplayName(env)}
                   active={envFilter === env}
                   onClick={() => setEnvFilter(env)}
@@ -634,6 +637,8 @@ export function ProductDeploymentsPage() {
                     align="left"
                   />
                 </th>
+                {/* Header label carries the environment colour so a column is findable at a
+                    glance in a wide matrix. */}
                 {environments.map((env) => (
                   <th
                     key={env}
@@ -641,7 +646,7 @@ export function ProductDeploymentsPage() {
                     style={{ color: 'var(--text-muted)' }}
                   >
                     <SortHeader
-                      label={getDisplayName(env)}
+                      label={<EnvLabel env={env} />}
                       active={sortBy === env}
                       dir={sortDir}
                       onClick={() => toggleSort(env)}
@@ -761,11 +766,8 @@ export function ProductDeploymentsPage() {
           {activityByEnv.map(({ env, events }) => (
             <div key={env} className="space-y-2">
               {envFilter === 'all' && (
-                <h3
-                  className="text-[12px] font-semibold uppercase tracking-wider px-1"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  {getDisplayName(env)}
+                <h3 className="text-[12px] font-semibold uppercase tracking-wider px-1">
+                  <EnvLabel env={env} />
                 </h3>
               )}
               {events.map((evt) => (
@@ -773,7 +775,6 @@ export function ProductDeploymentsPage() {
                   key={evt.id}
                   event={evt}
                   showEnv={envFilter !== 'all'}
-                  getDisplayName={getDisplayName}
                   onClick={() => setSelected(evt)}
                 />
               ))}
@@ -853,7 +854,7 @@ function SortHeader({
   onClick,
   align,
 }: {
-  label: string;
+  label: ReactNode;
   active: boolean;
   dir: 'asc' | 'desc';
   onClick: () => void;
@@ -934,27 +935,42 @@ function DateTimePicker({
   );
 }
 
+/**
+ * Environment filter pill. When `env` is given the active state uses that environment's
+ * colour rather than the generic accent, so the selected filter matches the colour of the
+ * rows it selected. The "All" pill has no env and keeps the accent.
+ */
 function EnvPill({
+  env,
   label,
   active,
   onClick,
 }: {
+  env?: string;
   label: string;
   active: boolean;
   onClick: () => void;
 }) {
+  const envStyles = useEnvColorOrNull(env);
+  const activeStyle = envStyles
+    ? { backgroundColor: envStyles.bg, color: envStyles.fg, border: `1px solid ${envStyles.border}` }
+    : { backgroundColor: 'var(--accent-muted)', color: 'var(--accent)', border: '1px solid var(--accent)' };
+
   return (
     <button
       onClick={onClick}
-      className="px-2.5 py-1 text-[12px] font-medium rounded-full transition-all"
-      style={{
-        backgroundColor: active ? 'var(--accent-muted)' : 'transparent',
-        color: active ? 'var(--accent)' : 'var(--text-muted)',
-        border: active
-          ? '1px solid var(--accent)'
-          : '1px solid var(--border-color)',
-      }}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium rounded-full transition-all"
+      style={
+        active
+          ? activeStyle
+          : {
+              backgroundColor: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--border-color)',
+            }
+      }
     >
+      {env && <EnvDot env={env} size={6} />}
       {label}
     </button>
   );
@@ -971,16 +987,15 @@ function EnvSelect({
   getLabel: (env: string) => string;
   onChange: (v: string) => void;
 }) {
+  // Each side of the comparison wears its environment's colour, so which direction you're
+  // comparing is readable from the control itself.
+  const style = useEnvControlStyle(value);
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-      style={{
-        borderColor: 'var(--border-color)',
-        backgroundColor: 'var(--bg-primary)',
-        color: 'var(--text-primary)',
-      }}
+      className="px-2.5 py-1.5 rounded-lg border text-[13px] font-medium outline-none transition-colors focus:border-[var(--accent)]"
+      style={style}
     >
       {options.map((env) => (
         <option key={env} value={env}>
@@ -1046,11 +1061,11 @@ function CompareView({
             <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
               Service
             </th>
-            <th className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
-              {fromLabel}
+            <th className="text-center px-4 py-3 font-medium">
+              <EnvLabel env={fromEnv} />
             </th>
-            <th className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
-              {toLabel}
+            <th className="text-center px-4 py-3 font-medium">
+              <EnvLabel env={toEnv} />
             </th>
           </tr>
         </thead>
@@ -1178,12 +1193,10 @@ const STYLE_COLORS: Record<string, string> = {
 function ActivityCard({
   event: evt,
   showEnv,
-  getDisplayName,
   onClick,
 }: {
   event: DeployEvent;
   showEnv: boolean;
-  getDisplayName: (key: string) => string;
   onClick: () => void;
 }) {
   const { activityTemplate } = useSettingsStore();
@@ -1215,15 +1228,7 @@ function ActivityCard({
               <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                 →
               </span>
-              <span
-                className="badge text-[11px]"
-                style={{
-                  backgroundColor: 'var(--accent-muted)',
-                  color: 'var(--accent)',
-                }}
-              >
-                {getDisplayName(evt.environment)}
-              </span>
+              <EnvBadge env={evt.environment} />
             </>
           )}
         </div>

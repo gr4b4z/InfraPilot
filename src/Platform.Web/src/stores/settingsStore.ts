@@ -2,10 +2,14 @@ import { create } from 'zustand';
 import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
+import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
 
 export interface EnvironmentConfig {
   key: string;
   displayName: string;
+  /** Admin-chosen accent (`#rrggbb`) used to tell environments apart at a glance. When unset,
+   *  `getEnvironmentColor` derives a stable colour from the key. */
+  color?: string | null;
 }
 
 export interface RoleConfig {
@@ -38,14 +42,17 @@ interface SettingsState {
   setRoles: (roles: RoleConfig[]) => Promise<void>;
   setActivityTemplate: (lines: ActivityTemplateLine[]) => Promise<void>;
   getDisplayName: (key: string) => string;
+  /** Resolved `#rrggbb` for an environment — the configured colour, or a stable one derived
+   *  from the key so every environment is distinguishable even before an admin picks. */
+  getEnvironmentColor: (key: string) => string;
   getRoleDisplayName: (key: string) => string;
   getOrderedEnvironments: (keys: string[]) => string[];
 }
 
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
-  { key: 'development', displayName: 'Development' },
-  { key: 'staging', displayName: 'Staging' },
-  { key: 'production', displayName: 'Production' },
+  { key: 'development', displayName: 'Development', color: '#2563eb' },
+  { key: 'staging', displayName: 'Staging', color: '#d97706' },
+  { key: 'production', displayName: 'Production', color: '#dc2626' },
 ];
 
 const DEFAULT_ROLES: RoleConfig[] = [
@@ -122,6 +129,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   getDisplayName: (key) => {
     const env = get().environments.find((e) => e.key === key);
     return env?.displayName ?? key;
+  },
+
+  getEnvironmentColor: (key) => {
+    const configured = get().environments.find((e) => e.key === key)?.color;
+    return normalizeHexColor(configured) ?? autoEnvColor(key);
   },
 
   getRoleDisplayName: (key) => {
