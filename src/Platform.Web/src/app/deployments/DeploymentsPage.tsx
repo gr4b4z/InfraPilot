@@ -4,10 +4,11 @@ import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { formatDistanceToNow } from 'date-fns';
 import { Rocket, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { EnvLabel } from '@/components/environments/EnvBadge';
 
 export function DeploymentsPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
-  const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
+  const { getOrderedEnvironments } = useSettingsStore();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -44,9 +45,10 @@ export function DeploymentsPage() {
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
                 <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Product</th>
+                {/* Colour-coded so a column can be picked out at a glance in a wide table. */}
                 {allEnvs.map((env) => (
-                  <th key={env} className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
-                    {getDisplayName(env)}
+                  <th key={env} className="text-center px-4 py-3 font-medium">
+                    <EnvLabel env={env} />
                   </th>
                 ))}
               </tr>

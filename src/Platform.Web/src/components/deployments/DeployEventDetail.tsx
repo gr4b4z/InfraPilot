@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2, PlusCircle } from 'lucide-react';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { api } from '@/lib/api';
@@ -26,7 +26,6 @@ const REFERENCE_ICONS: Record<string, typeof ExternalLink> = {
 };
 
 export function DeployEventDetail({ entry, product, onClose, onChanged }: Props) {
-  const { getDisplayName } = useSettingsStore();
   const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
   const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
 
@@ -81,9 +80,9 @@ export function DeployEventDetail({ entry, product, onClose, onChanged }: Props)
             <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
               {entry.service}
             </h2>
-            <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {getDisplayName(entry.environment)}
-            </p>
+            <div className="mt-1">
+              <EnvBadge env={entry.environment} />
+            </div>
           </div>
           <button onClick={onClose} className="p-1 rounded-lg transition-colors hover:opacity-80" style={{ color: 'var(--text-muted)' }}>
             <X size={18} />

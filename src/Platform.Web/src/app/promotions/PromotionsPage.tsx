@@ -4,6 +4,9 @@ import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { roleDisplay } from '@/lib/roleLabel';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowRight,
@@ -45,6 +48,7 @@ const STATUS_CONFIG: Record<
 };
 
 export function PromotionsPage() {
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
   // The page is pending-by-default: `candidates` holds only Pending promotions.
   // Resolved (Approved/Deploying/Deployed/Rejected) promotions are never fetched
   // until the user explicitly opens the resolved section (lazy-loaded below).
@@ -70,6 +74,7 @@ export function PromotionsPage() {
   const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
   const [resolvedShown, setResolvedShown] = useState(false);
   const [resolvedLoading, setResolvedLoading] = useState(false);
+  const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
 
   // Secondary filters shared by both the pending fetch and the resolved fetch.
   const filterParams = () => {
@@ -291,20 +296,18 @@ export function PromotionsPage() {
             color: 'var(--text-primary)',
           }}
         />
+        {/* When a target env is selected the control itself takes that environment's colour,
+            so an active env filter is visible without reading the dropdown. */}
         <select
           value={targetEnvFilter}
           onChange={(e) => setTargetEnvFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-[13px]"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-primary)',
-          }}
+          className="rounded-lg border px-3 py-1.5 text-[13px] font-medium"
+          style={targetEnvSelectStyle}
         >
           <option value="">All target envs</option>
           {targetEnvOptions.map((env) => (
             <option key={env} value={env}>
-              {env}
+              {getDisplayName(env)}
             </option>
           ))}
         </select>
@@ -634,20 +637,17 @@ function CandidateCard({
           )}
         </div>
         <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          <span className="font-medium">
-            {candidate.sourceEnv} ({candidate.version})
-          </span>
+          <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
           <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
-          <span
-            className="font-medium"
+          <EnvBadge
+            env={candidate.targetEnv}
+            suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
             title={
               candidate.targetCurrentVersion
                 ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
                 : `First deploy to ${candidate.targetEnv}`
             }
-          >
-            {candidate.targetEnv} ({candidate.targetCurrentVersion ?? 'new'})
-          </span>
+          />
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
           <span className="flex items-center gap-1">
