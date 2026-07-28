@@ -619,13 +619,13 @@ export function ProductDeploymentsPage() {
       ) : tab === 'state' ? (
         /* ── State Matrix ── */
         <div
-          className="rounded-xl border overflow-hidden"
+          className="rounded-xl border overflow-x-auto"
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-secondary)',
           }}
         >
-          <table className="w-full text-[13px]">
+          <table className="w-full min-w-max text-[13px]">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
                 <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
