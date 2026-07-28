@@ -5,9 +5,11 @@ import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/li
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
+import { readEnumPref, writePref, PROMOTIONS_VIEW_PREF } from '@/lib/prefs';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { refreshMyTasks } from '@/stores/myTasksStore';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowRight,
@@ -64,6 +66,8 @@ const STATUS_CONFIG: Record<
  * tail can't clip it.
  */
 type View = 'pending' | 'mine' | 'awaiting-deploy' | 'resolved' | 'rejected' | 'all';
+
+const VIEWS = ['pending', 'mine', 'awaiting-deploy', 'resolved', 'rejected', 'all'] as const;
 
 const VIEW_HEADINGS: Record<View, string> = {
   pending: 'All pending',
@@ -144,7 +148,10 @@ export function PromotionsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
-  const [view, setView] = useState<View>('pending');
+  // Cookie-persisted so the tab you work from is the tab you come back to.
+  const [view, setView] = useState<View>(() =>
+    readEnumPref(PROMOTIONS_VIEW_PREF, VIEWS, 'pending'),
+  );
   // Approved-awaiting-deploy set. Fetched eagerly (alongside Pending) so the tab
   // badge shows a live count without the user having to open the tab first.
   const [awaitingDeploy, setAwaitingDeploy] = useState<PromotionCandidate[]>([]);
@@ -158,6 +165,11 @@ export function PromotionsPage() {
   const [rejected, setRejected] = useState<PromotionCandidate[] | null>(null);
   const [rejectedLoading, setRejectedLoading] = useState(false);
   const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
+
+  const changeView = (next: View) => {
+    writePref(PROMOTIONS_VIEW_PREF, next);
+    setView(next);
+  };
 
   // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
   const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}`;
@@ -404,6 +416,8 @@ export function PromotionsPage() {
       setArchive(null);
       setRejected(null);
       setBulkLoading(false);
+      // The sidebar counter and the bell badge counted these as awaiting the user.
+      refreshMyTasks();
     }
   };
 
@@ -498,7 +512,7 @@ export function PromotionsPage() {
             <button
               key={tab.key}
               type="button"
-              onClick={() => setView(tab.key)}
+              onClick={() => changeView(tab.key)}
               aria-pressed={active}
               className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
               style={{

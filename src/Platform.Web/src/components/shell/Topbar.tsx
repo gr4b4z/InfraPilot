@@ -1,7 +1,9 @@
 import { Bell, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
+import { NavLink } from 'react-router-dom';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useMyTasksCount } from '@/stores/myTasksStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
 
@@ -15,6 +17,9 @@ export function Topbar() {
   const logout = useAuthStore((s) => s.logout);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  // Promotions + work items awaiting this user. Drives the bell badge; the bell opens the
+  // My Tasks page that lists exactly these items.
+  const myTasksCount = useMyTasksCount();
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
@@ -162,18 +167,32 @@ export function Topbar() {
           </button>
         </div>
 
-        <button
+        {/* Bell → My tasks. The badge is a real count of things awaiting this user, so an
+            empty bell renders bare rather than with a dot that means nothing. */}
+        <NavLink
+          to="/my-tasks"
           className="p-2 rounded-lg transition-colors hover:bg-[var(--bg-secondary)] relative"
-          style={{ color: 'var(--text-muted)' }}
-          title="Notifications"
+          style={({ isActive }) => ({
+            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+            backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
+          })}
+          title={
+            myTasksCount > 0
+              ? `My tasks — ${myTasksCount} awaiting you`
+              : 'My tasks — nothing awaiting you'
+          }
+          aria-label={`My tasks, ${myTasksCount} awaiting you`}
         >
           <Bell size={16} />
-          {/* Notification dot */}
-          <span
-            className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
-            style={{ backgroundColor: 'var(--danger)' }}
-          />
-        </button>
+          {myTasksCount > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full text-[10px] font-bold leading-[16px] text-center text-white"
+              style={{ backgroundColor: 'var(--danger)' }}
+            >
+              {myTasksCount > 99 ? '99+' : myTasksCount}
+            </span>
+          )}
+        </NavLink>
 
         <div className="w-px h-6 mx-1.5" style={{ backgroundColor: 'var(--border-color)' }} />
 
