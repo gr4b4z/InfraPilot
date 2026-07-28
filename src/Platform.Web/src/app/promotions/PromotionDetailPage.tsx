@@ -1318,7 +1318,7 @@ function PromotionApprovalCard({
               }
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
-                backgroundColor: 'var(--success)',
+                backgroundColor: 'var(--success-solid)',
                 color: '#fff',
                 opacity: actionLoading || approveBlocked ? 0.5 : 1,
                 cursor: approveBlocked ? 'not-allowed' : 'pointer',
@@ -1332,7 +1332,7 @@ function PromotionApprovalCard({
               disabled={actionLoading}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
-                backgroundColor: 'var(--danger)',
+                backgroundColor: 'var(--danger-solid)',
                 color: '#fff',
                 opacity: actionLoading ? 0.5 : 1,
                 cursor: 'pointer',

@@ -380,7 +380,7 @@ function DecisionCard({
                 onClick={() => decide('Approved')}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--success)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                style={{ backgroundColor: 'var(--success-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
               >
                 <CheckCircle size={12} />
                 {busy === 'Approved' ? 'Approving…' : 'Approve'}
@@ -391,7 +391,7 @@ function DecisionCard({
                 onClick={() => decide('Blocked')}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--warning)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                style={{ backgroundColor: 'var(--warning-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
                 title="Hold this work item back without rejecting the promotion"
               >
                 <Ban size={12} />
@@ -403,7 +403,7 @@ function DecisionCard({
                 onClick={() => decide('Rejected')}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--danger)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
                 title="Veto — rejects the promotion carrying this work item"
               >
                 <XCircle size={12} />
