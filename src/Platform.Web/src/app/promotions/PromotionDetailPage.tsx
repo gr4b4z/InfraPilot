@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, createContext, useContext } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
   PromotionCandidate,
@@ -1641,6 +1641,10 @@ function WorkItemsCard({
 /**
  * One work-item row.
  *
+ * The whole tile opens the work-item detail page, matching the queue and the promotions list;
+ * regions with their own behaviour (the tracker link, the participant controls) swallow the click
+ * rather than every leaf control having to know about the tile.
+ *
  * Layout note: the state badge lives in its own flex column rather than being pushed right with
  * `ml-auto` inside the title row — in the wrapping version it dropped onto a line of its own as
  * soon as the title got long. The title truncates on a single line for the same reason, and the
@@ -1657,6 +1661,7 @@ function TicketRow({
   onChanged: () => void;
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
+  const navigate = useNavigate();
   const key = reference.key ?? '';
   const [ctx, setCtx] = useState<WorkItemContext | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1703,18 +1708,21 @@ function TicketRow({
   const stateColor = decidedStyle?.color ?? 'var(--warning)';
   const stateBg = decidedStyle?.bg ?? 'var(--warning-bg)';
 
+  const detailPath = key ? workItemDetailPath(key, candidate.product, candidate.targetEnv) : null;
+
   return (
     <div
-      className="p-3 rounded-lg border"
+      className={`p-3 rounded-lg border ${detailPath ? 'card-hover cursor-pointer' : ''}`}
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+      onClick={detailPath ? () => navigate(detailPath) : undefined}
     >
       <div className="flex items-start gap-3">
         <Icon size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 2 }} />
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 min-w-0">
-            {key ? (
+            {detailPath ? (
               <Link
-                to={workItemDetailPath(key, candidate.product, candidate.targetEnv)}
+                to={detailPath}
                 className="text-[13px] font-medium hover:underline shrink-0"
                 style={{ color: 'var(--accent)' }}
                 title={`Open ${key} details`}
@@ -1733,6 +1741,7 @@ function TicketRow({
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
                 className="shrink-0 transition-opacity hover:opacity-70"
                 style={{ color: 'var(--text-muted)' }}
                 title={`Open ${key || 'work item'} in ${reference.provider ?? 'the tracker'}`}
@@ -1753,14 +1762,17 @@ function TicketRow({
           </div>
 
           {/* Reference-level participants (e.g. QA on a ticket). Editable in place: writes go to
-              PATCH /api/promotions/{id}/references/{key}/participants. */}
-          <WorkItemParticipants
-            candidateId={candidate.id}
-            referenceKey={key}
-            participants={reference.participants ?? []}
-            onChanged={onChanged}
-            readOnly={readOnly}
-          />
+              PATCH /api/promotions/{id}/references/{key}/participants. The wrapper keeps assignment
+              clicks from being read as "open the work item". */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <WorkItemParticipants
+              candidateId={candidate.id}
+              referenceKey={key}
+              participants={reference.participants ?? []}
+              onChanged={onChanged}
+              readOnly={readOnly}
+            />
+          </div>
 
           {decided && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -1798,9 +1810,9 @@ function TicketRow({
             </p>
           )}
 
-          {key && (
+          {detailPath && (
             <Link
-              to={workItemDetailPath(key, candidate.product, candidate.targetEnv)}
+              to={detailPath}
               className="inline-flex items-center gap-1 mt-1.5 text-[11px] font-medium transition-opacity hover:opacity-80"
               style={{ color: 'var(--accent)' }}
             >

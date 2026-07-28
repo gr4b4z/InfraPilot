@@ -106,6 +106,8 @@ body {
   --accent-hover: #4A38CD;
   --accent-muted: rgba(91, 73, 222, 0.08);
   --accent-subtle: rgba(91, 73, 222, 0.12);
+  /* Tinted fill behind accent-coloured text (active tabs, badges). Sibling of --success-bg etc. */
+  --accent-bg: rgba(91, 73, 222, 0.1);
   --success: #059669;
   --success-bg: #ECFDF5;
   /* Solid fill for buttons carrying white text (Approve/Reject, destructive confirm). Equal to
@@ -126,61 +128,69 @@ body {
 /* Dark mode */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg-primary: #09090B;
-    --bg-secondary: #111113;
-    --bg-tertiary: #18181B;
-    --bg-elevated: #1E1E21;
-    --bg-overlay: rgba(0, 0, 0, 0.7);
-    --text-primary: #FAFAFA;
-    --text-secondary: #A1A1AA;
-    --text-muted: #52525B;
-    --border-color: #27272A;
-    --border-strong: #3F3F46;
-    --accent: #7C6EF0;
-    --accent-hover: #9B8FFF;
-    --accent-muted: rgba(124, 110, 240, 0.1);
-    --accent-subtle: rgba(124, 110, 240, 0.15);
-    --success: #34D399;
-    --success-bg: rgba(52, 211, 153, 0.1);
-    --success-solid: #047857;
-    --warning: #FBBF24;
-    --warning-solid: #B45309;
-    --warning-bg: rgba(251, 191, 36, 0.1);
-    --danger: #F87171;
-    --danger-bg: rgba(248, 113, 113, 0.1);
-    --danger-solid: #B91C1C;
-    --info: #60A5FA;
-    --info-bg: rgba(96, 165, 250, 0.1);
+    /* Azure DevOps-style greys: a soft charcoal canvas with surfaces raised above it, rather than
+       near-black. Note the ordering matches light mode — --bg-primary (cards, topbar) sits ABOVE
+       --bg-secondary (page canvas, sidebar, recessed wells) — so depth reads the same either way. */
+    --bg-primary: #252526;
+    --bg-secondary: #1B1B1C;
+    --bg-tertiary: #2D2D30;
+    --bg-elevated: #333337;
+    --bg-overlay: rgba(0, 0, 0, 0.6);
+    --text-primary: #E9E9E9;
+    --text-secondary: #B4B4B4;
+    --text-muted: #8A8A8A;
+    --border-color: #3F3F41;
+    --border-strong: #565658;
+    --accent: #8C80F5;
+    --accent-hover: #A79DFF;
+    --accent-muted: rgba(140, 128, 245, 0.12);
+    --accent-subtle: rgba(140, 128, 245, 0.18);
+    --accent-bg: rgba(140, 128, 245, 0.16);
+    --success: #4EC994;
+    --success-bg: rgba(78, 201, 148, 0.14);
+    --success-solid: #107C55;
+    --warning: #E5B84B;
+    --warning-solid: #A16207;
+    --warning-bg: rgba(229, 184, 75, 0.14);
+    --danger: #F08A8A;
+    --danger-bg: rgba(240, 138, 138, 0.14);
+    --danger-solid: #B3261E;
+    --info: #6BA8F5;
+    --info-bg: rgba(107, 168, 245, 0.14);
   }
 }
 
 /* Dark mode class toggle */
 .dark {
-  --bg-primary: #09090B;
-  --bg-secondary: #111113;
-  --bg-tertiary: #18181B;
-  --bg-elevated: #1E1E21;
-  --bg-overlay: rgba(0, 0, 0, 0.7);
-  --text-primary: #FAFAFA;
-  --text-secondary: #A1A1AA;
-  --text-muted: #52525B;
-  --border-color: #27272A;
-  --border-strong: #3F3F46;
-  --accent: #7C6EF0;
-  --accent-hover: #9B8FFF;
-  --accent-muted: rgba(124, 110, 240, 0.1);
-  --accent-subtle: rgba(124, 110, 240, 0.15);
-  --success: #34D399;
-  --success-bg: rgba(52, 211, 153, 0.1);
-  --success-solid: #047857;
-  --warning: #FBBF24;
-  --warning-solid: #B45309;
-  --warning-bg: rgba(251, 191, 36, 0.1);
-  --danger: #F87171;
-  --danger-bg: rgba(248, 113, 113, 0.1);
-  --danger-solid: #B91C1C;
-  --info: #60A5FA;
-  --info-bg: rgba(96, 165, 250, 0.1);
+  /* Azure DevOps-style greys: a soft charcoal canvas with surfaces raised above it, rather than
+     near-black. Note the ordering matches light mode — --bg-primary (cards, topbar) sits ABOVE
+     --bg-secondary (page canvas, sidebar, recessed wells) — so depth reads the same either way. */
+  --bg-primary: #252526;
+  --bg-secondary: #1B1B1C;
+  --bg-tertiary: #2D2D30;
+  --bg-elevated: #333337;
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --text-primary: #E9E9E9;
+  --text-secondary: #B4B4B4;
+  --text-muted: #8A8A8A;
+  --border-color: #3F3F41;
+  --border-strong: #565658;
+  --accent: #8C80F5;
+  --accent-hover: #A79DFF;
+  --accent-muted: rgba(140, 128, 245, 0.12);
+  --accent-subtle: rgba(140, 128, 245, 0.18);
+  --accent-bg: rgba(140, 128, 245, 0.16);
+  --success: #4EC994;
+  --success-bg: rgba(78, 201, 148, 0.14);
+  --success-solid: #107C55;
+  --warning: #E5B84B;
+  --warning-solid: #A16207;
+  --warning-bg: rgba(229, 184, 75, 0.14);
+  --danger: #F08A8A;
+  --danger-bg: rgba(240, 138, 138, 0.14);
+  --danger-solid: #B3261E;
+  --info: #6BA8F5;
+  --info-bg: rgba(107, 168, 245, 0.14);
 }
 
 /* Explicit light mode override */
@@ -199,6 +209,7 @@ body {
   --accent-hover: #4A38CD;
   --accent-muted: rgba(91, 73, 222, 0.08);
   --accent-subtle: rgba(91, 73, 222, 0.12);
+  --accent-bg: rgba(91, 73, 222, 0.1);
   --success: #059669;
   --success-bg: #ECFDF5;
   --success-solid: var(--success);

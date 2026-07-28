@@ -326,10 +326,16 @@ public class PromotionGateTests
         }
     }
 
-    // ── 5. WorkItemsOnly_TicketRejected_VetoesCandidate ───────────────────────
+    // ── 5. WorkItemsOnly_TicketRejected_StallsGateWithoutTerminatingCandidate ──
 
+    /// <summary>
+    /// A work-item rejection is a verdict on the ticket, not on the promotion: it holds the gate
+    /// (the item never counts as resolved) but leaves the candidate Pending, exactly like a block.
+    /// It used to cascade into <c>promotion.rejected</c>; that veto is gone, so a reject is
+    /// recoverable — the same user can approve later, or a new version resets the decision.
+    /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_TicketRejected_VetoesCandidate()
+    public async Task WorkItemsOnly_TicketRejected_StallsGateWithoutTerminatingCandidate()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "rejector@example.com";
@@ -346,11 +352,10 @@ public class PromotionGateTests
             candidateId = c.Id;
         }
 
-        // Reject one ticket — candidate should be terminated immediately, regardless of FOO-2.
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.RejectAsync("FOO-1", "acme", "prod", "blocked", default);
+            await svc.RejectAsync("FOO-1", "acme", "prod", "not ready", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -358,23 +363,25 @@ public class PromotionGateTests
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var candidate = await db.PromotionCandidates.AsNoTracking()
                 .FirstAsync(c => c.Id == candidateId);
-            Assert.Equal(PromotionStatus.Rejected, candidate.Status);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
 
-            // The rejecting user (not "system") owns the coarse promotion.rejected audit.
-            var coarse = await db.AuditLog.AsNoTracking()
-                .FirstAsync(a => a.Action == "promotion.rejected" && a.EntityId == candidateId);
-            Assert.Equal("user", coarse.ActorType);
-            Assert.NotEqual("system", coarse.ActorId);
-            // Trigger marker is on AfterState (audit logger's payload arg).
-            Assert.Contains("ticket-veto", coarse.AfterState!);
+            // No promotion-level rejection at all — the cascade is gone.
+            Assert.Empty(await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.rejected").ToListAsync());
 
-            // Ticket-level audit also emitted for the rejection.
+            // Ticket-level audit is still emitted for the rejection.
             var ticket = await db.AuditLog.AsNoTracking()
                 .Where(a => a.Action == "promotion.ticket.rejected").ToListAsync();
             Assert.Single(ticket);
+
+            // And the decision lands in the work item's comment thread.
+            var entry = await db.WorkItemComments.AsNoTracking()
+                .SingleAsync(c => c.WorkItemKey == "FOO-1");
+            Assert.Equal(PromotionDecision.Rejected, entry.Decision);
+            Assert.Contains("not ready", entry.Body);
         }
 
-        await factory.WebhookDispatcher.Received().DispatchAsync(
+        await factory.WebhookDispatcher.DidNotReceive().DispatchAsync(
             "promotion.rejected",
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
@@ -632,15 +639,15 @@ public class PromotionGateTests
         }
     }
 
-    // ── 10. WorkItemsOnly_OrphanedTicketSignoff_NoActiveCandidate_RejectsRecord ──
+    // ── 10. WorkItemsOnly_OrphanedTicketSignoff_IsRecorded ───────────────────────
 
-    // Adjusted from spec: the spec asks us to verify against actual Phase 3B
-    // behaviour. RecordAsync throws InvalidOperationException("No Pending promotion
-    // candidate references this ticket") when no candidate carries the ticket — it
-    // does NOT persist a row, NOT emit ticket audit, NOT emit webhook. We assert that.
-
+    /// <summary>
+    /// An orphaned work item — one no Pending candidate carries any more — is still signable. It
+    /// used to be refused, which stranded the item: it stayed unresolved forever with no way to
+    /// close it out. The sign-off records normally, just with a null candidate id on the events.
+    /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_OrphanedTicketSignoff_NoActiveCandidate_ThrowsAndPersistsNothing()
+    public async Task WorkItemsOnly_OrphanedTicketSignoff_IsRecorded()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -661,26 +668,59 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.ApproveAsync("ORPH-1", "acme", "prod", null, default));
-            Assert.Contains("Pending", ex.Message, StringComparison.OrdinalIgnoreCase);
+            var row = await svc.ApproveAsync("ORPH-1", "acme", "prod", null, default);
+            Assert.Equal(PromotionDecision.Approved, row.Decision);
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
-            // No WorkItemApproval row written.
-            Assert.Empty(await db.WorkItemApprovals.AsNoTracking().ToListAsync());
+            var rows = await db.WorkItemApprovals.AsNoTracking().ToListAsync();
+            Assert.Single(rows);
 
-            // No ticket-level audit (neither legacy nor new ticket-level event).
-            Assert.Empty(await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "promotion.ticket.approved").ToListAsync());
-            Assert.Empty(await db.AuditLog.AsNoTracking()
+            // Both audit events are emitted, the ticket-level one with no candidate attached.
+            var ticketAudit = await db.AuditLog.AsNoTracking()
+                .SingleAsync(a => a.Action == "promotion.ticket.approved");
+            Assert.Null(ticketAudit.EntityId);
+            Assert.Single(await db.AuditLog.AsNoTracking()
                 .Where(a => a.Action == "work-item.approved").ToListAsync());
         }
 
-        // No webhook dispatch for a ticket that wasn't recorded.
+        await factory.WebhookDispatcher.Received().DispatchAsync(
+            "promotion.ticket.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    /// <summary>
+    /// The other half of the orphan story: a signable orphan must be a work item the platform has
+    /// actually seen. An arbitrary key is still refused, so nothing can seed rows for a ticket that
+    /// was never promoted.
+    /// </summary>
+    [Fact]
+    public async Task UnknownTicketSignoff_ThrowsAndPersistsNothing()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "approver@example.com";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                svc.ApproveAsync("NOPE-1", "acme", "prod", null, default));
+            Assert.Contains("not known", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Empty(await db.WorkItemApprovals.AsNoTracking().ToListAsync());
+            Assert.Empty(await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.ticket.approved").ToListAsync());
+        }
+
         await factory.WebhookDispatcher.DidNotReceive().DispatchAsync(
             "promotion.ticket.approved",
             Arg.Any<object>(),
