@@ -1203,8 +1203,8 @@ public class PromotionService
     /// Computes the "all work items resolved" gate condition for a candidate, or <c>null</c> when the
     /// policy doesn't gate on work items (neither <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>
     /// nor <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>) or the candidate carries no
-    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and no
-    /// Rejected one.
+    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and
+    /// neither a Rejected nor a Blocked one.
     /// </summary>
     private async Task<WorkItemGateProgress?> GetWorkItemGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
@@ -1231,16 +1231,21 @@ public class PromotionService
             .ToListAsync(ct);
 
         var approved = 0;
+        var blocked = 0;
         foreach (var key in workItemKeys)
         {
             var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
             if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) continue;
+            // A block holds the item back without vetoing: it never counts as approved, and it
+            // takes precedence over any sibling approval so one blocker is enough to stall the gate.
+            if (rows.Any(a => a.Decision == PromotionDecision.Blocked)) { blocked++; continue; }
             if (rows.Any(a => a.Decision == PromotionDecision.Approved)) approved++;
         }
 
         return new WorkItemGateProgress(
             Required: true, Total: workItemKeys.Count, Approved: approved,
-            Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove);
+            Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove,
+            Blocked: blocked);
     }
 
     /// <summary>
@@ -1299,7 +1304,8 @@ public class PromotionService
     /// <summary>
     /// Returns <c>true</c> when every distinct work-item key on the candidate has at least one
     /// <see cref="PromotionDecision.Approved"/> <see cref="WorkItemApproval"/> row and zero
-    /// <see cref="PromotionDecision.Rejected"/> rows. Returns <c>true</c> vacuously when the
+    /// <see cref="PromotionDecision.Rejected"/> / <see cref="PromotionDecision.Blocked"/> rows.
+    /// Returns <c>true</c> vacuously when the
     /// candidate has no work items — callers should guard with <see cref="CandidateHasWorkItemsAsync"/>
     /// first when they want "no work items" to be treated differently.
     /// </summary>
@@ -1323,6 +1329,8 @@ public class PromotionService
         {
             var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
             if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) return false;
+            // One Blocked decision stalls the item regardless of sibling approvals.
+            if (rows.Any(a => a.Decision == PromotionDecision.Blocked)) return false;
             if (!rows.Any(a => a.Decision == PromotionDecision.Approved)) return false;
         }
 
@@ -1684,7 +1692,11 @@ public record ApprovalProgress(
 /// Progress of the "all work items resolved/approved" gate condition for a candidate:
 /// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off.
 /// </summary>
-public record WorkItemGateProgress(bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false);
+public record WorkItemGateProgress(
+    bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false,
+    // Work items held back by a Blocked decision. Counted separately from Approved so the UI can
+    // say "2 of 5 approved, 1 blocked" instead of leaving the shortfall unexplained.
+    int Blocked = 0);
 
 /// <summary>One approval step's progress: satisfied once all its requirements are.</summary>
 public record StepProgress(string Name, bool Satisfied, IReadOnlyList<RequirementProgress> Requirements);

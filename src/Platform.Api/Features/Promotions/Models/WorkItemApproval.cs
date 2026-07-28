@@ -8,9 +8,10 @@ namespace Platform.Api.Features.Promotions.Models;
 /// can transition to Approved under WorkItemsOnly / WorkItemsAndManual modes.
 ///
 /// One signoff per work item is enough (MVP). The unique index on
-/// (WorkItemKey, Product, TargetEnv, ApproverEmail) prevents the same user
-/// from recording two decisions on the same work item; multi-approver-per-work-item
-/// is a future policy.
+/// (WorkItemKey, Product, TargetEnv, ApproverEmail) holds a single row per user per work item;
+/// re-deciding (Approve ↔ Block, say) updates that row in place rather than appending, so
+/// <see cref="UpdatedAt"/> is the only trace of the earlier value on the row itself — the audit
+/// log keeps the full sequence. Multi-approver-per-work-item is a future policy.
 /// </summary>
 public class WorkItemApproval
 {
@@ -23,4 +24,7 @@ public class WorkItemApproval
     public PromotionDecision Decision { get; set; }
     public string? Comment { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>When the approver last changed their decision. Null while the original stands.</summary>
+    public DateTimeOffset? UpdatedAt { get; set; }
 }

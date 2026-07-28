@@ -473,6 +473,58 @@ class ApiClient {
     );
   }
 
+  /**
+   * Hold the work item back without vetoing the promotion. Unlike a rejection the candidate stays
+   * Pending, and the same user can call `approveWorkItem` later to release it.
+   */
+  blockWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+    return this.request<WorkItemApproval>(
+      `/work-items/${encodeURIComponent(key)}/blocks`,
+      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+    );
+  }
+
+  /**
+   * Everything the work-item detail page renders in one call: display fields, assigned people,
+   * decision trail, comment thread, and every promotion candidate carrying the ticket. 404s when
+   * the platform has never seen the key for that (product, targetEnv).
+   */
+  getWorkItemDetail(key: string, product: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, targetEnv });
+    return this.request<WorkItemDetail>(
+      `/work-items/${encodeURIComponent(key)}/detail?${params.toString()}`,
+    );
+  }
+
+  // ── Work-item comments ────────────────────────────────────────────────
+  // Threads key on (key, product, targetEnv) — the same grain as the decisions — so they survive
+  // a superseded candidate. Edit/delete address the comment by id alone.
+
+  listWorkItemComments(key: string, product: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, targetEnv });
+    return this.request<{ comments: WorkItemComment[] }>(
+      `/work-items/${encodeURIComponent(key)}/comments?${params.toString()}`,
+    );
+  }
+
+  addWorkItemComment(key: string, product: string, targetEnv: string, body: string) {
+    return this.request<WorkItemComment>(
+      `/work-items/${encodeURIComponent(key)}/comments`,
+      { method: 'POST', body: JSON.stringify({ product, targetEnv, body }) },
+    );
+  }
+
+  updateWorkItemComment(commentId: string, body: string) {
+    return this.request<WorkItemComment>(`/work-items/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  deleteWorkItemComment(commentId: string) {
+    return this.request<void>(`/work-items/comments/${commentId}`, { method: 'DELETE' });
+  }
+
   // The current user's pending work items across all (product, targetEnv) pairs.
   // Powers the /me/work-items queue page.
   //
@@ -846,6 +898,12 @@ export interface PromotionCandidate {
   canApprove: boolean;
 }
 
+/**
+ * A work-item sign-off outcome. `Blocked` holds the item back without vetoing the promotion
+ * (the candidate stays Pending) and is reversible; `Rejected` is a veto that terminates it.
+ */
+export type WorkItemDecision = 'Approved' | 'Rejected' | 'Blocked';
+
 export interface WorkItemApproval {
   id: string;
   workItemKey: string;
@@ -853,9 +911,11 @@ export interface WorkItemApproval {
   targetEnv: string;
   approverEmail: string;
   approverName: string;
-  decision: 'Approved' | 'Rejected';
+  decision: WorkItemDecision;
   comment: string | null;
   createdAt: string;
+  /** Set when the approver later changed their decision; the row is updated in place. */
+  updatedAt?: string | null;
 }
 
 export interface WorkItemContext {
@@ -863,9 +923,60 @@ export interface WorkItemContext {
   product: string;
   targetEnv: string;
   pendingCandidateId: string | null;
+  /** Whether the current user may record — or change — a decision right now. */
   canApprove: boolean;
   blockedReason: string | null;
+  /** The current user's own decision, if they already made one. */
+  myDecision?: WorkItemDecision | null;
   approvals: WorkItemApproval[];
+}
+
+/** One comment in a work item's thread. Keyed by (workItemKey, product, targetEnv). */
+export interface WorkItemComment {
+  id: string;
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  authorEmail: string;
+  authorName: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+/** One promotion candidate carrying a work item, as listed on the detail page. */
+export interface WorkItemCandidateRef {
+  id: string;
+  service: string;
+  version: string;
+  sourceEnv: string;
+  targetEnv: string;
+  status: PromotionStatus;
+  createdAt: string;
+  /** The candidate participant assignments write to (newest Pending, else newest overall). */
+  isPrimary: boolean;
+}
+
+/** Full response shape for `GET /api/work-items/{key}/detail`. */
+export interface WorkItemDetail {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  pendingCandidateId: string | null;
+  /** Target for participant writes — null only if the ticket has no candidates at all. */
+  primaryCandidateId: string | null;
+  canApprove: boolean;
+  /** Whether the caller may assign / remove people (QA or Admin). */
+  canManage: boolean;
+  blockedReason: string | null;
+  myDecision: WorkItemDecision | null;
+  participants: PromotionSourceEventParticipant[];
+  approvals: WorkItemApproval[];
+  comments: WorkItemComment[];
+  candidates: WorkItemCandidateRef[];
 }
 
 /** One row from `GET /api/work-items/me/pending`. */
@@ -893,7 +1004,7 @@ export interface PendingTicket {
    * The decision recorded on this ticket — null on the pending inbox; populated on the
    * "decided" view. Decisions can come from any approver in the candidate's authorised group.
    */
-  decision?: 'Approved' | 'Rejected' | null;
+  decision?: WorkItemDecision | null;
   decidedAt?: string | null;
   decidedByEmail?: string | null;
   decidedByName?: string | null;
@@ -1021,6 +1132,8 @@ export interface PromotionWorkItemGate {
   required: boolean;
   total: number;
   approved: number;
+  /** Work items held back by a Blocked decision — counted apart from `approved`. */
+  blocked?: number;
   satisfied: boolean;
   /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
   autoApprove: boolean;

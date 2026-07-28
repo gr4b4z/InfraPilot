@@ -69,6 +69,24 @@ public static class WorkItemEndpoints
             });
         });
 
+        // Full detail for the work-item page: display fields, people, decision trail, comment
+        // thread, and every candidate carrying the ticket. Mounted before /{key} so "detail" is
+        // never swallowed as a key segment (it wouldn't be — the shapes differ — but keeping the
+        // more specific route first makes the intent obvious).
+        group.MapGet("/{key}/detail", async (
+            WorkItemApprovalService svc,
+            string key,
+            string product,
+            string targetEnv,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            var detail = await svc.GetDetailAsync(decoded, product, targetEnv, ct);
+            return detail is null
+                ? Results.NotFound(new { error = $"Work item '{decoded}' not found for {product}/{targetEnv}" })
+                : Results.Ok(ToDetailDto(detail));
+        });
+
         // Ticket context — authority + decision history for a specific (key, product, env).
         group.MapGet("/{key}", async (
             WorkItemApprovalService svc,
@@ -107,6 +125,83 @@ public static class WorkItemEndpoints
                 decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
         });
 
+        // Record a block — holds the item back without vetoing the promotion. Reversible: the same
+        // user may later POST /approvals to release it.
+        group.MapPost("/{key}/blocks", async (
+            WorkItemApprovalService svc,
+            string key,
+            WorkItemDecisionRequest body,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            return await RunDecisionAsync(() => svc.BlockAsync(
+                decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
+        });
+
+        // ── Comment thread ────────────────────────────────────────────────
+        // Keyed by (key, product, targetEnv) like the decisions, so the thread survives a
+        // superseded candidate. Edit/delete route by comment id — no key in the path — because the
+        // id alone identifies the row and the author check is the only authorisation that matters.
+
+        group.MapGet("/{key}/comments", async (
+            WorkItemApprovalService svc,
+            string key,
+            string product,
+            string targetEnv,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            var comments = await svc.GetCommentsAsync(decoded, product, targetEnv, ct);
+            return Results.Ok(new { comments = comments.Select(ToCommentDto) });
+        });
+
+        group.MapPost("/{key}/comments", async (
+            WorkItemApprovalService svc,
+            string key,
+            WorkItemCommentRequest body,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            try
+            {
+                var comment = await svc.AddCommentAsync(
+                    decoded, body.Product ?? "", body.TargetEnv ?? "", body.Body ?? "", ct);
+                return Results.Ok(ToCommentDto(comment));
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        group.MapPatch("/comments/{commentId:guid}", async (
+            WorkItemApprovalService svc,
+            Guid commentId,
+            WorkItemCommentRequest body,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var comment = await svc.UpdateCommentAsync(commentId, body.Body ?? "", ct);
+                return Results.Ok(ToCommentDto(comment));
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        group.MapDelete("/comments/{commentId:guid}", async (
+            WorkItemApprovalService svc,
+            Guid commentId,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                await svc.DeleteCommentAsync(commentId, ct);
+                return Results.NoContent();
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+        });
+
         return group;
     }
 
@@ -138,6 +233,7 @@ public static class WorkItemEndpoints
         decision = a.Decision.ToString(),
         comment = a.Comment,
         createdAt = a.CreatedAt,
+        updatedAt = a.UpdatedAt,
     };
 
     private static object ToContextDto(TicketContext ctx) => new
@@ -148,8 +244,56 @@ public static class WorkItemEndpoints
         pendingCandidateId = ctx.PendingCandidateId,
         canApprove = ctx.CanApprove,
         blockedReason = ctx.BlockedReason,
+        myDecision = ctx.MyDecision,
         approvals = ctx.Approvals.Select(ToApprovalDto),
+    };
+
+    private static object ToCommentDto(WorkItemComment c) => new
+    {
+        id = c.Id,
+        workItemKey = c.WorkItemKey,
+        product = c.Product,
+        targetEnv = c.TargetEnv,
+        authorEmail = c.AuthorEmail,
+        authorName = c.AuthorName,
+        body = c.Body,
+        createdAt = c.CreatedAt,
+        updatedAt = c.UpdatedAt,
+    };
+
+    private static object ToDetailDto(WorkItemDetail d) => new
+    {
+        workItemKey = d.WorkItemKey,
+        product = d.Product,
+        targetEnv = d.TargetEnv,
+        title = d.Title,
+        url = d.Url,
+        provider = d.Provider,
+        pendingCandidateId = d.PendingCandidateId,
+        primaryCandidateId = d.PrimaryCandidateId,
+        canApprove = d.CanApprove,
+        canManage = d.CanManage,
+        blockedReason = d.BlockedReason,
+        myDecision = d.MyDecision,
+        participants = d.Participants,
+        approvals = d.Approvals.Select(ToApprovalDto),
+        comments = d.Comments.Select(ToCommentDto),
+        candidates = d.Candidates.Select(c => new
+        {
+            id = c.Id,
+            service = c.Service,
+            version = c.Version,
+            sourceEnv = c.SourceEnv,
+            targetEnv = c.TargetEnv,
+            status = c.Status,
+            createdAt = c.CreatedAt,
+            isPrimary = c.IsPrimary,
+        }),
     };
 }
 
 public record WorkItemDecisionRequest(string? Product, string? TargetEnv, string? Comment);
+
+/// <summary>Body for posting/editing a work-item comment. Product/TargetEnv are required on
+/// create (they complete the thread key) and ignored on edit.</summary>
+public record WorkItemCommentRequest(string? Product, string? TargetEnv, string? Body);
