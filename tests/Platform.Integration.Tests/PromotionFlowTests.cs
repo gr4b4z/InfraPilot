@@ -227,6 +227,130 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         Assert.Equal("Approved", ctx.GetProperty("myDecision").GetString());
     }
 
+    /// <summary>
+    /// A work item is discovered by parsing commit messages, so the producer declares the commit
+    /// hashes that mentioned it on the work-item reference. The detail projection hydrates those into
+    /// the commits themselves and — through each commit's merge revision — the pull requests behind
+    /// them, which is the only way the ticket→PR link exists: the payload never states it directly.
+    ///
+    /// <para>Shaped after a real mpt-extensions payload: two tickets, each with one commit, each
+    /// commit merged by its own PR, plus repository and pipeline references that must not leak in.</para>
+    /// </summary>
+    [Fact]
+    public async Task Create_WithCommitLinkedWorkItems_ResolvesCommitsAndPullRequests()
+    {
+        await SeedPoliciesAsync();
+
+        const string shaA = "19a22406ddec682782c02f051b2303b4f3758a22";
+        const string shaB = "32a0a09aa2f8f1711d781b802074f44974c8973c";
+
+        var references = new object[]
+        {
+            new { type = "repository", provider = "azure-devops", revision = shaA,
+                  url = "https://example.visualstudio.com/MPT/_git/svc", title = "svc" },
+            new { type = "pipeline", provider = "azure-devops", key = "8688281",
+                  url = "https://example.visualstudio.com/MPT/_build/results?buildId=8688281" },
+            new { type = "commit", provider = "azure-devops", key = shaA,
+                  title = "Merged PR 149502: Add CLI command",
+                  url = $"https://example.com/_git/svc/commit/{shaA}",
+                  participants = new[] { new { role = "author", displayName = "A Author", email = "a@example.com" } } },
+            new { type = "work-item", provider = "jira", key = "MPT-23574",
+                  url = "https://example.atlassian.net/browse/MPT-23574",
+                  title = "Add CLI command to execute offboarding",
+                  commits = new[] { shaA } },
+            new { type = "pull-request", provider = "azure-devops", key = "149502", revision = shaA,
+                  title = "Add CLI command",
+                  url = "https://example.visualstudio.com/MPT/_git/svc/pullrequest/149502" },
+            new { type = "commit", provider = "azure-devops", key = shaB,
+                  title = "Merged PR 149496: Fix templates mapping",
+                  url = $"https://example.com/_git/svc/commit/{shaB}" },
+            new { type = "work-item", provider = "jira", key = "MPT-23640",
+                  url = "https://example.atlassian.net/browse/MPT-23640",
+                  title = "Invalid notification data",
+                  commits = new[] { shaB } },
+            new { type = "pull-request", provider = "azure-devops", key = "149496", revision = shaB,
+                  title = "Fix templates mapping",
+                  url = "https://example.visualstudio.com/MPT/_git/svc/pullrequest/149496" },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.0.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        // Ticket A: its own commit and its own PR — not the other ticket's.
+        var a = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-23574/detail?product=acme&targetEnv=prod");
+
+        var aCommits = a.GetProperty("commits").EnumerateArray().ToList();
+        Assert.Single(aCommits);
+        Assert.Equal(shaA, aCommits[0].GetProperty("hash").GetString());
+        Assert.Equal("Merged PR 149502: Add CLI command", aCommits[0].GetProperty("title").GetString());
+        Assert.Equal($"https://example.com/_git/svc/commit/{shaA}", aCommits[0].GetProperty("url").GetString());
+        Assert.Equal("A Author",
+            aCommits[0].GetProperty("participants").EnumerateArray().First().GetProperty("displayName").GetString());
+
+        var aPrs = a.GetProperty("pullRequests").EnumerateArray().ToList();
+        Assert.Single(aPrs);
+        Assert.Equal("149502", aPrs[0].GetProperty("key").GetString());
+        Assert.Equal("Add CLI command", aPrs[0].GetProperty("title").GetString());
+        Assert.Equal(shaA, aPrs[0].GetProperty("revision").GetString());
+
+        // Ticket B resolves to the other pair — no cross-contamination between tickets.
+        var b = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-23640/detail?product=acme&targetEnv=prod");
+        Assert.Equal(shaB, b.GetProperty("commits").EnumerateArray().Single().GetProperty("hash").GetString());
+        Assert.Equal("149496", b.GetProperty("pullRequests").EnumerateArray().Single().GetProperty("key").GetString());
+
+        // The Jira link the header now promotes to a labelled button.
+        Assert.Equal("jira", b.GetProperty("provider").GetString());
+        Assert.Equal("https://example.atlassian.net/browse/MPT-23640", b.GetProperty("url").GetString());
+    }
+
+    /// <summary>
+    /// A declared hash with no matching <c>commit</c> reference still renders — the producer saw that
+    /// commit, and dropping it would understate the change set. Abbreviated hashes match the full
+    /// reference, because commit messages and version strings routinely carry the short form.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithUnresolvableAndAbbreviatedHashes_StillListsThem()
+    {
+        await SeedPoliciesAsync();
+
+        const string full = "a7ce996fb64bf76bf2c51f38208a2c1fd35740ab";
+        var references = new object[]
+        {
+            new { type = "commit", provider = "azure-devops", key = full, title = "Add command",
+                  url = $"https://example.com/_git/svc/commit/{full}" },
+            new { type = "pull-request", provider = "azure-devops", key = "149478", revision = full,
+                  title = "Add OffboardAgreementsCommand", url = "https://example.com/pr/149478" },
+            new { type = "work-item", provider = "jira", key = "MPT-23508", title = "Create command",
+                  url = "https://example.atlassian.net/browse/MPT-23508",
+                  // First is abbreviated, second was never included as a `commit` reference.
+                  commits = new[] { "a7ce996", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" } },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.1.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-23508/detail?product=acme&targetEnv=prod");
+
+        var commits = detail.GetProperty("commits").EnumerateArray().ToList();
+        Assert.Equal(2, commits.Count);
+
+        // Abbreviated hash hydrated from the full-hash reference.
+        Assert.Equal("a7ce996", commits[0].GetProperty("hash").GetString());
+        Assert.Equal("Add command", commits[0].GetProperty("title").GetString());
+
+        // Unresolvable hash survives as a bare row with no link.
+        Assert.Equal("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", commits[1].GetProperty("hash").GetString());
+        Assert.Equal(JsonValueKind.Null, commits[1].GetProperty("url").ValueKind);
+        Assert.Equal(JsonValueKind.Null, commits[1].GetProperty("title").ValueKind);
+
+        // The PR is reached via the abbreviated hash matching its full revision.
+        Assert.Equal("149478",
+            detail.GetProperty("pullRequests").EnumerateArray().Single().GetProperty("key").GetString());
+    }
+
     [Fact]
     public async Task Ingest_DispatchesDeploymentCreatedWebhook()
     {

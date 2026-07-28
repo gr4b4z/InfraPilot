@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
+  PromotionSourceEventParticipant,
   PromotionStatus,
   WorkItemComment,
   WorkItemDecision,
   WorkItemDetail,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
-import { decisionStyle } from '@/lib/workItem';
+import { decisionStyle, providerLabel, shortHash } from '@/lib/workItem';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
@@ -19,6 +20,7 @@ import {
   Ban,
   CheckCircle,
   ExternalLink,
+  GitCommitHorizontal,
   GitPullRequest,
   MessageSquare,
   Ticket,
@@ -123,25 +125,34 @@ export function WorkItemDetailPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <Ticket size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            <h1
-              className="text-xl font-semibold tracking-tight"
-              style={{ color: 'var(--text-primary)' }}
-            >
-              {detail.workItemKey}
-            </h1>
+          <div className="flex items-center gap-3 min-w-0 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <Ticket size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              <h1
+                className="text-xl font-semibold tracking-tight"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {detail.workItemKey}
+              </h1>
+            </div>
+            {/* The tracker link is the most-used control on this page — someone reviewing a ticket
+                goes to read it. It was a 14px bare icon next to the title; now it's a labelled
+                button so it's findable without hunting. */}
             {detail.url && (
               <a
                 href={detail.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="transition-opacity hover:opacity-70"
-                style={{ color: 'var(--text-muted)' }}
-                title={`Open ${detail.workItemKey} in ${detail.provider ?? 'the tracker'}`}
-                aria-label={`Open ${detail.workItemKey} in ${detail.provider ?? 'the tracker'}`}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] font-semibold shrink-0 transition-colors hover:bg-[var(--accent-bg)]"
+                style={{
+                  borderColor: 'var(--accent)',
+                  color: 'var(--accent)',
+                  backgroundColor: 'var(--accent-muted)',
+                }}
+                title={`Open ${detail.workItemKey} in ${providerLabel(detail.provider)}`}
               >
-                <ExternalLink size={14} />
+                View in {providerLabel(detail.provider)}
+                <ExternalLink size={12} />
               </a>
             )}
           </div>
@@ -198,6 +209,8 @@ export function WorkItemDetailPage() {
         </div>
 
         <div className="space-y-4">
+          <ChangeSetCard detail={detail} />
+
           {/* People — assignments write to the primary candidate's copy of this work-item
              reference, which is where participants actually live. */}
           <div
@@ -292,6 +305,155 @@ export function WorkItemDetailPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The change that carried this work item: the commits whose messages referenced it, and the pull
+ * requests those commits merged. Both come from the promotion payload — the producer declares the
+ * commit hashes on the work-item reference and the server resolves them against the `commit` and
+ * `pull-request` references — so a reviewer can get from "what am I signing off?" to the actual diff
+ * without going hunting in the promotion.
+ *
+ * Renders nothing when the producer declared no commits, which is the case for every payload written
+ * before `commits` existed.
+ */
+function ChangeSetCard({ detail }: { detail: WorkItemDetail }) {
+  const { commits, pullRequests } = detail;
+  if (commits.length === 0 && pullRequests.length === 0) return null;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <GitCommitHorizontal size={12} /> Change
+      </h2>
+
+      {pullRequests.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[11px] font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
+            Pull requests ({pullRequests.length})
+          </p>
+          <div className="space-y-2">
+            {pullRequests.map((pr) => (
+              <ChangeRow
+                key={pr.key || pr.url || pr.revision || ''}
+                icon={<GitPullRequest size={12} />}
+                label={pr.key ? `!${pr.key}` : 'Pull request'}
+                title={pr.title}
+                url={pr.url}
+                provider={pr.provider}
+                participants={pr.participants}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {commits.length > 0 && (
+        <div>
+          <p className="text-[11px] font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
+            Commits ({commits.length})
+          </p>
+          <div className="space-y-2">
+            {commits.map((c) => (
+              <ChangeRow
+                key={c.hash}
+                icon={<GitCommitHorizontal size={12} />}
+                label={shortHash(c.hash)}
+                labelTitle={c.hash}
+                title={c.title}
+                url={c.url}
+                provider={c.provider}
+                participants={c.participants}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One commit or pull-request row. The whole row is the link when the reference carried a URL;
+ * otherwise it's inert text — a hash the producer declared but supplied no `commit` reference for is
+ * still worth showing, just not clickable.
+ */
+function ChangeRow({
+  icon,
+  label,
+  labelTitle,
+  title,
+  url,
+  provider,
+  participants,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  labelTitle?: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  participants: PromotionSourceEventParticipant[];
+}) {
+  const author = participants.find((p) => (p.role ?? '').toLowerCase() === 'author') ?? participants[0];
+
+  const body = (
+    <>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{icon}</span>
+        <span
+          className="font-mono text-[11px] font-semibold shrink-0"
+          style={{ color: 'var(--accent)' }}
+          title={labelTitle}
+        >
+          {label}
+        </span>
+        {url && <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />}
+      </div>
+      {title && (
+        <p className="text-[12px] mt-1 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
+          {title}
+        </p>
+      )}
+      {author && (
+        <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--text-muted)' }}>
+          {author.displayName ?? author.email}
+        </p>
+      )}
+    </>
+  );
+
+  const style = {
+    borderColor: 'var(--border-color)',
+    backgroundColor: 'var(--bg-secondary)',
+  };
+
+  if (!url) {
+    return (
+      <div className="block p-2.5 rounded-lg border" style={style}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block p-2.5 rounded-lg border transition-opacity hover:opacity-80"
+      style={style}
+      title={`Open ${label} in ${providerLabel(provider, 'the source repository')}`}
+    >
+      {body}
+    </a>
   );
 }
 
