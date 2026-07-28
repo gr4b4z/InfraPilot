@@ -783,6 +783,10 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("Decision")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)

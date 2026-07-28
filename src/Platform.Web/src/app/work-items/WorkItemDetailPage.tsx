@@ -236,6 +236,12 @@ export function WorkItemDetailPage() {
             >
               <GitPullRequest size={12} /> Promotions ({detail.candidates.length})
             </h2>
+            {detail.candidates.length === 0 && (
+              <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                No live promotion carries this work item — it still needs signing off so it stops
+                sitting in the queue.
+              </p>
+            )}
             <div className="space-y-2">
               {detail.candidates.map((c) => (
                 <Link
@@ -278,7 +284,8 @@ export function WorkItemDetailPage() {
             {primary && detail.candidates.length > 1 && (
               <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
                 A sign-off here counts for every promotion above. People are assigned on{' '}
-                <span className="font-medium">{primary.service}</span> (the newest one).
+                <span className="font-medium">{primary.service}</span> (the newest one). Superseded
+                builds aren&rsquo;t listed.
               </p>
             )}
           </div>
@@ -404,7 +411,7 @@ function DecisionCard({
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-                title="Veto — rejects the promotion carrying this work item"
+                title="Reject this work item — the promotion stays pending"
               >
                 <XCircle size={12} />
                 {busy === 'Rejected' ? 'Rejecting…' : 'Reject'}
@@ -412,9 +419,11 @@ function DecisionCard({
             )}
           </div>
           <p className="text-[11px] mt-2.5" style={{ color: 'var(--text-muted)' }}>
-            <span className="font-medium">Block</span> holds the item back and leaves the promotion
-            pending — reversible. <span className="font-medium">Reject</span> is a veto: it rejects
-            the promotion outright.
+            Only <span className="font-medium">Approve</span> releases the promotion.{' '}
+            <span className="font-medium">Block</span> (&ldquo;not yet&rdquo;) and{' '}
+            <span className="font-medium">Reject</span> (&ldquo;no&rdquo;) both leave the item
+            unresolved, which holds the promotion pending without cancelling it — and both are
+            reversible. A new version of the promotion clears them and asks again.
           </p>
         </>
       )}
@@ -491,9 +500,13 @@ function DecisionTrail({ detail }: { detail: WorkItemDetail }) {
 }
 
 /**
- * The work item's discussion thread. Separate from the note attached to a decision: comments are
- * editable by their author (or an admin) and outlive the candidate that was live when they were
- * written, because they key on (workItemKey, product, targetEnv) like the decisions do.
+ * The work item's thread: free-text discussion interleaved with the decision entries the API writes
+ * on every Approve / Block / Reject (and the system entry when a new version resets one). Everything
+ * keys on (workItemKey, product, targetEnv), so the thread outlives the candidate that was live when
+ * it started.
+ *
+ * Decision and system entries are tinted by outcome and carry no edit/delete — they are the record of
+ * what happened, not someone's remark about it. Only a human comment the caller authored is editable.
  */
 function CommentsCard({
   detail,
@@ -581,21 +594,31 @@ function CommentsCard({
           </p>
         )}
         {sorted.map((c) => {
+          // An entry the platform wrote — a sign-off, or the system note when a new version reset
+          // one. Immutable server-side, so the UI offers no controls for it either.
+          const record = c.decision ?? (c.authorEmail.toLowerCase() === 'system' ? 'system' : null);
+          const style = c.decision ? decisionStyle(c.decision) : null;
           const isMine =
-            !!currentUserEmail && c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
+            !record &&
+            !!currentUserEmail &&
+            c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
           const isEditing = editingId === c.id;
           return (
             <div
               key={c.id}
               className="p-3 rounded-lg border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+              style={{
+                borderColor: style?.color ?? 'var(--border-color)',
+                backgroundColor: style?.bg ?? 'var(--bg-secondary)',
+              }}
             >
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span
-                  className="text-[13px] font-medium truncate"
-                  style={{ color: 'var(--text-primary)' }}
+                  className="text-[13px] font-medium truncate inline-flex items-center gap-1.5"
+                  style={{ color: style?.color ?? 'var(--text-primary)' }}
                 >
-                  {c.authorName || c.authorEmail}
+                  {c.decision && <DecisionIcon decision={c.decision} size={12} />}
+                  {record === 'system' ? 'System' : c.authorName || c.authorEmail}
                 </span>
                 <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
                   {format(new Date(c.createdAt), 'MMM d, HH:mm')}
