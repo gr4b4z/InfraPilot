@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -91,19 +91,24 @@ public class WorkItemApprovalTests
         }
     }
 
+    /// <summary>
+    /// A missing Pending candidate no longer blocks a sign-off (an orphaned item still needs
+    /// resolving) — but a key the platform has never seen does, so nothing can seed rows for a
+    /// ticket that was never promoted.
+    /// </summary>
     [Fact]
-    public async Task Approve_Throws_WhenNoPendingCandidateReferencesTicket()
+    public async Task Approve_Throws_WhenTicketIsUnknown()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
-        // No setup — no candidate carries FOO-999.
+        // No setup — no candidate has ever carried FOO-999.
         using var scope = factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.ApproveAsync("FOO-999", "acme", "prod", null, default));
-        Assert.Contains("Pending", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not known", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -640,8 +645,48 @@ public class WorkItemApprovalTests
         }
     }
 
+    /// <summary>
+    /// A superseded build is a promotion that was replaced before it shipped — noise on a page about
+    /// the work item, so it's left out of the list. It still resolves as primary when it's all the
+    /// ticket has, so people assignments keep a write target.
+    /// </summary>
     [Fact]
-    public async Task GetTicketContext_BlockedReasonIsNoPending_WhenNoCandidateCarriesTicket()
+    public async Task GetDetail_OmitsSupersededCandidates()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid supersededId;
+        Guid liveId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, old) = await SeedPolicyEventCandidateAsync(db, "FOO-1",
+                approverGroup: "ReleaseApprovers", service: "api",
+                createdAt: DateTimeOffset.UtcNow.AddHours(-2));
+            old.Status = PromotionStatus.Superseded;
+            supersededId = old.Id;
+            var (_, _, live) = await SeedPolicyEventCandidateAsync(db, "FOO-1",
+                approverGroup: "ReleaseApprovers", service: "api",
+                createdAt: DateTimeOffset.UtcNow);
+            liveId = live.Id;
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal(new[] { liveId }, detail!.Candidates.Select(c => c.Id).ToArray());
+            Assert.Equal(liveId, detail.PrimaryCandidateId);
+            Assert.DoesNotContain(supersededId, detail.Candidates.Select(c => c.Id));
+        }
+    }
+
+    [Fact]
+    public async Task GetTicketContext_CannotApprove_WhenTicketIsUnknown()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
@@ -651,9 +696,39 @@ public class WorkItemApprovalTests
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
         var ctx = await svc.GetTicketContextAsync("ZZZ-999", "acme", "prod", default);
         Assert.False(ctx.CanApprove);
-        Assert.Equal("No pending promotion needs this ticket", ctx.BlockedReason);
+        Assert.Equal("This work item is not known for that product and environment", ctx.BlockedReason);
         Assert.Null(ctx.PendingCandidateId);
         Assert.Empty(ctx.Approvals);
+    }
+
+    /// <summary>
+    /// A known work item whose promotion has moved on is orphaned, not undecidable: the context must
+    /// still offer the sign-off, otherwise the item can never be closed out and sits in the queue.
+    /// </summary>
+    [Fact]
+    public async Task GetTicketContext_CanApprove_WhenTicketIsOrphaned()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "me@example.com";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, c) = await SeedPolicyEventCandidateAsync(db, "ORPH-1",
+                approverGroup: "ReleaseApprovers");
+            c.Status = PromotionStatus.Superseded;
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var ctx = await svc.GetTicketContextAsync("ORPH-1", "acme", "prod", default);
+            Assert.True(ctx.CanApprove);
+            Assert.Null(ctx.BlockedReason);
+            Assert.Null(ctx.PendingCandidateId);
+        }
     }
 
     [Fact]
@@ -873,7 +948,7 @@ public class WorkItemApprovalTests
     }
 
     [Fact]
-    public async Task POST_Approvals_Returns400_WhenNoPendingCandidate()
+    public async Task POST_Approvals_Returns400_WhenTicketIsUnknown()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -885,7 +960,7 @@ public class WorkItemApprovalTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         var body = await Deserialize(response);
-        Assert.Contains("Pending", body.GetProperty("error").GetString()!,
+        Assert.Contains("not known", body.GetProperty("error").GetString()!,
             StringComparison.OrdinalIgnoreCase);
     }
 

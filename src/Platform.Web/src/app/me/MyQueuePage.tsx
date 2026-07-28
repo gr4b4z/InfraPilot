@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PendingAssignee, PendingTicket, WorkItemDecision } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
@@ -16,6 +16,7 @@ import {
   ExternalLink,
   ArrowRight,
   Inbox,
+  Unlink,
 } from 'lucide-react';
 import {
   AssigneeFilter,
@@ -575,6 +576,10 @@ function emptyStateBody(filter: AssigneeFilterValue): string {
  * One queue row. Navigational, not transactional: sign-off (Approve / Block / Reject) and the
  * discussion thread live on the work-item detail page, so the row's job is to surface state and get
  * you there. Assigning people stays inline — it's the one edit that's useful while triaging a list.
+ *
+ * The whole tile is the click target for "open details", matching the promotions list. Regions with
+ * their own behaviour (the tracker link, the participant controls) swallow the click rather than
+ * every leaf control having to know about the tile.
  */
 function TicketRow({
   ticket,
@@ -583,16 +588,23 @@ function TicketRow({
   ticket: PendingTicket;
   onChanged: () => void;
 }) {
+  const navigate = useNavigate();
   // Decided rows are read-only history: decision badge + decider + comment, and no participant
   // editing. The candidate may also have moved on (Approved/Deployed/Rejected/Superseded) so we
   // surface its current status as a hint.
   const decided = ticket.decision != null;
+  // Undecided row whose promotion is gone: superseded without the replacement picking the ticket up,
+  // or rejected. The item is still ours to resolve, so it stays in the queue — flagged, because the
+  // service/version shown belongs to a promotion that is no longer going anywhere.
+  const orphaned =
+    !decided && !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
   const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
 
   return (
     <div
-      className="rounded-xl border p-4"
+      className="card-hover rounded-xl border p-4 cursor-pointer"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+      onClick={() => navigate(detailPath)}
     >
       <div className="flex items-start gap-3">
         <Ticket size={16} style={{ color: 'var(--text-muted)', marginTop: 2, flexShrink: 0 }} />
@@ -612,6 +624,7 @@ function TicketRow({
                 href={ticket.url}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
                 className="shrink-0 transition-opacity hover:opacity-70"
                 style={{ color: 'var(--text-muted)' }}
                 title={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
@@ -636,6 +649,16 @@ function TicketRow({
                 title={`Referenced by ${ticket.blockingPromotions} pending promotion candidates`}
               >
                 ×{ticket.blockingPromotions}
+              </span>
+            )}
+            {orphaned && (
+              <span
+                className="badge shrink-0"
+                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                title={`The promotion carrying this work item is ${ticket.candidateStatus}. The item still needs signing off.`}
+              >
+                <Unlink size={10} />
+                No live promotion
               </span>
             )}
           </div>
@@ -668,24 +691,19 @@ function TicketRow({
           </div>
 
           {/* Participants — each chip carries its own role icon, and the dashed "Assign" button is
-              the empty state, so no separate header is needed here. */}
-          <WorkItemParticipants
-            candidateId={ticket.candidateId}
-            referenceKey={ticket.workItemKey}
-            participants={ticket.participants ?? []}
-            onChanged={onChanged}
-            readOnly={decided}
-          />
-
-          <div className="flex items-center gap-3 mt-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            <Link
-              to={`/promotions/${ticket.candidateId}`}
-              className="inline-flex items-center gap-1 hover:underline"
-              style={{ color: 'var(--accent)' }}
-            >
-              View promotion
-              <ExternalLink size={10} />
-            </Link>
+              the empty state, so no separate header is needed here. The wrapper keeps assignment
+              clicks from being read as "open the details page". */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <WorkItemParticipants
+              candidateId={ticket.candidateId}
+              referenceKey={ticket.workItemKey}
+              participants={ticket.participants ?? []}
+              onChanged={onChanged}
+              /* Orphan rows are read-only for assignment: their candidate is the dead one, which
+                 isn't necessarily the candidate the detail page writes people to, so an edit here
+                 could land somewhere the user never sees it. The detail page is the place. */
+              readOnly={decided || orphaned}
+            />
           </div>
 
           {decided && (

@@ -899,8 +899,9 @@ export interface PromotionCandidate {
 }
 
 /**
- * A work-item sign-off outcome. `Blocked` holds the item back without vetoing the promotion
- * (the candidate stays Pending) and is reversible; `Rejected` is a veto that terminates it.
+ * A work-item sign-off outcome. Neither `Blocked` nor `Rejected` touches the promotion — both leave
+ * the item unresolved, which stalls the gate without terminating the candidate, and both are
+ * reversible. They differ only in what the reviewer is saying: "not yet" versus "no".
  */
 export type WorkItemDecision = 'Approved' | 'Rejected' | 'Blocked';
 
@@ -922,6 +923,7 @@ export interface WorkItemContext {
   workItemKey: string;
   product: string;
   targetEnv: string;
+  /** Null when no live promotion carries the item — orphaned, but still signable. */
   pendingCandidateId: string | null;
   /** Whether the current user may record — or change — a decision right now. */
   canApprove: boolean;
@@ -931,7 +933,7 @@ export interface WorkItemContext {
   approvals: WorkItemApproval[];
 }
 
-/** One comment in a work item's thread. Keyed by (workItemKey, product, targetEnv). */
+/** One entry in a work item's thread. Keyed by (workItemKey, product, targetEnv). */
 export interface WorkItemComment {
   id: string;
   workItemKey: string;
@@ -940,6 +942,12 @@ export interface WorkItemComment {
   authorEmail: string;
   authorName: string;
   body: string;
+  /**
+   * Set when this entry records a sign-off rather than free-text discussion (written automatically
+   * on Approve / Block / Reject). Those entries — and anything authored by `system` — are immutable,
+   * so the UI shows no edit/delete on them.
+   */
+  decision?: WorkItemDecision | null;
   createdAt: string;
   updatedAt: string | null;
 }
@@ -995,9 +1003,10 @@ export interface PendingTicket {
   /** Participants on this specific work-item reference (overrides applied). */
   participants: PromotionSourceEventParticipant[];
   /**
-   * Status of the candidate this row represents. "Pending" on the inbox; for decision-history
-   * views the candidate may have moved on (Approved / Deploying / Deployed / Rejected /
-   * Superseded). "Unknown" when no candidate could be linked to the row.
+   * Status of the candidate this row represents. "Pending" for a live promotion; anything else means
+   * the row is either decision history or an orphan — a work item whose promotion died (Superseded /
+   * Rejected) and which nobody has signed off, kept in the queue so the work isn't lost.
+   * "Unknown" when no candidate could be linked to the row.
    */
   candidateStatus?: string;
   /**
