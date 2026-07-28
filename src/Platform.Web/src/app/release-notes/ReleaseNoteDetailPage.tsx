@@ -109,10 +109,17 @@ export function ReleaseNoteDetailPage() {
 
       {view === 'rendered' ? (
         <div
-          className="release-notes-prose rounded-xl border p-6 text-[14px] overflow-x-auto"
-          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+          className="rounded-xl border p-6"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+        >
+          {/* Card spans the page, but the prose keeps a reading width — full-viewport
+              line lengths are unreadable for long-form notes. */}
+          <div
+            className="release-notes-prose text-[14px] overflow-x-auto max-w-[80ch]"
+            style={{ color: 'var(--text-primary)' }}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        </div>
       ) : (
         <div className="space-y-3">
           {note.raw.services.map((svc) => (

@@ -250,7 +250,7 @@ function ReleaseNoteCard({ note, onOpen }: { note: ReleaseNoteFeedItem; onOpen: 
         </button>
       </div>
       <div
-        className="release-notes-prose px-5 py-4 text-[14px] overflow-x-auto"
+        className="release-notes-prose px-5 py-4 text-[14px] overflow-x-auto max-w-[80ch]"
         style={{ color: 'var(--text-primary)' }}
         dangerouslySetInnerHTML={{ __html: html }}
       />
