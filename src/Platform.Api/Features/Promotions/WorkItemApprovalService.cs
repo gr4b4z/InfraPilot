@@ -78,13 +78,28 @@ public class WorkItemApprovalService
         => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Rejected, ct);
 
     /// <summary>
-    /// Records a ticket-level decision after authority + duplicate checks. Does not transition
-    /// any candidate — that's PR3's gate evaluator.
+    /// Holds the work item back without vetoing the promotion. The candidate stays Pending (no
+    /// cascade) and the gate treats the item as unresolved; the same user can switch to Approved
+    /// later, which is the whole point of having a decision that isn't a veto.
+    /// </summary>
+    public Task<WorkItemApproval> BlockAsync(
+        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Blocked, ct);
+
+    /// <summary>
+    /// Records a ticket-level decision after authority checks, then drives the candidate side
+    /// (auto-promote on approve, veto-cascade on reject, nothing on block).
+    ///
+    /// <para>A user who already decided may change their mind: the existing row is updated in
+    /// place (the unique index permits one row per approver) and <c>UpdatedAt</c> is stamped.
+    /// Re-recording the <i>same</i> decision is a no-op error. Note that a decision which already
+    /// moved its candidate out of Pending can't be revisited — the "no Pending candidate" guard
+    /// below rejects it, which is what keeps an auto-promoted gate from being unwound.</para>
     ///
     /// <para>Throws <see cref="InvalidOperationException"/> for "no pending candidate carries
-    /// this ticket", "already decided", or "auto-approve policy" so endpoints map them to 400.
-    /// Throws <see cref="UnauthorizedAccessException"/> for excluded role / not in approver
-    /// group so endpoints map them to 403.</para>
+    /// this ticket", "already recorded that decision", or "auto-approve policy" so endpoints map
+    /// them to 400. Throws <see cref="UnauthorizedAccessException"/> for the missing QA/Admin role
+    /// so endpoints map it to 403.</para>
     /// </summary>
     private async Task<WorkItemApproval> RecordAsync(
         string workItemKey, string product, string targetEnv,
@@ -109,41 +124,59 @@ public class WorkItemApprovalService
         if (snapshot.IsAutoApprove)
             throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
 
-        // Separation-of-duties (ExcludeRole) removed (D17): anyone authorized for any requirement on
-        // the promotion's rule tree may decide on its tickets.
-        if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
-            throw new UnauthorizedAccessException("You are not authorized to approve this promotion");
+        // Work-item sign-off is the QA role's jurisdiction (Admin included) — distinct from promotion
+        // approval, which is governed by the policy's approver requirements. Any QA/Admin may decide
+        // any candidate's tickets, regardless of whether they're an approver of the promotion itself.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
 
-        // Duplicate guard. The unique index enforces this at the DB; the in-app check turns the
-        // race-loser case into a clean 400 instead of a 500 with an obscure constraint message.
-        var alreadyDecided = await _db.WorkItemApprovals.AsNoTracking()
-            .AnyAsync(a =>
+        // The unique index holds one row per (ticket, product, env, approver). Load the caller's
+        // row (tracked) so a change of mind updates it rather than colliding with the constraint.
+        var existing = await _db.WorkItemApprovals
+            .FirstOrDefaultAsync(a =>
                 a.WorkItemKey == key &&
                 a.Product == prod &&
                 a.TargetEnv == env &&
                 a.ApproverEmail == _currentUser.Email, ct);
-        if (alreadyDecided)
-            throw new InvalidOperationException("You have already made a decision on this ticket");
+        if (existing is not null && existing.Decision == decision)
+            throw new InvalidOperationException(
+                $"You have already recorded '{decision}' on this work item");
 
-        var row = new WorkItemApproval
+        WorkItemApproval row;
+        if (existing is null)
         {
-            Id = Guid.NewGuid(),
-            WorkItemKey = key,
-            Product = prod,
-            TargetEnv = env,
-            ApproverEmail = _currentUser.Email,
-            ApproverName = _currentUser.Name,
-            Decision = decision,
-            Comment = comment,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.WorkItemApprovals.Add(row);
+            row = new WorkItemApproval
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = prod,
+                TargetEnv = env,
+                ApproverEmail = _currentUser.Email,
+                ApproverName = _currentUser.Name,
+                Decision = decision,
+                Comment = comment,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            _db.WorkItemApprovals.Add(row);
+        }
+        else
+        {
+            existing.Decision = decision;
+            existing.Comment = comment;
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+            row = existing;
+        }
         await _db.SaveChangesAsync(ct);
 
         // Legacy granular row-level audit kept for backward compatibility with existing callers
         // (dashboards, alerts, integration tests). The new ticket-level audit + webhook events
         // emitted below are the canonical events for downstream consumers.
-        var legacyAction = decision == PromotionDecision.Approved ? "work-item.approved" : "work-item.rejected";
+        var legacyAction = decision switch
+        {
+            PromotionDecision.Approved => "work-item.approved",
+            PromotionDecision.Blocked => "work-item.blocked",
+            _ => "work-item.rejected",
+        };
         await _audit.Log(
             "promotions", legacyAction,
             _currentUser.Id, _currentUser.Name, "user",
@@ -163,10 +196,24 @@ public class WorkItemApprovalService
 
         // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
         // WorkItemsOnly / WorkItemsAndManual conditions are met). Reject → veto cascade: terminate
-        // the candidate directly with the rejecting user as the actor.
-        if (decision == PromotionDecision.Approved)
+        // the candidate directly with the rejecting user as the actor. Block → nothing: the point
+        // of a block is that the candidate stays Pending until the item is unblocked. (A block that
+        // displaces an earlier approval doesn't need a re-evaluation either: re-evaluation only ever
+        // promotes, and the candidate is still Pending here by the guard above.)
+        if (decision == PromotionDecision.Blocked)
         {
-            await TryReevaluateCandidateAsync(candidate.Id, ct);
+            // No candidate transition.
+        }
+        else if (decision == PromotionDecision.Approved)
+        {
+            // A ticket approval is shared across every candidate carrying it (WorkItemApproval is
+            // keyed by key+product+targetEnv, not by candidate), so re-evaluate ALL pending
+            // candidates that reference this ticket — not just the one the row was attributed to —
+            // so every gate the sign-off satisfies auto-promotes immediately. ReevaluateAsync is
+            // idempotent and no-ops for candidates that aren't Pending or whose gate isn't met.
+            var affected = await FindPendingCandidateIdsForTicketAsync(key, prod, env, ct);
+            foreach (var affectedId in affected)
+                await TryReevaluateCandidateAsync(affectedId, ct);
         }
         else
         {
@@ -187,9 +234,12 @@ public class WorkItemApprovalService
         string workItemKey, string product, string targetEnv,
         Guid? candidateId, string? comment, CancellationToken ct)
     {
-        var action = decision == PromotionDecision.Approved
-            ? "promotion.ticket.approved"
-            : "promotion.ticket.rejected";
+        var action = decision switch
+        {
+            PromotionDecision.Approved => "promotion.ticket.approved",
+            PromotionDecision.Blocked => "promotion.ticket.blocked",
+            _ => "promotion.ticket.rejected",
+        };
 
         // No dedicated ticket entity exists; the audit row attaches to the candidate when one
         // is known so the UI can deep-link. When the cascade has no live candidate (future),
@@ -347,8 +397,10 @@ public class WorkItemApprovalService
             : await FindPendingCandidateForTicketAsync(key, prod, env, ct);
 
         // Build BlockedReason in the same order as the throwing path so the UI message matches
-        // what the user would see if they tried to act.
-        var alreadyDecidedByMe = approvals.Any(a =>
+        // what the user would see if they tried to act. An existing decision by the caller is NOT
+        // a blocker — re-deciding is allowed (see RecordAsync) — it's surfaced as MyDecision so the
+        // UI can render "you approved this; switch to Block?" rather than a dead end.
+        var mine = approvals.FirstOrDefault(a =>
             string.Equals(a.ApproverEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase));
 
         bool canApprove = false;
@@ -365,13 +417,9 @@ public class WorkItemApprovalService
             {
                 blockedReason = "Auto-approve policy";
             }
-            else if (alreadyDecidedByMe)
+            else if (!(_currentUser.IsQA || _currentUser.IsAdmin))
             {
-                blockedReason = "Already decided";
-            }
-            else if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
-            {
-                blockedReason = "Not authorized to approve this promotion";
+                blockedReason = "Work-item sign-off requires the QA or Admin role";
             }
             else
             {
@@ -386,7 +434,8 @@ public class WorkItemApprovalService
             PendingCandidateId: candidate?.Id,
             CanApprove: canApprove,
             BlockedReason: blockedReason,
-            Approvals: approvals);
+            Approvals: approvals,
+            MyDecision: mine?.Decision.ToString());
     }
 
     /// <summary>
@@ -468,8 +517,9 @@ public class WorkItemApprovalService
             .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
             .ToHashSet();
 
-        // Cache approver-group membership across distinct groups.
-        var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        // Work-item management (view / assign / sign off) is the QA role's jurisdiction (Admin
+        // included) — independent of the promotion's approver requirements.
+        var canManageWorkItems = _currentUser.IsQA || _currentUser.IsAdmin;
 
         // Index work-items by their candidate for fast lookup.
         var workItemsByCandidate = workItems
@@ -491,7 +541,10 @@ public class WorkItemApprovalService
         }
 
         var result = new List<PendingTicketView>();
-        var emitted = new HashSet<(string Key, Guid CandidateId)>();
+        // Dedup by (key, product, targetEnv) — the grain at which a work-item sign-off actually
+        // happens (WorkItemApproval is keyed the same way). One shared decision ⇒ one row, even when
+        // the ticket backs several Pending candidates; the row's BlockingPromotions surfaces the count.
+        var emitted = new HashSet<(string Key, string Product, string Env)>();
 
         // (email, role) → count + best displayName seen. Counts feed the assignee summary;
         // displayName is taken from the first non-empty value seen.
@@ -505,31 +558,10 @@ public class WorkItemApprovalService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) continue;
 
-            // Authorized for at least one requirement on this candidate's rule tree? Group membership
-            // is cached per distinct group across all candidates to avoid N+1 Graph calls; the
-            // explicit user-list check is free.
-            var authorized = false;
-            foreach (var req in snapshot.AllRequirements)
-            {
-                if (req.Users.Any(u => string.Equals(u, _currentUser.Email, StringComparison.OrdinalIgnoreCase)))
-                {
-                    authorized = true;
-                    break;
-                }
-                foreach (var group in req.Groups)
-                {
-                    if (!groupMembership.TryGetValue(group.Id, out var member))
-                    {
-                        member = await _auth.IsInApproverGroupAsync(group, ct);
-                        groupMembership[group.Id] = member;
-                    }
-                    if (member) { authorized = true; break; }
-                }
-                if (authorized) break;
-            }
-            if (!authorized) continue;
-
-            // Separation-of-duties (ExcludeRole) removed (D17) — no per-candidate exclusion check.
+            // Work items are the QA role's jurisdiction (Admin included): a QA/Admin sees every
+            // pending candidate's tickets so they can triage/assign/sign off, independent of the
+            // promotion's approver requirements. Non-QA/Admin users have no work-item queue.
+            if (!canManageWorkItems) continue;
 
             // Distinct work items on this candidate.
             var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
@@ -596,7 +628,7 @@ public class WorkItemApprovalService
             {
                 var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
                 if (decidedSet.Contains(tup)) continue;
-                if (!emitted.Add((w.WorkItemKey, c.Id))) continue;
+                if (!emitted.Add((w.WorkItemKey, c.Product, c.TargetEnv))) continue;
 
                 var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
 
@@ -645,6 +677,7 @@ public class WorkItemApprovalService
     public async Task<PendingQueueResult> GetDecidedAsync(
         PromotionDecision? decision,
         DateTimeOffset? since,
+        string? decidedBy = null,
         CancellationToken ct = default)
     {
         var query = _db.WorkItemApprovals.AsNoTracking().AsQueryable();
@@ -656,6 +689,42 @@ public class WorkItemApprovalService
             .ToListAsync(ct);
         if (approvals.Count == 0)
             return new PendingQueueResult(new(), new(), Array.Empty<string>());
+
+        // Decider rollup — computed BEFORE the decidedBy narrowing (mirrors the pending path's
+        // pre-narrow assignee summary) so the front-end "who decided" dropdown never offers a
+        // zero-result person. Deciders carry no role, so Role is left empty. One row per email;
+        // the display name is the first non-empty one seen (approvals are newest-first).
+        var deciderAccumulator = new Dictionary<string, AssigneeAccumulator>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in approvals)
+        {
+            if (string.IsNullOrEmpty(a.ApproverEmail)) continue;
+            if (!deciderAccumulator.TryGetValue(a.ApproverEmail, out var acc))
+                acc = new AssigneeAccumulator(a.ApproverName, 0);
+            else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(a.ApproverName))
+                acc = acc with { DisplayName = a.ApproverName };
+            deciderAccumulator[a.ApproverEmail] = acc with { Count = acc.Count + 1 };
+        }
+        var deciderRows = deciderAccumulator
+            .Select(kv => new PendingAssigneeView(
+                Email: kv.Key,
+                DisplayName: string.IsNullOrEmpty(kv.Value.DisplayName) ? kv.Key : kv.Value.DisplayName!,
+                Role: "",
+                Count: kv.Value.Count))
+            .OrderByDescending(a => a.Count)
+            .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Narrow to a single decider when requested. Case-insensitive, matching the pending
+        // path's email comparison.
+        var trimmedDecider = decidedBy?.Trim();
+        if (!string.IsNullOrEmpty(trimmedDecider))
+        {
+            approvals = approvals
+                .Where(a => string.Equals(a.ApproverEmail, trimmedDecider, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (approvals.Count == 0)
+                return new PendingQueueResult(new(), deciderRows, Array.Empty<string>());
+        }
 
         // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
         var keys = approvals.Select(a => a.WorkItemKey).Distinct().ToList();
@@ -717,7 +786,184 @@ public class WorkItemApprovalService
                 DecisionComment: a.Comment));
         }
 
-        return new PendingQueueResult(result, new(), Array.Empty<string>());
+        return new PendingQueueResult(result, deciderRows, Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// Everything the work-item detail page renders for one <c>(key, product, targetEnv)</c>:
+    /// display fields, the people assigned to it, the decision trail, the comment thread, and every
+    /// promotion candidate that carries it. Returns <c>null</c> when no candidate has ever carried
+    /// the ticket in that product/env — the caller maps that to 404.
+    ///
+    /// <para>The <i>primary</i> candidate is the newest Pending one, falling back to the newest of
+    /// any status. It's the candidate that participant assignments write to (participants live on a
+    /// candidate's reference, not on the ticket) and the one whose reference supplies title/url.</para>
+    /// </summary>
+    public async Task<WorkItemDetail?> GetDetailAsync(
+        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return null;
+
+        var rows = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.WorkItemKey == key && w.Product == prod && w.TargetEnv == env)
+            .ToListAsync(ct);
+        if (rows.Count == 0) return null;
+
+        var candidateIds = rows.Select(w => w.CandidateId).Distinct().ToList();
+        var candidates = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => candidateIds.Contains(c.Id))
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return null;
+
+        var ordered = candidates.OrderByDescending(c => c.CreatedAt).ToList();
+        var primary = ordered.FirstOrDefault(c => c.Status == PromotionStatus.Pending) ?? ordered[0];
+
+        // Display fields: prefer the primary candidate's own row, then any row that has them —
+        // an older candidate may carry a title the newest ingest omitted.
+        var primaryRow = rows.FirstOrDefault(w => w.CandidateId == primary.Id);
+        var title = primaryRow?.Title ?? rows.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t));
+        var url = primaryRow?.Url ?? rows.Select(w => w.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
+        var provider = primaryRow?.Provider ?? rows.Select(w => w.Provider).FirstOrDefault(p => !string.IsNullOrEmpty(p));
+
+        var ctx = await GetTicketContextAsync(key, prod, env, ct);
+        var comments = await GetCommentsAsync(key, prod, env, ct);
+
+        return new WorkItemDetail(
+            WorkItemKey: key,
+            Product: prod,
+            TargetEnv: env,
+            Title: title,
+            Url: url,
+            Provider: provider,
+            PendingCandidateId: ctx.PendingCandidateId,
+            PrimaryCandidateId: primary.Id,
+            CanApprove: ctx.CanApprove,
+            CanManage: _currentUser.IsQA || _currentUser.IsAdmin,
+            BlockedReason: ctx.BlockedReason,
+            MyDecision: ctx.MyDecision,
+            Participants: GetWorkItemParticipants(primary, key),
+            Approvals: ctx.Approvals,
+            Comments: comments,
+            Candidates: ordered
+                .Select(c => new WorkItemCandidateRef(
+                    c.Id, c.Service, c.Version, c.SourceEnv, c.TargetEnv,
+                    c.Status.ToString(), c.CreatedAt, c.Id == primary.Id))
+                .ToList());
+    }
+
+    // ---------------------------------------------------------------------
+    // Comments
+    //
+    // Keyed by (workItemKey, product, targetEnv) — the same grain as the decision rows — so the
+    // thread outlives the candidate that happened to be live when it started.
+    // ---------------------------------------------------------------------
+
+    public async Task<List<WorkItemComment>> GetCommentsAsync(
+        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return new();
+
+        return await _db.WorkItemComments.AsNoTracking()
+            .Where(c => c.WorkItemKey == key && c.Product == prod && c.TargetEnv == env)
+            .OrderBy(c => c.CreatedAt)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Posts a comment on a work item. Unlike a decision this needs no live Pending candidate —
+    /// discussing a ticket whose promotion already shipped (or was superseded) is legitimate — but
+    /// the ticket must be one the platform has actually seen, so an arbitrary key can't seed rows.
+    /// </summary>
+    public async Task<WorkItemComment> AddCommentAsync(
+        string workItemKey, string product, string targetEnv, string body, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        var trimmed = (body ?? "").Trim();
+        if (key.Length == 0) throw new InvalidOperationException("workItemKey is required");
+        if (prod.Length == 0) throw new InvalidOperationException("product is required");
+        if (env.Length == 0) throw new InvalidOperationException("targetEnv is required");
+        if (trimmed.Length == 0) throw new InvalidOperationException("Comment body is required");
+
+        var known = await _db.PromotionWorkItems.AsNoTracking()
+            .AnyAsync(w => w.WorkItemKey == key && w.Product == prod && w.TargetEnv == env, ct);
+        if (!known)
+            throw new KeyNotFoundException($"Work item '{key}' is not known for {prod}/{env}");
+
+        var comment = new WorkItemComment
+        {
+            Id = Guid.NewGuid(),
+            WorkItemKey = key,
+            Product = prod,
+            TargetEnv = env,
+            AuthorEmail = _currentUser.Email,
+            AuthorName = _currentUser.Name,
+            Body = trimmed,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        _db.WorkItemComments.Add(comment);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.comment.added",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemComment", comment.Id, null,
+            new { workItemKey = key, product = prod, targetEnv = env });
+
+        return comment;
+    }
+
+    public async Task<WorkItemComment> UpdateCommentAsync(
+        Guid commentId, string body, CancellationToken ct = default)
+    {
+        var trimmed = (body ?? "").Trim();
+        if (trimmed.Length == 0) throw new InvalidOperationException("Comment body is required");
+
+        var comment = await _db.WorkItemComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
+            ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+        EnsureCommentAuthor(comment, "edit");
+
+        comment.Body = trimmed;
+        comment.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.comment.updated",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemComment", comment.Id, null,
+            new { comment.WorkItemKey, comment.Product, comment.TargetEnv });
+
+        return comment;
+    }
+
+    public async Task DeleteCommentAsync(Guid commentId, CancellationToken ct = default)
+    {
+        var comment = await _db.WorkItemComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
+            ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+        EnsureCommentAuthor(comment, "delete");
+
+        _db.WorkItemComments.Remove(comment);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.comment.deleted",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemComment", commentId, null,
+            new { comment.WorkItemKey, comment.Product, comment.TargetEnv });
+    }
+
+    private void EnsureCommentAuthor(WorkItemComment comment, string verb)
+    {
+        if (string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)) return;
+        if (_currentUser.IsAdmin) return;
+        throw new UnauthorizedAccessException($"Only the author (or an admin) can {verb} this comment");
     }
 
     // ---------------------------------------------------------------------
@@ -730,6 +976,30 @@ public class WorkItemApprovalService
     /// candidate in <c>(product, targetEnv)</c> whose <see cref="PromotionWorkItem"/> rows include
     /// the ticket. Most-recent because it represents the freshest state of the world.
     /// </summary>
+    /// <summary>
+    /// All Pending candidates (in the ticket's product/targetEnv) that carry this work item. A ticket
+    /// can back several promotions at once, and one shared approval counts for all of them — this is
+    /// the fan-out used to re-evaluate every affected gate after a sign-off.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> FindPendingCandidateIdsForTicketAsync(
+        string workItemKey, string product, string targetEnv, CancellationToken ct)
+    {
+        var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv)
+            .Select(w => w.CandidateId)
+            .Distinct()
+            .ToListAsync(ct);
+        if (candidateIds.Count == 0) return Array.Empty<Guid>();
+
+        return await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => candidateIds.Contains(c.Id)
+                     && c.Product == product
+                     && c.TargetEnv == targetEnv
+                     && c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+    }
+
     private async Task<PromotionCandidate?> FindPendingCandidateForTicketAsync(
         string workItemKey, string product, string targetEnv, CancellationToken ct)
     {
@@ -854,7 +1124,44 @@ public record TicketContext(
     Guid? PendingCandidateId,
     bool CanApprove,
     string? BlockedReason,
-    List<WorkItemApproval> Approvals);
+    List<WorkItemApproval> Approvals,
+    /// <summary>The current user's own decision ("Approved" / "Rejected" / "Blocked"), or null.</summary>
+    string? MyDecision = null);
+
+/// <summary>
+/// Full state of one work item for the detail page. <see cref="PrimaryCandidateId"/> is the
+/// candidate participant assignments write to; <see cref="Candidates"/> lists every promotion the
+/// ticket appears on so the page can link out to each.
+/// </summary>
+public record WorkItemDetail(
+    string WorkItemKey,
+    string Product,
+    string TargetEnv,
+    string? Title,
+    string? Url,
+    string? Provider,
+    Guid? PendingCandidateId,
+    Guid? PrimaryCandidateId,
+    bool CanApprove,
+    /// <summary>Whether the caller may assign/remove people (QA or Admin).</summary>
+    bool CanManage,
+    string? BlockedReason,
+    string? MyDecision,
+    IReadOnlyList<ParticipantDto> Participants,
+    List<WorkItemApproval> Approvals,
+    List<WorkItemComment> Comments,
+    IReadOnlyList<WorkItemCandidateRef> Candidates);
+
+/// <summary>One promotion candidate carrying a work item, as listed on the detail page.</summary>
+public record WorkItemCandidateRef(
+    Guid Id,
+    string Service,
+    string Version,
+    string SourceEnv,
+    string TargetEnv,
+    string Status,
+    DateTimeOffset CreatedAt,
+    bool IsPrimary);
 
 /// <summary>
 /// One row of the "tickets I can sign off right now" inbox. Includes the work-item display

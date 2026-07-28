@@ -31,4 +31,13 @@ public enum PromotionDecision
 {
     Approved,
     Rejected,
+
+    /// <summary>
+    /// Work-item only: the item is held back without vetoing the promotion. Unlike
+    /// <see cref="Rejected"/> (a veto that terminates the candidate), a block leaves the
+    /// candidate Pending and is reversible — the same user can later switch to Approved.
+    /// The gate treats a blocked work item as unresolved. Never produced for a
+    /// <see cref="PromotionApproval"/> (promotion-level decisions are Approved / Rejected only).
+    /// </summary>
+    Blocked,
 }

@@ -308,6 +308,27 @@ public static class PromotionEndpoints
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
         });
 
+        // Assign / reassign / clear a participant on a specific work-item reference of a candidate.
+        // This is what the work-items queue's "Assign" writes to (candidates are self-contained, so
+        // there is no deploy event to override). Body: { role, assignee: { email, displayName } | null }.
+        group.MapPatch("/{id:guid}/references/{referenceKey}/participants", async (
+            PromotionService svc, Guid id, string referenceKey, AssignReferenceParticipantRequest body) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Role))
+                return Results.BadRequest(new { error = "role is required" });
+            try
+            {
+                var assignee = body.Assignee is null
+                    ? null
+                    : new ParticipantDto(body.Role, body.Assignee.DisplayName, body.Assignee.Email);
+                var participants = await svc.UpsertReferenceParticipantAsync(id, referenceKey, body.Role, assignee);
+                return Results.Ok(new { participants });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
         // List comments.
         group.MapGet("/{id:guid}/comments", async (PromotionService svc, Guid id) =>
         {
@@ -632,4 +653,9 @@ public record CreatePromotionDto(
 public record PromotionDecisionRequest(string? Comment, string? StepName = null, string? RequirementName = null);
 public record PromotionBulkRequest(Guid[] Ids, string? Comment);
 public record UpsertParticipantRequest(string? Role, string? DisplayName, string? Email);
+
+/// <summary>Body for assigning a participant to a work-item reference of a candidate. A null
+/// <c>Assignee</c> clears the given role on that reference.</summary>
+public record AssignReferenceParticipantRequest(string? Role, AssignReferenceParticipantTarget? Assignee);
+public record AssignReferenceParticipantTarget(string? Email, string? DisplayName);
 public record CommentRequest(string? Body);

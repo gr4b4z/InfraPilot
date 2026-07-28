@@ -20,6 +20,8 @@ import {
   Ban,
 } from 'lucide-react';
 import { CreateRollbackPanel } from './CreateRollbackPanel';
+import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 
 const STATUS_CONFIG: Record<
   RollbackStatus,
@@ -159,6 +161,9 @@ export function RollbacksPage() {
     return Array.from(set).sort();
   }, [requests, targetEnvFilter]);
 
+  const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+
   const active = useMemo(
     () => requests.filter((r) => r.status === 'Pending' || r.status === 'Approved' || r.status === 'RollingBack'),
     [requests],
@@ -225,20 +230,17 @@ export function RollbacksPage() {
             </option>
           ))}
         </select>
+        {/* Carries the selected environment's colour, matching the badges on the rows below. */}
         <select
           value={targetEnvFilter}
           onChange={(e) => setTargetEnvFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-[13px]"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-primary)',
-          }}
+          className="rounded-lg border px-3 py-1.5 text-[13px] font-medium"
+          style={targetEnvSelectStyle}
         >
           <option value="">All target envs</option>
           {targetEnvOptions.map((env) => (
             <option key={env} value={env}>
-              {env}
+              {getDisplayName(env)}
             </option>
           ))}
         </select>
@@ -360,12 +362,7 @@ function RollbackCard({
             <h3 className="text-[14px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
               {request.product}
             </h3>
-            <span
-              className="px-1.5 py-0.5 rounded text-[11px] font-medium"
-              style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
-            >
-              {getDisplayName(request.targetEnv)}
-            </span>
+            <EnvBadge env={request.targetEnv} title={`Rolling back in ${getDisplayName(request.targetEnv)}`} />
             <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
               <StatusIcon size={10} />
               {request.status}
@@ -379,9 +376,13 @@ function RollbackCard({
                   : 'Manual version selection'
               }
             >
-              {request.mode === 'Align' && request.referenceEnv
-                ? `Align → ${getDisplayName(request.referenceEnv)}`
-                : request.mode}
+              {request.mode === 'Align' && request.referenceEnv ? (
+                <>
+                  Align → <EnvLabel env={request.referenceEnv} className="font-semibold" />
+                </>
+              ) : (
+                request.mode
+              )}
             </span>
           </div>
 

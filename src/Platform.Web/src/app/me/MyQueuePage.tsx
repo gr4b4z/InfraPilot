@@ -1,20 +1,21 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PendingAssignee, PendingTicket, PromotionSourceEventParticipant } from '@/lib/api';
+import type { PendingAssignee, PendingTicket, WorkItemDecision } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { roleDisplay } from '@/lib/roleLabel';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { formatDistanceToNow } from 'date-fns';
 import {
   Ticket,
+  Ban,
   CheckCircle,
   XCircle,
   ExternalLink,
   ArrowRight,
   Inbox,
-  Plus,
-  Users,
-  X,
 } from 'lucide-react';
 import {
   AssigneeFilter,
@@ -56,6 +57,9 @@ export function MyQueuePage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilterValue>(() => loadStatusFilter());
   // Time frame — only meaningful on the "decided" view; defaults to last day.
   const [timeFrame, setTimeFrame] = useState<TimeFrameValue>(() => loadTimeFrame());
+  // Decider narrowing — only meaningful on the "decided" view. Filters by who clicked
+  // Approve / Reject ("Me" = the current user's own decisions). Persisted via localStorage.
+  const [deciderFilter, setDeciderFilter] = useState<DeciderFilterValue>(() => loadDeciderFilter());
   // The auth store already carries the current user's email — same source PromotionDetailPage
   // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
   // server when the user picks "Assigned to me".
@@ -69,11 +73,12 @@ export function MyQueuePage() {
     filter: AssigneeFilterValue,
     status: StatusFilterValue,
     tf: TimeFrameValue,
+    decider: DeciderFilterValue,
   ) => {
     setLoading(true);
     setError(null);
     try {
-      const apiArg = toApiArg(filter, currentUserEmail, status, tf);
+      const apiArg = toApiArg(filter, currentUserEmail, status, tf, decider);
       const res = await api.getMyPendingWorkItems(apiArg);
       setTickets(res.tickets ?? []);
       setAssignees(res.assignees ?? []);
@@ -86,9 +91,9 @@ export function MyQueuePage() {
   };
 
   useEffect(() => {
-    void fetchData(assigneeFilter, statusFilter, timeFrame);
+    void fetchData(assigneeFilter, statusFilter, timeFrame, deciderFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assigneeFilter, statusFilter, timeFrame, currentUserEmail]);
+  }, [assigneeFilter, statusFilter, timeFrame, deciderFilter, currentUserEmail]);
 
   const handleFilterChange = (next: AssigneeFilterValue) => {
     saveAssigneeFilter(next);
@@ -108,6 +113,11 @@ export function MyQueuePage() {
   const handleTimeFrameChange = (next: TimeFrameValue) => {
     saveTimeFrame(next);
     setTimeFrame(next);
+  };
+
+  const handleDeciderChange = (next: DeciderFilterValue) => {
+    saveDeciderFilter(next);
+    setDeciderFilter(next);
   };
 
   // Server-narrowed list × scope filter → what the user actually sees.
@@ -132,9 +142,17 @@ export function MyQueuePage() {
 
       <div className="flex items-center gap-2 flex-wrap">
         <StatusFilter value={statusFilter} onChange={handleStatusChange} />
-        {/* Time frame is only meaningful on the decided view. */}
+        {/* Time frame + decider narrowing are only meaningful on the decided view. */}
         {statusFilter === 'decided' && (
-          <TimeFrameFilter value={timeFrame} onChange={handleTimeFrameChange} />
+          <>
+            <TimeFrameFilter value={timeFrame} onChange={handleTimeFrameChange} />
+            <DeciderFilter
+              value={deciderFilter}
+              onChange={handleDeciderChange}
+              deciders={assignees}
+              currentUserEmail={currentUserEmail}
+            />
+          </>
         )}
         {/* Role/assignee narrowing only meaningful for the pending pool — hide for history views. */}
         {statusFilter === 'pending' && (
@@ -189,12 +207,16 @@ export function MyQueuePage() {
           <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
               ? 'No work items match the current filters.'
-              : emptyStateTitle(assigneeFilter)}
+              : statusFilter === 'decided'
+                ? decidedEmptyTitle(deciderFilter)
+                : emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
               ? 'Widen the product / service / target-env picks to see more rows.'
-              : emptyStateBody(assigneeFilter)}
+              : statusFilter === 'decided'
+                ? 'Try a wider time frame, or switch the decider to "Anyone".'
+                : emptyStateBody(assigneeFilter)}
           </p>
         </div>
       ) : (
@@ -203,7 +225,7 @@ export function MyQueuePage() {
             <TicketRow
               key={`${t.workItemKey}-${t.candidateId}-${t.decidedAt ?? 'pending'}-${t.decidedByEmail ?? ''}`}
               ticket={t}
-              onChanged={() => fetchData(assigneeFilter, statusFilter, timeFrame)}
+              onChanged={() => fetchData(assigneeFilter, statusFilter, timeFrame, deciderFilter)}
             />
           ))}
         </div>
@@ -217,11 +239,15 @@ function toApiArg(
   currentUserEmail: string,
   status: StatusFilterValue,
   timeFrame: TimeFrameValue,
+  decider: DeciderFilterValue,
 ): { role?: string; assignee?: string; status?: 'pending' | 'decided'; since?: string } | undefined {
-  // Decision-history views ignore role/assignee narrowing — the backend short-circuits.
+  // Decision-history views ignore role/participant narrowing but DO honour the decider filter:
+  // `assignee` here means "who decided" (a single email; "Me" → current user). The backend
+  // maps this param to WorkItemApproval.ApproverEmail on the decided path.
   if (status === 'decided') {
     const since = timeFrameToSince(timeFrame);
-    return since ? { status, since } : { status };
+    const decidedBy = deciderToEmail(decider, currentUserEmail);
+    return { status, ...(since ? { since } : {}), ...(decidedBy ? { assignee: decidedBy } : {}) };
   }
 
   const role = filter.role ?? undefined;
@@ -292,7 +318,7 @@ function StatusFilter({
         }}
       >
         <option value="pending">Pending</option>
-        <option value="decided">Approved &amp; Rejected</option>
+        <option value="decided">Decided</option>
       </select>
     </label>
   );
@@ -366,6 +392,146 @@ function TimeFrameFilter({
   );
 }
 
+// ── Decider filter (only meaningful on "decided" view) ───────────────────────────────────
+// Narrows the decision history by who clicked Approve / Reject. Distinct from the pending
+// AssigneeFilter (which narrows by work-item participant/role) — a decider has no role and
+// "unassigned" is not a valid choice, so this is its own lightweight picker.
+
+export type DeciderFilterValue =
+  | { mode: 'all' }
+  | { mode: 'me' }
+  | { mode: 'person'; email: string; displayName: string };
+
+const DECIDER_FILTER_STORAGE_KEY = 'me.queue.deciderFilter';
+
+const DECIDER_ANYONE = '__all__';
+const DECIDER_ME = '__me__';
+
+function loadDeciderFilter(): DeciderFilterValue {
+  try {
+    const raw = window.localStorage.getItem(DECIDER_FILTER_STORAGE_KEY);
+    if (!raw) return { mode: 'all' };
+    const parsed = JSON.parse(raw);
+    if (parsed?.mode === 'me') return { mode: 'me' };
+    if (
+      parsed?.mode === 'person' &&
+      typeof parsed.email === 'string' &&
+      typeof parsed.displayName === 'string'
+    ) {
+      return { mode: 'person', email: parsed.email, displayName: parsed.displayName };
+    }
+  } catch {
+    // Ignore — corrupted entry; fall through to default.
+  }
+  return { mode: 'all' };
+}
+
+function saveDeciderFilter(value: DeciderFilterValue): void {
+  try {
+    window.localStorage.setItem(DECIDER_FILTER_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Ignore — quota or disabled storage.
+  }
+}
+
+/** Resolves the decider filter to a single email for the API, or undefined for "Anyone". */
+function deciderToEmail(value: DeciderFilterValue, currentUserEmail: string): string | undefined {
+  if (value.mode === 'me') return currentUserEmail || undefined;
+  if (value.mode === 'person') return value.email;
+  return undefined;
+}
+
+function DeciderFilter({
+  value,
+  onChange,
+  deciders,
+  currentUserEmail,
+}: {
+  value: DeciderFilterValue;
+  onChange: (next: DeciderFilterValue) => void;
+  /** Decider rollup (email, displayName, count) from the decided endpoint, pre-narrowing. */
+  deciders: PendingAssignee[];
+  currentUserEmail: string;
+}) {
+  // Dedupe by email — the decided endpoint already returns one row per decider, but guard
+  // anyway. Exclude the current user from the named list; "Me" covers them.
+  const people = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Array<{ email: string; displayName: string }> = [];
+    for (const d of deciders) {
+      if (!d.email || seen.has(d.email.toLowerCase())) continue;
+      if (d.email.toLowerCase() === currentUserEmail.toLowerCase()) continue;
+      seen.add(d.email.toLowerCase());
+      out.push({ email: d.email, displayName: d.displayName });
+    }
+    return out;
+  }, [deciders, currentUserEmail]);
+
+  // If the persisted person is no longer in the list, render "Anyone" rather than a stale pick.
+  const selectValue = useMemo(() => {
+    if (value.mode === 'me') return DECIDER_ME;
+    if (value.mode === 'person') {
+      const stillVisible = people.some(
+        (p) => p.email.toLowerCase() === value.email.toLowerCase(),
+      );
+      return stillVisible ? `email:${value.email}` : DECIDER_ANYONE;
+    }
+    return DECIDER_ANYONE;
+  }, [value, people]);
+
+  const handleChange = (next: string) => {
+    if (next === DECIDER_ANYONE) return onChange({ mode: 'all' });
+    if (next === DECIDER_ME) return onChange({ mode: 'me' });
+    if (next.startsWith('email:')) {
+      const email = next.slice('email:'.length);
+      const person = people.find((p) => p.email === email);
+      if (person) onChange({ mode: 'person', email: person.email, displayName: person.displayName });
+    }
+  };
+
+  return (
+    <label
+      className="inline-flex items-center gap-1.5 text-[12px]"
+      style={{ color: 'var(--text-muted)' }}
+    >
+      <span>Decided by</span>
+      <select
+        value={selectValue}
+        onChange={(e) => handleChange(e.target.value)}
+        className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+        style={{
+          borderColor: 'var(--border-color)',
+          backgroundColor: 'var(--bg-primary)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        <option value={DECIDER_ANYONE}>Anyone</option>
+        <option value={DECIDER_ME}>Me</option>
+        {people.length > 0 && (
+          <optgroup label="Deciders">
+            {people.map((p) => (
+              <option key={p.email} value={`email:${p.email}`}>
+                {p.displayName}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
+
+function decidedEmptyTitle(decider: DeciderFilterValue): string {
+  switch (decider.mode) {
+    case 'me':
+      return 'No decisions you made in this time frame.';
+    case 'person':
+      return `No decisions by ${decider.displayName} in this time frame.`;
+    default:
+      return 'No decisions recorded in this time frame.';
+  }
+}
+
 function emptyStateTitle(filter: AssigneeFilterValue): string {
   const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
   switch (filter.mode) {
@@ -405,6 +571,11 @@ function emptyStateBody(filter: AssigneeFilterValue): string {
   }
 }
 
+/**
+ * One queue row. Navigational, not transactional: sign-off (Approve / Block / Reject) and the
+ * discussion thread live on the work-item detail page, so the row's job is to surface state and get
+ * you there. Assigning people stays inline — it's the one edit that's useful while triaging a list.
+ */
 function TicketRow({
   ticket,
   onChanged,
@@ -412,74 +583,11 @@ function TicketRow({
   ticket: PendingTicket;
   onChanged: () => void;
 }) {
-  // Decided rows render a read-only history view: decision badge + decider + comment, no
-  // Approve/Reject buttons, no participant editing. The candidate may also have moved on
-  // (Approved/Deployed/Rejected/Superseded) so we surface its current status as a hint.
+  // Decided rows are read-only history: decision badge + decider + comment, and no participant
+  // editing. The candidate may also have moved on (Approved/Deployed/Rejected/Superseded) so we
+  // surface its current status as a hint.
   const decided = ticket.decision != null;
-
-  const [comment, setComment] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [showComment, setShowComment] = useState(false);
-  // Local participant state — seeded from the ticket, updated optimistically after assign.
-  const [participants, setParticipants] = useState<PromotionSourceEventParticipant[]>(
-    ticket.participants ?? [],
-  );
-  // Re-sync from the prop whenever the parent reloads tickets (filter change, post-decision
-  // refresh, etc.). Without this the useState initializer only runs once and stale data sticks.
-  useEffect(() => {
-    setParticipants(ticket.participants ?? []);
-  }, [ticket.participants]);
-  const [showAssignForm, setShowAssignForm] = useState(false);
-
-  const decide = async (decision: 'approve' | 'reject') => {
-    setBusy(true);
-    setError(null);
-    try {
-      if (decision === 'approve') {
-        await api.approveWorkItem(ticket.workItemKey, ticket.product, ticket.targetEnv, comment || undefined);
-      } else {
-        await api.rejectWorkItem(ticket.workItemKey, ticket.product, ticket.targetEnv, comment || undefined);
-      }
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleAssign = async (role: string, assignee: { email: string; displayName: string }) => {
-    try {
-      const res = await api.assignReferenceParticipant(
-        ticket.sourceDeployEventId,
-        ticket.workItemKey,
-        role,
-        assignee,
-      );
-      setParticipants(res.participants);
-      setShowAssignForm(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to assign');
-    }
-  };
-
-  // Tombstone a participant. Same API as assign but with `assignee: null` — the server
-  // records a tombstone-override that suppresses the lower (reference / event / enrichment)
-  // layers for this (refKey, role). Mirrors PromotionDetailPage's "Clear" action.
-  const handleRemove = async (role: string) => {
-    try {
-      const res = await api.assignReferenceParticipant(
-        ticket.sourceDeployEventId,
-        ticket.workItemKey,
-        role,
-        null,
-      );
-      setParticipants(res.participants);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove');
-    }
-  };
+  const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
 
   return (
     <div
@@ -487,35 +595,43 @@ function TicketRow({
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
       <div className="flex items-start gap-3">
-        <Ticket size={16} style={{ color: 'var(--text-muted)', marginTop: 2 }} />
+        <Ticket size={16} style={{ color: 'var(--text-muted)', marginTop: 2, flexShrink: 0 }} />
         <div className="flex-1 min-w-0">
-          {/* Title row */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {ticket.url ? (
+          {/* Title row. The key goes to the in-app detail page; the tracker link is a bare icon. */}
+          <div className="flex items-baseline gap-2 min-w-0">
+            <Link
+              to={detailPath}
+              className="text-[13px] font-semibold hover:underline shrink-0"
+              style={{ color: 'var(--accent)' }}
+              title={`Open ${ticket.workItemKey} details`}
+            >
+              {ticket.workItemKey}
+            </Link>
+            {ticket.url && (
               <a
                 href={ticket.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[13px] font-semibold hover:underline inline-flex items-center gap-1"
-                style={{ color: 'var(--accent)' }}
-                title={ticket.title ?? undefined}
+                className="shrink-0 transition-opacity hover:opacity-70"
+                style={{ color: 'var(--text-muted)' }}
+                title={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
+                aria-label={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
               >
-                {ticket.workItemKey}
                 <ExternalLink size={11} />
               </a>
-            ) : (
-              <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {ticket.workItemKey}
-              </span>
             )}
             {ticket.title && (
-              <span className="text-[12px] truncate" style={{ color: 'var(--text-secondary)' }}>
+              <span
+                className="text-[12px] truncate"
+                style={{ color: 'var(--text-secondary)' }}
+                title={ticket.title}
+              >
                 {ticket.title}
               </span>
             )}
             {ticket.blockingPromotions > 1 && (
               <span
-                className="badge"
+                className="badge shrink-0"
                 style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
                 title={`Referenced by ${ticket.blockingPromotions} pending promotion candidates`}
               >
@@ -535,9 +651,9 @@ function TicketRow({
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
             <span className="inline-flex items-center gap-1">
-              <span className="font-medium">{ticket.sourceEnv}</span>
+              <EnvBadge env={ticket.sourceEnv} size="xs" />
               <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-              <span className="font-medium">{ticket.targetEnv}</span>
+              <EnvBadge env={ticket.targetEnv} size="xs" />
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
             <span>
@@ -551,98 +667,28 @@ function TicketRow({
             </span>
           </div>
 
-          {/* Participants row */}
-          <div className="flex items-center gap-1.5 flex-wrap mt-2">
-            <Users size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            {participants.length === 0 && !showAssignForm && (
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                No people assigned
-              </span>
-            )}
-            {participants.map((p, i) => (
-              <span
-                key={`${p.role}-${i}`}
-                className="inline-flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded text-[11px]"
-                style={{
-                  backgroundColor: p.isOverride ? 'var(--accent-bg)' : 'var(--bg-secondary)',
-                  color: p.isOverride ? 'var(--accent)' : 'var(--text-secondary)',
-                  border: p.isOverride ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : '1px solid var(--border-color)',
-                }}
-                title={p.email ?? undefined}
-              >
-                <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
-                <span className="font-medium">{p.displayName ?? p.email ?? '—'}</span>
-                {!decided && (
-                  <button
-                    type="button"
-                    onClick={() => handleRemove(p.role)}
-                    className="ml-0.5 inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-70"
-                    style={{ color: 'var(--text-muted)', width: 14, height: 14 }}
-                    title={p.isOverride ? 'Remove assignment' : 'Hide this participant for this work item'}
-                    aria-label={`Remove ${roleDisplay(p)} ${p.displayName ?? p.email ?? ''}`}
-                  >
-                    <X size={10} />
-                  </button>
-                )}
-              </span>
-            ))}
-            {!decided && !showAssignForm && (
-              <button
-                type="button"
-                onClick={() => setShowAssignForm(true)}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] transition-opacity hover:opacity-80"
-                style={{
-                  border: '1px dashed var(--border-color)',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                <Plus size={10} /> Assign
-              </button>
-            )}
-          </div>
+          {/* Participants — each chip carries its own role icon, and the dashed "Assign" button is
+              the empty state, so no separate header is needed here. */}
+          <WorkItemParticipants
+            candidateId={ticket.candidateId}
+            referenceKey={ticket.workItemKey}
+            participants={ticket.participants ?? []}
+            onChanged={onChanged}
+            readOnly={decided}
+          />
 
-          {/* Inline assign form */}
-          {!decided && showAssignForm && (
-            <AssignForm
-              onSave={handleAssign}
-              onCancel={() => setShowAssignForm(false)}
-            />
-          )}
-
-          {/* Candidate link */}
           <div className="flex items-center gap-3 mt-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
             <Link
               to={`/promotions/${ticket.candidateId}`}
               className="inline-flex items-center gap-1 hover:underline"
               style={{ color: 'var(--accent)' }}
             >
-              View candidate
+              View promotion
               <ExternalLink size={10} />
             </Link>
           </div>
 
-          {!decided && showComment && (
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Optional comment..."
-              rows={2}
-              className="w-full rounded-lg border px-2 py-1.5 text-[12px] resize-none mt-2"
-              style={{
-                borderColor: 'var(--border-color)',
-                backgroundColor: 'var(--bg-secondary)',
-                color: 'var(--text-primary)',
-              }}
-            />
-          )}
-
-          {error && (
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--danger)' }}>
-              {error}
-            </p>
-          )}
-
-          {decided ? (
+          {decided && (
             <DecisionBanner
               decision={ticket.decision!}
               decidedAt={ticket.decidedAt ?? null}
@@ -651,37 +697,16 @@ function TicketRow({
               comment={ticket.decisionComment ?? null}
               candidateStatus={ticket.candidateStatus ?? null}
             />
-          ) : (
-            <div className="flex items-center gap-2 mt-2.5">
-              <button
-                onClick={() => decide('approve')}
-                disabled={busy}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--success)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-              >
-                <CheckCircle size={12} />
-                Approve
-              </button>
-              <button
-                onClick={() => decide('reject')}
-                disabled={busy}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--danger)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-              >
-                <XCircle size={12} />
-                Reject
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowComment((v) => !v)}
-                className="text-[11px] transition-opacity hover:opacity-80"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                {showComment ? 'Hide comment' : 'Add comment'}
-              </button>
-            </div>
           )}
         </div>
+        <Link
+          to={detailPath}
+          className="shrink-0 self-center inline-flex items-center gap-1 text-[12px] font-medium transition-opacity hover:opacity-80"
+          style={{ color: 'var(--accent)' }}
+        >
+          Details
+          <ArrowRight size={14} />
+        </Link>
       </div>
     </div>
   );
@@ -700,29 +725,25 @@ function DecisionBanner({
   comment,
   candidateStatus,
 }: {
-  decision: 'Approved' | 'Rejected';
+  decision: WorkItemDecision;
   decidedAt: string | null;
   decidedByName: string | null;
   decidedByEmail: string | null;
   comment: string | null;
   candidateStatus: string | null;
 }) {
-  const isApproved = decision === 'Approved';
+  const s = decisionStyle(decision);
   const decider = decidedByName ?? decidedByEmail ?? 'someone';
+  const Icon = decision === 'Approved' ? CheckCircle : decision === 'Blocked' ? Ban : XCircle;
   return (
     <div
       className="mt-2.5 rounded-lg border px-3 py-2 text-[12px] space-y-1"
-      style={{
-        borderColor: isApproved ? 'var(--success)' : 'var(--danger)',
-        backgroundColor: isApproved ? 'var(--success-bg)' : 'var(--danger-bg)',
-        color: isApproved ? 'var(--success)' : 'var(--danger)',
-      }}
+      style={{ borderColor: s.color, backgroundColor: s.bg, color: s.color }}
     >
       <div className="inline-flex items-center gap-2 font-medium flex-wrap">
-        {isApproved ? <CheckCircle size={12} /> : <XCircle size={12} />}
+        <Icon size={12} />
         <span>
-          {isApproved ? 'Approved' : 'Rejected'} by{' '}
-          <span title={decidedByEmail ?? undefined}>{decider}</span>
+          {s.label} by <span title={decidedByEmail ?? undefined}>{decider}</span>
         </span>
         {decidedAt && (
           <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
@@ -735,156 +756,7 @@ function DecisionBanner({
           </span>
         )}
       </div>
-      {comment && (
-        <p style={{ color: 'var(--text-secondary)' }}>“{comment}”</p>
-      )}
+      {comment && <p style={{ color: 'var(--text-secondary)' }}>“{comment}”</p>}
     </div>
   );
 }
-
-/**
- * Inline role + person picker. Directory-searched, falls back to manual email entry.
- * Same UX as the assign form on the promotion detail page.
- */
-function AssignForm({
-  onSave,
-  onCancel,
-}: {
-  onSave: (role: string, assignee: { email: string; displayName: string }) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [roleInput, setRoleInput] = useState('');
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
-  const [searching, setSearching] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [knownRoles, setKnownRoles] = useState<string[]>([]);
-  const datalistId = useMemo(() => `queue-assign-roles-${Math.random().toString(36).slice(2, 8)}`, []);
-
-  useEffect(() => {
-    api.listPromotionRoles()
-      .then((d) => setKnownRoles(d.roles || []))
-      .catch(() => setKnownRoles([]));
-  }, []);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) { setResults([]); return; }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users ?? []);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [query]);
-
-  const submit = async (email: string, displayName: string) => {
-    const role = roleInput.trim();
-    if (!role) { setErr('Role is required'); return; }
-    setSaving(true);
-    setErr(null);
-    try {
-      await onSave(role, { email, displayName });
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const submitManual = () => {
-    const q = query.trim();
-    if (!q.includes('@') || !q.includes('.')) return;
-    void submit(q, q);
-  };
-
-  return (
-    <div
-      className="mt-2 p-3 rounded-lg border space-y-2"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-    >
-      <input
-        autoFocus
-        list={datalistId}
-        value={roleInput}
-        onChange={(e) => setRoleInput(e.target.value)}
-        placeholder="Role (e.g. QA, reviewer)"
-        className="w-full rounded-lg border px-3 py-1.5 text-[12px]"
-        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-        disabled={saving}
-        onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
-      />
-      <datalist id={datalistId}>
-        {knownRoles.map((r) => (
-          <option key={r} value={roleDisplay({ role: r })} />
-        ))}
-      </datalist>
-      <div className="relative">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search directory (name or email)..."
-          className="w-full rounded-lg border px-3 py-1.5 text-[12px]"
-          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-          disabled={saving}
-          onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
-        />
-        {query.trim().length >= 2 && (
-          <div
-            className="absolute left-0 right-0 mt-1 rounded-lg border shadow-lg max-h-40 overflow-y-auto z-10"
-            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
-          >
-            {searching && (
-              <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>Searching...</div>
-            )}
-            {!searching && results.length === 0 && (
-              <button
-                type="button"
-                onClick={submitManual}
-                disabled={saving || !roleInput.trim()}
-                className="w-full text-left px-3 py-2 text-[12px] flex flex-col hover:opacity-80"
-                style={{ color: 'var(--text-primary)' }}
-              >
-                <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>No directory matches.</span>
-              </button>
-            )}
-            {!searching && results.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => void submit(u.email, u.displayName)}
-                disabled={saving || !roleInput.trim()}
-                className="w-full text-left px-3 py-2 text-[12px] flex flex-col hover:opacity-80"
-                style={{ color: 'var(--text-primary)' }}
-                title={!roleInput.trim() ? 'Pick a role first' : undefined}
-              >
-                <span className="font-medium">{u.displayName}</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{u.email}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      {err && <p className="text-[11px]" style={{ color: 'var(--danger)' }}>{err}</p>}
-      <div className="flex items-center gap-2 pt-0.5">
-        <button
-          onClick={onCancel}
-          className="text-[11px] transition-opacity hover:opacity-80"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-

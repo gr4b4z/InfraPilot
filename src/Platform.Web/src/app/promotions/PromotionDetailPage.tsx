@@ -37,7 +37,10 @@ import {
   Trash2,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
@@ -46,43 +49,23 @@ const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Supersede
 // Set to true when the candidate is in a terminal state.
 const PromoReadOnlyCtx = createContext(false);
 
-// Distinct work-items in the candidate's bundle. Built from the source event's
-// references (the candidate's own references). Deduped on key. Each entry carries
-// the origin deploy event id so the override-assign PATCH can target the right event.
-export interface BundleWorkItem {
-  reference: PromotionSourceEventReference;
-  /** Deploy event id this reference came from. Needed to PATCH overrides. */
-  deployEventId: string | null;
-}
-
+// Distinct work-items in the candidate's bundle, built from the candidate's own references and
+// deduped on key. Participants on these references are edited through the candidate itself — the
+// candidate is self-contained, so there is no deploy event to override.
 function buildBundleWorkItems(
   sourceEvent: PromotionSourceEvent | null,
-): BundleWorkItem[] {
-  const out: BundleWorkItem[] = [];
+): PromotionSourceEventReference[] {
+  const out: PromotionSourceEventReference[] = [];
   const seen = new Set<string>();
-  const push = (r: PromotionSourceEventReference, deployEventId: string | null) => {
-    if (r.type !== 'work-item') return;
+  if (!sourceEvent) return out;
+  for (const r of sourceEvent.references) {
+    if (r.type !== 'work-item') continue;
     const k = (r.key ?? '').trim();
-    if (!k || seen.has(k)) return;
+    if (!k || seen.has(k)) continue;
     seen.add(k);
-    out.push({ reference: r, deployEventId });
-  };
-  if (sourceEvent) for (const r of sourceEvent.references) push(r, sourceEvent.id);
+    out.push(r);
+  }
   return out;
-}
-
-// Compact one-line label for a reference-level participant. Format: "Role: Display <email>",
-// falling back to email-only or just the role label when no human name is available.
-// Display names are truncated client-side so a long full name can't blow the row layout.
-function formatReferenceParticipant(p: PromotionSourceEventParticipant): string {
-  const role = roleDisplay(p);
-  const name = (p.displayName ?? '').trim();
-  const truncatedName = name.length > 40 ? `${name.slice(0, 37)}...` : name;
-  const email = (p.email ?? '').trim();
-  if (truncatedName && email) return `${role}: ${truncatedName} <${email}>`;
-  if (truncatedName) return `${role}: ${truncatedName}`;
-  if (email) return `${role}: ${email}`;
-  return role;
 }
 
 const STATUS_CONFIG: Record<
@@ -225,20 +208,17 @@ export function PromotionDetailPage() {
             {candidate.product} / {candidate.service}
           </h1>
           <div className="flex items-center gap-3 mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
-            <span className="font-medium">
-              {candidate.sourceEnv} ({candidate.version})
-            </span>
+            <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
             <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-            <span
-              className="font-medium"
+            <EnvBadge
+              env={candidate.targetEnv}
+              suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
               title={
                 candidate.targetCurrentVersion
                   ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
                   : `First deploy to ${candidate.targetEnv}`
               }
-            >
-              {candidate.targetEnv} ({candidate.targetCurrentVersion ?? 'new'})
-            </span>
+            />
           </div>
         </div>
         <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
@@ -301,9 +281,9 @@ export function PromotionDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Work items card — bundle of work-items keyed (key, product, targetEnv).
-             Per-row Approve / Reject buttons hit the work-item endpoints; after each
-             decision we refetch the candidate so the manual card stays in sync. */}
+          {/* Work items card — bundle of work-items keyed (key, product, targetEnv). Rows link to
+             the work-item detail page, which owns sign-off and discussion; assigning people here
+             refetches the candidate so the row re-renders with the new participant. */}
           <WorkItemsCard
             candidate={candidate}
             workItems={bundleWorkItems}
@@ -1580,6 +1560,12 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
                       : 'Resolving all work items auto-approves this promotion'}
                   </p>
                 )}
+                {/* Blocked items explain a shortfall that the approved count alone doesn't. */}
+                {(workItemGate.blocked ?? 0) > 0 && (
+                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--warning)' }}>
+                    {workItemGate.blocked} blocked — release or approve them to satisfy this gate
+                  </p>
+                )}
               </div>
               <span
                 className="text-[12px] font-medium whitespace-nowrap"
@@ -1599,10 +1585,10 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
 // Work items card
 //
 // Lists every work-item in the candidate's bundle (the candidate's own
-// source-event refs, deduped on key). Per-row buttons
-// drive POST /api/work-items/{key}/approvals|rejections. Authority is decided
-// by GET /api/work-items/{key}?product=&targetEnv= so we surface the same
-// blockedReason wording the API would return on a failed POST.
+// references, deduped on key). Rows are navigational: the key opens the
+// work-item detail page, which owns sign-off and discussion. Here we show the
+// current sign-off state — from GET /api/work-items/{key}?product=&targetEnv=
+// — and let an operator assign the people responsible.
 //
 // Empty bundle: explicit message.
 // ─────────────────────────────────────────────────────────────────────────
@@ -1612,7 +1598,7 @@ function WorkItemsCard({
   onChanged,
 }: {
   candidate: PromotionCandidate;
-  workItems: BundleWorkItem[];
+  workItems: PromotionSourceEventReference[];
   onChanged: () => void;
 }) {
   return (
@@ -1638,12 +1624,11 @@ function WorkItemsCard({
         </div>
       ) : (
         <div className="space-y-2">
-          {workItems.map((wi, i) => (
+          {workItems.map((reference, i) => (
             <TicketRow
-              key={wi.reference.key ?? wi.reference.url ?? `wi-${i}`}
+              key={reference.key ?? reference.url ?? `wi-${i}`}
               candidate={candidate}
-              reference={wi.reference}
-              deployEventId={wi.deployEventId}
+              reference={reference}
               onChanged={onChanged}
             />
           ))}
@@ -1653,26 +1638,29 @@ function WorkItemsCard({
   );
 }
 
+/**
+ * One work-item row.
+ *
+ * Layout note: the state badge lives in its own flex column rather than being pushed right with
+ * `ml-auto` inside the title row — in the wrapping version it dropped onto a line of its own as
+ * soon as the title got long. The title truncates on a single line for the same reason, and the
+ * participant chips get the full content width so a long assignee list stays readable instead of
+ * being clipped.
+ */
 function TicketRow({
   candidate,
   reference,
-  deployEventId,
   onChanged,
 }: {
   candidate: PromotionCandidate;
   reference: PromotionSourceEventReference;
-  /** Source deploy event id this reference belongs to. PATCH targets `/deployments/{eventId}/...`.
-   *  Null when the reference can't be traced back (legacy data) — assign controls hidden. */
-  deployEventId: string | null;
   onChanged: () => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
   const key = reference.key ?? '';
   const [ctx, setCtx] = useState<WorkItemContext | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState('');
-  const [showCommentBox, setShowCommentBox] = useState(false);
 
   const refresh = async () => {
     if (!key) {
@@ -1694,30 +1682,6 @@ function TicketRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, candidate.product, candidate.targetEnv, candidate.id]);
 
-  const decide = async (decision: 'approve' | 'reject') => {
-    if (!key) return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (decision === 'approve') {
-        await api.approveWorkItem(key, candidate.product, candidate.targetEnv, comment || undefined);
-      } else {
-        await api.rejectWorkItem(key, candidate.product, candidate.targetEnv, comment || undefined);
-      }
-      setComment('');
-      setShowCommentBox(false);
-      // Refetch this row's context AND the parent candidate (the latter so the
-      // promotion-level card mirrors any cascade — auto-promote on full approve,
-      // veto-cascade on reject).
-      await refresh();
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const Icon = REFERENCE_ICONS[reference.type] ?? Ticket;
   const href = resolveReferenceHref({
     type: reference.type,
@@ -1726,26 +1690,18 @@ function TicketRow({
     revision: reference.revision ?? undefined,
   });
 
-  // Pick a single decision (Approved / Rejected) to render — first decision wins.
-  // The unique index in the API guarantees one row per (key, product, env, approver),
-  // and the blocked-reason path guarantees no second user can decide if any decision
-  // is already present. So the first row is canonical.
+  // Pick a single decision (Approved / Blocked / Rejected) to render — first row wins. The API
+  // keeps one row per approver and the detail page shows the full trail, so the summary badge only
+  // needs the canonical outcome.
   const decided = ctx?.approvals[0] ?? null;
-  const stateLabel = decided
-    ? decided.decision
+  const decidedStyle = decided ? decisionStyle(decided.decision) : null;
+  const stateLabel = decidedStyle
+    ? decidedStyle.label
     : ctx?.canApprove
       ? 'Pending — your turn'
       : 'Pending';
-  const stateColor = decided
-    ? decided.decision === 'Approved'
-      ? 'var(--success)'
-      : 'var(--danger)'
-    : 'var(--warning)';
-  const stateBg = decided
-    ? decided.decision === 'Approved'
-      ? 'var(--success-bg)'
-      : 'var(--danger-bg)'
-    : 'var(--warning-bg)';
+  const stateColor = decidedStyle?.color ?? 'var(--warning)';
+  const stateBg = decidedStyle?.bg ?? 'var(--warning-bg)';
 
   return (
     <div
@@ -1753,55 +1709,65 @@ function TicketRow({
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
     >
       <div className="flex items-start gap-3">
-        <Icon size={14} style={{ color: 'var(--text-muted)', marginTop: 2 }} />
+        <Icon size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 2 }} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            {href ? (
+          <div className="flex items-baseline gap-2 min-w-0">
+            {key ? (
+              <Link
+                to={workItemDetailPath(key, candidate.product, candidate.targetEnv)}
+                className="text-[13px] font-medium hover:underline shrink-0"
+                style={{ color: 'var(--accent)' }}
+                title={`Open ${key} details`}
+              >
+                {key}
+              </Link>
+            ) : (
+              <span className="text-[13px] font-medium shrink-0" style={{ color: 'var(--text-primary)' }}>
+                work-item
+              </span>
+            )}
+            {/* External tracker link is a bare icon — the label itself now goes to the in-app
+                detail page, which is the primary destination. */}
+            {href && (
               <a
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[13px] font-medium hover:underline"
-                style={{ color: 'var(--accent)' }}
-                title={reference.title ?? undefined}
+                className="shrink-0 transition-opacity hover:opacity-70"
+                style={{ color: 'var(--text-muted)' }}
+                title={`Open ${key || 'work item'} in ${reference.provider ?? 'the tracker'}`}
+                aria-label={`Open ${key || 'work item'} in ${reference.provider ?? 'the tracker'}`}
               >
-                {key || 'work-item'}
+                <ExternalLink size={11} />
               </a>
-            ) : (
-              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                {key || 'work-item'}
-              </span>
             )}
             {reference.title && (
-              <span className="text-[12px] truncate" style={{ color: 'var(--text-secondary)' }}>
+              <span
+                className="text-[12px] truncate"
+                style={{ color: 'var(--text-secondary)' }}
+                title={reference.title}
+              >
                 {reference.title}
               </span>
             )}
-            <span
-              className="badge ml-auto"
-              style={{ backgroundColor: stateBg, color: stateColor }}
-            >
-              {stateLabel}
-            </span>
           </div>
 
-          {/* Reference-level participants (e.g. QA on a ticket, author on a PR).
-              Now interactive: each chip can be reassigned or cleared, and an empty slot
-              for any role attached to a sibling reference can be filled. Operator
-              overrides surface via PATCH /api/deployments/{eventId}/references/{key}/participants. */}
-          <ParticipantChips
-            participants={reference.participants ?? []}
-            deployEventId={deployEventId}
+          {/* Reference-level participants (e.g. QA on a ticket). Editable in place: writes go to
+              PATCH /api/promotions/{id}/references/{key}/participants. */}
+          <WorkItemParticipants
+            candidateId={candidate.id}
             referenceKey={key}
+            participants={reference.participants ?? []}
             onChanged={onChanged}
+            readOnly={readOnly}
           />
 
           {decided && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {decided.decision} by{' '}
+              {decidedStyle?.label} by{' '}
               <span style={{ color: 'var(--text-secondary)' }}>{decided.approverEmail}</span>
               {' · '}
-              {format(new Date(decided.createdAt), 'MMM d, HH:mm')}
+              {format(new Date(decided.updatedAt ?? decided.createdAt), 'MMM d, HH:mm')}
               {decided.comment && (
                 <span
                   className="block mt-1 italic"
@@ -1832,416 +1798,23 @@ function TicketRow({
             </p>
           )}
 
-          {!decided && ctx?.canApprove && (
-            <div className="mt-2">
-              {showCommentBox && (
-                <textarea
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  placeholder="Optional comment..."
-                  rows={2}
-                  className="w-full rounded-lg border px-2 py-1.5 text-[12px] resize-none mb-2"
-                  style={{
-                    borderColor: 'var(--border-color)',
-                    backgroundColor: 'var(--bg-primary)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => decide('approve')}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-opacity"
-                  style={{
-                    backgroundColor: 'var(--success)',
-                    color: '#fff',
-                    opacity: busy ? 0.6 : 1,
-                  }}
-                >
-                  <CheckCircle size={11} />
-                  Approve
-                </button>
-                <button
-                  onClick={() => decide('reject')}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-opacity"
-                  style={{
-                    backgroundColor: 'var(--danger)',
-                    color: '#fff',
-                    opacity: busy ? 0.6 : 1,
-                  }}
-                >
-                  <XCircle size={11} />
-                  Reject
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowCommentBox((v) => !v)}
-                  className="text-[11px] transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  {showCommentBox ? 'Hide comment' : 'Add comment'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// One row of role chips for a single reference. Each chip is a participant slot:
-//  - filled  → "Role: Display <email>" with a popover containing Reassign / Clear.
-// A single "+ Assign" button at the end opens a picker where the operator chooses
-// both the role (free-form, with directory-suggested values) and the person —
-// mirroring PeopleCard's add-form so the two flows feel like one thing.
-function ParticipantChips({
-  participants,
-  deployEventId,
-  referenceKey,
-  onChanged,
-}: {
-  participants: PromotionSourceEventParticipant[];
-  deployEventId: string | null;
-  referenceKey: string;
-  onChanged: () => void;
-}) {
-  const readOnly = useContext(PromoReadOnlyCtx);
-  // editingRole === '' means "new assign" (role chosen inside picker).
-  // editingRole === <role> means reassigning that specific chip.
-  const [editingRole, setEditingRole] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // No event id or read-only → can't PATCH. Render the read-only text fallback.
-  if (!deployEventId || !referenceKey || readOnly) {
-    if (participants.length === 0) return null;
-    return (
-      <div
-        className="mt-0.5 text-[11px] truncate"
-        style={{ color: 'var(--text-muted)' }}
-        title={participants.map((p) => formatReferenceParticipant(p)).join(', ')}
-      >
-        {participants.map((p) => formatReferenceParticipant(p)).join(', ')}
-      </div>
-    );
-  }
-
-  const submit = async (role: string, assignee: { email: string; displayName: string } | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.assignReferenceParticipant(deployEventId, referenceKey, role, assignee);
-      setEditingRole(null);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update participant');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const newAssignOpen = editingRole === '';
-
-  return (
-    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-      {participants.map((p) => (
-        <ParticipantChip
-          key={`${p.role}-${p.email ?? ''}`}
-          participant={p}
-          onReassign={() => setEditingRole(p.role)}
-          onClear={() => submit(p.role, null)}
-          editing={editingRole === p.role}
-          onCancelEdit={() => setEditingRole(null)}
-          onPick={(picked) => submit(p.role, picked)}
-          busy={busy}
-        />
-      ))}
-      <span className="inline-flex items-center relative">
-        <button
-          type="button"
-          onClick={() => setEditingRole(newAssignOpen ? null : '')}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
-          style={{
-            borderColor: 'var(--border-color)',
-            color: 'var(--text-muted)',
-            border: '1px dashed var(--border-color)',
-          }}
-          disabled={busy}
-          title="Assign a person to this reference"
-        >
-          <Plus size={10} /> Assign
-        </button>
-        {newAssignOpen && (
-          <InlineUserPicker
-            role={null}
-            onPick={(picked) => submit(picked.role, { email: picked.email, displayName: picked.displayName })}
-            onCancel={() => setEditingRole(null)}
-            busy={busy}
-          />
-        )}
-      </span>
-      {error && (
-        <span className="text-[10px]" style={{ color: 'var(--danger)' }}>
-          {error}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function ParticipantChip({
-  participant,
-  onReassign,
-  onClear,
-  editing,
-  onCancelEdit,
-  onPick,
-  busy,
-}: {
-  participant: PromotionSourceEventParticipant;
-  onReassign: () => void;
-  onClear: () => void;
-  editing: boolean;
-  onCancelEdit: () => void;
-  onPick: (picked: { email: string; displayName: string }) => void;
-  busy: boolean;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const overridden = participant.isOverride === true;
-  const tooltip = overridden && participant.assignedBy
-    ? `${formatReferenceParticipant(participant)} (overridden by ${participant.assignedBy})`
-    : formatReferenceParticipant(participant);
-
-  return (
-    <span className="inline-flex items-center relative">
-      <button
-        type="button"
-        onClick={() => setMenuOpen((v) => !v)}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
-        style={{
-          backgroundColor: overridden ? 'var(--accent-bg)' : 'var(--bg-tertiary, var(--bg-primary))',
-          color: overridden ? 'var(--accent)' : 'var(--text-secondary)',
-          border: '1px solid var(--border-color)',
-        }}
-        title={tooltip}
-        disabled={busy}
-      >
-        <Users size={10} />
-        <span className="truncate max-w-[160px]">
-          {roleDisplay(participant)}: {participant.displayName ?? participant.email ?? '—'}
-        </span>
-        {overridden && <span style={{ color: 'var(--accent)' }}>•</span>}
-      </button>
-      {menuOpen && !editing && (
-        <div
-          className="absolute z-10 mt-1 top-full left-0 rounded-lg border shadow-lg"
-          style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
-        >
-          <button
-            type="button"
-            onClick={() => { setMenuOpen(false); onReassign(); }}
-            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            Reassign…
-          </button>
-          <button
-            type="button"
-            onClick={() => { setMenuOpen(false); onClear(); }}
-            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
-            style={{ color: 'var(--danger)' }}
-          >
-            Clear (tombstone)
-          </button>
-        </div>
-      )}
-      {editing && (
-        <InlineUserPicker
-          role={participant.role}
-          onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
-          onCancel={onCancelEdit}
-          busy={busy}
-        />
-      )}
-    </span>
-  );
-}
-
-// Inline user picker — debounced search against /promotions/users/search. Mirrors the
-// look-and-feel of PeopleCard's add-participant dropdown so the two flows feel like one
-// thing. Anchored absolutely to its parent (which must be `position: relative`); pops
-// out below the chip with a fixed width so the chip itself stays narrow.
-//
-// Two modes via the `role` prop:
-//   - role = string  → reassigning a known role; only the user is selected.
-//   - role = null    → new assignment; operator types/picks the role too. Suggested
-//                      roles come from /api/promotions/roles via a <datalist> (same
-//                      pattern as PeopleCard).
-//
-// Falls back to manual email entry when the directory returns no hits (local-auth dev).
-function InlineUserPicker({
-  role,
-  onPick,
-  onCancel,
-  busy,
-}: {
-  role: string | null;
-  onPick: (picked: { role: string; email: string; displayName: string }) => void;
-  onCancel: () => void;
-  busy: boolean;
-}) {
-  const roleEditable = role === null;
-  const [roleInput, setRoleInput] = useState('');
-  const [knownRoles, setKnownRoles] = useState<string[]>([]);
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
-  const [searching, setSearching] = useState(false);
-  const datalistId = useMemo(() => `assign-roles-${Math.random().toString(36).slice(2, 8)}`, []);
-
-  // Pre-fetch role suggestions when in role-editable mode.
-  useEffect(() => {
-    if (!roleEditable) return;
-    let cancelled = false;
-    api
-      .listPromotionRoles()
-      .then((d) => { if (!cancelled) setKnownRoles(d.roles || []); })
-      .catch(() => { if (!cancelled) setKnownRoles([]); });
-    return () => { cancelled = true; };
-  }, [roleEditable]);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) { setResults([]); return; }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [query]);
-
-  // Resolve the role to send: either the locked prop or whatever the operator typed.
-  const effectiveRole = (role ?? roleInput).trim();
-  const canSubmit = effectiveRole.length > 0;
-
-  const submitWithUser = (u: { email: string; displayName: string }) => {
-    if (!canSubmit) return;
-    onPick({ role: effectiveRole, email: u.email, displayName: u.displayName });
-  };
-
-  const submitManual = () => {
-    const q = query.trim();
-    // Cheap email-shape check. Server validates again with the same rule.
-    if (!q.includes('@') || !q.includes('.')) return;
-    submitWithUser({ email: q, displayName: q });
-  };
-
-  return (
-    <div
-      className="absolute z-20 mt-1 top-full left-0 rounded-lg border shadow-lg p-2 w-72"
-      style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
-    >
-      <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
-        {roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`}
-      </div>
-      {roleEditable && (
-        <>
-          <input
-            autoFocus
-            list={datalistId}
-            value={roleInput}
-            onChange={(e) => setRoleInput(e.target.value)}
-            placeholder="Role (e.g. QA, reviewer)"
-            className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none mb-1.5"
-            style={{
-              borderColor: 'var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-            }}
-            disabled={busy}
-            onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
-          />
-          <datalist id={datalistId}>
-            {knownRoles.map((r) => (
-              <option key={r} value={roleDisplay({ role: r })} />
-            ))}
-          </datalist>
-        </>
-      )}
-      <input
-        autoFocus={!roleEditable}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search directory (name or email)..."
-        className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none"
-        style={{
-          borderColor: 'var(--border-color)',
-          backgroundColor: 'var(--bg-secondary)',
-          color: 'var(--text-primary)',
-        }}
-        disabled={busy}
-        onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
-      />
-      {query.trim().length >= 2 && (
-        <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
-          {searching && (
-            <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-              Searching...
-            </div>
-          )}
-          {!searching && results.length === 0 && (
-            <button
-              type="button"
-              onClick={submitManual}
-              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
-              disabled={busy || !canSubmit}
-              title={!canSubmit ? 'Pick a role first' : undefined}
+          {key && (
+            <Link
+              to={workItemDetailPath(key, candidate.product, candidate.targetEnv)}
+              className="inline-flex items-center gap-1 mt-1.5 text-[11px] font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--accent)' }}
             >
-              <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                No directory matches — sent as-is.
-              </span>
-            </button>
+              Sign off &amp; discuss
+              <ArrowRight size={11} />
+            </Link>
           )}
-          {!searching && results.map((u) => (
-            <button
-              key={u.id}
-              type="button"
-              onClick={() => submitWithUser({ email: u.email, displayName: u.displayName })}
-              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
-              disabled={busy || !canSubmit}
-              title={!canSubmit ? 'Pick a role first' : undefined}
-            >
-              <span className="font-medium truncate">{u.displayName}</span>
-              <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-                {u.email}
-              </span>
-            </button>
-          ))}
         </div>
-      )}
-      <div className="mt-2 flex justify-end">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity hover:opacity-80"
-          style={{ color: 'var(--text-muted)' }}
-          disabled={busy}
+        <span
+          className="badge shrink-0 self-start"
+          style={{ backgroundColor: stateBg, color: stateColor }}
         >
-          Cancel
-        </button>
+          {stateLabel}
+        </span>
       </div>
     </div>
   );
