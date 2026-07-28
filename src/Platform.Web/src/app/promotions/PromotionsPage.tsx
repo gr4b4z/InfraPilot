@@ -449,7 +449,7 @@ export function PromotionsPage() {
                     disabled={bulkLoading}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                     style={{
-                      backgroundColor: 'var(--success)',
+                      backgroundColor: 'var(--success-solid)',
                       color: '#fff',
                       opacity: bulkLoading ? 0.6 : 1,
                     }}

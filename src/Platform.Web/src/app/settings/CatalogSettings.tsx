@@ -334,7 +334,7 @@ executor:
                     <button
                       onClick={() => handleDelete(item.slug)}
                       className="text-[11px] font-medium px-2 py-1 rounded-md"
-                      style={{ backgroundColor: 'var(--danger)', color: 'white' }}
+                      style={{ backgroundColor: 'var(--danger-solid)', color: 'white' }}
                     >
                       Confirm
                     </button>

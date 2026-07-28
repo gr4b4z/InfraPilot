@@ -108,10 +108,17 @@ body {
   --accent-subtle: rgba(91, 73, 222, 0.12);
   --success: #059669;
   --success-bg: #ECFDF5;
+  /* Solid fill for buttons carrying white text (Approve/Reject, destructive confirm). Equal to
+     --success/--danger in light mode; dark mode gets its own deeper shade below because the
+     bright --success/--danger there is tuned for text-on-dark and fails contrast as a white-on-
+     fill button (~2:1 — see --success-solid override). */
+  --success-solid: var(--success);
   --warning: #D97706;
+  --warning-solid: var(--warning);
   --warning-bg: #FFFBEB;
   --danger: #DC2626;
   --danger-bg: #FEF2F2;
+  --danger-solid: var(--danger);
   --info: #2563EB;
   --info-bg: #EFF6FF;
 }
@@ -135,10 +142,13 @@ body {
     --accent-subtle: rgba(124, 110, 240, 0.15);
     --success: #34D399;
     --success-bg: rgba(52, 211, 153, 0.1);
+    --success-solid: #047857;
     --warning: #FBBF24;
+    --warning-solid: #B45309;
     --warning-bg: rgba(251, 191, 36, 0.1);
     --danger: #F87171;
     --danger-bg: rgba(248, 113, 113, 0.1);
+    --danger-solid: #B91C1C;
     --info: #60A5FA;
     --info-bg: rgba(96, 165, 250, 0.1);
   }
@@ -162,10 +172,13 @@ body {
   --accent-subtle: rgba(124, 110, 240, 0.15);
   --success: #34D399;
   --success-bg: rgba(52, 211, 153, 0.1);
+  --success-solid: #047857;
   --warning: #FBBF24;
+  --warning-solid: #B45309;
   --warning-bg: rgba(251, 191, 36, 0.1);
   --danger: #F87171;
   --danger-bg: rgba(248, 113, 113, 0.1);
+  --danger-solid: #B91C1C;
   --info: #60A5FA;
   --info-bg: rgba(96, 165, 250, 0.1);
 }
@@ -188,10 +201,13 @@ body {
   --accent-subtle: rgba(91, 73, 222, 0.12);
   --success: #059669;
   --success-bg: #ECFDF5;
+  --success-solid: var(--success);
   --warning: #D97706;
+  --warning-solid: var(--warning);
   --warning-bg: #FFFBEB;
   --danger: #DC2626;
   --danger-bg: #FEF2F2;
+  --danger-solid: var(--danger);
   --info: #2563EB;
   --info-bg: #EFF6FF;
 }
