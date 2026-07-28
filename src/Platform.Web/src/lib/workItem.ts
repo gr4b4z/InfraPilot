@@ -28,6 +28,42 @@ export function formatReferenceParticipant(p: PromotionSourceEventParticipant): 
 }
 
 /**
+ * Human name for a reference provider, for link labels like "View in Jira". Falls back to the raw
+ * value (title-cased on separators) so an unrecognised provider still reads as a name rather than a
+ * slug, and to a generic word when there's nothing to go on.
+ */
+export function providerLabel(provider: string | null | undefined, fallback = 'tracker'): string {
+  const raw = (provider ?? '').trim();
+  if (!raw) return fallback;
+  switch (raw.toLowerCase()) {
+    case 'jira':
+      return 'Jira';
+    case 'azure-devops':
+    case 'azuredevops':
+    case 'ado':
+      return 'Azure DevOps';
+    case 'github':
+      return 'GitHub';
+    case 'gitlab':
+      return 'GitLab';
+    case 'bitbucket':
+      return 'Bitbucket';
+    default:
+      return raw
+        .split(/[-_\s]+/)
+        .filter(Boolean)
+        .map((w) => w[0].toUpperCase() + w.slice(1))
+        .join(' ');
+  }
+}
+
+/** Abbreviated commit hash for display. Git's own 7-character convention. */
+export function shortHash(hash: string): string {
+  const trimmed = (hash ?? '').trim();
+  return trimmed.length > 7 ? trimmed.slice(0, 7) : trimmed;
+}
+
+/**
  * Presentation for a work-item decision. One source of truth so the queue, the promotion row, and
  * the detail page can't drift on what "Blocked" looks like.
  *

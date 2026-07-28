@@ -984,7 +984,35 @@ export interface WorkItemDetail {
   participants: PromotionSourceEventParticipant[];
   approvals: WorkItemApproval[];
   comments: WorkItemComment[];
+  /** Commits whose messages referenced this work item. Empty when the producer declared none. */
+  commits: WorkItemCommitRef[];
+  /** Pull requests those commits merged — derived server-side via commit hash → PR revision. */
+  pullRequests: WorkItemPullRequestRef[];
   candidates: WorkItemCandidateRef[];
+}
+
+/**
+ * One commit that carried a work item. `hash` is always present (it's what the producer declared);
+ * the rest is hydrated from the matching `commit` reference and is null when the payload had none —
+ * such a row renders as a bare hash with no link.
+ */
+export interface WorkItemCommitRef {
+  hash: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  participants: PromotionSourceEventParticipant[];
+}
+
+/** One pull request behind a work item, reached through the commit it merged. */
+export interface WorkItemPullRequestRef {
+  key: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  /** The merge commit that tied this PR to the work item. */
+  revision: string | null;
+  participants: PromotionSourceEventParticipant[];
 }
 
 /** One row from `GET /api/work-items/me/pending`. */
@@ -1065,6 +1093,12 @@ export interface PromotionSourceEventReference {
   key?: string | null;
   revision?: string | null;
   title?: string | null;
+  /**
+   * Commit hashes this reference was derived from — set by the producer on `work-item` references
+   * to record which commit messages mentioned the ticket. The server uses it to resolve the
+   * ticket's `commits` and `pullRequests` on the detail projection.
+   */
+  commits?: string[] | null;
   /**
    * Reference-scoped participants. Optional and may be absent on legacy payloads —
    * always treat as `participants ?? []`. Same shape as event-level participants.
