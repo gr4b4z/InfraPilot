@@ -823,7 +823,7 @@ function TicketRow({
                 onClick={() => decide('approve')}
                 disabled={busy}
                 className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--success)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                style={{ backgroundColor: 'var(--success-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
               >
                 <CheckCircle size={12} />
                 Approve
@@ -832,7 +832,7 @@ function TicketRow({
                 onClick={() => decide('reject')}
                 disabled={busy}
                 className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--danger)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
               >
                 <XCircle size={12} />
                 Reject
