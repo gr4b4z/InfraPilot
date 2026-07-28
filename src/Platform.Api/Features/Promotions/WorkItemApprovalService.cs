@@ -855,6 +855,15 @@ public class WorkItemApprovalService
         var ctx = await GetTicketContextAsync(key, prod, env, ct);
         var comments = await GetCommentsAsync(key, prod, env, ct);
 
+        // The change that carried this ticket. Resolved from the primary candidate, falling back to
+        // the newest candidate that actually records commits for the ticket — same "prefer primary,
+        // else whoever has the data" rule the display fields above use, because an older ingest may
+        // have supplied commits that a later one omitted.
+        var changeSource = ResolvesCommits(primary, key)
+            ? primary
+            : ordered.FirstOrDefault(c => ResolvesCommits(c, key)) ?? primary;
+        var (commits, pullRequests) = ResolveChangeSet(changeSource, key);
+
         return new WorkItemDetail(
             WorkItemKey: key,
             Product: prod,
@@ -871,6 +880,8 @@ public class WorkItemApprovalService
             Participants: GetWorkItemParticipants(primary, key),
             Approvals: ctx.Approvals,
             Comments: comments,
+            Commits: commits,
+            PullRequests: pullRequests,
             Candidates: ordered
                 .Where(c => c.Status != PromotionStatus.Superseded)
                 .Select(c => new WorkItemCandidateRef(
@@ -1059,6 +1070,102 @@ public class WorkItemApprovalService
             .FirstOrDefaultAsync(ct);
     }
 
+    /// <summary>Whether the candidate records any source commits for this work item.</summary>
+    private static bool ResolvesCommits(PromotionCandidate candidate, string workItemKey)
+        => FindWorkItemReference(candidate, workItemKey)?.Commits is { Count: > 0 };
+
+    private static ReferenceDto? FindWorkItemReference(PromotionCandidate candidate, string workItemKey)
+        => candidate.References.FirstOrDefault(r =>
+            string.Equals(r.Key, workItemKey, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Resolves the change set behind a work item: the commits whose messages referenced the ticket,
+    /// and the pull requests those commits merged.
+    ///
+    /// <para>The producer supplies the linkage as bare hashes on the work-item reference's
+    /// <see cref="ReferenceDto.Commits"/>. This walks the candidate's other references to hydrate
+    /// them: a <c>commit</c> reference matches on <see cref="ReferenceDto.Key"/>, and a
+    /// <c>pull-request</c> reference matches on <see cref="ReferenceDto.Revision"/> — the merge commit
+    /// it produced. That indirection (ticket → commit → PR) is why the PR list is derived rather than
+    /// declared: the payload never states which PR belongs to which ticket, only which commit does.</para>
+    ///
+    /// <para>A hash with no matching <c>commit</c> reference still yields a row carrying just the hash.
+    /// The hash is real information — the producer saw that commit — and silently dropping it would
+    /// make the change set look smaller than it is. Output order follows the declared hash order so
+    /// it stays stable and mirrors the payload.</para>
+    /// </summary>
+    private static (List<WorkItemCommitRef> Commits, List<WorkItemPullRequestRef> PullRequests)
+        ResolveChangeSet(PromotionCandidate candidate, string workItemKey)
+    {
+        var commits = new List<WorkItemCommitRef>();
+        var pullRequests = new List<WorkItemPullRequestRef>();
+
+        var declared = FindWorkItemReference(candidate, workItemKey)?.Commits;
+        if (declared is not { Count: > 0 }) return (commits, pullRequests);
+
+        var references = candidate.References;
+        var seenCommits = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenPrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var raw in declared)
+        {
+            var hash = (raw ?? "").Trim();
+            if (hash.Length == 0 || !seenCommits.Add(hash)) continue;
+
+            var commitRef = references.FirstOrDefault(r =>
+                string.Equals(r.Type, "commit", StringComparison.OrdinalIgnoreCase)
+                && HashesMatch(r.Key, hash));
+
+            commits.Add(new WorkItemCommitRef(
+                Hash: hash,
+                Title: commitRef?.Title,
+                Url: commitRef?.Url,
+                Provider: commitRef?.Provider,
+                Participants: commitRef?.Participants ?? Array.Empty<ParticipantDto>()));
+
+            foreach (var pr in references.Where(r =>
+                string.Equals(r.Type, "pull-request", StringComparison.OrdinalIgnoreCase)
+                && HashesMatch(r.Revision, hash)))
+            {
+                // Key is a PR number and the natural identity; fall back to the URL for a producer
+                // that omitted it, so an unkeyed PR still renders once instead of on every commit.
+                var prIdentity = string.IsNullOrWhiteSpace(pr.Key) ? pr.Url ?? "" : pr.Key;
+                if (prIdentity.Length == 0 || !seenPrs.Add(prIdentity)) continue;
+                pullRequests.Add(new WorkItemPullRequestRef(
+                    Key: pr.Key ?? "",
+                    Title: pr.Title,
+                    Url: pr.Url,
+                    Provider: pr.Provider,
+                    Revision: pr.Revision,
+                    Participants: pr.Participants ?? Array.Empty<ParticipantDto>()));
+            }
+        }
+
+        return (commits, pullRequests);
+    }
+
+    /// <summary>
+    /// Git hash comparison, case-insensitive, tolerating abbreviation on either side: commit messages
+    /// and build metadata routinely carry a short SHA where the reference carries the full one (the
+    /// version string in the sample payload does exactly this). A prefix match needs at least
+    /// <c>MinAbbreviatedHashLength</c> characters so a stray short token can't match everything.
+    /// </summary>
+    private const int MinAbbreviatedHashLength = 7;
+
+    private static bool HashesMatch(string? a, string? b)
+    {
+        var left = (a ?? "").Trim();
+        var right = (b ?? "").Trim();
+        if (left.Length == 0 || right.Length == 0) return false;
+        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return true;
+
+        var shorter = left.Length <= right.Length ? left : right;
+        var longer = left.Length <= right.Length ? right : left;
+        return shorter.Length >= MinAbbreviatedHashLength
+            && longer.StartsWith(shorter, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// Returns the effective participant list for <paramref name="workItemKey"/> on the candidate.
     /// The candidate is self-contained, so people come from its own data (no deploy-event join, no
@@ -1188,7 +1295,33 @@ public record WorkItemDetail(
     IReadOnlyList<ParticipantDto> Participants,
     List<WorkItemApproval> Approvals,
     List<WorkItemComment> Comments,
+    /// <summary>The commits whose messages referenced this ticket, newest-declared-first.</summary>
+    IReadOnlyList<WorkItemCommitRef> Commits,
+    /// <summary>The pull requests those commits merged. Derived via commit → PR revision.</summary>
+    IReadOnlyList<WorkItemPullRequestRef> PullRequests,
     IReadOnlyList<WorkItemCandidateRef> Candidates);
+
+/// <summary>
+/// One commit that carried a work item. <see cref="Hash"/> is always present — it's what the producer
+/// declared. Everything else is hydrated from the matching <c>commit</c> reference and is null when
+/// the payload didn't include one, in which case the row is hash-only.
+/// </summary>
+public record WorkItemCommitRef(
+    string Hash,
+    string? Title,
+    string? Url,
+    string? Provider,
+    IReadOnlyList<ParticipantDto> Participants);
+
+/// <summary>One pull request behind a work item, reached through the commit it merged.</summary>
+public record WorkItemPullRequestRef(
+    string Key,
+    string? Title,
+    string? Url,
+    string? Provider,
+    /// <summary>The merge commit that tied this PR to the work item.</summary>
+    string? Revision,
+    IReadOnlyList<ParticipantDto> Participants);
 
 /// <summary>One promotion candidate carrying a work item, as listed on the detail page.</summary>
 public record WorkItemCandidateRef(

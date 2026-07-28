@@ -44,7 +44,14 @@ public record ReferenceDto(
     // its QA/assignee. When present these are persisted nested under the reference in
     // ReferencesJson and are honoured by the excluded-role check (reference-level wins
     // over event-level when both carry a participant for a given role).
-    IReadOnlyList<ParticipantDto>? Participants = null);
+    IReadOnlyList<ParticipantDto>? Participants = null,
+    // Commit hashes this reference was derived from. Set by the producer on `work-item`
+    // references: the work item was discovered by parsing commit messages, and this records
+    // which commits mentioned it. The read path uses it to link the ticket back to its
+    // `commit` references (matched on Key) and to the `pull-request` references those commits
+    // merged (matched on Revision), so the detail page can show the change that carried it.
+    // Meaningless on other reference types; ignored there.
+    IReadOnlyList<string>? Commits = null);
 
 public record ParticipantDto(
     string Role,

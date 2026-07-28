@@ -27,7 +27,9 @@ export function Layout() {
               className="flex-1 overflow-y-auto"
               style={{ backgroundColor: 'var(--bg-secondary)' }}
             >
-              <div className="p-6 lg:p-8 max-w-[1400px]">
+              {/* No width cap here: these are dense operational tables that should use the
+                  whole viewport. Long-form pages set their own reading width instead. */}
+              <div className="p-6 lg:p-8">
                 <Outlet />
               </div>
             </main>
