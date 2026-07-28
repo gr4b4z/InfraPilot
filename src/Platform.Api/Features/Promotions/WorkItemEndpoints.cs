@@ -281,6 +281,26 @@ public static class WorkItemEndpoints
         participants = d.Participants,
         approvals = d.Approvals.Select(ToApprovalDto),
         comments = d.Comments.Select(ToCommentDto),
+        // The change behind the ticket: the commits whose messages referenced it, and the pull
+        // requests those commits merged. Empty when the producer didn't declare `commits` on the
+        // work-item reference.
+        commits = d.Commits.Select(c => new
+        {
+            hash = c.Hash,
+            title = c.Title,
+            url = c.Url,
+            provider = c.Provider,
+            participants = c.Participants,
+        }),
+        pullRequests = d.PullRequests.Select(p => new
+        {
+            key = p.Key,
+            title = p.Title,
+            url = p.Url,
+            provider = p.Provider,
+            revision = p.Revision,
+            participants = p.Participants,
+        }),
         candidates = d.Candidates.Select(c => new
         {
             id = c.Id,
