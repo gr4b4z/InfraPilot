@@ -257,6 +257,9 @@ public static class WorkItemEndpoints
         authorEmail = c.AuthorEmail,
         authorName = c.AuthorName,
         body = c.Body,
+        // Set on the entries written automatically for a sign-off; null for human discussion. The UI
+        // styles the two differently and only offers edit/delete on the latter.
+        decision = c.Decision?.ToString(),
         createdAt = c.CreatedAt,
         updatedAt = c.UpdatedAt,
     };

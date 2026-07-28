@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
+import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
-import { workItemDetailPath } from '@/lib/workItem';
+import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
@@ -21,22 +21,30 @@ import {
 } from 'lucide-react';
 
 /**
- * Per-candidate work-item signoff progress for the list. Computed lazily for the
- * pending rows only — non-pending candidates show "—". The list API returns the
- * candidate's own sourceEventReferences (work-items + others); we filter to
- * work-items, then call /work-items/{key}?... for each to get approval state.
+ * Per-candidate work-item signoff state for the list. The list API returns the candidate's own
+ * sourceEventReferences (work-items + others) but not their approval state, so we filter to
+ * work-items and call /work-items/{key}?... for each.
  *
- * Cap at the visible Pending set per render, which is bounded by the page's
- * filter so this stays well-behaved in practice.
+ * `decisions` carries the per-key outcome so each work-item chip can be tinted by its own state —
+ * the counts alone can't tell you *which* item is the blocked one, which is the thing you want to
+ * see when scanning a stalled bundle.
+ *
+ * Fetching is capped at {@link PROGRESS_CANDIDATE_LIMIT} candidates per render: the resolved and
+ * "all" tabs are unbounded in a way the pending queue never was, and a chip with no tint is a fine
+ * degradation. Rows past the cap render as undecided.
  */
 interface WorkItemProgress {
   total: number;
   approved: number;
   rejected: number;
-  /** Held back by a Blocked decision — neither approved nor a veto. */
+  /** Held back by a Blocked decision. Like Rejected, it stalls the gate without vetoing. */
   blocked: number;
+  /** Work-item key → the decision on it, or null when nobody has decided yet. */
+  decisions: Record<string, WorkItemDecision | null>;
   loading: boolean;
 }
+
+const PROGRESS_CANDIDATE_LIMIT = 25;
 
 const STATUS_CONFIG: Record<
   PromotionStatus,
@@ -49,6 +57,78 @@ const STATUS_CONFIG: Record<
   Superseded: { icon: Clock, color: 'var(--text-muted)', bg: 'var(--bg-secondary)' },
   Rejected: { icon: XCircle, color: 'var(--danger)', bg: 'var(--danger-bg)' },
 };
+
+/**
+ * Which slice of the promotions set the page is showing. `mine` narrows `pending` client-side (no
+ * refetch); `resolved` and `all` share one lazy fetch; `rejected` has its own so a long resolved
+ * tail can't clip it.
+ */
+type View = 'pending' | 'mine' | 'awaiting-deploy' | 'resolved' | 'rejected' | 'all';
+
+const VIEW_HEADINGS: Record<View, string> = {
+  pending: 'All pending',
+  mine: 'Awaiting my approval',
+  'awaiting-deploy': 'Approved · awaiting deploy',
+  resolved: 'Resolved',
+  rejected: 'Rejected',
+  all: 'All promotions',
+};
+
+const EMPTY_STATES: Record<View, { icon: typeof Clock; title: string; body: string }> = {
+  pending: {
+    icon: GitPullRequest,
+    title: 'No pending promotions',
+    body: 'Pending promotions awaiting approval will appear here.',
+  },
+  mine: {
+    icon: CheckCircle,
+    title: 'Nothing awaiting your approval',
+    body: 'Promotions you can approve will appear here.',
+  },
+  'awaiting-deploy': {
+    icon: Rocket,
+    title: 'Nothing awaiting deploy',
+    body: 'Approved promotions not yet deployed will appear here.',
+  },
+  resolved: {
+    icon: CheckCircle,
+    title: 'No resolved promotions',
+    body: 'Promotions that have been approved, deployed, rejected or superseded land here.',
+  },
+  rejected: {
+    icon: XCircle,
+    title: 'No rejected promotions',
+    body: 'Promotions someone turned down will appear here.',
+  },
+  all: {
+    icon: GitPullRequest,
+    title: 'No promotions',
+    body: 'Nothing has been promoted yet for the current filters.',
+  },
+};
+
+function EmptyState({ view }: { view: View }) {
+  const { icon: Icon, title, body } = EMPTY_STATES[view];
+  return (
+    <div
+      className="flex flex-col items-center justify-center py-16 rounded-xl border"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <div
+        className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+        style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+      >
+        <Icon size={24} />
+      </div>
+      <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
+        {title}
+      </p>
+      <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+        {body}
+      </p>
+    </div>
+  );
+}
 
 export function PromotionsPage() {
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
@@ -64,22 +144,25 @@ export function PromotionsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
-  // View over the promotions set:
-  //  - 'pending'         : all Pending (loaded set)
-  //  - 'mine'            : Pending the current user can act on (per-candidate `canApprove`), no refetch
-  //  - 'awaiting-deploy' : Approved but not yet deployed — its own fetch (status=Approved)
-  const [view, setView] = useState<'pending' | 'mine' | 'awaiting-deploy'>('pending');
+  const [view, setView] = useState<View>('pending');
   // Approved-awaiting-deploy set. Fetched eagerly (alongside Pending) so the tab
   // badge shows a live count without the user having to open the tab first.
   const [awaitingDeploy, setAwaitingDeploy] = useState<PromotionCandidate[]>([]);
   const [awaitingDeployLoading, setAwaitingDeployLoading] = useState(true);
-  // Resolved section — lazy. Only fetched when the user opens it.
-  const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
-  const [resolvedShown, setResolvedShown] = useState(false);
-  const [resolvedLoading, setResolvedLoading] = useState(false);
+  // Everything, any status — backs both the "All" and "Resolved" tabs. Lazy: null means
+  // "not fetched yet", which is how the effect below knows to go and get it.
+  const [archive, setArchive] = useState<PromotionCandidate[] | null>(null);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  // Rejected gets its own single-status fetch rather than being filtered out of `archive`: the
+  // no-status query caps its non-Pending tail, which would silently clip old rejections.
+  const [rejected, setRejected] = useState<PromotionCandidate[] | null>(null);
+  const [rejectedLoading, setRejectedLoading] = useState(false);
   const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
 
-  // Secondary filters shared by both the pending fetch and the resolved fetch.
+  // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
+  const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}`;
+
+  // Secondary filters shared by every fetch on this page.
   const filterParams = () => {
     const params: Record<string, string> = {};
     if (productFilter) params.product = productFilter;
@@ -112,41 +195,94 @@ export function PromotionsPage() {
   useEffect(() => {
     fetchData();
     fetchAwaitingDeploy();
-    // A filter change invalidates any loaded resolved set — collapse it so it
-    // reloads fresh (with the new filters) if the user reopens it.
-    setResolvedShown(false);
-    setResolved([]);
+    // A filter change invalidates the lazy sets — drop them back to "not fetched" so the
+    // effect below refetches with the new filters when their tab is next shown.
+    setArchive(null);
+    setRejected(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productFilter, serviceFilter, targetEnvFilter, referenceFilter]);
 
-  const loadResolved = () => {
-    setResolvedShown(true);
-    setResolvedLoading(true);
-    api
-      .listPromotions(filterParams())
-      .then((data) => setResolved((data.candidates || []).filter((c) => c.status !== 'Pending')))
-      .catch(() => setResolved([]))
-      .finally(() => setResolvedLoading(false));
-  };
+  // Lazy loads for the tabs that aren't fetched up front. Fires on tab change and after a filter
+  // change has reset the sets to null. `filterKey` is a dependency so a filter change tears down an
+  // in-flight request rather than letting its stale result land — and a `null` set is the only
+  // trigger, so a settled fetch (success or failure) can't loop.
+  useEffect(() => {
+    let cancelled = false;
+    if ((view === 'all' || view === 'resolved') && archive === null) {
+      setArchiveLoading(true);
+      api
+        .listPromotions(filterParams())
+        .then((data) => { if (!cancelled) setArchive(data.candidates || []); })
+        .catch(() => { if (!cancelled) setArchive([]); })
+        .finally(() => { if (!cancelled) setArchiveLoading(false); });
+    }
+    if (view === 'rejected' && rejected === null) {
+      setRejectedLoading(true);
+      api
+        .listPromotions({ status: 'Rejected', ...filterParams() })
+        .then((data) => { if (!cancelled) setRejected(data.candidates || []); })
+        .catch(() => { if (!cancelled) setRejected([]); })
+        .finally(() => { if (!cancelled) setRejectedLoading(false); });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, archive, rejected, filterKey]);
 
   const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
+  const resolved = useMemo(
+    () => (archive ?? []).filter((c) => c.status !== 'Pending'),
+    [archive],
+  );
 
-  // Lazy work-item-progress fetch for Pending rows only. Non-pending rows show "—"
-  // so we never spend an HTTP round-trip on them. We fan out concurrently per
-  // candidate and per work item, capped by the natural Pending bound (small in
-  // practice). A cancellation guard avoids overwriting state when the candidate
-  // list churns mid-flight (e.g. a filter changes).
+  const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
+
+  // The rows the active tab shows, and whether we're still waiting on them.
+  const displayed = useMemo((): PromotionCandidate[] => {
+    switch (view) {
+      case 'mine':
+        return approvablePending;
+      case 'awaiting-deploy':
+        return awaitingDeploy;
+      case 'resolved':
+        return resolved;
+      case 'rejected':
+        return rejected ?? [];
+      case 'all':
+        return archive ?? [];
+      default:
+        return pending;
+    }
+  }, [view, pending, approvablePending, awaitingDeploy, resolved, rejected, archive]);
+
+  const displayedLoading =
+    view === 'awaiting-deploy'
+      ? awaitingDeployLoading
+      : view === 'resolved' || view === 'all'
+        ? archiveLoading || archive === null
+        : view === 'rejected'
+          ? rejectedLoading || rejected === null
+          : loading;
+
+  // Work-item signoff state for the rows on screen. One request per work item per candidate, fanned
+  // out concurrently within a candidate and sequentially across them so a wide tab doesn't open
+  // hundreds of sockets at once. A cancellation guard avoids overwriting state when the list churns
+  // mid-flight (a filter or tab change).
+  const progressTargets = useMemo(
+    () => displayed.slice(0, PROGRESS_CANDIDATE_LIMIT),
+    [displayed],
+  );
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      for (const c of pending) {
+      for (const c of progressTargets) {
         const tickets = (c.sourceEventReferences ?? []).filter(
           (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
         );
         if (tickets.length === 0) {
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: 0, approved: 0, rejected: 0, blocked: 0, loading: false },
+            [c.id]: { total: 0, approved: 0, rejected: 0, blocked: 0, decisions: {}, loading: false },
           }));
           continue;
         }
@@ -158,6 +294,7 @@ export function PromotionsPage() {
             approved: 0,
             rejected: 0,
             blocked: 0,
+            decisions: {},
             loading: true,
           },
         }));
@@ -166,15 +303,18 @@ export function PromotionsPage() {
             tickets.map((t) =>
               api
                 .getWorkItemContext(t.key ?? '', c.product, c.targetEnv)
-                .catch(() => null),
+                .then((ctx) => ({ key: t.key ?? '', ctx }))
+                .catch(() => ({ key: t.key ?? '', ctx: null })),
             ),
           );
           if (cancelled) return;
           let approved = 0;
           let rejected = 0;
           let blocked = 0;
-          for (const ctx of ctxs) {
-            const decision = ctx?.approvals?.[0]?.decision;
+          const decisions: Record<string, WorkItemDecision | null> = {};
+          for (const { key, ctx } of ctxs) {
+            const decision = ctx?.approvals?.[0]?.decision ?? null;
+            decisions[key] = decision;
             if (decision === 'Approved') approved++;
             else if (decision === 'Rejected') rejected++;
             else if (decision === 'Blocked') blocked++;
@@ -186,6 +326,7 @@ export function PromotionsPage() {
               approved,
               rejected,
               blocked,
+              decisions,
               loading: false,
             },
           }));
@@ -193,7 +334,14 @@ export function PromotionsPage() {
           if (cancelled) return;
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: tickets.length, approved: 0, rejected: 0, blocked: 0, loading: false },
+            [c.id]: {
+              total: tickets.length,
+              approved: 0,
+              rejected: 0,
+              blocked: 0,
+              decisions: {},
+              loading: false,
+            },
           }));
         }
       }
@@ -202,7 +350,7 @@ export function PromotionsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending.map((c) => c.id).join(',')]);
+  }, [progressTargets.map((c) => c.id).join(',')]);
 
   // Known target envs from the currently-loaded candidate set, for the dropdown. Keeping the
   // current filter selection in the list even if nothing matches so the user can clear it.
@@ -220,8 +368,6 @@ export function PromotionsPage() {
     return Array.from(set).sort();
   }, [candidates, productFilter]);
 
-  const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
-  const displayedPending = view === 'mine' ? approvablePending : pending;
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
 
@@ -248,14 +394,15 @@ export function PromotionsPage() {
     try {
       await api.bulkApprovePromotions(Array.from(selected));
       setSelected(new Set());
-      fetchData();
-      // Approved rows leave Pending and land in the awaiting-deploy set — refresh it too.
-      fetchAwaitingDeploy();
-    } catch {
-      // silently refresh
-      fetchData();
-      fetchAwaitingDeploy();
     } finally {
+      // Refresh either way: on failure the server may still have approved some of the batch, so
+      // re-reading is the only way to know what actually happened. Approved rows leave Pending and
+      // land in the awaiting-deploy set, and the lazy tabs are now stale — drop them so they
+      // refetch when next opened rather than showing a pre-approval snapshot.
+      fetchData();
+      fetchAwaitingDeploy();
+      setArchive(null);
+      setRejected(null);
       setBulkLoading(false);
     }
   };
@@ -332,12 +479,19 @@ export function PromotionsPage() {
         />
       </div>
 
-      {/* Segmented control: all pending vs. only what the current user can approve. */}
-      <div className="flex items-center gap-2">
+      {/* Tabs over the promotions set. Resolved sits here rather than behind a "show resolved"
+          disclosure at the bottom of the page: it's a slice of the same list, and hiding it below
+          the fold made looking something up feel like an archaeology exercise. Counts are only
+          shown for the eagerly-fetched tabs — a badge on a lazy tab would either lie until you
+          opened it or force the fetch the laziness exists to avoid. */}
+      <div className="flex items-center gap-2 flex-wrap">
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
           { key: 'awaiting-deploy', label: 'Approved · awaiting deploy', count: awaitingDeploy.length, showBadge: true },
+          { key: 'resolved', label: 'Resolved', count: 0, showBadge: false },
+          { key: 'rejected', label: 'Rejected', count: 0, showBadge: false },
+          { key: 'all', label: 'All', count: 0, showBadge: false },
         ] as const).map((tab) => {
           const active = view === tab.key;
           return (
@@ -370,197 +524,74 @@ export function PromotionsPage() {
         })}
       </div>
 
-      {loading && view !== 'awaiting-deploy' ? (
+      {displayedLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="skeleton h-24" />
           ))}
         </div>
+      ) : displayed.length === 0 ? (
+        <EmptyState view={view} />
       ) : (
-        <div className="space-y-6">
-          {view === 'awaiting-deploy' ? (
-            /* Approved but not yet deployed. Browse-only: no bulk-approve, no per-row
-               approve action (already approved) — this is a tracking view. */
-            awaitingDeployLoading ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="skeleton h-24" />
-                ))}
-              </div>
-            ) : awaitingDeploy.length > 0 ? (
-              <div>
-                <h2
-                  className="text-[11px] font-semibold uppercase tracking-wider mb-3"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Approved · awaiting deploy ({awaitingDeploy.length})
-                </h2>
-                <div className="space-y-2">
-                  {awaitingDeploy.map((c) => (
-                    <CandidateCard key={c.id} candidate={c} />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div
-                className="flex flex-col items-center justify-center py-16 rounded-xl border"
-                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-              >
-                <div
-                  className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-                  style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-                >
-                  <Rocket size={24} />
-                </div>
-                <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                  Nothing awaiting deploy
-                </p>
-                <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                  Approved promotions not yet deployed will appear here.
-                </p>
-              </div>
-            )
-          ) : /* Pending list (or "awaiting my approval" when that tab is active) */
-          displayedPending.length > 0 ? (
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
-                     where every row is something you can act on. The default list stays
-                     action-per-row (Review →) without checkbox clutter. */}
-                  {view === 'mine' && approvablePending.length > 0 && (
-                    <input
-                      type="checkbox"
-                      checked={allApprovableSelected}
-                      onChange={toggleSelectAll}
-                      className="rounded"
-                    />
-                  )}
-                  <h2
-                    className="text-[11px] font-semibold uppercase tracking-wider"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({displayedPending.length})
-                  </h2>
-                </div>
-                {view === 'mine' && selected.size > 0 && (
-                  <button
-                    onClick={handleBulkApprove}
-                    disabled={bulkLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                    style={{
-                      backgroundColor: 'var(--success-solid)',
-                      color: '#fff',
-                      opacity: bulkLoading ? 0.6 : 1,
-                    }}
-                  >
-                    <CheckCircle size={12} />
-                    {bulkLoading ? 'Approving...' : `Approve selected (${selected.size})`}
-                  </button>
-                )}
-              </div>
-              <div className="space-y-2">
-                {displayedPending.map((c) => (
-                  <CandidateCard
-                    key={c.id}
-                    candidate={c}
-                    urgent
-                    selectable={view === 'mine' && c.canApprove}
-                    selected={selected.has(c.id)}
-                    onToggleSelect={() => toggleSelect(c.id)}
-                    workItemProgress={workItemProgress[c.id]}
-                    awaitingCue={view !== 'mine'}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : view === 'mine' ? (
-            <div
-              className="flex flex-col items-center justify-center py-16 rounded-xl border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              >
-                <CheckCircle size={24} />
-              </div>
-              <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                Nothing awaiting your approval
-              </p>
-              <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                Promotions you can approve will appear here.
-              </p>
-            </div>
-          ) : (
-            <div
-              className="flex flex-col items-center justify-center py-16 rounded-xl border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              >
-                <GitPullRequest size={24} />
-              </div>
-              <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                No pending promotions
-              </p>
-              <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                Pending promotions awaiting approval will appear here.
-              </p>
-            </div>
-          )}
-
-          {/* Resolved promotions — lazy-loaded only when the user asks. */}
-          {!resolvedShown ? (
-            <button
-              type="button"
-              onClick={loadResolved}
-              className="text-[13px] font-medium transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              Show resolved promotions
-            </button>
-          ) : (
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2
-                  className="text-[11px] font-semibold uppercase tracking-wider"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Resolved ({resolved.length})
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResolvedShown(false);
-                    setResolved([]);
-                  }}
-                  className="text-[12px] font-medium transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Hide resolved
-                </button>
-              </div>
-              {resolvedLoading ? (
-                <div className="space-y-3">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="skeleton h-24" />
-                  ))}
-                </div>
-              ) : resolved.length > 0 ? (
-                <div className="space-y-2">
-                  {resolved.map((c) => (
-                    <CandidateCard key={c.id} candidate={c} compact />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-                  No resolved promotions.
-                </p>
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
+                 where every row is something you can act on. The other lists stay
+                 action-per-row (Review →) without checkbox clutter. */}
+              {view === 'mine' && approvablePending.length > 0 && (
+                <input
+                  type="checkbox"
+                  checked={allApprovableSelected}
+                  onChange={toggleSelectAll}
+                  className="rounded"
+                />
               )}
+              <h2
+                className="text-[11px] font-semibold uppercase tracking-wider"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {VIEW_HEADINGS[view]} ({displayed.length})
+              </h2>
             </div>
+            {view === 'mine' && selected.size > 0 && (
+              <button
+                onClick={handleBulkApprove}
+                disabled={bulkLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{
+                  backgroundColor: 'var(--success-solid)',
+                  color: '#fff',
+                  opacity: bulkLoading ? 0.6 : 1,
+                }}
+              >
+                <CheckCircle size={12} />
+                {bulkLoading ? 'Approving...' : `Approve selected (${selected.size})`}
+              </button>
+            )}
+          </div>
+          <div className="space-y-2">
+            {displayed.map((c) => (
+              <CandidateCard
+                key={c.id}
+                candidate={c}
+                /* The urgency tint only means something where every row is genuinely waiting
+                   on someone. On a mixed list the status badge carries that instead. */
+                urgent={c.status === 'Pending'}
+                selectable={view === 'mine' && c.canApprove}
+                selected={selected.has(c.id)}
+                onToggleSelect={() => toggleSelect(c.id)}
+                workItemProgress={workItemProgress[c.id]}
+                awaitingCue={view !== 'mine'}
+              />
+            ))}
+          </div>
+          {displayed.length > PROGRESS_CANDIDATE_LIMIT && (
+            <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              Work-item sign-off state is loaded for the first {PROGRESS_CANDIDATE_LIMIT} rows;
+              beyond that, work-item chips are shown without their decision colour. Narrow the
+              filters above to see it for a specific product or service.
+            </p>
           )}
         </div>
       )}
@@ -576,7 +607,6 @@ function CandidateCard({
   onToggleSelect,
   workItemProgress,
   awaitingCue,
-  compact,
 }: {
   candidate: PromotionCandidate;
   urgent?: boolean;
@@ -586,9 +616,6 @@ function CandidateCard({
   workItemProgress?: WorkItemProgress;
   /** Show the "Awaiting your approval" cue when the user can act (used in the all-pending view). */
   awaitingCue?: boolean;
-  /** Compact reference row for the resolved (browse-only) list: drops work-item chips,
-     people chips, and signoff progress; keeps service, version/env, status, time, View. */
-  compact?: boolean;
 }) {
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
@@ -658,12 +685,13 @@ function CandidateCard({
             <Clock size={10} />
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
-          {!compact && <WorkItemsBadge candidate={candidate} progress={workItemProgress} />}
+          <WorkItemsBadge candidate={candidate} progress={workItemProgress} />
         </div>
-        {/* Work items — key + optional title. The chip opens the work-item detail page (sign-off,
+        {/* Work items — key + optional title, tinted by their own sign-off state so a stalled bundle
+           shows you *which* item is holding it. The chip opens the work-item detail page (sign-off,
            comments, people); the icon beside it opens the ticket in its tracker. To narrow the list
            to one work item instead, use the reference filter at the top of the page. */}
-        {!compact && (() => {
+        {(() => {
           const tickets = (candidate.sourceEventReferences ?? []).filter(
             (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
           );
@@ -681,6 +709,10 @@ function CandidateCard({
                   revision: ref.revision ?? undefined,
                 });
                 const chipLabel = ref.title ? `${ref.key} — ${ref.title}` : ref.key!;
+                // Undecided (or state not loaded — see PROGRESS_CANDIDATE_LIMIT) keeps the neutral
+                // chip, so a tint always means somebody has actually decided something.
+                const decision = workItemProgress?.decisions[workItemKey] ?? null;
+                const decided = decision ? decisionStyle(decision) : null;
                 return (
                   <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
                     <Link
@@ -688,13 +720,19 @@ function CandidateCard({
                       onClick={(e) => e.stopPropagation()}
                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
                       style={{
-                        backgroundColor: 'var(--bg-secondary)',
-                        color: 'var(--text-secondary)',
+                        backgroundColor: decided?.bg ?? 'var(--bg-secondary)',
+                        color: decided?.color ?? 'var(--text-secondary)',
                         maxWidth: 200,
                       }}
-                      title={ref.title ? `${ref.key} — ${ref.title}` : `Open ${workItemKey} details`}
+                      title={[
+                        ref.title ? `${ref.key} — ${ref.title}` : workItemKey,
+                        decided ? decided.label : 'Not signed off yet',
+                      ].join(' · ')}
                     >
-                      <Ticket size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                      <Ticket
+                        size={10}
+                        style={{ color: decided?.color ?? 'var(--text-muted)', flexShrink: 0 }}
+                      />
                       <span className="font-medium truncate">{chipLabel}</span>
                     </Link>
                     {href && (
@@ -731,7 +769,7 @@ function CandidateCard({
           );
         })()}
         {/* People — reference-level (from work items) + promotion root */}
-        {!compact && (() => {
+        {(() => {
           type Chip = {
             role: string;
             displayName?: string | null;
@@ -847,10 +885,9 @@ function CandidateCard({
 }
 
 /**
- * Inline work-item-progress indicator for the list. The list response surfaces
- * the candidate's own work-item refs (sourceEventReferences) but not approval
- * state, so the parent fetches /work-items/{key}?... lazily for Pending rows
- * only. Non-pending rows render "—" so historical state isn't fetched.
+ * Inline work-item-progress indicator for the list. The list response surfaces the candidate's own
+ * work-item refs (sourceEventReferences) but not approval state, so the parent fetches
+ * /work-items/{key}?... for the rows on screen. Rows past the fetch cap fall back to the bare count.
  */
 function WorkItemsBadge({
   candidate,
@@ -874,7 +911,7 @@ function WorkItemsBadge({
       </span>
     );
   }
-  if (candidate.status !== 'Pending' || !progress) {
+  if (!progress) {
     return (
       <span
         className="inline-flex items-center gap-1"

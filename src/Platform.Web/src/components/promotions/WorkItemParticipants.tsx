@@ -200,6 +200,11 @@ export function WorkItemParticipants({
 /**
  * One "Role — Person" line for the card layout. Read-only when no handlers are supplied, which is
  * how the same component serves both the editable and the view-only case.
+ *
+ * Editing is click-the-person, not a trailing button pair: an "Edit" link plus an "x" beside a
+ * two-line block never sat on a sensible baseline, and the person's name is the obvious affordance
+ * anyway. Removal moves inside the picker, where it reads as one of the things you can do to this
+ * assignment rather than a stray destructive icon a mis-click away from the edit link.
  */
 function ParticipantRow({
   participant,
@@ -220,61 +225,59 @@ function ParticipantRow({
 }) {
   const overridden = participant.isOverride === true;
   const editable = !!onReassign && !!onRemove;
-  return (
-    <div className="flex items-start justify-between gap-2 min-w-0">
-      <div className="min-w-0">
-        <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          {roleDisplay(participant)}
-          {overridden && participant.assignedBy && (
-            <span title={`Overridden by ${participant.assignedBy}`}> · overridden</span>
-          )}
-        </div>
-        <div
-          className="text-[13px] font-medium inline-flex items-center gap-1.5 min-w-0"
-          style={{ color: 'var(--text-primary)' }}
-        >
-          <span className="truncate">
-            {participant.displayName ?? participant.email ?? '—'}
-          </span>
-          <CopyEmailButton email={participant.email ?? null} />
-        </div>
+  const label = participant.displayName ?? participant.email ?? '—';
+
+  const body = (
+    <>
+      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        {roleDisplay(participant)}
+        {overridden && participant.assignedBy && (
+          <span title={`Overridden by ${participant.assignedBy}`}> · overridden</span>
+        )}
       </div>
-      {editable && (
-        <span className="inline-flex items-center gap-1 shrink-0 relative">
-          <button
-            type="button"
-            onClick={onReassign}
-            className="text-[11px] transition-opacity hover:opacity-80"
-            style={{ color: 'var(--accent)' }}
-            disabled={busy}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            onClick={onRemove}
-            className="inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-70"
-            style={{ color: 'var(--danger)', width: 16, height: 16 }}
-            title={
-              overridden
-                ? 'Remove assignment'
-                : 'Hide this participant for this work item'
-            }
-            aria-label={`Remove ${roleDisplay(participant)} ${participant.displayName ?? participant.email ?? ''}`}
-            disabled={busy}
-          >
-            <X size={11} />
-          </button>
-          {editing && onPick && onCancelEdit && (
-            <InlineUserPicker
-              role={participant.role}
-              onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
-              onCancel={onCancelEdit}
-              busy={busy}
-              align="right"
-            />
-          )}
-        </span>
+      <div
+        className="text-[13px] font-medium flex items-center gap-1.5 min-w-0"
+        style={{ color: 'var(--text-primary)' }}
+      >
+        <span className="truncate">{label}</span>
+        {/* Sits outside the clickable region below, so copying an address never opens the picker. */}
+        <CopyEmailButton email={participant.email ?? null} />
+      </div>
+    </>
+  );
+
+  if (!editable) {
+    return <div className="min-w-0">{body}</div>;
+  }
+
+  return (
+    <div className="relative min-w-0">
+      <div
+        role="button"
+        tabIndex={busy ? -1 : 0}
+        onClick={onReassign}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onReassign?.();
+          }
+        }}
+        className="-mx-2 px-2 py-1 rounded-lg cursor-pointer transition-colors hover:bg-[var(--bg-secondary)] min-w-0"
+        style={{ opacity: busy ? 0.6 : 1 }}
+        title={`Reassign or remove the ${roleDisplay(participant)}`}
+        aria-label={`Edit ${roleDisplay(participant)} ${label}`}
+      >
+        {body}
+      </div>
+      {editing && onPick && onCancelEdit && (
+        <InlineUserPicker
+          role={participant.role}
+          onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
+          onCancel={onCancelEdit}
+          onRemove={onRemove}
+          removeLabel={overridden ? 'Remove assignment' : 'Hide for this work item'}
+          busy={busy}
+        />
       )}
     </div>
   );
@@ -368,18 +371,26 @@ function ParticipantChip({
  *   - role = null    → new assignment; the operator types/picks the role too. Suggested roles come
  *                      from /api/promotions/roles via a `<datalist>`.
  *
+ * Pass `onRemove` to offer clearing the slot from inside the popover — the row layout uses this
+ * instead of a separate destructive button beside the person.
+ *
  * Falls back to manual email entry when the directory returns no hits (local-auth dev).
  */
 export function InlineUserPicker({
   role,
   onPick,
   onCancel,
+  onRemove,
+  removeLabel = 'Remove',
   busy,
   align = 'left',
 }: {
   role: string | null;
   onPick: (picked: { role: string; email: string; displayName: string }) => void;
   onCancel: () => void;
+  /** When supplied, the popover offers clearing this assignment. */
+  onRemove?: () => void;
+  removeLabel?: string;
   busy: boolean;
   /** Which edge the popover hangs from — `right` keeps it on screen when the anchor is right-aligned. */
   align?: 'left' | 'right';
@@ -523,7 +534,20 @@ export function InlineUserPicker({
           ))}
         </div>
       )}
-      <div className="mt-2 flex justify-end">
+      <div className="mt-2 flex items-center justify-between gap-2">
+        {onRemove ? (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[12px] font-medium transition-opacity hover:opacity-80"
+            style={{ color: 'var(--danger)' }}
+            disabled={busy}
+          >
+            <X size={11} /> {removeLabel}
+          </button>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
           onClick={onCancel}

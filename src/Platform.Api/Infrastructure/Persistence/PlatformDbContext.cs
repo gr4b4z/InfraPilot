@@ -469,6 +469,8 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.AuthorEmail).HasMaxLength(300).IsRequired();
             e.Property(x => x.AuthorName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Body).HasMaxLength(4000).IsRequired();
+            // Null for human comments; set on the auto-written entries that record a sign-off.
+            e.Property(x => x.Decision).HasMaxLength(20).HasConversion<string>();
             // Lookup: "the thread for FOO-123 in product X / env stage", oldest first.
             e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.CreatedAt });
         });

@@ -238,6 +238,9 @@ public class PromotionService
             candidate.Id, LogSanitizer.Clean(product), LogSanitizer.Clean(service),
             LogSanitizer.Clean(version), candidate.Status);
 
+        // A new build invalidates the "held back" verdicts made against the old one.
+        await ResetHeldWorkItemDecisionsAsync(candidate, payloadWorkItems, ct);
+
         // If born Approved, kick off execution right away — after the initial save so the candidate
         // is visible to queries even if dispatch transiently fails.
         if (candidate.Status == PromotionStatus.Approved)
@@ -322,6 +325,79 @@ public class PromotionService
             _logger.LogInformation(
                 "Superseded {Count} pending candidate(s) in favour of {CandidateId}",
                 stale.Count, fresh.Id);
+    }
+
+    /// <summary>
+    /// Returns the fresh candidate's work items to an undecided state by clearing the Blocked and
+    /// Rejected sign-offs recorded for that <c>(key, product, targetEnv)</c>.
+    ///
+    /// <para>Rationale: a "held back" verdict is a judgement about a specific build. When a new
+    /// version arrives carrying the same ticket, that judgement no longer describes anything — the
+    /// code under review changed — so leaving it in place would stall the new promotion on a stale
+    /// objection nobody is looking at. Approvals are deliberately <i>not</i> cleared: a sign-off is
+    /// defined to carry across builds (see <see cref="Models.WorkItemApproval"/>), and re-asking for
+    /// it on every version would make the gate unusable.</para>
+    ///
+    /// <para>Only reached from the create path, so "new candidate" means a new version by definition:
+    /// a repeat for the same version reuses the existing candidate and never lands here. Each cleared
+    /// ticket gets a system entry in its comment thread so the operator whose block vanished can see
+    /// why, and one audit row records the sweep.</para>
+    /// </summary>
+    private async Task ResetHeldWorkItemDecisionsAsync(
+        PromotionCandidate candidate, IReadOnlyList<ReferenceDto> workItemRefs, CancellationToken ct)
+    {
+        if (workItemRefs.Count == 0) return;
+        var keys = workItemRefs.Select(r => r.Key!).ToList();
+
+        var held = await _db.WorkItemApprovals
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.TargetEnv == candidate.TargetEnv
+                     && a.Decision != PromotionDecision.Approved)
+            .ToListAsync(ct);
+        if (held.Count == 0) return;
+
+        _db.WorkItemApprovals.RemoveRange(held);
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var group in held.GroupBy(a => a.WorkItemKey, StringComparer.OrdinalIgnoreCase))
+        {
+            var cleared = string.Join(", ", group
+                .Select(a => $"{a.Decision} by {a.ApproverName ?? a.ApproverEmail}"));
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = group.Key,
+                Product = candidate.Product,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = WorkItemComment.SystemAuthor,
+                AuthorName = "System",
+                Body =
+                    $"Reset to pending — a new promotion ({candidate.Service} {candidate.Version}) "
+                    + $"carries this work item. Cleared: {cleared}.",
+                CreatedAt = now,
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.decisions.reset",
+            "system", "System", "system",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                reason = "new-version",
+                candidate.Product,
+                candidate.TargetEnv,
+                candidate.Version,
+                workItemKeys = held.Select(a => a.WorkItemKey).Distinct().ToList(),
+            });
+
+        _logger.LogInformation(
+            "Reset {Count} held work-item decision(s) for candidate {CandidateId} ({Product}/{Env} {Version})",
+            held.Count, candidate.Id, LogSanitizer.Clean(candidate.Product),
+            LogSanitizer.Clean(candidate.TargetEnv), LogSanitizer.Clean(candidate.Version));
     }
 
     /// <summary>

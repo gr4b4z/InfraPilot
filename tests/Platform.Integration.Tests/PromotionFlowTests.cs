@@ -128,7 +128,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         string targetEnv,
         string version,
         string product = "acme",
-        string service = "api")
+        string service = "api",
+        object[]? references = null)
     {
         // Source validation now requires a succeeded deploy of this exact version in the source env.
         await _apiKeyClient.PostAsJsonAsync(
@@ -142,6 +143,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             sourceEnv,
             targetEnv,
             version,
+            references = references ?? Array.Empty<object>(),
             participants = new[]
             {
                 new { role = "PR Author", displayName = "Bob Builder", email = "bob@example.com" },
@@ -150,6 +152,80 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     // ── Tests ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A block is a judgement about a specific build. When a new version arrives carrying the same
+    /// work item, that judgement no longer describes anything, so it's cleared and the item goes back
+    /// to undecided — otherwise the new promotion would stall on a stale objection nobody is looking
+    /// at. The operator whose block vanished finds out from a system entry in the comment thread.
+    /// </summary>
+    [Fact]
+    public async Task Create_NewVersion_ResetsHeldWorkItemDecisions()
+    {
+        await SeedPoliciesAsync();
+
+        var workItemRef = new object[]
+        {
+            new { type = "work-item", key = "RESET-1", provider = "azure-devops", title = "Held item" },
+        };
+
+        var first = await CreatePromotionAsync("staging", "prod", "v9.0.0", references: workItemRef);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        // Hold the item back on that build.
+        var block = await _adminClient.PostAsJsonAsync("/api/work-items/RESET-1/blocks",
+            new { product = "acme", targetEnv = "prod" });
+        Assert.Equal(HttpStatusCode.OK, block.StatusCode);
+
+        var beforeCtx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/RESET-1?product=acme&targetEnv=prod");
+        Assert.Single(beforeCtx.GetProperty("approvals").EnumerateArray());
+
+        // A new version carrying the same work item lands.
+        var second = await CreatePromotionAsync("staging", "prod", "v9.1.0", references: workItemRef);
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+
+        var afterCtx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/RESET-1?product=acme&targetEnv=prod");
+        Assert.Empty(afterCtx.GetProperty("approvals").EnumerateArray());
+        Assert.True(afterCtx.GetProperty("canApprove").GetBoolean());
+
+        // The thread carries both the block and the reset that undid it.
+        var thread = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/RESET-1/comments?product=acme&targetEnv=prod");
+        var bodies = thread.GetProperty("comments").EnumerateArray()
+            .Select(c => c.GetProperty("body").GetString() ?? "")
+            .ToList();
+        Assert.Contains(bodies, b => b.Contains("Blocked this work item"));
+        Assert.Contains(bodies, b => b.Contains("Reset to pending") && b.Contains("v9.1.0"));
+    }
+
+    /// <summary>
+    /// The counterpart: an approval is defined to carry across builds, so a new version must leave it
+    /// alone. Re-asking for every sign-off on every version would make the gate unusable.
+    /// </summary>
+    [Fact]
+    public async Task Create_NewVersion_KeepsWorkItemApprovals()
+    {
+        await SeedPoliciesAsync();
+
+        var workItemRef = new object[]
+        {
+            new { type = "work-item", key = "KEEP-1", provider = "azure-devops", title = "Signed item" },
+        };
+
+        await CreatePromotionAsync("staging", "prod", "v8.0.0", references: workItemRef);
+        var approve = await _adminClient.PostAsJsonAsync("/api/work-items/KEEP-1/approvals",
+            new { product = "acme", targetEnv = "prod" });
+        Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
+
+        await CreatePromotionAsync("staging", "prod", "v8.1.0", references: workItemRef);
+
+        var ctx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/KEEP-1?product=acme&targetEnv=prod");
+        Assert.Single(ctx.GetProperty("approvals").EnumerateArray());
+        Assert.Equal("Approved", ctx.GetProperty("myDecision").GetString());
+    }
 
     [Fact]
     public async Task Ingest_DispatchesDeploymentCreatedWebhook()
