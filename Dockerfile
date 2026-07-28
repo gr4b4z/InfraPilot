@@ -8,7 +8,7 @@ RUN dotnet restore src/Platform.Api/Platform.Api.csproj
 COPY . .
 RUN dotnet publish src/Platform.Api/Platform.Api.csproj -c Release -o /app/api /p:UseAppHost=false
 
-FROM node:25-alpine AS web-build
+FROM node:26-alpine AS web-build
 WORKDIR /app
 
 ARG APP_VERSION=dev
