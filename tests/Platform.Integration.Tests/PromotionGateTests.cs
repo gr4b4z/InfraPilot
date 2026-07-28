@@ -96,6 +96,71 @@ public class PromotionGateTests
             Arg.Any<WebhookEventFilters>());
     }
 
+    // ── 1a. WorkItemsOnly_Block_StallsGateWithoutTerminatingCandidate ─────────
+
+    /// <summary>
+    /// A block is the reversible middle ground between silence and a veto: the gate stays unmet (so
+    /// no auto-promotion) but the candidate stays Pending (unlike a rejection, which terminates it).
+    /// Approving afterwards releases the hold and the gate fires as normal.
+    /// </summary>
+    [Fact]
+    public async Task WorkItemsOnly_Block_StallsGateThenApproveReleasesIt()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "approver@example.com";
+        factory.Current.Name = "Approver";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
+            candidateId = c.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.BlockAsync("FOO-1", "acme", "prod", "waiting on test data", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
+            Assert.Null(candidate.ApprovedAt);
+
+            var ticket = await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.ticket.blocked").ToListAsync();
+            Assert.Single(ticket);
+        }
+
+        await factory.WebhookDispatcher.Received().DispatchAsync(
+            "promotion.ticket.blocked",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>());
+
+        // Releasing the hold satisfies the gate.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "prod", "unblocked", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Approved, candidate.Status);
+        }
+    }
+
     // ── 1b. SharedTicket_ApproveOnce_ReevaluatesAllCandidatesCarryingIt ───────
 
     [Fact]

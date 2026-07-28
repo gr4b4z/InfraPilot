@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
@@ -32,6 +33,8 @@ interface WorkItemProgress {
   total: number;
   approved: number;
   rejected: number;
+  /** Held back by a Blocked decision — neither approved nor a veto. */
+  blocked: number;
   loading: boolean;
 }
 
@@ -143,7 +146,7 @@ export function PromotionsPage() {
         if (tickets.length === 0) {
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: 0, approved: 0, rejected: 0, loading: false },
+            [c.id]: { total: 0, approved: 0, rejected: 0, blocked: 0, loading: false },
           }));
           continue;
         }
@@ -154,6 +157,7 @@ export function PromotionsPage() {
             total: tickets.length,
             approved: 0,
             rejected: 0,
+            blocked: 0,
             loading: true,
           },
         }));
@@ -168,10 +172,12 @@ export function PromotionsPage() {
           if (cancelled) return;
           let approved = 0;
           let rejected = 0;
+          let blocked = 0;
           for (const ctx of ctxs) {
             const decision = ctx?.approvals?.[0]?.decision;
             if (decision === 'Approved') approved++;
             else if (decision === 'Rejected') rejected++;
+            else if (decision === 'Blocked') blocked++;
           }
           setWorkItemProgress((prev) => ({
             ...prev,
@@ -179,6 +185,7 @@ export function PromotionsPage() {
               total: tickets.length,
               approved,
               rejected,
+              blocked,
               loading: false,
             },
           }));
@@ -186,7 +193,7 @@ export function PromotionsPage() {
           if (cancelled) return;
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: tickets.length, approved: 0, rejected: 0, loading: false },
+            [c.id]: { total: tickets.length, approved: 0, rejected: 0, blocked: 0, loading: false },
           }));
         }
       }
@@ -390,7 +397,7 @@ export function PromotionsPage() {
                 </h2>
                 <div className="space-y-2">
                   {awaitingDeploy.map((c) => (
-                    <CandidateCard key={c.id} candidate={c} onFilterByReference={setReferenceFilter} />
+                    <CandidateCard key={c.id} candidate={c} />
                   ))}
                 </div>
               </div>
@@ -461,7 +468,6 @@ export function PromotionsPage() {
                     selectable={view === 'mine' && c.canApprove}
                     selected={selected.has(c.id)}
                     onToggleSelect={() => toggleSelect(c.id)}
-                    onFilterByReference={setReferenceFilter}
                     workItemProgress={workItemProgress[c.id]}
                     awaitingCue={view !== 'mine'}
                   />
@@ -546,7 +552,7 @@ export function PromotionsPage() {
               ) : resolved.length > 0 ? (
                 <div className="space-y-2">
                   {resolved.map((c) => (
-                    <CandidateCard key={c.id} candidate={c} compact onFilterByReference={setReferenceFilter} />
+                    <CandidateCard key={c.id} candidate={c} compact />
                   ))}
                 </div>
               ) : (
@@ -568,7 +574,6 @@ function CandidateCard({
   selectable,
   selected,
   onToggleSelect,
-  onFilterByReference,
   workItemProgress,
   awaitingCue,
   compact,
@@ -578,7 +583,6 @@ function CandidateCard({
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
-  onFilterByReference?: (key: string) => void;
   workItemProgress?: WorkItemProgress;
   /** Show the "Awaiting your approval" cue when the user can act (used in the all-pending view). */
   awaitingCue?: boolean;
@@ -656,7 +660,9 @@ function CandidateCard({
           </span>
           {!compact && <WorkItemsBadge candidate={candidate} progress={workItemProgress} />}
         </div>
-        {/* Work items — key + optional title, click-to-filter + external link */}
+        {/* Work items — key + optional title. The chip opens the work-item detail page (sign-off,
+           comments, people); the icon beside it opens the ticket in its tracker. To narrow the list
+           to one work item instead, use the reference filter at the top of the page. */}
         {!compact && (() => {
           const tickets = (candidate.sourceEventReferences ?? []).filter(
             (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
@@ -667,7 +673,7 @@ function CandidateCard({
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
               {visibleTickets.map((ref, i) => {
-                const filterKey = ref.key ?? '';
+                const workItemKey = ref.key ?? '';
                 const href = resolveReferenceHref({
                   type: ref.type,
                   url: ref.url ?? undefined,
@@ -677,24 +683,20 @@ function CandidateCard({
                 const chipLabel = ref.title ? `${ref.key} — ${ref.title}` : ref.key!;
                 return (
                   <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (filterKey && onFilterByReference) onFilterByReference(filterKey);
-                      }}
+                    <Link
+                      to={workItemDetailPath(workItemKey, candidate.product, candidate.targetEnv)}
+                      onClick={(e) => e.stopPropagation()}
                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
                       style={{
                         backgroundColor: 'var(--bg-secondary)',
                         color: 'var(--text-secondary)',
-                        cursor: filterKey ? 'pointer' : 'default',
                         maxWidth: 200,
                       }}
-                      title={ref.title ? `${ref.key} — ${ref.title}` : `Filter by ${filterKey}`}
+                      title={ref.title ? `${ref.key} — ${ref.title}` : `Open ${workItemKey} details`}
                     >
                       <Ticket size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                       <span className="font-medium truncate">{chipLabel}</span>
-                    </button>
+                    </Link>
                     {href && (
                       <a
                         href={href}
@@ -703,7 +705,8 @@ function CandidateCard({
                         onClick={(e) => e.stopPropagation()}
                         style={{ color: 'var(--text-muted)' }}
                         className="transition-opacity hover:opacity-80"
-                        title="Open work item"
+                        title={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
+                        aria-label={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
                       >
                         <ExternalLink size={10} />
                       </a>
@@ -891,17 +894,27 @@ function WorkItemsBadge({
       </span>
     );
   }
+  // Blocked items are called out in the label: without it a stalled bundle looks identical to one
+  // nobody has looked at yet, which is the opposite of the truth.
   const label = progress.approved === 0
-    ? 'Awaiting'
-    : `${progress.approved}/${progress.total} approved`;
+    ? progress.blocked > 0
+      ? `${progress.blocked} blocked`
+      : 'Awaiting'
+    : progress.blocked > 0
+      ? `${progress.approved}/${progress.total} approved · ${progress.blocked} blocked`
+      : `${progress.approved}/${progress.total} approved`;
+  const undecided = progress.total - progress.approved - progress.rejected - progress.blocked;
   return (
     <span
       className="inline-flex items-center gap-1.5"
-      title={
-        progress.rejected > 0
-          ? `${progress.approved} approved, ${progress.rejected} rejected, ${progress.total - progress.approved - progress.rejected} pending`
-          : `${progress.approved} of ${progress.total} approved`
-      }
+      title={[
+        `${progress.approved} approved`,
+        progress.blocked > 0 ? `${progress.blocked} blocked` : null,
+        progress.rejected > 0 ? `${progress.rejected} rejected` : null,
+        `${undecided} pending`,
+      ]
+        .filter(Boolean)
+        .join(', ')}
     >
       <Ticket size={10} />
       {label}
@@ -909,6 +922,7 @@ function WorkItemsBadge({
         approved={progress.approved}
         total={progress.total}
         rejected={progress.rejected}
+        blocked={progress.blocked}
       />
     </span>
   );
@@ -918,13 +932,16 @@ function ProgressBar({
   approved,
   total,
   rejected = 0,
+  blocked = 0,
 }: {
   approved: number;
   total: number;
   rejected?: number;
+  blocked?: number;
 }) {
   if (total === 0) return null;
   const approvedPct = (approved / total) * 100;
+  const blockedPct = (blocked / total) * 100;
   const rejectedPct = (rejected / total) * 100;
   return (
     <span
@@ -940,6 +957,12 @@ function ProgressBar({
         className="inline-block align-top h-full"
         style={{ width: `${approvedPct}%`, backgroundColor: 'var(--success)' }}
       />
+      {blockedPct > 0 && (
+        <span
+          className="inline-block align-top h-full"
+          style={{ width: `${blockedPct}%`, backgroundColor: 'var(--warning)' }}
+        />
+      )}
       {rejectedPct > 0 && (
         <span
           className="inline-block align-top h-full"

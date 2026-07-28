@@ -320,8 +320,13 @@ public class WorkItemApprovalTests
         }
     }
 
+    /// <summary>
+    /// An existing decision by the caller is not a blocker — re-deciding (Approve ↔ Block ↔ Reject)
+    /// is allowed, which is what makes Block usable as a reversible hold. The context surfaces the
+    /// caller's current decision so the UI can offer the states they can move to.
+    /// </summary>
     [Fact]
-    public async Task GetTicketContext_BlockedReasonIsAlreadyDecided_WhenUserHasDecided()
+    public async Task GetTicketContext_SurfacesMyDecisionAndStaysActionable_WhenUserHasDecided()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "me@example.com";
@@ -347,8 +352,291 @@ public class WorkItemApprovalTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ctx = await svc.GetTicketContextAsync("FOO-1", "acme", "prod", default);
-            Assert.False(ctx.CanApprove);
-            Assert.Equal("Already decided", ctx.BlockedReason);
+            Assert.True(ctx.CanApprove);
+            Assert.Null(ctx.BlockedReason);
+            Assert.Equal("Approved", ctx.MyDecision);
+        }
+    }
+
+    // ── Block decision ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A block records the decision and leaves the candidate Pending — that's the whole difference
+    /// from a rejection, which vetoes and terminates it.
+    /// </summary>
+    [Fact]
+    public async Task Block_RecordsRow_AndLeavesCandidatePending()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA User";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, c) = await SeedPolicyEventCandidateAsync(db, "FOO-1",
+                approverGroup: "ReleaseApprovers");
+            candidateId = c.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var row = await svc.BlockAsync("FOO-1", "acme", "prod", "waiting on test data", default);
+            Assert.Equal(PromotionDecision.Blocked, row.Decision);
+            Assert.Null(row.UpdatedAt);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
+        }
+    }
+
+    /// <summary>
+    /// Changing one's mind updates the single row the unique index allows rather than colliding with
+    /// it, stamping UpdatedAt and preserving CreatedAt.
+    /// </summary>
+    [Fact]
+    public async Task Approve_AfterBlock_UpdatesExistingRowInPlace()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA User";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
+        }
+
+        Guid rowId;
+        DateTimeOffset createdAt;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var blocked = await svc.BlockAsync("FOO-1", "acme", "prod", "blocked", default);
+            rowId = blocked.Id;
+
+            // Read CreatedAt back from storage rather than trusting the in-memory value: SQLite
+            // round-trips DateTimeOffset at lower precision, so comparing the two would fail on
+            // sub-tick digits that have nothing to do with the behaviour under test.
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            createdAt = (await db.WorkItemApprovals.AsNoTracking().FirstAsync(a => a.Id == rowId)).CreatedAt;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var approved = await svc.ApproveAsync("FOO-1", "acme", "prod", "unblocked", default);
+            Assert.Equal(rowId, approved.Id);
+            Assert.Equal(PromotionDecision.Approved, approved.Decision);
+            Assert.Equal("unblocked", approved.Comment);
+            Assert.NotNull(approved.UpdatedAt);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // One row per approver, still — and the original creation time survived the update.
+            var rows = await db.WorkItemApprovals.AsNoTracking()
+                .Where(a => a.WorkItemKey == "FOO-1").ToListAsync();
+            Assert.Single(rows);
+            Assert.Equal(createdAt, rows[0].CreatedAt);
+        }
+    }
+
+    [Fact]
+    public async Task Block_Throws_WhenAlreadyBlockedByTheSameUser()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.BlockAsync("FOO-1", "acme", "prod", null, default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                svc.BlockAsync("FOO-1", "acme", "prod", null, default));
+            Assert.Contains("already", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task POST_Blocks_Returns200_AndRecordsBlockedDecision()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "admin@localhost";
+        factory.Current.RolesList = new() { "InfraPortal.Admin", "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
+        }
+
+        var client = factory.CreateAdminClient();
+        var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/blocks",
+            new { product = "acme", targetEnv = "prod", comment = "on hold" });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await Deserialize(response);
+        Assert.Equal("Blocked", body.GetProperty("decision").GetString());
+    }
+
+    // ── Comments ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AddComment_Throws_WhenWorkItemIsUnknown()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using var scope = factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            svc.AddCommentAsync("NOPE-1", "acme", "prod", "hello", default));
+    }
+
+    [Fact]
+    public async Task Comments_RoundTrip_ScopedToKeyProductAndEnv()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA User";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
+        }
+
+        Guid commentId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var created = await svc.AddCommentAsync("FOO-1", "acme", "prod", "  needs a retest  ", default);
+            commentId = created.Id;
+            Assert.Equal("needs a retest", created.Body);
+            Assert.Equal("qa@example.com", created.AuthorEmail);
+            Assert.Null(created.UpdatedAt);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var updated = await svc.UpdateCommentAsync(commentId, "retested, fine", default);
+            Assert.Equal("retested, fine", updated.Body);
+            Assert.NotNull(updated.UpdatedAt);
+
+            var thread = await svc.GetCommentsAsync("FOO-1", "acme", "prod", default);
+            Assert.Single(thread);
+
+            // A different env is a different thread.
+            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "staging", default));
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.DeleteCommentAsync(commentId, default);
+            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "prod", default));
+        }
+    }
+
+    [Fact]
+    public async Task UpdateComment_Throws_WhenNotAuthorOrAdmin()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "author@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
+        }
+
+        Guid commentId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            commentId = (await svc.AddCommentAsync("FOO-1", "acme", "prod", "mine", default)).Id;
+        }
+
+        factory.Current.Email = "someone-else@example.com";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                svc.UpdateCommentAsync(commentId, "hijacked", default));
+        }
+    }
+
+    // ── Detail projection ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetDetail_ReturnsNull_WhenWorkItemIsUnknown()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using var scope = factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+        Assert.Null(await svc.GetDetailAsync("NOPE-1", "acme", "prod", default));
+    }
+
+    /// <summary>
+    /// The detail projection lists every candidate carrying the ticket and picks the newest Pending
+    /// one as primary — that's the candidate participant assignments are written to.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_PicksNewestPendingCandidateAsPrimary_AndListsAll()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid newerId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                service: "api", createdAt: DateTimeOffset.UtcNow.AddHours(-2));
+            var (_, _, newer) = await SeedPolicyEventCandidateAsync(db, "FOO-1",
+                approverGroup: "ReleaseApprovers", service: "web",
+                createdAt: DateTimeOffset.UtcNow);
+            newerId = newer.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal(2, detail!.Candidates.Count);
+            Assert.Equal(newerId, detail.PrimaryCandidateId);
+            Assert.True(detail.CanManage);
+            Assert.Single(detail.Candidates.Where(c => c.IsPrimary));
         }
     }
 
