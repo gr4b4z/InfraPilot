@@ -44,6 +44,7 @@ export function AssigneeFilter({
   onChange,
   assignees,
   roles,
+  hidePerson = false,
 }: {
   value: AssigneeFilterValue;
   onChange: (next: AssigneeFilterValue) => void;
@@ -51,6 +52,12 @@ export function AssigneeFilter({
   assignees: PendingAssignee[];
   /** Canonical assignee-role set from the server. */
   roles: string[];
+  /**
+   * Drop the person select, keeping only the role one. Used on the "Assigned to me" tab, where
+   * the person is fixed by the tab — offering a picker that could contradict it would make the
+   * tab a lie. Role narrowing ("show me only the items where I'm the QA") still applies.
+   */
+  hidePerson?: boolean;
 }) {
   // People to show in the person dropdown, filtered by the currently-selected role.
   // When role is null we dedupe on email and pick the displayName from the row with the
@@ -166,6 +173,7 @@ export function AssigneeFilter({
         </select>
       </label>
 
+      {!hidePerson && (
       <label
         className="inline-flex items-center gap-1.5 text-[12px]"
         style={{ color: 'var(--text-muted)' }}
@@ -195,6 +203,7 @@ export function AssigneeFilter({
           )}
         </select>
       </label>
+      )}
     </div>
   );
 }

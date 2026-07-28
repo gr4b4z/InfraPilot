@@ -41,6 +41,7 @@ import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
+import { refreshMyTasks } from '@/stores/myTasksStore';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
@@ -138,6 +139,8 @@ export function PromotionDetailPage() {
       setActionDone(action === 'approve' ? 'Approved' : 'Rejected');
       setComment('');
       fetchData();
+      // This candidate just left (or is about to leave) the user's awaiting-me list.
+      refreshMyTasks();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
     } finally {

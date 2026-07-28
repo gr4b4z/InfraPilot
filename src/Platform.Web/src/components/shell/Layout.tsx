@@ -4,9 +4,12 @@ import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
 import { useSseEvents } from '@/hooks/useSseEvents';
 import { useConversationStore } from '@/stores/conversationStore';
+import { useMyTasksPolling } from '@/stores/myTasksStore';
 
 export function Layout() {
   useSseEvents();
+  // Feeds the sidebar counters, the topbar bell badge and the My Tasks page from one fetch.
+  useMyTasksPolling();
   const { sidebarOpen, sidebarExpanded } = useConversationStore();
   const chatTakesOver = sidebarOpen && sidebarExpanded;
 
