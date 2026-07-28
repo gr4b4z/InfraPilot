@@ -43,6 +43,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionWorkItem> PromotionWorkItems => Set<PromotionWorkItem>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
+    public DbSet<WorkItemComment> WorkItemComments => Set<WorkItemComment>();
     public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
     public DbSet<RollbackItem> RollbackItems => Set<RollbackItem>();
     public DbSet<RollbackApproval> RollbackApprovals => Set<RollbackApproval>();
@@ -453,6 +454,23 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
             // Lookup: "any decisions in this product+env" — admin queries.
             e.HasIndex(x => new { x.Product, x.TargetEnv });
+        });
+
+        // Work-item comments — the discussion thread on a ticket's sign-off, keyed the same way
+        // as WorkItemApproval so it survives candidate supersession. No FK: there is no single
+        // owning candidate (one ticket can back several).
+        modelBuilder.Entity<WorkItemComment>(e =>
+        {
+            e.ToTable("work_item_comments");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.AuthorEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.AuthorName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Body).HasMaxLength(4000).IsRequired();
+            // Lookup: "the thread for FOO-123 in product X / env stage", oldest first.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.CreatedAt });
         });
 
         // Release Notes

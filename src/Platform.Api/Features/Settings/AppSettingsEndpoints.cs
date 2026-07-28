@@ -21,7 +21,10 @@ public static class AppSettingsEndpoints
             var cleaned = new AppSettingsDto(
                 Environments: (body.Environments ?? [])
                     .Where(e => !string.IsNullOrWhiteSpace(e.Key))
-                    .Select(e => new EnvironmentConfigDto(e.Key.Trim(), (e.DisplayName ?? "").Trim()))
+                    .Select(e => new EnvironmentConfigDto(
+                        e.Key.Trim(),
+                        (e.DisplayName ?? "").Trim(),
+                        AppSettingsService.NormalizeHexColor(e.Color)))
                     .ToList(),
                 Roles: (body.Roles ?? [])
                     .Where(r => !string.IsNullOrWhiteSpace(r.Key))

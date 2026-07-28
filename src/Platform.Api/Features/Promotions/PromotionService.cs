@@ -514,6 +514,67 @@ public class PromotionService
     }
 
     /// <summary>
+    /// Upserts (or, when <paramref name="assignee"/> is null, clears) a participant on a specific
+    /// work-item <b>reference</b> of a candidate — this is what the work-items queue's "Assign"
+    /// action writes to. Candidates are self-contained (there is no deploy event to override), so the
+    /// assignment lives directly on the candidate's <c>References[key].Participants</c>, which is
+    /// exactly what <c>GetWorkItemParticipants</c> reads back. Dedupe is on the normalised role.
+    /// Returns the reference's updated participant list.
+    /// </summary>
+    public async Task<IReadOnlyList<ParticipantDto>> UpsertReferenceParticipantAsync(
+        Guid candidateId, string referenceKey, string role, ParticipantDto? assignee, CancellationToken ct = default)
+    {
+        // Assigning people to work-item references is part of work-item management, which is the QA
+        // role's jurisdiction (Admin included) — not tied to being an approver of the promotion.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Assigning work-item participants requires the QA or Admin role");
+
+        var storedRole = _normalization.CurrentValue.ApplyRole(role);
+        if (string.IsNullOrEmpty(storedRole))
+            throw new InvalidOperationException("Participant role is required");
+        var canonicalKey = RoleNormalizer.Normalize(storedRole);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var refs = candidate.References;
+        var idx = refs.FindIndex(r =>
+            string.Equals(r.Key, referenceKey, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
+        if (idx < 0)
+            throw new KeyNotFoundException(
+                $"Work-item reference '{referenceKey}' not found on candidate {candidateId}");
+
+        var participants = (refs[idx].Participants ?? new List<ParticipantDto>()).ToList();
+        participants.RemoveAll(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        if (assignee is not null)
+            participants.Add(new ParticipantDto(storedRole, assignee.DisplayName, assignee.Email));
+
+        refs[idx] = refs[idx] with { Participants = participants };
+        candidate.References = refs;
+        await _db.SaveChangesAsync(ct);
+
+        var action = assignee is null
+            ? "promotion.reference.participant.removed"
+            : "promotion.reference.participant.upserted";
+        await _audit.Log(
+            "promotions", action,
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { referenceKey, role = storedRole, canonicalKey, assignee?.DisplayName, assignee?.Email });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new
+            {
+                changeType = assignee is null ? "reference.participant.removed" : "reference.participant.upserted",
+                referenceKey,
+                role = storedRole,
+            });
+
+        return participants;
+    }
+
+    /// <summary>
     /// Returns distinct participant roles observed across deploy events and promotion candidates,
     /// ordered by frequency so the UI autocomplete surfaces the most common first.
     /// </summary>
@@ -1142,8 +1203,8 @@ public class PromotionService
     /// Computes the "all work items resolved" gate condition for a candidate, or <c>null</c> when the
     /// policy doesn't gate on work items (neither <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>
     /// nor <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>) or the candidate carries no
-    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and no
-    /// Rejected one.
+    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and
+    /// neither a Rejected nor a Blocked one.
     /// </summary>
     private async Task<WorkItemGateProgress?> GetWorkItemGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
@@ -1170,16 +1231,21 @@ public class PromotionService
             .ToListAsync(ct);
 
         var approved = 0;
+        var blocked = 0;
         foreach (var key in workItemKeys)
         {
             var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
             if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) continue;
+            // A block holds the item back without vetoing: it never counts as approved, and it
+            // takes precedence over any sibling approval so one blocker is enough to stall the gate.
+            if (rows.Any(a => a.Decision == PromotionDecision.Blocked)) { blocked++; continue; }
             if (rows.Any(a => a.Decision == PromotionDecision.Approved)) approved++;
         }
 
         return new WorkItemGateProgress(
             Required: true, Total: workItemKeys.Count, Approved: approved,
-            Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove);
+            Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove,
+            Blocked: blocked);
     }
 
     /// <summary>
@@ -1238,7 +1304,8 @@ public class PromotionService
     /// <summary>
     /// Returns <c>true</c> when every distinct work-item key on the candidate has at least one
     /// <see cref="PromotionDecision.Approved"/> <see cref="WorkItemApproval"/> row and zero
-    /// <see cref="PromotionDecision.Rejected"/> rows. Returns <c>true</c> vacuously when the
+    /// <see cref="PromotionDecision.Rejected"/> / <see cref="PromotionDecision.Blocked"/> rows.
+    /// Returns <c>true</c> vacuously when the
     /// candidate has no work items — callers should guard with <see cref="CandidateHasWorkItemsAsync"/>
     /// first when they want "no work items" to be treated differently.
     /// </summary>
@@ -1262,6 +1329,8 @@ public class PromotionService
         {
             var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
             if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) return false;
+            // One Blocked decision stalls the item regardless of sibling approvals.
+            if (rows.Any(a => a.Decision == PromotionDecision.Blocked)) return false;
             if (!rows.Any(a => a.Decision == PromotionDecision.Approved)) return false;
         }
 
@@ -1623,7 +1692,11 @@ public record ApprovalProgress(
 /// Progress of the "all work items resolved/approved" gate condition for a candidate:
 /// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off.
 /// </summary>
-public record WorkItemGateProgress(bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false);
+public record WorkItemGateProgress(
+    bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false,
+    // Work items held back by a Blocked decision. Counted separately from Approved so the UI can
+    // say "2 of 5 approved, 1 blocked" instead of leaving the shortfall unexplained.
+    int Blocked = 0);
 
 /// <summary>One approval step's progress: satisfied once all its requirements are.</summary>
 public record StepProgress(string Name, bool Satisfied, IReadOnlyList<RequirementProgress> Requirements);

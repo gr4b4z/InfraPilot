@@ -203,4 +203,12 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
 - **Work-item gate**: when `requireAllWorkItemsApproved` is set and the candidate has work items,
   all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
   promotes automatically once every work item is approved, regardless of the human approver tree.
+  A work item counts as resolved only with at least one `Approved` decision and no `Rejected` or
+  `Blocked` one.
+- **Work-item decisions** are `Approved`, `Rejected`, or `Blocked`, one row per approver per
+  `(key, product, targetEnv)`. `Rejected` is a veto — it terminates the candidate. `Blocked` is a
+  reversible hold: the gate stays unmet but the candidate stays Pending, and the same approver can
+  switch to `Approved` later to release it. Re-deciding updates the approver's existing row
+  (stamping `updatedAt`) instead of appending a second one; recording the *same* decision twice is
+  a 400.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).

@@ -1,0 +1,716 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { api } from '@/lib/api';
+import type {
+  PromotionStatus,
+  WorkItemComment,
+  WorkItemDecision,
+  WorkItemDetail,
+} from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { decisionStyle } from '@/lib/workItem';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { format, formatDistanceToNow } from 'date-fns';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Ban,
+  CheckCircle,
+  ExternalLink,
+  GitPullRequest,
+  MessageSquare,
+  Ticket,
+  Users,
+  XCircle,
+  Edit2,
+  Trash2,
+} from 'lucide-react';
+
+/**
+ * Work-item detail page — the one place a work item is managed end to end: sign it off (Approve /
+ * Block / Reject), discuss it, and assign the people responsible for it.
+ *
+ * Identity is the triple `(key, product, targetEnv)` — the grain decisions and comments key on —
+ * with product and target env arriving as query params. Everything renders from a single
+ * `GET /api/work-items/{key}/detail` call; every mutation refetches it, because a decision can
+ * cascade (a rejection terminates the candidate, an approval can auto-promote it) and the page must
+ * show the new truth rather than a guess at it.
+ */
+
+const CANDIDATE_STATUS_COLOR: Record<PromotionStatus, string> = {
+  Pending: 'var(--warning)',
+  Approved: 'var(--info)',
+  Deploying: 'var(--accent)',
+  Deployed: 'var(--success)',
+  Superseded: 'var(--text-muted)',
+  Rejected: 'var(--danger)',
+};
+
+export function WorkItemDetailPage() {
+  const { key: rawKey } = useParams<{ key: string }>();
+  const [searchParams] = useSearchParams();
+  const workItemKey = rawKey ?? '';
+  const product = searchParams.get('product') ?? '';
+  const targetEnv = searchParams.get('targetEnv') ?? '';
+  const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
+
+  const [detail, setDetail] = useState<WorkItemDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!workItemKey || !product || !targetEnv) {
+      setError('This link is missing the product or target environment.');
+      setLoading(false);
+      return;
+    }
+    try {
+      const next = await api.getWorkItemDetail(workItemKey, product, targetEnv);
+      setDetail(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load work item');
+    } finally {
+      setLoading(false);
+    }
+  }, [workItemKey, product, targetEnv]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="skeleton h-64" />
+      </div>
+    );
+  }
+
+  if (!detail) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-2">
+        <XCircle size={24} style={{ color: 'var(--danger)' }} />
+        <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
+          {error ?? 'Work item not found'}
+        </p>
+        <Link to="/me/work-items" className="text-[13px] font-medium" style={{ color: 'var(--accent)' }}>
+          Back to work items
+        </Link>
+      </div>
+    );
+  }
+
+  // First decision wins for the headline state: the API keeps one row per approver and the trail
+  // below shows every one of them, so the summary badge only needs the canonical outcome.
+  const headline = detail.approvals[0] ?? null;
+  const headlineStyle = headline ? decisionStyle(headline.decision) : null;
+  const primary = detail.candidates.find((c) => c.isPrimary) ?? null;
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      <Link
+        to="/me/work-items"
+        className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <ArrowLeft size={14} /> Back to work items
+      </Link>
+
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <Ticket size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+            <h1
+              className="text-xl font-semibold tracking-tight"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              {detail.workItemKey}
+            </h1>
+            {detail.url && (
+              <a
+                href={detail.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="transition-opacity hover:opacity-70"
+                style={{ color: 'var(--text-muted)' }}
+                title={`Open ${detail.workItemKey} in ${detail.provider ?? 'the tracker'}`}
+                aria-label={`Open ${detail.workItemKey} in ${detail.provider ?? 'the tracker'}`}
+              >
+                <ExternalLink size={14} />
+              </a>
+            )}
+          </div>
+          {detail.title && (
+            <p className="text-[14px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+              {detail.title}
+            </p>
+          )}
+          <div
+            className="flex items-center gap-2 flex-wrap mt-2 text-[12px]"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            <span>
+              <span style={{ color: 'var(--text-muted)' }}>Product:</span>{' '}
+              <span className="font-medium">{detail.product}</span>
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <span className="inline-flex items-center gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Target:</span>
+              <EnvBadge env={detail.targetEnv} size="xs" />
+            </span>
+          </div>
+        </div>
+        {headline && headlineStyle && (
+          <span
+            className="badge shrink-0"
+            style={{ backgroundColor: headlineStyle.bg, color: headlineStyle.color }}
+          >
+            <DecisionIcon decision={headline.decision} size={10} />
+            {headlineStyle.label}
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div
+          className="flex items-center gap-3 p-4 rounded-xl border"
+          style={{ backgroundColor: 'var(--danger-bg)', borderColor: 'var(--danger)', color: 'var(--danger)' }}
+        >
+          <XCircle size={18} />
+          <span className="text-[13px] font-medium">{error}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-4">
+          <DecisionCard detail={detail} onChanged={load} onError={setError} />
+          <DecisionTrail detail={detail} />
+          <CommentsCard
+            detail={detail}
+            currentUserEmail={currentUserEmail}
+            onChange={(comments) => setDetail({ ...detail, comments })}
+          />
+        </div>
+
+        <div className="space-y-4">
+          {/* People — assignments write to the primary candidate's copy of this work-item
+             reference, which is where participants actually live. */}
+          <div
+            className="rounded-xl border p-5"
+            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+          >
+            <h2
+              className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <Users size={12} /> People ({detail.participants.length})
+            </h2>
+            <WorkItemParticipants
+              candidateId={detail.primaryCandidateId}
+              referenceKey={detail.workItemKey}
+              participants={detail.participants}
+              onChanged={load}
+              readOnly={!detail.canManage}
+              layout="rows"
+            />
+            {!detail.canManage && detail.participants.length > 0 && (
+              <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Assigning people requires the QA or Admin role.
+              </p>
+            )}
+          </div>
+
+          {/* Promotions carrying this work item */}
+          <div
+            className="rounded-xl border p-5"
+            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+          >
+            <h2
+              className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <GitPullRequest size={12} /> Promotions ({detail.candidates.length})
+            </h2>
+            <div className="space-y-2">
+              {detail.candidates.map((c) => (
+                <Link
+                  key={c.id}
+                  to={`/promotions/${c.id}`}
+                  className="block p-3 rounded-lg border transition-opacity hover:opacity-80"
+                  style={{
+                    borderColor: c.isPrimary ? 'var(--accent)' : 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className="text-[13px] font-medium truncate"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      {c.service}
+                    </span>
+                    <span
+                      className="text-[11px] font-medium shrink-0"
+                      style={{ color: CANDIDATE_STATUS_COLOR[c.status] ?? 'var(--text-muted)' }}
+                    >
+                      {c.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 mt-1.5 text-[11px]">
+                    <EnvBadge env={c.sourceEnv} size="xs" />
+                    <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+                    <EnvBadge env={c.targetEnv} size="xs" />
+                    <span className="font-mono ml-1" style={{ color: 'var(--text-muted)' }}>
+                      {c.version}
+                    </span>
+                  </div>
+                  <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+                  </p>
+                </Link>
+              ))}
+            </div>
+            {primary && detail.candidates.length > 1 && (
+              <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                A sign-off here counts for every promotion above. People are assigned on{' '}
+                <span className="font-medium">{primary.service}</span> (the newest one).
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DecisionIcon({ decision, size }: { decision: WorkItemDecision; size: number }) {
+  if (decision === 'Approved') return <CheckCircle size={size} />;
+  if (decision === 'Blocked') return <Ban size={size} />;
+  return <XCircle size={size} />;
+}
+
+/**
+ * Sign-off controls. Approve / Block / Reject each POST to their own endpoint; the option matching
+ * the user's current decision is hidden (re-recording the same one is a no-op the API rejects), so
+ * what's left are the states they can actually move to.
+ */
+function DecisionCard({
+  detail,
+  onChanged,
+  onError,
+}: {
+  detail: WorkItemDetail;
+  onChanged: () => Promise<void>;
+  onError: (message: string | null) => void;
+}) {
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState<WorkItemDecision | null>(null);
+
+  const decide = async (decision: WorkItemDecision) => {
+    setBusy(decision);
+    onError(null);
+    try {
+      const args = [detail.workItemKey, detail.product, detail.targetEnv, comment || undefined] as const;
+      if (decision === 'Approved') await api.approveWorkItem(...args);
+      else if (decision === 'Blocked') await api.blockWorkItem(...args);
+      else await api.rejectWorkItem(...args);
+      setComment('');
+      await onChanged();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mine = detail.myDecision;
+  const mineStyle = mine ? decisionStyle(mine) : null;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <CheckCircle size={12} /> Sign-off
+      </h2>
+
+      {mine && mineStyle && (
+        <div
+          className="flex items-center gap-2 px-3 py-2 rounded-lg border text-[12px] mb-3"
+          style={{ borderColor: mineStyle.color, backgroundColor: mineStyle.bg, color: mineStyle.color }}
+        >
+          <DecisionIcon decision={mine} size={13} />
+          <span className="font-medium">You {mineStyle.label.toLowerCase()} this work item.</span>
+          {detail.canApprove && (
+            <span style={{ color: 'var(--text-muted)' }}>You can still change it below.</span>
+          )}
+        </div>
+      )}
+
+      {!detail.canApprove ? (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          {detail.blockedReason ?? 'You cannot sign off on this work item.'}
+        </p>
+      ) : (
+        <>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Optional comment — recorded with the decision..."
+            rows={2}
+            className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            {mine !== 'Approved' && (
+              <button
+                onClick={() => decide('Approved')}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--success)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+              >
+                <CheckCircle size={12} />
+                {busy === 'Approved' ? 'Approving…' : 'Approve'}
+              </button>
+            )}
+            {mine !== 'Blocked' && (
+              <button
+                onClick={() => decide('Blocked')}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--warning)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                title="Hold this work item back without rejecting the promotion"
+              >
+                <Ban size={12} />
+                {busy === 'Blocked' ? 'Blocking…' : 'Block'}
+              </button>
+            )}
+            {mine !== 'Rejected' && (
+              <button
+                onClick={() => decide('Rejected')}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--danger)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                title="Veto — rejects the promotion carrying this work item"
+              >
+                <XCircle size={12} />
+                {busy === 'Rejected' ? 'Rejecting…' : 'Reject'}
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] mt-2.5" style={{ color: 'var(--text-muted)' }}>
+            <span className="font-medium">Block</span> holds the item back and leaves the promotion
+            pending — reversible. <span className="font-medium">Reject</span> is a veto: it rejects
+            the promotion outright.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DecisionTrail({ detail }: { detail: WorkItemDetail }) {
+  if (detail.approvals.length === 0) return null;
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        Decision trail ({detail.approvals.length})
+      </h2>
+      <div className="space-y-2">
+        {detail.approvals.map((a) => {
+          const s = decisionStyle(a.decision);
+          return (
+            <div
+              key={a.id}
+              className="flex items-start gap-3 p-3 rounded-lg border"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+            >
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+                style={{ backgroundColor: s.bg, color: s.color }}
+              >
+                <DecisionIcon decision={a.decision} size={14} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className="inline-flex items-center gap-1.5 text-[13px] font-medium min-w-0"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    <span className="truncate">{a.approverName || a.approverEmail}</span>
+                    <CopyEmailButton email={a.approverEmail} />
+                  </span>
+                  <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                    {format(new Date(a.updatedAt ?? a.createdAt), 'MMM d, HH:mm')}
+                    {a.updatedAt && (
+                      <span
+                        className="ml-1"
+                        title={`Originally ${format(new Date(a.createdAt), 'MMM d, HH:mm')}`}
+                      >
+                        (changed)
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="mt-1">
+                  <span className="badge" style={{ backgroundColor: s.bg, color: s.color }}>
+                    {s.label}
+                  </span>
+                </div>
+                {a.comment && (
+                  <p className="text-[12px] mt-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    &ldquo;{a.comment}&rdquo;
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The work item's discussion thread. Separate from the note attached to a decision: comments are
+ * editable by their author (or an admin) and outlive the candidate that was live when they were
+ * written, because they key on (workItemKey, product, targetEnv) like the decisions do.
+ */
+function CommentsCard({
+  detail,
+  currentUserEmail,
+  onChange,
+}: {
+  detail: WorkItemDetail;
+  currentUserEmail: string;
+  onChange: (next: WorkItemComment[]) => void;
+}) {
+  const [body, setBody] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState('');
+
+  const comments = detail.comments;
+  const sorted = useMemo(
+    () =>
+      [...comments].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+    [comments],
+  );
+
+  const post = async () => {
+    const text = body.trim();
+    if (!text) return;
+    setPosting(true);
+    setErr(null);
+    try {
+      const created = await api.addWorkItemComment(
+        detail.workItemKey,
+        detail.product,
+        detail.targetEnv,
+        text,
+      );
+      onChange([...comments, created]);
+      setBody('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to post');
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const saveEdit = async (commentId: string) => {
+    const text = editBody.trim();
+    if (!text) return;
+    try {
+      const updated = await api.updateWorkItemComment(commentId, text);
+      onChange(comments.map((c) => (c.id === commentId ? updated : c)));
+      setEditingId(null);
+      setEditBody('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to update');
+    }
+  };
+
+  const remove = async (commentId: string) => {
+    try {
+      await api.deleteWorkItemComment(commentId);
+      onChange(comments.filter((c) => c.id !== commentId));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to delete');
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <MessageSquare size={12} /> Comments ({sorted.length})
+      </h2>
+
+      <div className="space-y-3 mb-4">
+        {sorted.length === 0 && (
+          <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            No comments yet.
+          </p>
+        )}
+        {sorted.map((c) => {
+          const isMine =
+            !!currentUserEmail && c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
+          const isEditing = editingId === c.id;
+          return (
+            <div
+              key={c.id}
+              className="p-3 rounded-lg border"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span
+                  className="text-[13px] font-medium truncate"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {c.authorName || c.authorEmail}
+                </span>
+                <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {format(new Date(c.createdAt), 'MMM d, HH:mm')}
+                  {c.updatedAt && (
+                    <span
+                      className="ml-1"
+                      title={`Edited ${format(new Date(c.updatedAt), 'MMM d, HH:mm')}`}
+                    >
+                      (edited)
+                    </span>
+                  )}
+                </span>
+              </div>
+              {isEditing ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={editBody}
+                    onChange={(e) => setEditBody(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border px-2 py-1.5 text-[13px] resize-none"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => saveEdit(c.id)}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                      style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingId(null);
+                        setEditBody('');
+                      }}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p
+                    className="text-[13px] whitespace-pre-wrap"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    {c.body}
+                  </p>
+                  {isMine && (
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => {
+                          setEditingId(c.id);
+                          setEditBody(c.body);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] transition-opacity hover:opacity-80"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        <Edit2 size={10} /> Edit
+                      </button>
+                      <button
+                        onClick={() => remove(c.id)}
+                        className="inline-flex items-center gap-1 text-[11px] transition-opacity hover:opacity-80"
+                        style={{ color: 'var(--danger)' }}
+                      >
+                        <Trash2 size={10} /> Delete
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="space-y-2">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="Add a comment..."
+          rows={2}
+          className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {err && (
+          <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+            {err}
+          </p>
+        )}
+        <div className="flex items-center justify-end">
+          <button
+            onClick={post}
+            disabled={posting || !body.trim()}
+            className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+            style={{
+              backgroundColor: 'var(--accent)',
+              color: '#fff',
+              opacity: posting || !body.trim() ? 0.6 : 1,
+            }}
+          >
+            {posting ? 'Posting...' : 'Post'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
