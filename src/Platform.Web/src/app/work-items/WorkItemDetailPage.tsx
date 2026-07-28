@@ -10,6 +10,7 @@ import type {
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { decisionStyle, providerLabel, shortHash } from '@/lib/workItem';
+import { refreshMyTasks } from '@/stores/myTasksStore';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
@@ -490,6 +491,8 @@ function DecisionCard({
       else await api.rejectWorkItem(...args);
       setComment('');
       await onChanged();
+      // A signed-off item drops out of the pending queue the counters and bell badge count.
+      refreshMyTasks();
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Action failed');
     } finally {

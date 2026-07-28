@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PendingAssignee, PendingTicket, WorkItemDecision } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
+import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
 import { roleDisplay } from '@/lib/roleLabel';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
@@ -38,6 +40,10 @@ import {
  * GET /api/work-items/me/pending which returns one row per (work item × candidate)
  * after applying authority filters server-side (approver group, excluded role,
  * already-decided), so client-side rendering is straight-through.
+ *
+ * Three tabs, mirroring the promotions list: the items assigned to you, the whole pending pool
+ * you're authorised to sign off, and your team's decision history. The pick is remembered in a
+ * cookie so coming back lands you where you left off.
  */
 export function MyQueuePage() {
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
@@ -53,9 +59,8 @@ export function MyQueuePage() {
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilterValue>(() => loadAssigneeFilter());
   // Product / service / targetEnv narrowing — applied client-side to the loaded queue.
   const [scopeFilter, setScopeFilter] = useState<ScopeFilterValue>(() => loadScopeFilter());
-  // Status mode — controls whether the queue shows the pending inbox or the user's own
-  // decision history. Persisted via localStorage.
-  const [statusFilter, setStatusFilter] = useState<StatusFilterValue>(() => loadStatusFilter());
+  // Which slice of the queue is on screen. Cookie-persisted (see lib/prefs).
+  const [view, setView] = useState<QueueView>(() => loadQueueView());
   // Time frame — only meaningful on the "decided" view; defaults to last day.
   const [timeFrame, setTimeFrame] = useState<TimeFrameValue>(() => loadTimeFrame());
   // Decider narrowing — only meaningful on the "decided" view. Filters by who clicked
@@ -65,21 +70,24 @@ export function MyQueuePage() {
   // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
   // server when the user picks "Assigned to me".
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
+  // Badge for the "Assigned to me" tab. Comes from the shared My-tasks rollup — the same query
+  // this tab runs — so the number is live on every tab, not just once you've opened this one.
+  const assignedToMeCount = useMyTasksStore((s) => s.workItems.length);
 
   // Defined as an async function so the initial fetch from `useEffect` can be a
   // microtask (avoids the eslint react-hooks/set-state-in-effect rule and the
   // associated cascading-render warning) while still letting decision handlers
   // call `fetchData()` directly to refresh after Approve / Reject.
   const fetchData = async (
+    nextView: QueueView,
     filter: AssigneeFilterValue,
-    status: StatusFilterValue,
     tf: TimeFrameValue,
     decider: DeciderFilterValue,
   ) => {
     setLoading(true);
     setError(null);
     try {
-      const apiArg = toApiArg(filter, currentUserEmail, status, tf, decider);
+      const apiArg = toApiArg(nextView, filter, currentUserEmail, tf, decider);
       const res = await api.getMyPendingWorkItems(apiArg);
       setTickets(res.tickets ?? []);
       setAssignees(res.assignees ?? []);
@@ -92,9 +100,9 @@ export function MyQueuePage() {
   };
 
   useEffect(() => {
-    void fetchData(assigneeFilter, statusFilter, timeFrame, deciderFilter);
+    void fetchData(view, assigneeFilter, timeFrame, deciderFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assigneeFilter, statusFilter, timeFrame, deciderFilter, currentUserEmail]);
+  }, [view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail]);
 
   const handleFilterChange = (next: AssigneeFilterValue) => {
     saveAssigneeFilter(next);
@@ -106,9 +114,9 @@ export function MyQueuePage() {
     setScopeFilter(next);
   };
 
-  const handleStatusChange = (next: StatusFilterValue) => {
-    saveStatusFilter(next);
-    setStatusFilter(next);
+  const handleViewChange = (next: QueueView) => {
+    saveQueueView(next);
+    setView(next);
   };
 
   const handleTimeFrameChange = (next: TimeFrameValue) => {
@@ -137,14 +145,50 @@ export function MyQueuePage() {
           Work items queue
         </h1>
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          Work items awaiting your signoff across all products and environments.
+          {VIEW_SUBTITLES[view]}
         </p>
       </div>
 
+      {/* Tabs over the queue, matching the promotions list. Only "Assigned to me" carries a
+          badge: its count is fetched for the shell anyway, whereas a number on the other two
+          would need a second query per tab just to label a tab nobody has opened. */}
       <div className="flex items-center gap-2 flex-wrap">
-        <StatusFilter value={statusFilter} onChange={handleStatusChange} />
+        {QUEUE_VIEWS.map((key) => {
+          const active = view === key;
+          const count = key === 'mine' ? assignedToMeCount : 0;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => handleViewChange(key)}
+              aria-pressed={active}
+              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
+              style={{
+                borderColor: active ? 'var(--accent)' : 'var(--border-color)',
+                backgroundColor: active ? 'var(--accent-bg)' : 'var(--bg-primary)',
+                color: active ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+            >
+              {VIEW_LABELS[key]}
+              {count > 0 && (
+                <span
+                  className="ml-0.5 px-1.5 rounded-full text-[11px] font-semibold"
+                  style={{
+                    backgroundColor: active ? 'var(--accent)' : 'var(--warning-bg)',
+                    color: active ? '#fff' : 'var(--warning)',
+                  }}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
         {/* Time frame + decider narrowing are only meaningful on the decided view. */}
-        {statusFilter === 'decided' && (
+        {view === 'decided' && (
           <>
             <TimeFrameFilter value={timeFrame} onChange={handleTimeFrameChange} />
             <DeciderFilter
@@ -155,13 +199,15 @@ export function MyQueuePage() {
             />
           </>
         )}
-        {/* Role/assignee narrowing only meaningful for the pending pool — hide for history views. */}
-        {statusFilter === 'pending' && (
+        {/* Role/assignee narrowing only meaningful for the pending pool — hide for history views.
+            On the "Assigned to me" tab the person is the tab, so only the role select shows. */}
+        {view !== 'decided' && (
           <AssigneeFilter
             value={assigneeFilter}
             onChange={handleFilterChange}
             assignees={assignees}
             roles={roles}
+            hidePerson={view === 'mine'}
           />
         )}
         <ScopeFilter
@@ -208,27 +254,44 @@ export function MyQueuePage() {
           <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
               ? 'No work items match the current filters.'
-              : statusFilter === 'decided'
+              : view === 'decided'
                 ? decidedEmptyTitle(deciderFilter)
-                : emptyStateTitle(assigneeFilter)}
+                : view === 'mine'
+                  ? assignedToMeEmptyTitle(assigneeFilter)
+                  : emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
               ? 'Widen the product / service / target-env picks to see more rows.'
-              : statusFilter === 'decided'
+              : view === 'decided'
                 ? 'Try a wider time frame, or switch the decider to "Anyone".'
-                : emptyStateBody(assigneeFilter)}
+                : view === 'mine'
+                  ? 'Switch to "Pending" to see everything you\'re authorised to sign off.'
+                  : emptyStateBody(assigneeFilter)}
           </p>
         </div>
       ) : (
-        <div className="space-y-2">
-          {filteredTickets.map((t) => (
-            <TicketRow
-              key={`${t.workItemKey}-${t.candidateId}-${t.decidedAt ?? 'pending'}-${t.decidedByEmail ?? ''}`}
-              ticket={t}
-              onChanged={() => fetchData(assigneeFilter, statusFilter, timeFrame, deciderFilter)}
-            />
-          ))}
+        <div>
+          <h2
+            className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {VIEW_LABELS[view]} ({filteredTickets.length})
+          </h2>
+          <div className="space-y-2">
+            {filteredTickets.map((t) => (
+              <TicketRow
+                key={`${t.workItemKey}-${t.candidateId}-${t.decidedAt ?? 'pending'}-${t.decidedByEmail ?? ''}`}
+                ticket={t}
+                onChanged={() => {
+                  void fetchData(view, assigneeFilter, timeFrame, deciderFilter);
+                  // Reassigning a work item changes who it's "assigned to", so the shell's
+                  // counters and the bell badge are stale the moment this returns.
+                  refreshMyTasks();
+                }}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -236,22 +299,30 @@ export function MyQueuePage() {
 }
 
 function toApiArg(
+  view: QueueView,
   filter: AssigneeFilterValue,
   currentUserEmail: string,
-  status: StatusFilterValue,
   timeFrame: TimeFrameValue,
   decider: DeciderFilterValue,
 ): { role?: string; assignee?: string; status?: 'pending' | 'decided'; since?: string } | undefined {
   // Decision-history views ignore role/participant narrowing but DO honour the decider filter:
   // `assignee` here means "who decided" (a single email; "Me" → current user). The backend
   // maps this param to WorkItemApproval.ApproverEmail on the decided path.
-  if (status === 'decided') {
+  if (view === 'decided') {
     const since = timeFrameToSince(timeFrame);
     const decidedBy = deciderToEmail(decider, currentUserEmail);
-    return { status, ...(since ? { since } : {}), ...(decidedBy ? { assignee: decidedBy } : {}) };
+    return { status: 'decided', ...(since ? { since } : {}), ...(decidedBy ? { assignee: decidedBy } : {}) };
   }
 
   const role = filter.role ?? undefined;
+  // On the "Assigned to me" tab the person is fixed by the tab and the assignee filter's own
+  // person mode is ignored (its select is hidden there); only the role narrowing carries over.
+  if (view === 'mine') {
+    const assignee = currentUserEmail || undefined;
+    if (!role && !assignee) return undefined;
+    return { role, assignee };
+  }
+
   let assignee: string | undefined;
   switch (filter.mode) {
     case 'all':
@@ -271,58 +342,36 @@ function toApiArg(
   return { role, assignee };
 }
 
-// ── Status filter (pending inbox vs. recent decisions) ───────────────────────────────────
+// ── Queue view (tabs) ────────────────────────────────────────────────────────────────────
+// `mine` and `pending` are both the pending inbox — `mine` pins the assignee to the current
+// user. `decided` is the team's decision history for the same authorised set.
 
-export type StatusFilterValue = 'pending' | 'decided';
+export type QueueView = 'mine' | 'pending' | 'decided';
 
-const STATUS_FILTER_STORAGE_KEY = 'me.queue.statusFilter';
+const QUEUE_VIEWS = ['mine', 'pending', 'decided'] as const;
 
-function loadStatusFilter(): StatusFilterValue {
-  try {
-    const raw = window.localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
-    if (raw === 'decided') return raw;
-  } catch {
-    // Ignore — fall through to default.
-  }
-  return 'pending';
+const VIEW_LABELS: Record<QueueView, string> = {
+  mine: 'Assigned to me',
+  pending: 'Pending',
+  decided: 'Decided',
+};
+
+const VIEW_SUBTITLES: Record<QueueView, string> = {
+  mine: 'Work items assigned to you and awaiting sign-off, across all products and environments.',
+  pending: 'Every work item you can sign off, whoever it is assigned to.',
+  decided: 'Work items already signed off, by you or anyone else in your approver group.',
+};
+
+/**
+ * Loads the persisted tab. Defaults to "Assigned to me" — the slice that's actually the user's
+ * to act on; the full pending pool is one click away and the tab badge shows what's waiting.
+ */
+function loadQueueView(): QueueView {
+  return readEnumPref(WORK_ITEMS_VIEW_PREF, QUEUE_VIEWS, 'mine');
 }
 
-function saveStatusFilter(value: StatusFilterValue): void {
-  try {
-    window.localStorage.setItem(STATUS_FILTER_STORAGE_KEY, value);
-  } catch {
-    // Ignore.
-  }
-}
-
-function StatusFilter({
-  value,
-  onChange,
-}: {
-  value: StatusFilterValue;
-  onChange: (next: StatusFilterValue) => void;
-}) {
-  return (
-    <label
-      className="inline-flex items-center gap-1.5 text-[12px]"
-      style={{ color: 'var(--text-muted)' }}
-    >
-      <span>Show</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as StatusFilterValue)}
-        className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
-        style={{
-          borderColor: 'var(--border-color)',
-          backgroundColor: 'var(--bg-primary)',
-          color: 'var(--text-primary)',
-        }}
-      >
-        <option value="pending">Pending</option>
-        <option value="decided">Decided</option>
-      </select>
-    </label>
-  );
+function saveQueueView(value: QueueView): void {
+  writePref(WORK_ITEMS_VIEW_PREF, value);
 }
 
 // ── Time-frame filter (only meaningful on "decided" view) ────────────────────────────────
@@ -531,6 +580,14 @@ function decidedEmptyTitle(decider: DeciderFilterValue): string {
     default:
       return 'No decisions recorded in this time frame.';
   }
+}
+
+/** Empty state for the "Assigned to me" tab — the person is fixed, so only the role varies. */
+function assignedToMeEmptyTitle(filter: AssigneeFilterValue): string {
+  const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
+  return roleLabel
+    ? `No work items where you're the ${roleLabel}.`
+    : 'Nothing assigned to you right now.';
 }
 
 function emptyStateTitle(filter: AssigneeFilterValue): string {

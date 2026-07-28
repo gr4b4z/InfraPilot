@@ -17,13 +17,22 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
+import { useMyTasksStore } from '@/stores/myTasksStore';
 import { getAppName, getAppSubtitle, getEnvironmentLabel } from '@/lib/runtimeConfig';
+
+/**
+ * Live "assigned to me" counters, resolved at render from the shared My-tasks rollup rather than
+ * baked into {@link navGroups}. Same numbers the topbar bell and the My Tasks page show.
+ */
+type CounterKey = 'promotionsAwaitingMe' | 'workItemsAssignedToMe';
 
 interface NavItem {
   to: string;
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
   badge?: number;
+  /** Live counter to render as the badge. Takes precedence over the static `badge`. */
+  counter?: CounterKey;
   adminOnly?: boolean;
   featureFlag?: string;
 }
@@ -56,8 +65,8 @@ const navGroups: NavGroup[] = [
     label: 'Promotions',
     featureFlag: FeatureFlag.Promotions,
     items: [
-      { to: '/promotions', label: 'Promotions',    icon: GitPullRequest },
-      { to: '/me/work-items', label: 'Work items queue', icon: Inbox     },
+      { to: '/promotions', label: 'Promotions',    icon: GitPullRequest, counter: 'promotionsAwaitingMe' },
+      { to: '/me/work-items', label: 'Work items queue', icon: Inbox,   counter: 'workItemsAssignedToMe' },
     ],
   },
   {
@@ -84,6 +93,9 @@ export function Sidebar() {
   const appSubtitle = getAppSubtitle();
   const isAdmin = user?.isAdmin ?? false;
   const flags = useFeatureFlagsStore((s) => s.flags);
+  const promotionsAwaitingMe = useMyTasksStore((s) => s.promotions.length);
+  const workItemsAssignedToMe = useMyTasksStore((s) => s.workItems.length);
+  const counters: Record<CounterKey, number> = { promotionsAwaitingMe, workItemsAssignedToMe };
 
   const visibleGroups = navGroups
     .filter((g) => {
@@ -182,12 +194,18 @@ export function Sidebar() {
             <div className="space-y-0.5">
               {group.items.map((item) => {
                 const Icon = item.icon;
+                const count = item.counter ? counters[item.counter] : (item.badge ?? 0);
+                // Counter items say what the number means; a bare digit next to "Promotions"
+                // could just as easily be a total.
+                const countTitle = item.counter
+                  ? `${item.label} — ${count} assigned to you`
+                  : item.label;
                 return (
                   <NavLink
                     key={item.to}
                     to={item.to}
                     className={({ isActive }) =>
-                      `group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
+                      `group relative flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
                         collapsed ? 'justify-center' : ''
                       } ${isActive ? '' : 'hover:bg-[var(--accent-muted)]'}`
                     }
@@ -195,18 +213,28 @@ export function Sidebar() {
                       backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
                       color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
                     })}
-                    title={collapsed ? item.label : undefined}
+                    title={collapsed ? countTitle : undefined}
                   >
                     <Icon size={18} className="shrink-0" />
+                    {/* Collapsed rail has no room for the number — keep a dot so a non-zero
+                        count is still visible without expanding. */}
+                    {collapsed && count > 0 && (
+                      <span
+                        aria-hidden
+                        className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+                        style={{ backgroundColor: 'var(--accent)' }}
+                      />
+                    )}
                     {!collapsed && (
                       <>
                         <span className="flex-1">{item.label}</span>
-                        {item.badge !== undefined && item.badge > 0 && (
+                        {count > 0 && (
                           <span
                             className="badge text-white"
                             style={{ backgroundColor: 'var(--accent)' }}
+                            title={countTitle}
                           >
-                            {item.badge}
+                            {count > 99 ? '99+' : count}
                           </span>
                         )}
                       </>
