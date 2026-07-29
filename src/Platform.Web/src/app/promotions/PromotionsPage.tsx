@@ -14,7 +14,6 @@ import { RovingGroup } from '@/components/ui/RovingGroup';
 import { promotionSearchScope } from '@/components/shell/searchScopes';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
-import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { formatDistanceToNow } from 'date-fns';
@@ -794,8 +793,6 @@ function CandidateCard({
                         className="transition-opacity hover:opacity-80"
                         title={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
                         aria-label={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
-                        // First tracker link in the row answers the `o` shortcut.
-                        {...(i === 0 ? { [ROW_ACTION_ATTR]: 'open-external' } : {})}
                       >
                         <ExternalLink size={10} />
                       </a>

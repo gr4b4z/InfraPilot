@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useHotkeys } from '@/hooks/useHotkeys';
-import { activeKeyboardRow } from '@/hooks/keyboardList';
+import { activeKeyboardRow, focusIdleKeyboardList } from '@/hooks/keyboardList';
 import { invokeRowAction, type RowAction } from '@/lib/keys';
 import { useUiStore } from '@/stores/uiStore';
 import { CommandPalette } from './CommandPalette';
@@ -26,9 +26,23 @@ export function KeyboardLayer() {
   const [helpOpen, setHelpOpen] = useState(false);
   const navDrawerOpen = useUiStore((s) => s.navDrawerOpen);
 
-  // An open dialog owns the keyboard — otherwise the palette's accelerators would double as
-  // navigation, and `d` would fire twice.
-  const modalOpen = paletteOpen || quickFindOpen || helpOpen;
+  // Our own dialogs, which we can see in state.
+  const ownModalOpen = paletteOpen || quickFindOpen || helpOpen;
+
+  /**
+   * Any dialog at all, including the ones we don't own — the approve/reject confirmation belongs to
+   * the promotion page, and popovers belong to whichever row opened them. An open dialog has to own
+   * the keyboard completely: without this, `A` inside the approve confirmation would find the
+   * page-level Approve button still sitting behind the overlay and re-open the thing you are already
+   * looking at, and `:` would stack a palette on top of it.
+   *
+   * Read from the DOM at keypress time rather than tracked in state, because there is no way for a
+   * dialog owned by a page to tell this component it exists.
+   */
+  const dialogOpen = () => document.querySelector('[role="dialog"]') !== null;
+
+  /** Wraps a binding so it declines while any dialog is up, leaving the key to the dialog. */
+  const guard = (fn: () => unknown) => () => (dialogOpen() ? false : (fn(), true));
 
   // The focused row first, then the page — see invokeRowAction for why it cascades.
   const act = (action: RowAction) => invokeRowAction(activeKeyboardRow(), action);
@@ -53,21 +67,29 @@ export function KeyboardLayer() {
     {
       // `:` opens the destination menu. The menu owns the second keystroke, so there are no chords
       // here — the accelerators live in CommandPalette alongside the list that documents them.
-      ':': () => setPaletteOpen(true),
-      '/': () => setQuickFindOpen(true),
-      '?': () => setHelpOpen(true),
+      ':': guard(() => setPaletteOpen(true)),
+      '/': guard(() => setQuickFindOpen(true)),
+      '?': guard(() => setHelpOpen(true)),
+      // Not guarded: Escape checks for an open dialog itself, and must stay bound so it can fall
+      // through to "go back" when nothing is open.
       Escape: escape,
+
+      // The arrows belong to whatever region has focus, so these only fire when nothing does — see
+      // focusIdleKeyboardList. Landing on the row is the whole action; the list's own handler takes
+      // the next keystroke, so a second press moves as usual.
+      ArrowDown: focusIdleKeyboardList,
+      ArrowUp: focusIdleKeyboardList,
 
       // Row actions. `a` is assign, `A` approve — distinct bindings, which is why matching is
       // case-sensitive.
-      o: () => act('open-external'),
-      a: () => act('assign'),
-      A: () => act('approve'),
-      R: () => act('reject'),
-      I: () => act('issue'),
-      B: () => act('block'),
+      o: guard(() => act('open-external')),
+      a: guard(() => act('assign')),
+      A: guard(() => act('approve')),
+      R: guard(() => act('reject')),
+      I: guard(() => act('issue')),
+      B: guard(() => act('block')),
     },
-    { enabled: !modalOpen },
+    { enabled: !ownModalOpen },
   );
 
   return (
