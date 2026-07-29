@@ -6,8 +6,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
 import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
 import { roleDisplay } from '@/lib/roleLabel';
-import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -730,11 +730,7 @@ function TicketRow({
               <span className="font-medium">{ticket.product}</span>
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
-            <span className="inline-flex items-center gap-1">
-              <EnvBadge env={ticket.sourceEnv} size="xs" />
-              <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-              <EnvBadge env={ticket.targetEnv} size="xs" />
-            </span>
+            <WorkItemEnvironments environments={ticket.environments ?? []} />
             <span style={{ color: 'var(--text-muted)' }}>·</span>
             <span>
               <span style={{ color: 'var(--text-muted)' }}>Service:</span>{' '}
