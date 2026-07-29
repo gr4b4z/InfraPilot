@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
@@ -25,9 +26,9 @@ namespace Platform.Api.Features.Promotions;
 /// a friendly 400 instead of a DB exception.</para>
 ///
 /// <para>No decision cascades to the promotion. Approve feeds the gate (and can auto-promote);
-/// Block and Reject both simply leave the item unresolved, which stalls the gate without
-/// terminating the candidate. Rejecting used to veto the promotion outright — it no longer does,
-/// so a reject is as reversible as a block.</para>
+/// Issue and Block both simply leave the item unresolved, which stalls the gate without terminating
+/// the candidate, and both are reversible. Vetoing a promotion is a candidate-level action
+/// (<see cref="PromotionService.RejectAsync"/>), never something done to a single ticket.</para>
 /// </summary>
 public class WorkItemApprovalService
 {
@@ -38,6 +39,7 @@ public class WorkItemApprovalService
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly PromotionService _promotion;
     private readonly PromotionAssigneeRoleSettings _assigneeRoles;
+    private readonly ParticipantRoleCatalog _roleCatalog;
     private readonly ILogger<WorkItemApprovalService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -64,6 +66,7 @@ public class WorkItemApprovalService
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
         PromotionAssigneeRoleSettings assigneeRoles,
+        ParticipantRoleCatalog roleCatalog,
         ILogger<WorkItemApprovalService> logger)
     {
         _db = db;
@@ -73,6 +76,7 @@ public class WorkItemApprovalService
         _webhookDispatcher = webhookDispatcher;
         _promotion = promotion;
         _assigneeRoles = assigneeRoles;
+        _roleCatalog = roleCatalog;
         _logger = logger;
     }
 
@@ -82,24 +86,29 @@ public class WorkItemApprovalService
 
     public Task<WorkItemApproval> ApproveAsync(
         string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Approved, ct);
-
-    public Task<WorkItemApproval> RejectAsync(
-        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Rejected, ct);
+        => RecordAsync(workItemKey, product, targetEnv, comment, WorkItemDecision.Approved, ct);
 
     /// <summary>
-    /// Holds the work item back. The candidate stays Pending and the gate treats the item as
-    /// unresolved; the same user can switch to Approved later. Mechanically identical to
-    /// <see cref="RejectAsync"/> — the two differ only in what the operator is saying.
+    /// Flags something wrong with the work item. The candidate stays Pending and the gate treats the
+    /// item as unresolved; the same user can switch to Approved later. Mechanically identical to
+    /// <see cref="BlockAsync"/> — the two differ only in what the reviewer is saying.
+    /// </summary>
+    public Task<WorkItemApproval> RaiseIssueAsync(
+        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, targetEnv, comment, WorkItemDecision.Issue, ct);
+
+    /// <summary>
+    /// Holds the work item back. Says more than <see cref="RaiseIssueAsync"/> and does exactly the
+    /// same: no cascade to the promotion, and reversible. Note this is <i>not</i> a veto — that is
+    /// <see cref="PromotionService.RejectAsync"/>, which terminates a candidate.
     /// </summary>
     public Task<WorkItemApproval> BlockAsync(
         string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Blocked, ct);
+        => RecordAsync(workItemKey, product, targetEnv, comment, WorkItemDecision.Blocked, ct);
 
     /// <summary>
     /// Records a ticket-level decision after authority checks, then drives the candidate side:
-    /// an approval re-evaluates the gate (which may auto-promote), a Block or Reject does nothing
+    /// an approval re-evaluates the gate (which may auto-promote), an Issue or Block does nothing
     /// to the candidate — it just leaves the item unresolved, which stalls the gate.
     ///
     /// <para>A user who already decided may change their mind: the existing row is updated in
@@ -120,7 +129,7 @@ public class WorkItemApprovalService
     /// </summary>
     private async Task<WorkItemApproval> RecordAsync(
         string workItemKey, string product, string targetEnv,
-        string? comment, PromotionDecision decision, CancellationToken ct)
+        string? comment, WorkItemDecision decision, CancellationToken ct)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
@@ -211,11 +220,17 @@ public class WorkItemApprovalService
         // Legacy granular row-level audit kept for backward compatibility with existing callers
         // (dashboards, alerts, integration tests). The new ticket-level audit + webhook events
         // emitted below are the canonical events for downstream consumers.
+        //
+        // Note for anyone reading old rows: "work-item.blocked" used to mean what is now an issue,
+        // and today's block used to be "work-item.rejected". Rows written before the rename keep
+        // their original action names — the decision values in the tables were migrated, the audit
+        // history was not (rewriting an audit trail to say something it didn't say is worse than a
+        // documented discontinuity).
         var legacyAction = decision switch
         {
-            PromotionDecision.Approved => "work-item.approved",
-            PromotionDecision.Blocked => "work-item.blocked",
-            _ => "work-item.rejected",
+            WorkItemDecision.Approved => "work-item.approved",
+            WorkItemDecision.Issue => "work-item.issue-raised",
+            _ => "work-item.blocked",
         };
         await _audit.Log(
             "promotions", legacyAction,
@@ -233,12 +248,12 @@ public class WorkItemApprovalService
             decision, key, prod, env, _currentUser.Email, candidate?.Id);
 
         // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
-        // WorkItemsOnly / WorkItemsAndManual conditions are met). Block and Reject → nothing at all:
+        // WorkItemsOnly / WorkItemsAndManual conditions are met). Issue and Block → nothing at all:
         // neither cascades to the promotion; they simply leave the item unresolved, which is enough
         // to stall the gate until someone approves or the next version resets the decision. (A
         // decision that displaces an earlier approval needs no re-evaluation either: re-evaluation
         // only ever promotes.)
-        if (decision == PromotionDecision.Approved)
+        if (decision == WorkItemDecision.Approved)
         {
             // A ticket approval is shared across every candidate carrying it (WorkItemApproval is
             // keyed by key+product+targetEnv, not by candidate), so re-evaluate ALL pending
@@ -257,13 +272,13 @@ public class WorkItemApprovalService
     /// The comment-thread wording for a decision. The operator's own note is appended verbatim so
     /// the thread reads as one narrative rather than pointing at the decision trail for the detail.
     /// </summary>
-    private static string DescribeDecision(PromotionDecision decision, string? comment)
+    private static string DescribeDecision(WorkItemDecision decision, string? comment)
     {
         var headline = decision switch
         {
-            PromotionDecision.Approved => "Approved this work item.",
-            PromotionDecision.Blocked => "Blocked this work item.",
-            _ => "Rejected this work item.",
+            WorkItemDecision.Approved => "Approved this work item.",
+            WorkItemDecision.Issue => "Raised an issue on this work item.",
+            _ => "Blocked this work item.",
         };
         var note = (comment ?? "").Trim();
         return note.Length == 0 ? headline : $"{headline}\n\n{note}";
@@ -275,15 +290,19 @@ public class WorkItemApprovalService
     /// carries the item and <paramref name="candidateId"/> is null.
     /// </summary>
     private async Task EmitTicketEventsAsync(
-        PromotionDecision decision,
+        WorkItemDecision decision,
         string workItemKey, string product, string targetEnv,
         Guid? candidateId, string? comment, CancellationToken ct)
     {
+        // Subscriber-visible contract. As with the audit actions above, the two non-approval names
+        // shifted meaning in the rename: a subscriber that was matching promotion.ticket.blocked now
+        // receives today's block (the stronger call) and needs promotion.ticket.issue-raised for what
+        // it used to get. Both still mean "not approved, promotion still pending".
         var action = decision switch
         {
-            PromotionDecision.Approved => "promotion.ticket.approved",
-            PromotionDecision.Blocked => "promotion.ticket.blocked",
-            _ => "promotion.ticket.rejected",
+            WorkItemDecision.Approved => "promotion.ticket.approved",
+            WorkItemDecision.Issue => "promotion.ticket.issue-raised",
+            _ => "promotion.ticket.blocked",
         };
 
         // No dedicated ticket entity exists; the audit row attaches to the candidate when one
@@ -439,9 +458,16 @@ public class WorkItemApprovalService
     ///
     /// <para>Returns the rendered ticket list along with the (email, role) → count assignee
     /// summary built from the authorized list <i>before</i> the role/person filter is applied.
-    /// The summary feeds the front-end's role + person dropdowns so the picker only ever
-    /// surfaces choices the user can actually narrow to. Filtering first then collecting would
-    /// hide every alternative — pre-filter is the correct anchor.</para>
+    /// The summary feeds the front-end's person dropdown so the picker only ever surfaces choices
+    /// the user can actually narrow to. Filtering first then collecting would hide every
+    /// alternative — pre-filter is the correct anchor.</para>
+    ///
+    /// <para>The role dropdown is not built from the queue: it lists the configured participant
+    /// roles (<see cref="ParticipantRoleCatalog"/>) so an operator can always ask "which items have
+    /// no <c>qa-owner</c>?" — a question whose answer is precisely the items where that role never
+    /// appears. Alongside it, <see cref="PendingQueueResult.UnknownRoles"/> reports the roles
+    /// actually present on the queue's work items that <i>aren't</i> configured (producers may send
+    /// anything), so those slots stay reachable rather than becoming invisible.</para>
     ///
     /// <para>Person/role narrowing reads <b>the work item's own participants</b> — the people on its
     /// work-item reference, plus the promotion-level fallback — which is exactly the set the row
@@ -470,15 +496,19 @@ public class WorkItemApprovalService
 
         var queueCandidates = pending.Concat(stranded).ToList();
 
-        // Always resolve the canonical assignee-role set — the response surfaces it directly so
-        // the front-end can populate the role dropdown without an extra round trip, even when
-        // the caller didn't pass a filter.
+        // The assignee-role set defines what "assigned to somebody" means when no role filter is
+        // given (see PromotionAssigneeRoleSettings). It is NOT what the role dropdown offers.
         var assigneeRoles = await _assigneeRoles.GetAsync(ct);
         var assigneeRoleSet = new HashSet<string>(assigneeRoles, StringComparer.OrdinalIgnoreCase);
 
+        // The configured participant-role vocabulary — always resolved, since the response surfaces
+        // it as the role dropdown's contents whether or not the caller passed a filter.
+        var configuredRoles = await _roleCatalog.GetCanonicalKeysAsync(ct);
+        var configuredRoleSet = new HashSet<string>(configuredRoles, StringComparer.OrdinalIgnoreCase);
+
         if (queueCandidates.Count == 0)
         {
-            return new PendingQueueResult(new(), new(), assigneeRoles);
+            return new PendingQueueResult(new(), new(), configuredRoles, Array.Empty<string>());
         }
 
         // Filter inputs. `roleFilter` narrows to a single canonicalised role; `assigneeFilter`
@@ -499,6 +529,11 @@ public class WorkItemApprovalService
 
         // Effective role set used for matching — single role when role-filter is active,
         // otherwise the full assignee-role set (the "any role" semantics).
+        //
+        // A role filter is honoured for ANY role, not only those in the assignee-role set: the
+        // question "which items have nobody as qa-owner?" has to be answerable for every configured
+        // role (and for an unrecognised one the queue reports), otherwise picking such a role would
+        // silently match nothing and report every item as unassigned.
         HashSet<string> effectiveRoleSet = roleFilterActive
             ? new HashSet<string>(new[] { canonicalRoleFilter! }, StringComparer.OrdinalIgnoreCase)
             : assigneeRoleSet;
@@ -511,7 +546,7 @@ public class WorkItemApprovalService
             .ToListAsync(ct);
         if (workItems.Count == 0)
         {
-            return new PendingQueueResult(new(), new(), assigneeRoles);
+            return new PendingQueueResult(new(), new(), configuredRoles, Array.Empty<string>());
         }
 
         // Group user's existing decisions: (key, product, env) tuples to skip.
@@ -527,7 +562,7 @@ public class WorkItemApprovalService
         // but which someone already signed off is finished, not stranded. Rows still carried by a
         // Pending candidate keep the existing behaviour (visible until *this* user decides).
         var approvedByAnyone = (await _db.WorkItemApprovals.AsNoTracking()
-                .Where(a => a.Decision == PromotionDecision.Approved)
+                .Where(a => a.Decision == WorkItemDecision.Approved)
                 .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv })
                 .ToListAsync(ct))
             .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
@@ -538,7 +573,7 @@ public class WorkItemApprovalService
         // work-item queue at all, so bail before the remaining lookups.
         if (!(_currentUser.IsQA || _currentUser.IsAdmin))
         {
-            return new PendingQueueResult(new(), new(), assigneeRoles);
+            return new PendingQueueResult(new(), new(), configuredRoles, Array.Empty<string>());
         }
 
         // Where each candidate's version actually landed. Resolved once for the whole queue so the
@@ -575,6 +610,11 @@ public class WorkItemApprovalService
         // displayName is taken from the first non-empty value seen.
         var assigneeAccumulator = new Dictionary<(string Email, string Role), AssigneeAccumulator>();
 
+        // Roles present on the queue's work items that aren't in the configured vocabulary. Ingest
+        // accepts whatever a producer sends, so these exist; collecting them keeps the affected
+        // slots filterable (and tells the UI which chips to flag).
+        var unknownRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         // Pending candidates first, each set newest-first, so the most recent live candidate "owns"
         // the inbox row when the same ticket appears in several — keeps the list deterministic and
         // surfaces the freshest version/promotion to the approver. Dead candidates trail behind and
@@ -610,6 +650,16 @@ public class WorkItemApprovalService
                 var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
                 var ticketAssignees = AssignableParticipants(ticketParticipants, assigneeRoleSet);
 
+                // Unrecognised roles are collected BEFORE narrowing too, for the same reason the
+                // assignee rollup is: the dropdown has to keep offering a choice even while the
+                // filter that would hide it is applied.
+                foreach (var p in ticketParticipants)
+                {
+                    var canon = RoleNormalizer.Normalize(p.Role);
+                    if (canon.Length == 0 || configuredRoleSet.Contains(canon)) continue;
+                    unknownRoles.Add(canon);
+                }
+
                 // Update the assignee summary BEFORE narrowing — computed against the unfiltered
                 // authorized list. Dedupe per (email, role) within the work item.
                 var seenOnItem = new HashSet<(string Email, string Role)>();
@@ -634,9 +684,13 @@ public class WorkItemApprovalService
                 // "unassigned" by definition (legacy data, no participants, all tombstoned).
                 if (assigneeFilterActive || roleFilterActive)
                 {
-                    var inEffectiveRole = ticketAssignees
-                        .Where(p => effectiveRoleSet.Contains(p.Role))
-                        .ToList();
+                    // With a role filter, re-derive the match set from the work item's full
+                    // participant list scoped to that one role — narrowing `ticketAssignees` instead
+                    // would first drop every role outside the assignee-role set, so filtering on any
+                    // other role reported "nobody is assigned" for the whole queue.
+                    var inEffectiveRole = roleFilterActive
+                        ? AssignableParticipants(ticketParticipants, effectiveRoleSet)
+                        : ticketAssignees;
 
                     bool keep;
                     if (assigneeIsUnassigned)
@@ -691,13 +745,17 @@ public class WorkItemApprovalService
             .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return new PendingQueueResult(result, assigneeRows, assigneeRoles);
+        return new PendingQueueResult(
+            result,
+            assigneeRows,
+            configuredRoles,
+            unknownRoles.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList());
     }
 
     /// <summary>
     /// Returns rows representing recent ticket decisions across the platform — both approvals
-    /// and rejections by anyone. Use <paramref name="decision"/> to narrow to Approved or
-    /// Rejected; pass <c>null</c> for both. <paramref name="since"/> caps the query to recent
+    /// and non-approvals by anyone. Use <paramref name="decision"/> to narrow to a single
+    /// decision; pass <c>null</c> for all of them. <paramref name="since"/> caps the query to recent
     /// decisions (recommended — full history is unbounded).
     ///
     /// <para>For each <see cref="WorkItemApproval"/>, picks the most recent candidate that carries
@@ -706,7 +764,7 @@ public class WorkItemApprovalService
     /// are empty — those dropdowns only narrow the pending inbox.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetDecidedAsync(
-        PromotionDecision? decision,
+        WorkItemDecision? decision,
         DateTimeOffset? since,
         string? decidedBy = null,
         CancellationToken ct = default)
@@ -719,7 +777,7 @@ public class WorkItemApprovalService
             .OrderByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
         if (approvals.Count == 0)
-            return new PendingQueueResult(new(), new(), Array.Empty<string>());
+            return new PendingQueueResult(new(), new(), Array.Empty<string>(), Array.Empty<string>());
 
         // Decider rollup — computed BEFORE the decidedBy narrowing (mirrors the pending path's
         // pre-narrow assignee summary) so the front-end "who decided" dropdown never offers a
@@ -754,7 +812,7 @@ public class WorkItemApprovalService
                 .Where(a => string.Equals(a.ApproverEmail, trimmedDecider, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (approvals.Count == 0)
-                return new PendingQueueResult(new(), deciderRows, Array.Empty<string>());
+                return new PendingQueueResult(new(), deciderRows, Array.Empty<string>(), Array.Empty<string>());
         }
 
         // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
@@ -823,7 +881,7 @@ public class WorkItemApprovalService
                 DecisionComment: a.Comment));
         }
 
-        return new PendingQueueResult(result, deciderRows, Array.Empty<string>());
+        return new PendingQueueResult(result, deciderRows, Array.Empty<string>(), Array.Empty<string>());
     }
 
     /// <summary>
@@ -1494,10 +1552,23 @@ public record PendingAssigneeView(
 
 /// <summary>
 /// Composite return for <c>GET /api/work-items/me/pending</c>. Carries the rendered ticket
-/// list plus the unfiltered (email, role) summary and the canonical assignee-role set so
-/// the front-end's role + person dropdowns can be populated without a second call.
+/// list plus everything the front-end's dropdowns need, so they can be populated without a
+/// second call.
 /// </summary>
 public record PendingQueueResult(
     List<PendingTicketView> Tickets,
+    /// <summary>Unfiltered (email, role) rollup — the person dropdown's contents.</summary>
     List<PendingAssigneeView> Assignees,
-    IReadOnlyList<string> Roles);
+    /// <summary>
+    /// The configured participant roles (<see cref="ParticipantRoleCatalog"/>) — the role
+    /// dropdown's contents. Deliberately not derived from the queue: a role with nobody in it
+    /// anywhere is exactly the one an operator wants to filter on.
+    /// </summary>
+    IReadOnlyList<string> Roles,
+    /// <summary>
+    /// Canonical roles found on the queue's work items that are <i>not</i> configured — ingest
+    /// takes producers at their word, so these turn up. Listed separately so the UI can offer them
+    /// as filter choices while flagging them as unrecognised. Empty on the decided view, which has
+    /// no role narrowing.
+    /// </summary>
+    IReadOnlyList<string> UnknownRoles);

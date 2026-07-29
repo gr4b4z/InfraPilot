@@ -30,8 +30,12 @@ public static class WorkItemEndpoints
         //  - assignee=unassigned  → candidates with no participant in the effective role set
         //                           ("unassigned" is case-insensitive).
         // Response carries the rendered tickets plus an `assignees` rollup of (email, role) →
-        // count built from the authorized list <i>before</i> role/person narrowing, plus the
-        // canonical `roles` set — both feed the front-end's dropdowns without a second call.
+        // count built from the authorized list <i>before</i> role/person narrowing, the configured
+        // `roles` vocabulary, and `unknownRoles` (roles seen on these items that aren't configured)
+        // — all three feed the front-end's dropdowns without a second call.
+        //
+        // `role` accepts any role, configured or not. Combined with `assignee=unassigned` it answers
+        // "which items have nobody in this role?", which is the point of a role that may be empty.
         group.MapGet("/me/pending", async (
             WorkItemApprovalService svc,
             string? assignee, string? role, string? status, string? since,
@@ -66,6 +70,7 @@ public static class WorkItemEndpoints
                 tickets = queue.Tickets,
                 assignees = queue.Assignees,
                 roles = queue.Roles,
+                unknownRoles = queue.UnknownRoles,
             });
         });
 
@@ -113,20 +118,24 @@ public static class WorkItemEndpoints
                 decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
         });
 
-        // Record rejection.
-        group.MapPost("/{key}/rejections", async (
+        // Raise an issue — flags a problem on the item without calling it undeliverable.
+        group.MapPost("/{key}/issues", async (
             WorkItemApprovalService svc,
             string key,
             WorkItemDecisionRequest body,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
-            return await RunDecisionAsync(() => svc.RejectAsync(
+            return await RunDecisionAsync(() => svc.RaiseIssueAsync(
                 decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
         });
 
-        // Record a block — holds the item back without vetoing the promotion. Reversible: the same
-        // user may later POST /approvals to release it.
+        // Record a block — holds the item back. Neither this nor /issues vetoes the promotion, and
+        // both are reversible: the same user may later POST /approvals to release the item.
+        //
+        // These two routes replaced /blocks (which meant today's /issues) and /rejections (which
+        // meant today's /blocks). Old paths are gone rather than aliased: an alias would have kept
+        // /blocks working while silently changing which decision it records.
         group.MapPost("/{key}/blocks", async (
             WorkItemApprovalService svc,
             string key,

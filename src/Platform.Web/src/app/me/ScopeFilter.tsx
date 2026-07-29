@@ -4,12 +4,16 @@ import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 /**
- * Picker for narrowing the My-queue list by product / service / target environment.
+ * Picker for narrowing the My-queue list by product / service / environment.
  *
- * Three side-by-side native selects. Pure client-side filtering — the queue endpoint
- * already returns only what the user is authorised to sign off, so we just narrow what's
- * already loaded. Each dropdown is populated from the unfiltered ticket list so the user
- * never sees a zero-result option.
+ * Two environment axes, because a work item sits on two: the promotion edge its sign-off gates
+ * ("Target env") and the environments its change is actually deployed to ("Testable in"). The
+ * second is what "the staging work items" normally means, and it's the one a reviewer can act on.
+ *
+ * Side-by-side native selects. Pure client-side filtering — the queue endpoint already returns
+ * only what the user is authorised to sign off, so we just narrow what's already loaded. Each
+ * dropdown is populated from the unfiltered ticket list so the user never sees a zero-result
+ * option.
  *
  * Independent dropdowns (no hierarchical narrowing): if a (product, service) combination
  * has no tickets, the empty-state in MyQueuePage explains.
@@ -18,12 +22,20 @@ export type ScopeFilterValue = {
   product: string | null;
   service: string | null;
   targetEnv: string | null;
+  /**
+   * An environment the change is actually running in — matched against the row's deployed
+   * environments, not the promotion edge. "The staging work items" usually means these: where the
+   * change can be exercised, which is the question a reviewer is asking. `targetEnv` answers the
+   * different question of which promotion the sign-off gates.
+   */
+  deployedEnv: string | null;
 };
 
 export const SCOPE_FILTER_DEFAULT: ScopeFilterValue = {
   product: null,
   service: null,
   targetEnv: null,
+  deployedEnv: null,
 };
 
 const ANY = '__any__';
@@ -38,14 +50,18 @@ export function ScopeFilter({
   /** Unfiltered queue rows — used to compute the available options. */
   tickets: PendingTicket[];
 }) {
-  const { products, services, targetEnvs } = useMemo(() => {
+  const { products, services, targetEnvs, deployedEnvs } = useMemo(() => {
     const p = new Set<string>();
     const s = new Set<string>();
     const e = new Set<string>();
+    const d = new Set<string>();
     for (const t of tickets) {
       if (t.product) p.add(t.product);
       if (t.service) s.add(t.service);
       if (t.targetEnv) e.add(t.targetEnv);
+      for (const env of t.environments ?? []) {
+        if (env.environment) d.add(env.environment);
+      }
     }
     const sortAlpha = (a: string, b: string) =>
       a.localeCompare(b, undefined, { sensitivity: 'base' });
@@ -53,6 +69,7 @@ export function ScopeFilter({
       products: [...p].sort(sortAlpha),
       services: [...s].sort(sortAlpha),
       targetEnvs: [...e].sort(sortAlpha),
+      deployedEnvs: [...d].sort(sortAlpha),
     };
   }, [tickets]);
 
@@ -61,6 +78,7 @@ export function ScopeFilter({
   };
 
   const envSelectStyle = useEnvControlStyle(value.targetEnv);
+  const deployedEnvSelectStyle = useEnvControlStyle(value.deployedEnv);
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
 
   return (
@@ -128,6 +146,29 @@ export function ScopeFilter({
           ))}
         </select>
       </label>
+
+      {/* Where the change is running, which is the environment a reviewer means when they say
+          "the staging items" — the rows label it "Testable in". Only offered when the queue has
+          deploy data to narrow by. */}
+      {deployedEnvs.length > 0 && (
+        <label
+          className="inline-flex items-center gap-1.5 text-[12px]"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <span>Testable in</span>
+          <select
+            value={value.deployedEnv ?? ANY}
+            onChange={(e) => setField('deployedEnv', e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+            style={deployedEnvSelectStyle}
+          >
+            <option value={ANY}>Any env</option>
+            {deployedEnvs.map((e) => (
+              <option key={e} value={e}>{getDisplayName(e)}</option>
+            ))}
+          </select>
+        </label>
+      )}
     </>
   );
 }
@@ -137,18 +178,27 @@ export function applyScopeFilter(
   tickets: PendingTicket[],
   filter: ScopeFilterValue,
 ): PendingTicket[] {
-  if (!filter.product && !filter.service && !filter.targetEnv) return tickets;
+  if (!hasActiveScope(filter)) return tickets;
   return tickets.filter((t) => {
     if (filter.product && t.product !== filter.product) return false;
     if (filter.service && t.service !== filter.service) return false;
     if (filter.targetEnv && t.targetEnv !== filter.targetEnv) return false;
+    if (
+      filter.deployedEnv
+      && !(t.environments ?? []).some((e) => e.environment === filter.deployedEnv)
+    ) {
+      return false;
+    }
     return true;
   });
 }
 
-/** True when at least one of the three scope dropdowns is narrowing. */
+/** True when at least one of the scope dropdowns is narrowing. */
 export function hasActiveScope(filter: ScopeFilterValue): boolean {
-  return filter.product !== null || filter.service !== null || filter.targetEnv !== null;
+  return filter.product !== null
+    || filter.service !== null
+    || filter.targetEnv !== null
+    || filter.deployedEnv !== null;
 }
 
 // ── localStorage helpers (mirror AssigneeFilter's pattern) ────────────────────────────────
@@ -166,6 +216,8 @@ export function loadScopeFilter(): ScopeFilterValue {
       product: norm(parsed.product),
       service: norm(parsed.service),
       targetEnv: norm(parsed.targetEnv),
+      // Absent in payloads saved before this dropdown existed — reads as "any".
+      deployedEnv: norm(parsed.deployedEnv),
     };
   } catch {
     return SCOPE_FILTER_DEFAULT;

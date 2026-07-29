@@ -38,8 +38,9 @@ import {
 interface WorkItemProgress {
   total: number;
   approved: number;
-  rejected: number;
-  /** Held back by a Blocked decision. Like Rejected, it stalls the gate without vetoing. */
+  /** Carrying an Issue — a flagged problem. Stalls the gate without vetoing the promotion. */
+  issues: number;
+  /** Held back by a Block. Same effect as an issue, stronger statement. */
   blocked: number;
   /** Work-item key → the decision on it, or null when nobody has decided yet. */
   decisions: Record<string, WorkItemDecision | null>;
@@ -294,7 +295,7 @@ export function PromotionsPage() {
         if (tickets.length === 0) {
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: 0, approved: 0, rejected: 0, blocked: 0, decisions: {}, loading: false },
+            [c.id]: { total: 0, approved: 0, issues: 0, blocked: 0, decisions: {}, loading: false },
           }));
           continue;
         }
@@ -304,7 +305,7 @@ export function PromotionsPage() {
           [c.id]: prev[c.id] ?? {
             total: tickets.length,
             approved: 0,
-            rejected: 0,
+            issues: 0,
             blocked: 0,
             decisions: {},
             loading: true,
@@ -321,14 +322,14 @@ export function PromotionsPage() {
           );
           if (cancelled) return;
           let approved = 0;
-          let rejected = 0;
+          let issues = 0;
           let blocked = 0;
           const decisions: Record<string, WorkItemDecision | null> = {};
           for (const { key, ctx } of ctxs) {
             const decision = ctx?.approvals?.[0]?.decision ?? null;
             decisions[key] = decision;
             if (decision === 'Approved') approved++;
-            else if (decision === 'Rejected') rejected++;
+            else if (decision === 'Issue') issues++;
             else if (decision === 'Blocked') blocked++;
           }
           setWorkItemProgress((prev) => ({
@@ -336,7 +337,7 @@ export function PromotionsPage() {
             [c.id]: {
               total: tickets.length,
               approved,
-              rejected,
+              issues,
               blocked,
               decisions,
               loading: false,
@@ -349,7 +350,7 @@ export function PromotionsPage() {
             [c.id]: {
               total: tickets.length,
               approved: 0,
-              rejected: 0,
+              issues: 0,
               blocked: 0,
               decisions: {},
               loading: false,
@@ -950,23 +951,28 @@ function WorkItemsBadge({
       </span>
     );
   }
-  // Blocked items are called out in the label: without it a stalled bundle looks identical to one
-  // nobody has looked at yet, which is the opposite of the truth.
+  // Held-back items are called out in the label: without them a stalled bundle looks identical to
+  // one nobody has looked at yet, which is the opposite of the truth. Blocks lead — they're the
+  // stronger call of the two.
+  const held = [
+    progress.blocked > 0 ? `${progress.blocked} blocked` : null,
+    progress.issues > 0 ? `${progress.issues} issue${progress.issues === 1 ? '' : 's'}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const label = progress.approved === 0
-    ? progress.blocked > 0
-      ? `${progress.blocked} blocked`
-      : 'Awaiting'
-    : progress.blocked > 0
-      ? `${progress.approved}/${progress.total} approved · ${progress.blocked} blocked`
+    ? held || 'Awaiting'
+    : held
+      ? `${progress.approved}/${progress.total} approved · ${held}`
       : `${progress.approved}/${progress.total} approved`;
-  const undecided = progress.total - progress.approved - progress.rejected - progress.blocked;
+  const undecided = progress.total - progress.approved - progress.issues - progress.blocked;
   return (
     <span
       className="inline-flex items-center gap-1.5"
       title={[
         `${progress.approved} approved`,
         progress.blocked > 0 ? `${progress.blocked} blocked` : null,
-        progress.rejected > 0 ? `${progress.rejected} rejected` : null,
+        progress.issues > 0 ? `${progress.issues} with issues` : null,
         `${undecided} pending`,
       ]
         .filter(Boolean)
@@ -977,7 +983,7 @@ function WorkItemsBadge({
       <ProgressBar
         approved={progress.approved}
         total={progress.total}
-        rejected={progress.rejected}
+        issues={progress.issues}
         blocked={progress.blocked}
       />
     </span>
@@ -987,18 +993,18 @@ function WorkItemsBadge({
 function ProgressBar({
   approved,
   total,
-  rejected = 0,
+  issues = 0,
   blocked = 0,
 }: {
   approved: number;
   total: number;
-  rejected?: number;
+  issues?: number;
   blocked?: number;
 }) {
   if (total === 0) return null;
   const approvedPct = (approved / total) * 100;
+  const issuesPct = (issues / total) * 100;
   const blockedPct = (blocked / total) * 100;
-  const rejectedPct = (rejected / total) * 100;
   return (
     <span
       className="inline-block rounded-full overflow-hidden"
@@ -1013,16 +1019,16 @@ function ProgressBar({
         className="inline-block align-top h-full"
         style={{ width: `${approvedPct}%`, backgroundColor: 'var(--success)' }}
       />
+      {issuesPct > 0 && (
+        <span
+          className="inline-block align-top h-full"
+          style={{ width: `${issuesPct}%`, backgroundColor: 'var(--warning)' }}
+        />
+      )}
       {blockedPct > 0 && (
         <span
           className="inline-block align-top h-full"
-          style={{ width: `${blockedPct}%`, backgroundColor: 'var(--warning)' }}
-        />
-      )}
-      {rejectedPct > 0 && (
-        <span
-          className="inline-block align-top h-full"
-          style={{ width: `${rejectedPct}%`, backgroundColor: 'var(--danger)' }}
+          style={{ width: `${blockedPct}%`, backgroundColor: 'var(--danger)' }}
         />
       )}
     </span>

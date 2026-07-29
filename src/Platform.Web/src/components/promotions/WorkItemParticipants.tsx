@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import type { PromotionSourceEventParticipant } from '@/lib/api';
-import { roleDisplay } from '@/lib/roleLabel';
+import { roleDisplay, useConfiguredRoles, useIsUnrecognisedRole } from '@/lib/roleLabel';
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
-import { Plus, Users, X } from 'lucide-react';
+import { AlertTriangle, Plus, Users, X } from 'lucide-react';
 
 /**
  * The people assigned to one work-item reference of a promotion candidate, with assign / reassign /
@@ -14,6 +14,12 @@ import { Plus, Users, X } from 'lucide-react';
  *
  * Shared by the promotion detail page's work-item rows and the work-item detail page so the two
  * surfaces can't drift on what assignment means or which endpoint it hits.
+ *
+ * Roles arrive from ingest exactly as the producer sent them, so a work item can carry one that
+ * isn't in the configured vocabulary (Settings → Participant Roles). Those are flagged wherever
+ * they render and can only be cleared, not reassigned: the server refuses to name a person on an
+ * unconfigured role, and a slot the platform can't label or route on is a data problem to fix at
+ * the source, not a slot to keep filling.
  */
 
 export function WorkItemParticipants({
@@ -39,6 +45,7 @@ export function WorkItemParticipants({
   const [editingRole, setEditingRole] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isUnrecognised = useIsUnrecognisedRole();
 
   const editable = !readOnly && !!candidateId && !!referenceKey;
 
@@ -81,23 +88,36 @@ export function WorkItemParticipants({
     }
     return (
       <div className="mt-1 flex flex-wrap items-center gap-1.5">
-        {participants.map((p, i) => (
-          <span
-            key={`${p.role}-${i}`}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
-            style={{
-              backgroundColor: 'var(--bg-tertiary, var(--bg-primary))',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border-color)',
-            }}
-            title={formatReferenceParticipant(p)}
-          >
-            <Users size={10} style={{ flexShrink: 0 }} />
-            <span>
-              {roleDisplay(p)}: {p.displayName ?? p.email ?? '—'}
+        {participants.map((p, i) => {
+          const unrecognised = isUnrecognised(p.role);
+          return (
+            <span
+              key={`${p.role}-${i}`}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+              style={{
+                backgroundColor: unrecognised
+                  ? 'var(--warning-bg)'
+                  : 'var(--bg-tertiary, var(--bg-primary))',
+                color: unrecognised ? 'var(--warning)' : 'var(--text-secondary)',
+                border: `1px solid ${unrecognised ? 'var(--warning)' : 'var(--border-color)'}`,
+              }}
+              title={
+                unrecognised
+                  ? `${formatReferenceParticipant(p)} — "${p.role}" is not a configured participant role`
+                  : formatReferenceParticipant(p)
+              }
+            >
+              {unrecognised ? (
+                <AlertTriangle size={10} style={{ flexShrink: 0 }} />
+              ) : (
+                <Users size={10} style={{ flexShrink: 0 }} />
+              )}
+              <span>
+                {roleDisplay(p)}: {p.displayName ?? p.email ?? '—'}
+              </span>
             </span>
-          </span>
-        ))}
+          );
+        })}
       </div>
     );
   }
@@ -226,11 +246,21 @@ function ParticipantRow({
   const overridden = participant.isOverride === true;
   const editable = !!onReassign && !!onRemove;
   const label = participant.displayName ?? participant.email ?? '—';
+  const unrecognised = useIsUnrecognisedRole()(participant.role);
 
   const body = (
     <>
-      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+      <div
+        className="text-[11px] inline-flex items-center gap-1"
+        style={{ color: unrecognised ? 'var(--warning)' : 'var(--text-muted)' }}
+      >
+        {unrecognised && (
+          <span title={`"${participant.role}" is not a configured participant role`}>
+            <AlertTriangle size={10} />
+          </span>
+        )}
         {roleDisplay(participant)}
+        {unrecognised && <span> · not configured</span>}
         {overridden && participant.assignedBy && (
           <span title={`Overridden by ${participant.assignedBy}`}> · overridden</span>
         )}
@@ -264,7 +294,11 @@ function ParticipantRow({
         }}
         className="-mx-2 px-2 py-1 rounded-lg cursor-pointer transition-colors hover:bg-[var(--bg-secondary)] min-w-0"
         style={{ opacity: busy ? 0.6 : 1 }}
-        title={`Reassign or remove the ${roleDisplay(participant)}`}
+        title={
+          unrecognised
+            ? `"${participant.role}" is not a configured participant role — this slot can only be removed`
+            : `Reassign or remove the ${roleDisplay(participant)}`
+        }
         aria-label={`Edit ${roleDisplay(participant)} ${label}`}
       >
         {body}
@@ -302,9 +336,13 @@ function ParticipantChip({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const overridden = participant.isOverride === true;
-  const tooltip = overridden && participant.assignedBy
+  const unrecognised = useIsUnrecognisedRole()(participant.role);
+  const baseTooltip = overridden && participant.assignedBy
     ? `${formatReferenceParticipant(participant)} (overridden by ${participant.assignedBy})`
     : formatReferenceParticipant(participant);
+  const tooltip = unrecognised
+    ? `${baseTooltip} — "${participant.role}" is not a configured participant role`
+    : baseTooltip;
 
   return (
     <span className="inline-flex items-center relative">
@@ -313,32 +351,56 @@ function ParticipantChip({
         onClick={() => setMenuOpen((v) => !v)}
         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
         style={{
-          backgroundColor: overridden ? 'var(--accent-bg)' : 'var(--bg-tertiary, var(--bg-primary))',
-          color: overridden ? 'var(--accent)' : 'var(--text-secondary)',
-          border: '1px solid var(--border-color)',
+          backgroundColor: unrecognised
+            ? 'var(--warning-bg)'
+            : overridden
+              ? 'var(--accent-bg)'
+              : 'var(--bg-tertiary, var(--bg-primary))',
+          color: unrecognised
+            ? 'var(--warning)'
+            : overridden
+              ? 'var(--accent)'
+              : 'var(--text-secondary)',
+          border: `1px solid ${unrecognised ? 'var(--warning)' : 'var(--border-color)'}`,
         }}
         title={tooltip}
         disabled={busy}
       >
-        <Users size={10} style={{ flexShrink: 0 }} />
+        {unrecognised ? (
+          <AlertTriangle size={10} style={{ flexShrink: 0 }} />
+        ) : (
+          <Users size={10} style={{ flexShrink: 0 }} />
+        )}
         <span>
           {roleDisplay(participant)}: {participant.displayName ?? participant.email ?? '—'}
         </span>
-        {overridden && <span style={{ color: 'var(--accent)' }}>•</span>}
+        {overridden && !unrecognised && <span style={{ color: 'var(--accent)' }}>•</span>}
       </button>
       {menuOpen && !editing && (
         <div
           className="absolute z-10 mt-1 top-full left-0 rounded-lg border shadow-lg"
           style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
         >
-          <button
-            type="button"
-            onClick={() => { setMenuOpen(false); onReassign(); }}
-            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            Reassign…
-          </button>
+          {/* Reassigning an unconfigured role is refused server-side, so the menu says why instead
+              of offering a control that can only fail. Clearing stays available — that's the fix. */}
+          {unrecognised ? (
+            <p
+              className="px-3 py-1.5 text-[11px] max-w-[15rem]"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <span style={{ color: 'var(--warning)' }}>“{participant.role}” isn't a configured role.</span>{' '}
+              Add it under Settings → Participant Roles to assign people to it.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setMenuOpen(false); onReassign(); }}
+              className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              Reassign…
+            </button>
+          )}
           <button
             type="button"
             onClick={() => { setMenuOpen(false); onClear(); }}
@@ -367,9 +429,13 @@ function ParticipantChip({
  * itself stays narrow.
  *
  * Two modes via the `role` prop:
- *   - role = string  → reassigning a known role; only the person is selected.
- *   - role = null    → new assignment; the operator types/picks the role too. Suggested roles come
- *                      from /api/promotions/roles via a `<datalist>`.
+ *   - role = string  → reassigning that role; only the person is selected. When the role isn't in
+ *                      the configured vocabulary the popover explains and offers no assignment —
+ *                      the server refuses it, and a role nothing can label or filter on isn't a
+ *                      slot to keep filling.
+ *   - role = null    → new assignment; the operator picks the role from the configured list. A
+ *                      free-text role would let one typo create a permanently unroutable slot, so
+ *                      the vocabulary is the whole menu.
  *
  * Pass `onRemove` to offer clearing the slot from inside the popover — the row layout uses this
  * instead of a separate destructive button beside the person.
@@ -397,26 +463,18 @@ export function InlineUserPicker({
 }) {
   const roleEditable = role === null;
   const [roleInput, setRoleInput] = useState('');
-  const [knownRoles, setKnownRoles] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
   const [searching, setSearching] = useState(false);
-  const datalistId = useMemo(() => `assign-roles-${Math.random().toString(36).slice(2, 8)}`, []);
-
-  // Pre-fetch role suggestions when in role-editable mode.
-  useEffect(() => {
-    if (!roleEditable) return;
-    let cancelled = false;
-    api
-      .listPromotionRoles()
-      .then((d) => { if (!cancelled) setKnownRoles(d.roles || []); })
-      .catch(() => { if (!cancelled) setKnownRoles([]); });
-    return () => { cancelled = true; };
-  }, [roleEditable]);
+  // The assignable vocabulary — the same list the server validates against, so the popover can't
+  // offer a role the write would reject.
+  const configuredRoles = useConfiguredRoles();
+  const isUnrecognised = useIsUnrecognisedRole();
+  const lockedRoleUnrecognised = !roleEditable && isUnrecognised(role);
 
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 2) { setResults([]); return; }
+    if (q.length < 2 || lockedRoleUnrecognised) { setResults([]); return; }
     let cancelled = false;
     setSearching(true);
     const timer = setTimeout(async () => {
@@ -430,11 +488,11 @@ export function InlineUserPicker({
       }
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [query]);
+  }, [query, lockedRoleUnrecognised]);
 
-  // Resolve the role to send: either the locked prop or whatever the operator typed.
+  // Resolve the role to send: either the locked prop or the one picked from the list.
   const effectiveRole = (role ?? roleInput).trim();
-  const canSubmit = effectiveRole.length > 0;
+  const canSubmit = effectiveRole.length > 0 && !lockedRoleUnrecognised;
 
   const submitWithUser = (u: { email: string; displayName: string }) => {
     if (!canSubmit) return;
@@ -457,44 +515,66 @@ export function InlineUserPicker({
         {roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`}
       </div>
       {roleEditable && (
-        <>
-          <input
-            autoFocus
-            list={datalistId}
-            value={roleInput}
-            onChange={(e) => setRoleInput(e.target.value)}
-            placeholder="Role (e.g. QA, reviewer)"
-            className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none mb-1.5"
-            style={{
-              borderColor: 'var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-            }}
-            disabled={busy}
-            onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
-          />
-          <datalist id={datalistId}>
-            {knownRoles.map((r) => (
-              <option key={r} value={roleDisplay({ role: r })} />
-            ))}
-          </datalist>
-        </>
+        <select
+          autoFocus
+          value={roleInput}
+          onChange={(e) => setRoleInput(e.target.value)}
+          className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none mb-1.5"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+          disabled={busy || configuredRoles.length === 0}
+          onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
+        >
+          <option value="">
+            {configuredRoles.length === 0 ? 'No roles configured' : 'Pick a role…'}
+          </option>
+          {configuredRoles.map((r) => (
+            <option key={r.key} value={r.key}>
+              {r.displayName}
+            </option>
+          ))}
+        </select>
       )}
-      <input
-        autoFocus={!roleEditable}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search directory (name or email)..."
-        className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none"
-        style={{
-          borderColor: 'var(--border-color)',
-          backgroundColor: 'var(--bg-secondary)',
-          color: 'var(--text-primary)',
-        }}
-        disabled={busy}
-        onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
-      />
-      {query.trim().length >= 2 && (
+      {roleEditable && configuredRoles.length === 0 && (
+        <p className="text-[11px] px-1 mb-1.5" style={{ color: 'var(--warning)' }}>
+          Add participant roles under Settings → Participant Roles before assigning anyone.
+        </p>
+      )}
+      {/* Locked onto a role nobody configured: the write would be refused, so the popover offers
+          the explanation (and the Remove button, when the caller supplied one) instead of a search
+          box that leads nowhere. */}
+      {lockedRoleUnrecognised && (
+        <p
+          className="text-[11px] px-1 flex items-start gap-1"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <AlertTriangle size={11} style={{ color: 'var(--warning)', flexShrink: 0, marginTop: 1 }} />
+          <span>
+            <span style={{ color: 'var(--warning)' }}>“{role}” isn't a configured participant role.</span>{' '}
+            Add it under Settings → Participant Roles to assign someone, or clear the slot.
+          </span>
+        </p>
+      )}
+      {!lockedRoleUnrecognised && (
+        <input
+          autoFocus={!roleEditable}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search directory (name or email)..."
+          className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+          disabled={busy}
+          onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
+        />
+      )}
+      {!lockedRoleUnrecognised && query.trim().length >= 2 && (
         <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
           {searching && (
             <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
