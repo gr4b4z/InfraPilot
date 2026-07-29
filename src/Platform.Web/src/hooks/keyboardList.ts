@@ -21,6 +21,12 @@ export const KeyboardListContext = createContext<KeyboardListContextValue | null
 /** Marks a row element so the shortcut layer can find the focused row and its actions. */
 export const KEYBOARD_ROW_ATTR = 'data-kbd-row';
 
+/**
+ * Marks a list container, so a list that runs out of rows can hand off to the next one on the page.
+ * Matched in document order, which is the order the reader sees regardless of the React tree.
+ */
+export const KEYBOARD_LIST_ATTR = 'data-kbd-list';
+
 /** Selector for any keyboard-list row. */
 export const KEYBOARD_ROW_SELECTOR = `[${KEYBOARD_ROW_ATTR}]`;
 
