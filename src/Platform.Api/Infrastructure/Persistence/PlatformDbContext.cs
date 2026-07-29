@@ -32,6 +32,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
+    public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
     public DbSet<ReferenceParticipantOverride> ReferenceParticipantOverrides => Set<ReferenceParticipantOverride>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
@@ -215,12 +216,14 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
             var enrichmentJson = e.Property(x => x.EnrichmentJson);
             var metadataJson = e.Property(x => x.MetadataJson).HasDefaultValue("{}");
+            var runJson = e.Property(x => x.RunJson);
             if (jsonType != null)
             {
                 referencesJson.HasColumnType(jsonType);
                 participantsJson.HasColumnType(jsonType);
                 enrichmentJson.HasColumnType(jsonType);
                 metadataJson.HasColumnType(jsonType);
+                runJson.HasColumnType(jsonType);
             }
             e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.DeployedAt })
                 .IsDescending(false, false, false, true);
@@ -231,6 +234,28 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Ignore(x => x.Participants);
             e.Ignore(x => x.Enrichment);
             e.Ignore(x => x.Metadata);
+            e.Ignore(x => x.Run);
+        });
+
+        // Captured pipeline output, one row per block. Deliberately a separate table: the list and
+        // history queries materialise whole DeployEvent rows, and a Helm printout is large enough
+        // that carrying it on the event would tax every one of them.
+        modelBuilder.Entity<DeployEventLog>(e =>
+        {
+            e.ToTable("deploy_event_logs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(50);
+            // No length cap: this is a log, and the ingest path caps it by byte count instead.
+            e.Property(x => x.Content).IsRequired();
+            e.Property(x => x.Truncated).HasDefaultValue(false);
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Unique per (event, name) so a retrying sender replaces its block instead of appending.
+            e.HasIndex(x => new { x.DeployEventId, x.Name }).IsUnique();
+            e.HasIndex(x => x.DeployEventId);
         });
 
         modelBuilder.Entity<DeployEventWorkItem>(e =>

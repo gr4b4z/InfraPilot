@@ -134,6 +134,8 @@ export interface EnvironmentSummary {
 }
 
 export interface DeploymentStateEntry {
+  /** The deploy event behind this entry — the key for linking to its detail page. */
+  id: string;
   product: string;
   service: string;
   environment: string;
@@ -146,11 +148,33 @@ export interface DeploymentStateEntry {
   references: DeployReference[];
   participants: DeployParticipant[];
   enrichment: DeployEnrichment | null;
+  run?: DeployRun | null;
 }
 
 export interface DeployEvent extends DeploymentStateEntry {
-  id: string;
   metadata: Record<string, unknown>;
+}
+
+/**
+ * The CI run that performed the deployment. Distinct from the `pipeline` reference, which points at
+ * the run that *built* the artifact — a component is built once and deployed many times, so only
+ * this can explain a particular deployment's outcome. `failureReason` is the one line the pipeline
+ * itself named as the cause, so the UI never has to guess which log line matters.
+ */
+export interface DeployRun {
+  provider?: string | null;
+  runId?: string | null;
+  runNumber?: string | null;
+  attempt?: number | null;
+  workflowName?: string | null;
+  jobName?: string | null;
+  runUrl?: string | null;
+  /** Deep link to this component's job inside the run; falls back to `runUrl` when unresolved. */
+  jobUrl?: string | null;
+  triggeredBy?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  failureReason?: string | null;
 }
 
 export interface DeployReference {
@@ -187,6 +211,76 @@ export function collectParticipants(evt: DeploymentStateEntry): DeployParticipan
     ...evt.participants,
     ...(evt.enrichment?.participants ?? []),
   ];
+}
+
+// Deployment detail types
+
+/** A block of captured pipeline output, without its text — fetched separately, on expand. */
+export interface DeployLogSummary {
+  id: string;
+  name: string;
+  source?: string | null;
+  sequence: number;
+  byteCount: number;
+  lineCount: number;
+  /** True when only the tail was kept, either by the producer or by the ingest cap. */
+  truncated: boolean;
+  createdAt: string;
+}
+
+export interface DeployLogContent {
+  id: string;
+  name: string;
+  source?: string | null;
+  content: string;
+  truncated: boolean;
+  originalByteCount: number;
+}
+
+export interface DeployEventHistoryEntry {
+  id: string;
+  environment: string;
+  version: string;
+  previousVersion: string | null;
+  isRollback: boolean;
+  status: string;
+  source: string;
+  deployedAt: string;
+  failureReason: string | null;
+}
+
+/**
+ * A promotion carrying this deployment's version. `outbound` — this environment is the promotion's
+ * source, so this deploy is what may move forward. `inbound` — it is the target, so this deploy is
+ * what the promotion delivered.
+ */
+export interface RelatedPromotion {
+  id: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  status: string;
+  direction: 'outbound' | 'inbound';
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+}
+
+export interface RelatedWorkItem {
+  key: string;
+  provider?: string | null;
+  url?: string | null;
+  title?: string | null;
+  /** Environments the ticket is gated for; a work-item link needs one of them. */
+  signOffTargetEnvs: string[];
+}
+
+export interface DeploymentDetail {
+  event: DeployEvent;
+  logs: DeployLogSummary[];
+  history: DeployEventHistoryEntry[];
+  promotions: RelatedPromotion[];
+  workItems: RelatedWorkItem[];
 }
 
 // Webhook types
