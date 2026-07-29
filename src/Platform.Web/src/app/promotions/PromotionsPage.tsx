@@ -9,6 +9,9 @@ import { readEnumPref, writePref, PROMOTIONS_VIEW_PREF } from '@/lib/prefs';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { formatDistanceToNow } from 'date-fns';
@@ -593,10 +596,11 @@ export function PromotionsPage() {
               </button>
             )}
           </div>
-          <div className="space-y-2">
-            {displayed.map((c) => (
+          <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
+            {displayed.map((c, index) => (
               <CandidateCard
                 key={c.id}
+                index={index}
                 candidate={c}
                 /* The urgency tint only means something where every row is genuinely waiting
                    on someone. On a mixed list the status badge carries that instead. */
@@ -608,7 +612,7 @@ export function PromotionsPage() {
                 awaitingCue={view !== 'mine'}
               />
             ))}
-          </div>
+          </KeyboardList>
           {displayed.length > PROGRESS_CANDIDATE_LIMIT && (
             <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
               Work-item sign-off state is loaded for the first {PROGRESS_CANDIDATE_LIMIT} rows;
@@ -623,6 +627,7 @@ export function PromotionsPage() {
 }
 
 function CandidateCard({
+  index,
   candidate,
   urgent,
   selectable,
@@ -631,6 +636,8 @@ function CandidateCard({
   workItemProgress,
   awaitingCue,
 }: {
+  /** Position in the list, for {@link useKeyboardListRow}'s roving tabindex. */
+  index: number;
   candidate: PromotionCandidate;
   urgent?: boolean;
   selectable?: boolean;
@@ -650,15 +657,19 @@ function CandidateCard({
   const MAX_TICKETS = 5;
   const MAX_PEOPLE = 5;
 
+  const rowProps = useKeyboardListRow(index, () => navigate(`/promotions/${candidate.id}`), {
+    label: `${candidate.product} / ${candidate.service} to ${candidate.targetEnv} — ${candidate.status}. Open promotion.`,
+  });
+
   return (
     <div
+      {...rowProps}
       className="card-hover rounded-xl border p-4 cursor-pointer flex items-start gap-3"
       style={{
         borderColor: urgent ? cfg.color + '40' : 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
         borderLeft: candidate.canApprove ? `3px solid var(--warning)` : undefined,
       }}
-      onClick={() => navigate(`/promotions/${candidate.id}`)}
     >
       {selectable && (
         <input
@@ -773,6 +784,8 @@ function CandidateCard({
                         className="transition-opacity hover:opacity-80"
                         title={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
                         aria-label={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
+                        // First tracker link in the row answers the `o` shortcut.
+                        {...(i === 0 ? { [ROW_ACTION_ATTR]: 'open-external' } : {})}
                       >
                         <ExternalLink size={10} />
                       </a>

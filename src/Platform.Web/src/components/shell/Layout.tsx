@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
+import { KeyboardLayer } from './KeyboardLayer';
 import { useSseEvents } from '@/hooks/useSseEvents';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { useConversationStore } from '@/stores/conversationStore';
@@ -22,12 +23,25 @@ export function Layout() {
       className="flex h-screen overflow-hidden"
       style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
     >
+      {/* First tab stop on the page: without it, reaching the content means tabbing through the
+          whole sidebar on every navigation. Off-screen until focused. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[1200] focus:px-3 focus:py-2 focus:rounded-lg focus:text-[13px] focus:font-medium"
+        style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+      >
+        Skip to main content
+      </a>
+      <KeyboardLayer />
       <Sidebar />
       <div className="flex flex-col flex-1 overflow-hidden min-w-0">
         <Topbar />
         <div className="flex flex-1 overflow-hidden">
           {!chatTakesOver && (
             <main
+              id="main-content"
+              // Focusable so the skip link actually lands here; not a tab stop itself.
+              tabIndex={-1}
               className="flex-1 overflow-y-auto"
               style={{ backgroundColor: 'var(--bg-secondary)' }}
             >
