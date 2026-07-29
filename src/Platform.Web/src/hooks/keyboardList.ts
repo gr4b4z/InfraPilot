@@ -25,13 +25,23 @@ export const KEYBOARD_ROW_ATTR = 'data-kbd-row';
 export const KEYBOARD_ROW_SELECTOR = `[${KEYBOARD_ROW_ATTR}]`;
 
 /**
- * The row the user is currently on, or null. Read by the row-action shortcuts, which operate on
- * whatever is focused rather than tracking list state themselves.
+ * The row the row-action shortcuts should act on, or null.
+ *
+ * Focus wins when it is inside a row. Otherwise it falls back to the list's roving entry point — the
+ * one row left tabbable — which is what makes `o` and `a` work when focus has wandered to the filter
+ * strip or the page heading. Requiring focus to be exactly on the row was the reason `o` looked
+ * broken: on a freshly loaded page nothing was focused, so every row action silently did nothing.
+ *
+ * The fallback is safe for the destructive bindings because `A` and `R` confirm before they commit,
+ * and the confirmation names the promotion it is about to act on.
  */
 export function activeKeyboardRow(): HTMLElement | null {
   const active = document.activeElement;
-  if (!(active instanceof HTMLElement)) return null;
-  return active.closest<HTMLElement>(KEYBOARD_ROW_SELECTOR);
+  if (active instanceof HTMLElement) {
+    const focusedRow = active.closest<HTMLElement>(KEYBOARD_ROW_SELECTOR);
+    if (focusedRow) return focusedRow;
+  }
+  return document.querySelector<HTMLElement>(`${KEYBOARD_ROW_SELECTOR}[tabindex="0"]`);
 }
 
 /**

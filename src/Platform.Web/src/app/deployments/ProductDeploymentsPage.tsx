@@ -25,6 +25,8 @@ import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { KeyboardList } from '@/components/ui/KeyboardList';
+import { RovingGroup } from '@/components/ui/RovingGroup';
+import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 
 type ViewTab = 'state' | 'activity' | 'compare';
@@ -265,6 +267,34 @@ export function ProductDeploymentsPage() {
     });
   }, [stateMatrix, sortBy, sortDir, getCell]);
 
+  // `/` searches this product's services. Client-side over the loaded matrix, which is the whole
+  // product — a server round trip would return the same rows. Enter goes to the service's history,
+  // the page that answers "what has happened to this one".
+  useSearchScope(
+    {
+      label: product ?? 'Services',
+      placeholder: 'Find a service in this product…',
+      search: async (query) => {
+        const needle = query.toLowerCase();
+        return services
+          .filter((service) => service.toLowerCase().includes(needle))
+          .slice(0, 25)
+          .map((service) => ({
+            id: service,
+            title: service,
+            subtitle: environments
+              .map((env) => {
+                const cell = getCell(service, env);
+                return `${getDisplayName(env)} ${cell ? `v${cell.version}` : '—'}`;
+              })
+              .join(' · '),
+            to: `/deployments/${product}/${service}/history`,
+          }));
+      },
+    },
+    [product, services, environments, getCell, getDisplayName],
+  );
+
   const toggleSort = useCallback(
     (key: string) => {
       const updates: Record<string, string | null> = {};
@@ -494,6 +524,7 @@ export function ProductDeploymentsPage() {
           ]}
           value={tab}
           onChange={(v) => setTab(v as ViewTab)}
+          ariaLabel="View"
         />
 
         {/* Time filter for state tab */}
@@ -503,6 +534,7 @@ export function ProductDeploymentsPage() {
               options={TIME_PRESETS}
               value={timeFilter}
               onChange={(v) => setTimeFilter(v as TimeFilter)}
+              ariaLabel="Time range"
             />
             {timeFilter === 'custom' && (
               <DateTimePicker value={customDate} onChange={setCustomDate} />
@@ -517,6 +549,7 @@ export function ProductDeploymentsPage() {
               options={ACTIVITY_TIME_PRESETS}
               value={activityTimeFilter}
               onChange={(v) => setActivityTimeFilter(v as TimeFilter)}
+              ariaLabel="Activity time range"
             />
             {activityTimeFilter === 'custom' && (
               <DateTimePicker value={activityCustomDate} onChange={setActivityCustomDate} />
@@ -579,6 +612,7 @@ export function ProductDeploymentsPage() {
               ]}
               value={compareMode}
               onChange={(v) => setCompareMode(v as 'diff' | 'all')}
+              ariaLabel="Compare mode"
             />
             <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
               {resolvedFrom === resolvedTo
@@ -914,17 +948,25 @@ function SortHeader({
   );
 }
 
+/**
+ * One tab stop per control, arrows within it — see {@link RovingGroup}. Every strip on this page
+ * (State/Activity/Compare, the time presets, the compare mode) goes through here, so they all behave
+ * the same way and Tab crosses the filter bar in three presses rather than a dozen.
+ */
 function SegmentedControl({
   options,
   value,
   onChange,
+  ariaLabel,
 }: {
   options: { key: string; label: string }[];
   value: string;
   onChange: (key: string) => void;
+  ariaLabel: string;
 }) {
   return (
-    <div
+    <RovingGroup
+      ariaLabel={ariaLabel}
       className="inline-flex rounded-lg p-0.5 gap-0.5"
       style={{
         backgroundColor: 'var(--bg-secondary)',
@@ -935,6 +977,8 @@ function SegmentedControl({
         <button
           key={opt.key}
           onClick={() => onChange(opt.key)}
+          // Read by RovingGroup to decide which control Tab lands on.
+          aria-pressed={value === opt.key}
           className="px-3.5 py-1.5 text-[13px] font-medium rounded-md transition-all"
           style={{
             backgroundColor:
@@ -948,7 +992,7 @@ function SegmentedControl({
           {opt.label}
         </button>
       ))}
-    </div>
+    </RovingGroup>
   );
 }
 
