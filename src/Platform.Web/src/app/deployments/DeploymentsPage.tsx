@@ -7,6 +7,7 @@ import { Rocket, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { EnvLabel } from '@/components/environments/EnvBadge';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useSearchScope } from '@/stores/searchScopeStore';
 import type { ProductSummary } from '@/lib/types';
 
 export function DeploymentsPage() {
@@ -20,6 +21,27 @@ export function DeploymentsPage() {
 
   const allEnvs = getOrderedEnvironments(
     Array.from(new Set(products.flatMap((p) => Object.keys(p.environments))))
+  );
+
+  // `/` searches products here — the only thing this page lists.
+  useSearchScope(
+    {
+      label: 'Products',
+      placeholder: 'Find a product…',
+      search: async (query) => {
+        const needle = query.toLowerCase();
+        return products
+          .filter((p) => p.product.toLowerCase().includes(needle))
+          .slice(0, 25)
+          .map((p) => ({
+            id: p.product,
+            title: p.product,
+            subtitle: `${Object.keys(p.environments).length} environment(s)`,
+            to: `/deployments/${p.product}`,
+          }));
+      },
+    },
+    [products],
   );
 
   return (

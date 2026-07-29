@@ -56,6 +56,7 @@ export type RowAction =
   /** Open the assign / reassign picker for the row. */
   | 'assign'
   | 'approve'
+  | 'reject'
   | 'issue'
   | 'block';
 
@@ -64,29 +65,46 @@ export function rowActionSelector(action: RowAction): string {
   return `[${ROW_ACTION_ATTR}="${action}"]`;
 }
 
-/**
- * Clicks the control for `action` within `scope`, if one is offered and enabled. Returns whether
- * anything was activated, so a caller can fall back or do nothing.
- */
-export function invokeRowAction(scope: HTMLElement | null, action: RowAction): boolean {
-  const control = scope?.querySelector<HTMLElement>(rowActionSelector(action));
+/** Activates a tagged control, if it is present and enabled. */
+function activate(scope: ParentNode, action: RowAction): boolean {
+  const control = scope.querySelector<HTMLElement>(rowActionSelector(action));
   if (!control) return false;
   if (control instanceof HTMLButtonElement && control.disabled) return false;
   if (control.getAttribute('aria-disabled') === 'true') return false;
+
+  // Anchors are opened with `window.open` rather than a synthetic click. A synthetic `.click()` on an
+  // `<a target="_blank">` is honoured inconsistently — some browsers treat the programmatic click as
+  // untrusted and open a background tab or nothing at all — whereas `window.open` inside a keydown
+  // handler is a plain user-gesture navigation, and `.focus()` on the result brings the tab forward.
+  // `noopener` is kept because the markup carries `rel="noopener"`, and dropping it here would
+  // quietly hand the opened page a reference to this one.
+  if (control instanceof HTMLAnchorElement && control.target === '_blank') {
+    const opened = window.open(control.href, '_blank', 'noopener');
+    opened?.focus();
+    return true;
+  }
+
   control.click();
   return true;
 }
 
 /**
- * Resolves what an action shortcut should act on.
+ * Runs `action` on the row the user is on, falling back to the page.
  *
- * A focused row wins. Otherwise the whole page is fair game *only* when the page has no rows at all —
- * a detail page, where "approve" unambiguously means the one thing on screen. On a list with rows but
- * none focused we deliberately return null: falling back to the document there would let a single `A`
- * approve whichever row happens to be first in the DOM, which is not a mistake worth enabling.
+ * Two levels, because a page can have both. A promotion's detail page carries a list of work items
+ * *and* its own Approve button: scoping only to the focused row meant `A` searched a work-item card,
+ * found no approve control, and silently did nothing — the page-level button was right there.
+ *
+ * The page-level fallback fires only when the page offers exactly one control for the action. That is
+ * what keeps it safe on a list: if approve controls existed on every row, a document-wide lookup would
+ * have to guess which row was meant, so instead it refuses. One match is unambiguous; several is a
+ * question this function has no business answering.
+ *
+ * Returns whether anything ran, so a caller can stay quiet rather than pretend.
  */
-export function actionScope(focusedRow: HTMLElement | null, rowSelector: string): HTMLElement | null {
-  if (focusedRow) return focusedRow;
-  const pageHasRows = document.querySelector(rowSelector) !== null;
-  return pageHasRows ? null : document.body;
+export function invokeRowAction(row: HTMLElement | null, action: RowAction): boolean {
+  if (row && activate(row, action)) return true;
+  const candidates = document.querySelectorAll(rowActionSelector(action));
+  if (candidates.length === 1) return activate(document, action);
+  return false;
 }

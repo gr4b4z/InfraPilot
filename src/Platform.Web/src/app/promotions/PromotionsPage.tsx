@@ -10,6 +10,9 @@ import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
 import { KeyboardList } from '@/components/ui/KeyboardList';
+import { RovingGroup } from '@/components/ui/RovingGroup';
+import { promotionSearchScope } from '@/components/shell/searchScopes';
+import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -171,6 +174,10 @@ export function PromotionsPage() {
   const [rejected, setRejected] = useState<PromotionCandidate[] | null>(null);
   const [rejectedLoading, setRejectedLoading] = useState(false);
   const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
+
+  // `/` searches promotions while this page is up. No dependencies — the scope hits the server, so
+  // it doesn't close over anything on screen.
+  useSearchScope(promotionSearchScope(), []);
 
   const changeView = (next: View) => {
     writePref(PROMOTIONS_VIEW_PREF, next);
@@ -509,8 +516,11 @@ export function PromotionsPage() {
           shown for the eagerly-fetched tabs — a badge on a lazy tab would either lie until you
           opened it or force the fetch the laziness exists to avoid. */}
       {/* Six pills wrap to four rows on a phone and push the list off-screen, so below `sm` this
-          scrolls sideways instead — the usual mobile tab strip. */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
+          scrolls sideways instead — the usual mobile tab strip. One tab stop, arrows inside. */}
+      <RovingGroup
+        ariaLabel="Promotion views"
+        className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0"
+      >
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
@@ -548,7 +558,7 @@ export function PromotionsPage() {
             </button>
           );
         })}
-      </div>
+      </RovingGroup>
 
       {displayedLoading ? (
         <div className="space-y-3">

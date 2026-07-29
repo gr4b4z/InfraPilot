@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -7,10 +8,15 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  KEYBOARD_ROW_ATTR,
   KEYBOARD_ROW_SELECTOR,
   KeyboardListContext,
   type KeyboardListContextValue,
 } from '@/hooks/keyboardList';
+
+/** Anything inside a row that would otherwise become its own tab stop. */
+const NESTED_FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]';
 
 /**
  * Keyboard navigation for the app's list surfaces.
@@ -23,11 +29,12 @@ import {
  * Roving tabindex rather than making every row tabbable: a 60-row queue would otherwise put 60 stops
  * between the filters and the pagination, which is technically accessible and miserable to use.
  *
- * One deliberate compromise. Rows contain their own links (the Jira chip, the "View" affordance) and
- * those stay tabbable, so Tab still walks into a row's contents. Making them untabbable would have
- * been the tidier ARIA story but would take away a keyboard route that already worked. Arrow keys
- * skip straight between rows, and the `o` shortcut opens the focused row's reference, so the fast
- * path doesn't depend on tabbing through them.
+ * Controls *inside* a row are taken out of the tab order too, so Tab really does mean "next region".
+ * A 25-row promotions list carries a tracker link, a work-item chip and a "View" affordance per row;
+ * left tabbable those turned one region into ~30 stops, which is the thing that makes Tab useless for
+ * getting anywhere. Everything they did is still reachable: Enter opens the row, `o` opens its tracker
+ * reference, `a` opens its assign picker, and a chip pointing at some other record is reachable by
+ * opening the row and arrowing the list inside it.
  *
  * ```tsx
  * <KeyboardList count={items.length} ariaLabel="Promotions">
@@ -47,6 +54,7 @@ export function KeyboardList({
   /** Element to render. `tbody` for tables, `div` otherwise. */
   as: Tag = 'div',
   className,
+  autoFocus = true,
 }: {
   children: ReactNode;
   /** Number of rows. Bounds navigation and keeps the cursor inside a list that shrank. */
@@ -55,9 +63,16 @@ export function KeyboardList({
   columns?: number;
   as?: 'div' | 'tbody';
   className?: string;
+  /**
+   * Put focus on the first row once the list has one. Set false for a list that isn't the point of
+   * its page — a secondary panel shouldn't grab the caret from the primary one.
+   */
+  autoFocus?: boolean;
 }) {
   const [storedIndex, setStoredIndex] = useState(0);
   const elements = useRef(new Map<number, HTMLElement>());
+  const hasAutoFocused = useRef(false);
+  const container = useRef<HTMLElement>(null);
 
   // Clamped on read rather than corrected in an effect. A filter change can shrink the list under
   // the cursor, and deriving the valid index avoids both the extra render pass and the moment where
@@ -74,6 +89,42 @@ export function KeyboardList({
     setStoredIndex(clamped);
     elements.current.get(clamped)?.focus();
   }, [count]);
+
+  // Land on the first row as soon as the list has one, so the arrow keys work on arrival instead of
+  // needing a Tab first. Guarded three ways, because auto-focus is the kind of thing that becomes
+  // hostile the moment it fires when it shouldn't:
+  //   - once per mount, so re-renders and refetches don't yank the caret back to the top;
+  //   - only when focus is unclaimed (still on <body> or the main region), so it never interrupts
+  //     someone typing in a filter or reading with the skip link focused;
+  //   - `preventScroll`, since jumping the viewport on page load reads as a glitch.
+  useEffect(() => {
+    if (!autoFocus || hasAutoFocused.current || count === 0) return;
+    const active = document.activeElement;
+    const unclaimed = active === null
+      || active === document.body
+      || (active instanceof HTMLElement && active.id === 'main-content');
+    if (!unclaimed) return;
+    const first = elements.current.get(0);
+    if (!first) return;
+    hasAutoFocused.current = true;
+    first.focus({ preventScroll: true });
+  }, [autoFocus, count]);
+
+  // Keep the rows' own contents out of the tab order — see the note on Tab above. Runs after every
+  // render with no dependency array, because rows arrive and change as data loads and filters apply,
+  // and a stop that reappears on a refetch would be just as disruptive as never removing it.
+  //
+  // Done here rather than at each call site so no row component has to remember: the rule is a
+  // property of being inside a keyboard list, not of any particular row's markup.
+  useEffect(() => {
+    const root = container.current;
+    if (!root) return;
+    for (const el of root.querySelectorAll<HTMLElement>(NESTED_FOCUSABLE)) {
+      // The row itself is the tab stop; only its descendants get pulled out.
+      if (el.hasAttribute(KEYBOARD_ROW_ATTR)) continue;
+      el.tabIndex = -1;
+    }
+  });
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     // Only handle keys aimed at a row. A keystroke inside a row's own text input or link is that
@@ -117,7 +168,12 @@ export function KeyboardList({
 
   return (
     <KeyboardListContext.Provider value={value}>
-      <Tag onKeyDown={onKeyDown} aria-label={ariaLabel} className={className}>
+      <Tag
+        ref={container as React.Ref<HTMLDivElement & HTMLTableSectionElement>}
+        onKeyDown={onKeyDown}
+        aria-label={ariaLabel}
+        className={className}
+      >
         {children}
       </Tag>
     </KeyboardListContext.Provider>
