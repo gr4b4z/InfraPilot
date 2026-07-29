@@ -27,7 +27,7 @@ export function shortcutGroups(): ShortcutGroup[] {
       title: 'Within a page',
       items: [
         { keys: ['Tab'], description: 'Next region — filters, tabs, list, actions' },
-        { keys: ['↑', '↓'], description: 'Move within the focused region' },
+        { keys: ['↑', '↓'], description: 'Move within the region — continues into the next list at the ends' },
         { keys: ['←', '→'], description: 'Move across a tab strip, or across environments in the matrix' },
         { keys: ['Home', 'End'], description: 'First / last item in the region' },
         { keys: ['Enter'], description: 'Open the focused item' },
