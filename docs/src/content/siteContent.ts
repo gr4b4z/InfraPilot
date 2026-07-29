@@ -599,6 +599,7 @@ executor:
     paragraphs: [
       'Pipelines send deployment events to InfraPilot using an API key. Those events become the source of truth for deployment history, rollback target selection, promotion candidate creation, and the participants that promotion approval rules check (e.g. "the person who triggered this deploy cannot approve their own promotion").',
       'The request contract supports product, service, environment, version, source, timestamps, status, rollback flags, references, participants, and metadata. Each `references[]` entry can carry its own nested `participants[]` array — that is the more specific signal for "who QA-ed this ticket" or "who reviewed this PR" and wins over the event-level layer for the same role.',
+      'Two optional sections make a deployment explainable on its own. `run` records the CI run that performed it — the workflow, the job deep link, and on a failure the one line the pipeline identified as the cause — which is what the detail page states above everything else. `logs` carries what the pipeline printed (a Helm release printout, the diagnostics collected after a failure) as named blocks; the portal highlights the error lines and links straight to the first one. Neither is required: a producer that only reports "version V is live" simply omits them.',
       'Beyond ingest, two operator-facing surfaces sit on the same event: a PATCH endpoint for reference participant overrides (reassign / tombstone a slot without re-running the pipeline), and an enrichment layer populated server-side from Jira / Azure DevOps that is surfaced on read APIs.',
     ],
     bullets: [
@@ -606,8 +607,10 @@ executor:
       'Auth: X-Api-Key header',
       'Status values: succeeded, failed, in_progress',
       'Successful deploys are eligible for promotions and rollback history',
-      'References can be repository, pipeline, pull-request, or work-item — work-item references drive the Tickets queue',
+      'References can be repository, pipeline, pull-request, work-item, commit, or build-manifest — work-item references drive the Tickets queue, and a build-manifest reference makes the deployed version a link to what it is built from',
       'Participants carry on two levels (event-level + reference-level) with operator overrides and enrichment as additional layers',
+      'Optional `run` and `logs` sections record what created the deployment and what it printed — surfaced on GET /api/deployments/events/{id}',
+      'Log blocks are keyed by name, so a retrying pipeline replaces its earlier copy instead of duplicating it; content over 512 KiB per block keeps the tail',
     ],
     code: `POST /api/deployments/events
 X-Api-Key: <your-api-key>
@@ -1071,6 +1074,13 @@ export const deploymentApiFullPayload = `{
           "email": "maria.wisniewska@acmetrix.com"
         }
       ]
+    },
+    {
+      "type": "build-manifest",
+      "url": "https://github.com/Acmetrix/release/blob/9f8e7d6c/production/order-api/build-metadata.yaml",
+      "provider": "github",
+      "key": "production/order-api/build-metadata.yaml",
+      "revision": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"
     }
   ],
   "participants": [
@@ -1078,6 +1088,28 @@ export const deploymentApiFullPayload = `{
       "role": "triggered-by",
       "displayName": "Jan Kowalski",
       "email": "jan.kowalski@acmetrix.com"
+    }
+  ],
+  "run": {
+    "provider": "github-actions",
+    "runId": "30464088990",
+    "runNumber": "294",
+    "attempt": 1,
+    "workflowName": "Reconcile production",
+    "jobName": "Deploy Helm (order-api, 2.14.0)",
+    "runUrl": "https://github.com/Acmetrix/release/actions/runs/30464088990",
+    "jobUrl": "https://github.com/Acmetrix/release/actions/runs/30464088990/job/90617803378",
+    "triggeredBy": "jan-kowalski",
+    "startedAt": "2026-04-16T10:24:00Z",
+    "completedAt": "2026-04-16T10:30:00Z",
+    "failureReason": null
+  },
+  "logs": [
+    {
+      "name": "helm upgrade output",
+      "source": "helm",
+      "content": "Release \\"order-api\\" has been upgraded.\\nSTATUS: deployed\\n",
+      "truncated": false
     }
   ],
   "metadata": {
@@ -1274,9 +1306,108 @@ export const deploymentApiReferenceTypeColumns: TableColumn[] = [
 
 export const deploymentApiReferenceTypeRows: TableRow[] = [
   { type: '`repository`', usage: 'Link to the source code repository.' },
-  { type: '`pipeline`', usage: 'Link to the CI/CD build or workflow run.' },
+  { type: '`pipeline`', usage: 'Link to the CI/CD run that **built** the artifact. Distinct from `run` below, which is the run that **deployed** it — a component is built once and deployed many times.' },
   { type: '`pull-request`', usage: 'Link to the merged pull request that triggered the deploy.' },
   { type: '`work-item`', usage: 'Link to a Jira issue, Azure DevOps work item, or similar tracking record.' },
+  { type: '`commit`', usage: 'Link to a single commit in the change set.' },
+  { type: '`build-manifest`', usage: 'Link to the release repository\'s record of what this version is made of (chart version, images, source revision). The deployment detail page hangs the version number off this link, so pin it to a commit rather than a branch.' },
+];
+
+export const deploymentApiRunRows: TableRow[] = [
+  {
+    field: '`provider`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: '`github-actions`, `azure-devops`, … Drives the provider label on the run link.',
+  },
+  {
+    field: '`runId` / `runNumber`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Provider-native run identity. `runId` is the API/URL id; `runNumber` is the human counter a person reads in the pipeline UI.',
+  },
+  {
+    field: '`attempt`',
+    type: 'number',
+    required: 'No',
+    default: 'null',
+    description: 'Re-run attempt. Shown next to the run number when greater than 1.',
+  },
+  {
+    field: '`workflowName` / `jobName`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'The workflow and the specific job that deployed this component. Send the job\'s real display name, not a placeholder — the page presents it as fact.',
+  },
+  {
+    field: '`runUrl`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Link to the whole run.',
+  },
+  {
+    field: '`jobUrl`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Link to this component\'s job inside the run — the deep link that matters when one leg of a fan-out failed. Preferred over `runUrl` wherever the UI shows a single link; omit it if you cannot resolve it unambiguously.',
+  },
+  {
+    field: '`triggeredBy`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Who set the run off, when no `triggered-by` participant is supplied.',
+  },
+  {
+    field: '`startedAt` / `completedAt`',
+    type: 'string (ISO 8601)',
+    required: 'No',
+    default: 'null',
+    description: 'Bounds of the deployment attempt. Both are needed for the page to show a duration.',
+  },
+  {
+    field: '`failureReason`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'The specific error, as identified by the pipeline itself (e.g. `pod x cannot start (container waiting reason=ErrImagePull)`). Quoted verbatim in the failure callout, so send the one line that explains the outcome rather than a summary. Omit on success.',
+  },
+];
+
+export const deploymentApiLogRows: TableRow[] = [
+  {
+    field: '`name`',
+    type: 'string',
+    required: 'Yes',
+    default: '—',
+    description: 'Heading for the block, and its identity within the event: re-posting the same event with the same name replaces that block rather than adding a second one. An unnamed block is rejected.',
+  },
+  {
+    field: '`source`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Which tool produced it — `helm`, `kubectl`, `pipeline`. Shown as a small tag beside the heading.',
+  },
+  {
+    field: '`content`',
+    type: 'string',
+    required: 'No',
+    default: '`""`',
+    description: 'The captured text. Over 512 KiB the server keeps the tail and marks the block truncated — a failing deploy prints its diagnostics last.',
+  },
+  {
+    field: '`truncated`',
+    type: 'boolean',
+    required: 'No',
+    default: '`false`',
+    description: 'Set it when the producer itself already dropped part of the log, so the page says so instead of implying the output is complete.',
+  },
 ];
 
 export const deploymentApiCommitLinkColumns: TableColumn[] = [
@@ -1398,6 +1529,21 @@ export const deploymentApiOverrideEndpointRows: TableRow[] = [
     path: '`/api/deployments/{eventId}/references/{key}/participants`',
     auth: 'Authenticated user',
     description: 'Upsert (or tombstone) the participant for a `(referenceKey, role)` slot on an existing deploy event.',
+  },
+];
+
+export const deploymentApiDetailEndpointRows: TableRow[] = [
+  {
+    method: '`GET`',
+    path: '`/api/deployments/events/{id}`',
+    auth: 'Authenticated user',
+    description: 'Everything the deployment detail page shows: the event with its `run`, log block summaries (names and sizes, no text), the same service\'s recent deployments in this environment, the promotions carrying this version, and the work items it delivered. `?historyLimit=` bounds the neighbour list (default 10).',
+  },
+  {
+    method: '`GET`',
+    path: '`/api/deployments/events/{id}/logs/{logId}`',
+    auth: 'Authenticated user',
+    description: 'One log block\'s text. Separate from the detail response because a release printout is too large to send for a page that may never expand it. The id pair is checked, so a log id cannot be used to read another deployment\'s output.',
   },
 ];
 
@@ -1544,6 +1690,18 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       rows: deploymentApiCommitLinkRows,
     },
     {
+      title: '`run` fields',
+      description: 'The CI run that **performed** the deployment, as opposed to the `pipeline` reference, which points at the run that built the artifact. Optional as a whole: omit it and the detail page simply reports the source with no run link. Every field is individually optional too — send what you know rather than nulls.',
+      columns: deploymentApiFieldColumns,
+      rows: deploymentApiRunRows,
+    },
+    {
+      title: '`logs[]` fields',
+      description: 'What the deploying pipeline printed, as named blocks. The detail page lists them without their text and fetches each on expand (a release printout is too large to send speculatively), colours error and warning lines, and links to the first error. Blocks are capped at 512 KiB each and 20 per event.',
+      columns: deploymentApiFieldColumns,
+      rows: deploymentApiLogRows,
+    },
+    {
       title: '`participants[]` fields',
       description: '`participants[]` is the event-level layer — people scoped to the whole deploy (e.g. the pipeline triggerer). Reference-level participants nested under `references[].participants` cover people scoped to one PR or one ticket; both layers are honoured when promotion approval rules look up roles.',
       columns: deploymentApiFieldColumns,
@@ -1559,6 +1717,12 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       description: 'Reads of a deploy event resolve participants through a four-layer model. Promotion authorisation, the Tickets queue, and the detail view all use the same precedence so a person who appears at the right layer for a given (reference, role) is consistently surfaced.',
       columns: deploymentApiParticipantLayerColumns,
       rows: deploymentApiParticipantLayerRows,
+    },
+    {
+      title: 'Deployment detail — endpoints',
+      description: 'The read side of a single deployment. These are what the deployment detail page is built on: one call for the event and its context, one per log block on demand.',
+      columns: defaultEndpointColumns,
+      rows: deploymentApiDetailEndpointRows,
     },
     {
       title: 'Reference participant overrides — endpoint',
