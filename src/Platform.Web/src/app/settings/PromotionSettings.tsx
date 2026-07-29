@@ -379,6 +379,8 @@ export function PromotionSettings() {
   const [polLoading, setPolLoading] = useState(true);
   const [polError, setPolError] = useState<string | null>(null);
   const [polSaved, setPolSaved] = useState(false);
+  // How many pending promotions the last save re-gated (null until a save reports it).
+  const [reapplied, setReapplied] = useState<number | null>(null);
 
   // ── Form state (inline add/edit) ──
   const [showForm, setShowForm] = useState(false);
@@ -465,7 +467,10 @@ export function PromotionSettings() {
       }
       cancelForm();
       setPolSaved(true);
-      setTimeout(() => setPolSaved(false), 2000);
+      // The save re-gated any pending promotions on this edge; say how many so the operator knows
+      // the change reached in-flight work and isn't only forward-looking.
+      setReapplied(result.reappliedCandidates ?? 0);
+      setTimeout(() => setPolSaved(false), 4000);
     } catch (e) {
       setPolError(e instanceof Error ? e.message : 'Failed to save policy');
     } finally {
@@ -1047,6 +1052,12 @@ export function PromotionSettings() {
                     Cancel
                   </button>
                 </div>
+
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  Saving re-applies these settings to promotions that are still pending on this edge,
+                  not just future ones. Promotions that are already approved or deploying keep the
+                  rules they were approved under.
+                </p>
               </div>
             )}
 
@@ -1056,6 +1067,12 @@ export function PromotionSettings() {
                 style={{ color: 'var(--success)' }}
               >
                 <Check size={14} /> Saved
+                {reapplied ? (
+                  <>
+                    {' — re-applied to '}
+                    {reapplied} pending promotion{reapplied === 1 ? '' : 's'}
+                  </>
+                ) : null}
               </span>
             )}
 

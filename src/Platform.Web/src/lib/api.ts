@@ -1250,6 +1250,9 @@ export interface PromotionPolicy {
   sourceRequiresDeploy: boolean;
   createdAt: string;
   updatedAt: string;
+  // Set only on create/update responses: how many pending promotions were re-gated under the saved
+  // settings. Null when reading policies back.
+  reappliedCandidates: number | null;
 }
 
 export interface UpsertPromotionPolicyPayload {

@@ -1,9 +1,14 @@
 namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
-/// Immutable snapshot of the promotion policy at the moment a candidate was created.
-/// Persisted as <see cref="PromotionCandidate.ResolvedPolicyJson"/> so subsequent policy
-/// edits never change the rules mid-flight for an already-pending promotion.
+/// The resolved promotion policy a candidate is gated on, persisted as
+/// <see cref="PromotionCandidate.ResolvedPolicyJson"/> so gate evaluation never depends on a live
+/// join (and so a deleted policy leaves the candidate evaluable).
+///
+/// <para>The record itself is immutable, but the snapshot <b>on a Pending candidate</b> is replaced
+/// wholesale when the policy is edited — see
+/// <see cref="PromotionService.RefreshPolicySnapshotsAsync"/>. Once a candidate leaves Pending its
+/// snapshot is frozen: the approval that already fired was judged under those rules.</para>
 ///
 /// <para><c>PolicyId</c> is <c>null</c> when the resolution fell through to "auto-approve"
 /// (no matching row at all). An empty <see cref="ApprovalSteps"/> (no requirements anywhere) is

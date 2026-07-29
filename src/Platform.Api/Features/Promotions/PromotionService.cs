@@ -962,6 +962,88 @@ public class PromotionService
     }
 
     /// <summary>
+    /// Retroactively applies a policy change to in-flight promotions: re-snapshots every
+    /// still-<see cref="PromotionStatus.Pending"/> candidate on the policy's
+    /// (product, service, sourceEnv, targetEnv) scope and re-evaluates its gate under the new
+    /// rules. Called by the admin endpoints after a policy is created, edited, or deleted, so a
+    /// settings change takes effect for existing promotions instead of only future ones.
+    ///
+    /// <para><paramref name="service"/> mirrors policy scoping: <c>null</c> means a product-default
+    /// policy changed, so every service on the edge is re-resolved. A candidate whose own
+    /// service-specific policy still wins resolution re-projects to an identical snapshot and is
+    /// left untouched.</para>
+    ///
+    /// <para>Safety rails: candidates that are Approved/Deploying/terminal are never touched (an
+    /// approval that already fired its webhook is not retractable — reject or supersede instead),
+    /// and when no policy resolves at all any more (policy deleted with no fallback) the candidate
+    /// keeps its creation-time snapshot — deleting a gate's configuration must not auto-approve
+    /// everything that was waiting on it.</para>
+    /// </summary>
+    /// <returns>The number of candidates whose snapshot was refreshed.</returns>
+    public async Task<int> RefreshPolicySnapshotsAsync(
+        string product, string? service, string sourceEnv, string targetEnv, CancellationToken ct = default)
+    {
+        var candidates = await _db.PromotionCandidates
+            .Where(c => c.Product == product
+                     && c.SourceEnv == sourceEnv
+                     && c.TargetEnv == targetEnv
+                     && c.Status == PromotionStatus.Pending
+                     && (service == null || c.Service == service))
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return 0;
+
+        var refreshed = new List<PromotionCandidate>();
+        foreach (var candidate in candidates)
+        {
+            var snapshot = await _resolver.SnapshotAsync(
+                candidate.Product, candidate.Service, candidate.SourceEnv, candidate.TargetEnv, ct);
+
+            // No policy resolves any more → the edge is un-enrolled. Keep the creation-time
+            // snapshot: swapping in the auto-approve fallback would promote the candidate as a
+            // side effect of DELETING a gate.
+            if (snapshot.PolicyId is null) continue;
+
+            var json = JsonSerializer.Serialize(snapshot, JsonOptions);
+            if (json == candidate.ResolvedPolicyJson) continue; // resolution unchanged — no-op
+
+            candidate.PolicyId = snapshot.PolicyId;
+            candidate.ResolvedPolicyJson = json;
+            refreshed.Add(candidate);
+        }
+        if (refreshed.Count == 0) return 0;
+
+        await _db.SaveChangesAsync(ct);
+
+        foreach (var candidate in refreshed)
+        {
+            await _audit.Log(
+                "promotions", "promotion.policy.reapplied",
+                _currentUser.Id, _currentUser.Name, "user",
+                "PromotionCandidate", candidate.Id, null,
+                new
+                {
+                    candidate.PolicyId,
+                    candidate.Product,
+                    candidate.Service,
+                    candidate.SourceEnv,
+                    candidate.TargetEnv,
+                    candidate.Version,
+                });
+
+            // The new rules may already be satisfied (e.g. the gate was relaxed to auto-approve, or
+            // recorded approvals now cover the requirement tree) — evaluate immediately.
+            await ReevaluateAsync(candidate.Id, ct);
+        }
+
+        _logger.LogInformation(
+            "Policy change on {Product}/{Service} {SourceEnv} → {TargetEnv} re-applied to {Count} pending candidate(s)",
+            LogSanitizer.Clean(product), LogSanitizer.Clean(service ?? "*"),
+            LogSanitizer.Clean(sourceEnv), LogSanitizer.Clean(targetEnv), refreshed.Count);
+
+        return refreshed.Count;
+    }
+
+    /// <summary>
     /// Administrator escape hatch: force a Pending candidate to <see cref="PromotionStatus.Approved"/>
     /// without satisfying its configured approval gate. A <paramref name="reason"/> is required and is
     /// audited. Fires the SAME <c>promotion.approved</c> webhook a normal approval does — so downstream
