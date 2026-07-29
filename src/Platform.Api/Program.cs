@@ -50,16 +50,27 @@ if (!string.IsNullOrEmpty(appInsightsCs) && !appInsightsCs.StartsWith('<'))
 // mapped to whichever subclass was registered.
 var dbProvider = (builder.Configuration["Database:Provider"] ?? "Postgres").Trim();
 var dbConnectionString = builder.Configuration.GetConnectionString("Platform");
+
+// Retry on transient failures. This matters most at startup: the very first thing the app does is
+// apply pending migrations, and in Azure the database is serverless with auto-pause — so the opening
+// connection of the first deploy after an idle period has to wait out a cold resume, which takes
+// longer than a single connect timeout allows. Without a retry strategy that deploy fails outright
+// and the migrations never run.
+const int transientRetryCount = 8;
+var transientRetryDelay = TimeSpan.FromSeconds(15);
+
 if (dbProvider.Equals("SqlServer", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddDbContext<SqlServerPlatformDbContext>(options =>
-        options.UseSqlServer(dbConnectionString));
+        options.UseSqlServer(dbConnectionString, sql =>
+            sql.EnableRetryOnFailure(transientRetryCount, transientRetryDelay, errorNumbersToAdd: null)));
     builder.Services.AddScoped<PlatformDbContext>(sp => sp.GetRequiredService<SqlServerPlatformDbContext>());
 }
 else
 {
     builder.Services.AddDbContext<PostgresPlatformDbContext>(options =>
-        options.UseNpgsql(dbConnectionString));
+        options.UseNpgsql(dbConnectionString, npgsql =>
+            npgsql.EnableRetryOnFailure(transientRetryCount, transientRetryDelay, errorCodesToAdd: null)));
     builder.Services.AddScoped<PlatformDbContext>(sp => sp.GetRequiredService<PostgresPlatformDbContext>());
 }
 
