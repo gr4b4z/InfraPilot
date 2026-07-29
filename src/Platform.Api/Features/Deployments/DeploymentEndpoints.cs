@@ -24,8 +24,13 @@ public static class DeploymentEndpoints
                 return Results.Forbid();
             }
 
-            var result = await service.IngestEvent(dto, ct);
-            return Results.Created($"/api/deployments/events/{result.Id}", new { result.Id, result.Version, result.PreviousVersion });
+            var result = await service.IngestEventWithResult(dto, ct);
+            var body = new { result.Event.Id, result.Event.Version, result.Event.PreviousVersion, result.Replayed };
+            // Replay of an already-ingested event (same natural key) → 200 with the existing row,
+            // so retrying senders can distinguish "created" from "already there" but treat both as success.
+            return result.Replayed
+                ? Results.Ok(body)
+                : Results.Created($"/api/deployments/events/{result.Event.Id}", body);
         })
         .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
         .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);

@@ -33,6 +33,7 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   requireAllWorkItemsApproved: false,
   autoApproveOnAllWorkItemsApproved: false,
   autoApproveWhenNoWorkItems: false,
+  sourceRequiresDeploy: true,
 };
 
 const inputClass =
@@ -431,6 +432,7 @@ export function PromotionSettings() {
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
       autoApproveWhenNoWorkItems: p.autoApproveWhenNoWorkItems ?? false,
+      sourceRequiresDeploy: p.sourceRequiresDeploy ?? true,
     });
     setStepErrors({});
     setEditingId(p.id);
@@ -1001,6 +1003,26 @@ export function PromotionSettings() {
                       >
                         If the deploy event has no work-item references, skip the approval gate
                         entirely.
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.sourceRequiresDeploy}
+                      onChange={(e) => setField('sourceRequiresDeploy', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      Require a succeeded deploy in the source environment
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Uncheck for edges whose source is a CI landing zone / release track that
+                        never receives deployments (e.g. &quot;stable&quot;). Also disables the
+                        source-drift check for this edge.
                       </span>
                     </span>
                   </label>
