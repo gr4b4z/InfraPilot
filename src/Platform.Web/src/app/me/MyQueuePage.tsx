@@ -56,7 +56,6 @@ export function MyQueuePage() {
   // carries that nobody configured. The former is deliberately independent of what's on screen:
   // "which items have no QA owner?" is a question about a role that may appear nowhere.
   const [roles, setRoles] = useState<string[]>([]);
-  const [unknownRoles, setUnknownRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Hydrate the filter from localStorage so the user's pick survives reloads. Only happens
@@ -97,7 +96,6 @@ export function MyQueuePage() {
       setTickets(res.tickets ?? []);
       setAssignees(res.assignees ?? []);
       setRoles(res.roles ?? []);
-      setUnknownRoles(res.unknownRoles ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load work items');
     } finally {
@@ -213,7 +211,6 @@ export function MyQueuePage() {
             onChange={handleFilterChange}
             assignees={assignees}
             roles={roles}
-            unknownRoles={unknownRoles}
             hidePerson={view === 'mine'}
           />
         )}

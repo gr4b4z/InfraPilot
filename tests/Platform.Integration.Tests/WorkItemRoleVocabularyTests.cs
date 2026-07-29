@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -56,37 +56,21 @@ public class WorkItemRoleVocabularyTests
     // ── The role dropdown's contents ────────────────────────────────────────
 
     [Fact]
-    public async Task Queue_Roles_IsTheConfiguredVocabulary_NotTheAssigneeRoleSet()
+    public async Task Queue_Roles_IsTheBuiltInVocabulary()
     {
         var queue = await GetPendingAsync();
 
-        // Built-in defaults, in configured order.
+        // The built-in defaults cover every role the deploy-ingest and Jira paths actually emit, so a
+        // producer-sent role isn't flagged as unconfigured on a fresh install.
         Assert.Equal(
-            new[] { "triggered-by", "author", "reviewer", "qa" },
+            new[] { "triggered-by", "author", "reviewer", "qa", "qa-owner", "assignee", "reporter" },
             queue.Roles);
-
-        // "assignee" is in the DEFAULT assignee-role set (what counts as "assigned to somebody"
-        // when no role is picked) but is not a configured role, so it is not an offerable choice.
-        Assert.DoesNotContain("assignee", queue.Roles);
     }
 
     [Fact]
-    public async Task Queue_Roles_TracksTheSettingsNotTheAssigneeRoleSetting()
+    public async Task Queue_Roles_TracksTheConfiguredVocabulary()
     {
-        // Narrowing what counts as "assigned" must not narrow what an operator can filter on.
-        await SetAssigneeRoleSettingAsync("[\"qa\"]");
-        try
-        {
-            var queue = await GetPendingAsync();
-            Assert.Contains("author", queue.Roles);
-            Assert.Contains("reviewer", queue.Roles);
-        }
-        finally
-        {
-            await ResetAssigneeRoleSettingAsync();
-        }
-
-        // Editing the vocabulary itself, however, is exactly what the dropdown follows.
+        // The dropdown follows the settings row, not the roles present in the data.
         await SaveRoleVocabularyAsync(("qa-owner", "QA owner"), ("author", "Author"));
         try
         {
@@ -106,15 +90,16 @@ public class WorkItemRoleVocabularyTests
         await SeedPolicyAsync(product);
 
         // Ingest takes the producer at its word, so a role nobody configured lands on the item.
+        // "release-captain" is deliberately not in the built-in vocabulary.
         await CreateWorkItemPromotionAsync(product, "svc-unknown-role", "UNK-1", new[]
         {
-            new { role = "qa-owner", displayName = "Ola", email = "ola@example.com" },
+            new { role = "release-captain", displayName = "Ola", email = "ola@example.com" },
         });
 
         var queue = await GetPendingAsync();
-        Assert.Contains("qa-owner", queue.UnknownRoles);
+        Assert.Contains("release-captain", queue.UnknownRoles);
         // It is reported as unrecognised, not smuggled into the configured list.
-        Assert.DoesNotContain("qa-owner", queue.Roles);
+        Assert.DoesNotContain("release-captain", queue.Roles);
         // Configured roles that happen to be in use are not "unknown".
         Assert.DoesNotContain("qa", queue.UnknownRoles);
     }
@@ -122,12 +107,12 @@ public class WorkItemRoleVocabularyTests
     // ── The "nobody is in this role" filter ─────────────────────────────────
 
     [Fact]
-    public async Task RoleFilter_RoleOutsideTheAssigneeRoleSet_MatchesTheItemsOwnParticipants()
+    public async Task RoleFilter_AnyConfiguredRole_MatchesTheItemsOwnParticipants()
     {
-        // Regression: the role filter used to match only participants whose role was in the
-        // assignee-role set (qa / reviewer / assignee by default). Filtering on any other
-        // configured role — "author" here — therefore matched nothing, which made every item look
-        // like it was missing that role and the "role only" view come back empty.
+        // Regression: the role filter used to match only participants whose role was in a privileged
+        // "assignee role" subset. Filtering on any other configured role — "author" here — therefore
+        // matched nothing, which made every item look like it was missing that role and the
+        // "role only" view come back empty.
         var product = NewProduct();
         await SeedPolicyAsync(product);
 
@@ -158,18 +143,18 @@ public class WorkItemRoleVocabularyTests
 
         await CreateWorkItemPromotionAsync(product, "svc-owner-set", "OWN-1", new[]
         {
-            new { role = "qa-owner", displayName = "Ola", email = "ola@example.com" },
+            new { role = "release-captain", displayName = "Ola", email = "ola@example.com" },
         });
         await CreateWorkItemPromotionAsync(product, "svc-owner-unset", "OWN-2", new[]
         {
             new { role = "qa", displayName = "Quinn", email = "quinn@example.com" },
         });
 
-        var withOwner = await GetPendingAsync(role: "qa-owner");
+        var withOwner = await GetPendingAsync(role: "release-captain");
         Assert.Contains(withOwner.Tickets, t => t == "OWN-1");
         Assert.DoesNotContain(withOwner.Tickets, t => t == "OWN-2");
 
-        var missingOwner = await GetPendingAsync(role: "qa-owner", assignee: "unassigned");
+        var missingOwner = await GetPendingAsync(role: "release-captain", assignee: "unassigned");
         Assert.Contains(missingOwner.Tickets, t => t == "OWN-2");
         Assert.DoesNotContain(missingOwner.Tickets, t => t == "OWN-1");
     }
@@ -219,12 +204,12 @@ public class WorkItemRoleVocabularyTests
         var candidateId = await CreateWorkItemPromotionAsync(product, "svc-assign-bad", "ASSIGN-2", null);
 
         var resp = await AssignReferenceParticipantAsync(
-            candidateId, "ASSIGN-2", role: "qa-owner",
+            candidateId, "ASSIGN-2", role: "release-captain",
             assignee: new { email = "ola@example.com", displayName = "Ola" });
 
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var error = (await Deserialize(resp)).GetProperty("error").GetString() ?? "";
-        Assert.Contains("qa-owner", error);
+        Assert.Contains("release-captain", error);
         Assert.Contains("Participant Roles", error);
 
         // And nothing was written to the candidate's work-item reference.
@@ -294,7 +279,7 @@ public class WorkItemRoleVocabularyTests
 
         var bad = await _adminClient.PostAsJsonAsync(
             $"/api/promotions/{candidateId}/participants",
-            new { role = "qa-owner", displayName = "Ola", email = "ola@example.com" });
+            new { role = "release-captain", displayName = "Ola", email = "ola@example.com" });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         var good = await _adminClient.PostAsJsonAsync(
@@ -482,43 +467,7 @@ public class WorkItemRoleVocabularyTests
         }
     }
 
-    private async Task SetAssigneeRoleSettingAsync(string json)
-    {
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-        var existing = await db.PlatformSettings
-            .FirstOrDefaultAsync(s => s.Key == PromotionAssigneeRoleSettings.SettingKey);
-        if (existing is null)
-        {
-            db.PlatformSettings.Add(new PlatformSetting
-            {
-                Key = PromotionAssigneeRoleSettings.SettingKey,
-                Value = json,
-                UpdatedAt = DateTimeOffset.UtcNow,
-                UpdatedBy = "test",
-            });
-        }
-        else
-        {
-            existing.Value = json;
-            existing.UpdatedAt = DateTimeOffset.UtcNow;
-            existing.UpdatedBy = "test";
-        }
-        await db.SaveChangesAsync();
-    }
 
-    private async Task ResetAssigneeRoleSettingAsync()
-    {
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-        var existing = await db.PlatformSettings
-            .FirstOrDefaultAsync(s => s.Key == PromotionAssigneeRoleSettings.SettingKey);
-        if (existing is not null)
-        {
-            db.PlatformSettings.Remove(existing);
-            await db.SaveChangesAsync();
-        }
-    }
 
     private HttpClient CreateAuthenticatedClient(string email, string password)
     {

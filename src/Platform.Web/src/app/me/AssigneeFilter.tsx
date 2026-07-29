@@ -7,8 +7,9 @@ import type { PendingAssignee } from '@/lib/api';
  * Picker for narrowing the My-queue list by (role, person).
  *
  * Two side-by-side native selects:
- *   - Role: "Any role" + every configured participant role, then any unrecognised role the queue
- *     actually carries under its own group.
+ *   - Role: "Any role" + every configured participant role, ordered by label. Roles the queue
+ *     carries but nobody configured are not offered — they can't be assigned to, so filtering on one
+ *     only leads somewhere you can't act.
  *   - Person: "Anyone" + "Me" + the "nobody" option + each distinct person seen on the user's
  *     authorized list, filtered by the currently-selected role.
  *
@@ -53,21 +54,14 @@ export function AssigneeFilter({
   onChange,
   assignees,
   roles,
-  unknownRoles = [],
   hidePerson = false,
 }: {
   value: AssigneeFilterValue;
   onChange: (next: AssigneeFilterValue) => void;
   /** (email, role) → count rollup from the queue endpoint. Empty when the queue is empty. */
   assignees: PendingAssignee[];
-  /** Configured participant roles from the server, in configured order. */
+  /** Configured participant roles from the server. Rendered sorted by label. */
   roles: string[];
-  /**
-   * Roles carried by the queue's work items that aren't configured. Offered under their own
-   * group: they're the roles you'd want to find in order to fix them, and leaving them out would
-   * make those assignments unreachable from here.
-   */
-  unknownRoles?: string[];
   /**
    * Drop the person select, keeping only the role one. Used on the "Assigned to me" tab, where
    * the person is fixed by the tab — offering a picker that could contradict it would make the
@@ -97,21 +91,26 @@ export function AssigneeFilter({
     return out;
   }, [assignees, value.role]);
 
-  // Unrecognised roles to offer. The active pick is kept in the list even when the queue no longer
-  // carries it (its last holder was reassigned, say, or an admin dropped it from the vocabulary):
-  // a select whose value has no option renders as "Any role" while the filter is still narrowing,
-  // which reads as a broken queue rather than an active filter.
-  const unknownOptions = useMemo(() => {
-    const out = [...unknownRoles];
-    if (value.role && !roles.includes(value.role) && !out.includes(value.role)) {
-      out.push(value.role);
-    }
-    return out;
-  }, [unknownRoles, roles, value.role]);
+  // Configured roles, ordered by the label on screen. The configured order is an admin's arrangement
+  // of a settings list, which says nothing about how someone scans a dropdown for a role by name.
+  const roleOptions = useMemo(
+    () =>
+      [...roles].sort((a, b) =>
+        roleDisplay({ role: a }).localeCompare(roleDisplay({ role: b }), undefined, {
+          sensitivity: 'base',
+        }),
+      ),
+    [roles],
+  );
 
-  // The picked role isn't in the configured vocabulary — worth saying out loud, since it explains
-  // both the raw label and why nobody can be assigned to it.
-  const roleIsUnknown = !!value.role && unknownOptions.includes(value.role);
+  // A role the queue carries but nobody configured is deliberately NOT offered. It can't be
+  // assigned to (the server refuses it), so as a filter it only ever leads to a dead end — the fix
+  // is to add it under Settings → Participant Roles, which is what the chip on the item says.
+  //
+  // The active pick still gets an option when it isn't configured, because a select whose value has
+  // no matching option renders as "Any role" while the filter is still narrowing, which reads as a
+  // broken queue rather than an active filter. It's kept out of the list, not out of the select.
+  const roleIsUnknown = !!value.role && !roles.includes(value.role);
 
   // "Nobody" reads differently depending on whether a role is in play: with one, it's that role's
   // slot that's empty; without one, it's the whole assignment.
@@ -203,19 +202,13 @@ export function AssigneeFilter({
           }}
         >
           <option value={ANY_ROLE}>Any role</option>
-          {roles.map((r) => (
+          {roleOptions.map((r) => (
             <option key={r} value={r}>
               {roleDisplay({ role: r })}
             </option>
           ))}
-          {unknownOptions.length > 0 && (
-            <optgroup label="Not configured">
-              {unknownOptions.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </optgroup>
+          {roleIsUnknown && (
+            <option value={value.role!}>{value.role}</option>
           )}
         </select>
         {roleIsUnknown && (
