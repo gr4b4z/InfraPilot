@@ -5,6 +5,7 @@ import { roleDisplay, useConfiguredRoles, useIsUnrecognisedRole } from '@/lib/ro
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { AlertTriangle, Plus, Users, X } from 'lucide-react';
 
 /**
@@ -155,6 +156,7 @@ export function WorkItemParticipants({
           <button
             ref={rowsAssignRef}
             type="button"
+            {...{ [ROW_ACTION_ATTR]: 'assign' }}
             onClick={() => setEditingRole(newAssignOpen ? null : '')}
             className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-opacity hover:opacity-80"
             style={{ border: '1px dashed var(--border-color)', color: 'var(--text-muted)' }}
@@ -196,6 +198,7 @@ export function WorkItemParticipants({
         <button
           ref={chipsAssignRef}
           type="button"
+          {...{ [ROW_ACTION_ATTR]: 'assign' }}
           onClick={() => setEditingRole(newAssignOpen ? null : '')}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
           style={{ color: 'var(--text-muted)', border: '1px dashed var(--border-color)' }}
@@ -511,6 +514,13 @@ export function InlineUserPicker({
   const effectiveRole = (role ?? roleInput).trim();
   const canSubmit = effectiveRole.length > 0 && !lockedRoleUnrecognised;
 
+  // Which result the arrow keys are on. -1 means "none yet", so the first ArrowDown lands on the
+  // first result rather than the second. Reset whenever the result set changes, since index 2 of
+  // the previous search means nothing in the new one.
+  const [highlighted, setHighlighted] = useState(-1);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => setHighlighted(-1), [results]);
+
   const submitWithUser = (u: { email: string; displayName: string }) => {
     if (!canSubmit) return;
     onPick({ role: effectiveRole, email: u.email, displayName: u.displayName });
@@ -521,6 +531,32 @@ export function InlineUserPicker({
     // Cheap email-shape check. Server validates again with the same rule.
     if (!q.includes('@') || !q.includes('.')) return;
     submitWithUser({ email: q, displayName: q });
+  };
+
+  // Arrow keys drive the result list from the search box, so picking someone is type-then-Enter
+  // rather than type-then-Tab-past-every-name. Handled on the input because that is where focus
+  // stays while typing.
+  const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') { onCancel(); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (results.length === 0) return;
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      const next = Math.max(0, Math.min(highlighted + delta, results.length - 1));
+      setHighlighted(next);
+      // Keep the highlighted row inside the scrollable result box.
+      resultsRef.current
+        ?.querySelectorAll<HTMLElement>('[data-result-index]')[next]
+        ?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (results.length === 0) { submitManual(); return; }
+      // Enter with nothing arrowed to takes the top hit — the common case after typing a name.
+      const pick = results[highlighted === -1 ? 0 : highlighted];
+      if (pick) submitWithUser({ email: pick.email, displayName: pick.displayName });
+    }
   };
 
   return (
@@ -592,11 +628,21 @@ export function InlineUserPicker({
             color: 'var(--text-primary)',
           }}
           disabled={busy}
-          onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
+          role="combobox"
+          aria-expanded={results.length > 0}
+          aria-controls="assign-results"
+          aria-activedescendant={highlighted >= 0 ? `assign-result-${highlighted}` : undefined}
+          onKeyDown={onSearchKeyDown}
         />
       )}
       {!lockedRoleUnrecognised && query.trim().length >= 2 && (
-        <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
+        <div
+          ref={resultsRef}
+          id="assign-results"
+          role="listbox"
+          className="mt-1 max-h-48 overflow-y-auto rounded-lg border"
+          style={{ borderColor: 'var(--border-color)' }}
+        >
           {searching && (
             <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
               Searching...
@@ -617,13 +663,23 @@ export function InlineUserPicker({
               </span>
             </button>
           )}
-          {!searching && results.map((u) => (
+          {!searching && results.map((u, i) => (
             <button
               key={u.id}
               type="button"
+              id={`assign-result-${i}`}
+              data-result-index={i}
+              role="option"
+              aria-selected={highlighted === i}
+              onMouseEnter={() => setHighlighted(i)}
               onClick={() => submitWithUser({ email: u.email, displayName: u.displayName })}
               className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
+              style={{
+                color: 'var(--text-primary)',
+                // The arrowed-to row is tinted rather than focused: focus stays in the search box so
+                // the user can keep typing to narrow, which is how a combobox is expected to behave.
+                backgroundColor: highlighted === i ? 'var(--accent-muted)' : undefined,
+              }}
               disabled={busy || !canSubmit}
               title={!canSubmit ? 'Pick a role first' : undefined}
             >

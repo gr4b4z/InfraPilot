@@ -5,6 +5,9 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { formatDistanceToNow } from 'date-fns';
 import { Rocket, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { EnvLabel } from '@/components/environments/EnvBadge';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import type { ProductSummary } from '@/lib/types';
 
 export function DeploymentsPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
@@ -53,49 +56,81 @@ export function DeploymentsPage() {
                 ))}
               </tr>
             </thead>
-            <tbody>
-              {products.map((product) => (
-                  <tr
+            <KeyboardList as="tbody" count={products.length} ariaLabel="Products">
+              {products.map((product, index) => (
+                  <ProductRow
                     key={product.product}
-                    className="cursor-pointer transition-colors hover:opacity-80"
-                    style={{ borderBottom: '1px solid var(--border-color)' }}
-                    onClick={() => navigate(`/deployments/${product.product}`)}
-                  >
-                    <td className="px-4 py-3 font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {product.product}
-                    </td>
-                    {allEnvs.map((env) => {
-                      const summary = product.environments[env];
-                      if (!summary) {
-                        return (
-                          <td key={env} className="text-center px-4 py-3" style={{ color: 'var(--text-muted)' }}>
-                            —
-                          </td>
-                        );
-                      }
-                      const allDeployed = summary.deployedServices === summary.totalServices;
-                      return (
-                        <td key={env} className="text-center px-4 py-2">
-                          <div className="inline-flex flex-col items-center gap-0.5">
-                            <span className="inline-flex items-center gap-1" style={{ color: allDeployed ? 'var(--success)' : 'var(--warning)' }}>
-                              {allDeployed ? <CheckCircle size={13} /> : <AlertTriangle size={13} />}
-                              {summary.deployedServices}/{summary.totalServices}
-                            </span>
-                            {summary.lastDeployedAt && (
-                              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                                {formatDistanceToNow(new Date(summary.lastDeployedAt), { addSuffix: true })}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                      );
-                    })}
-                  </tr>
+                    index={index}
+                    product={product}
+                    allEnvs={allEnvs}
+                    onOpen={() => navigate(`/deployments/${product.product}`)}
+                  />
               ))}
-            </tbody>
+            </KeyboardList>
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One product's row in the overview. Focusable so the matrix can be walked with the arrow keys and
+ * opened with Enter — the row is the only way into a product's deployments, and as a bare
+ * `<tr onClick>` it had no keyboard route at all.
+ */
+function ProductRow({
+  index,
+  product,
+  allEnvs,
+  onOpen,
+}: {
+  index: number;
+  product: ProductSummary;
+  allEnvs: string[];
+  onOpen: () => void;
+}) {
+  // `role: null` keeps the implicit row semantics — see useKeyboardListRow.
+  const rowProps = useKeyboardListRow(index, onOpen, {
+    role: null,
+    label: `${product.product} — open deployments`,
+  });
+
+  return (
+    <tr
+      {...rowProps}
+      className="cursor-pointer transition-colors hover:opacity-80"
+      style={{ borderBottom: '1px solid var(--border-color)' }}
+    >
+      <td className="px-4 py-3 font-medium" style={{ color: 'var(--text-primary)' }}>
+        {product.product}
+      </td>
+      {allEnvs.map((env) => {
+        const summary = product.environments[env];
+        if (!summary) {
+          return (
+            <td key={env} className="text-center px-4 py-3" style={{ color: 'var(--text-muted)' }}>
+              —
+            </td>
+          );
+        }
+        const allDeployed = summary.deployedServices === summary.totalServices;
+        return (
+          <td key={env} className="text-center px-4 py-2">
+            <div className="inline-flex flex-col items-center gap-0.5">
+              <span className="inline-flex items-center gap-1" style={{ color: allDeployed ? 'var(--success)' : 'var(--warning)' }}>
+                {allDeployed ? <CheckCircle size={13} /> : <AlertTriangle size={13} />}
+                {summary.deployedServices}/{summary.totalServices}
+              </span>
+              {summary.lastDeployedAt && (
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {formatDistanceToNow(new Date(summary.lastDeployedAt), { addSuffix: true })}
+                </span>
+              )}
+            </div>
+          </td>
+        );
+      })}
+    </tr>
   );
 }

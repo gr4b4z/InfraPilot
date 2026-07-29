@@ -10,6 +10,7 @@ import type {
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { decisionStyle, providerLabel, referringCandidateId, shortHash } from '@/lib/workItem';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
@@ -694,6 +695,7 @@ function DecisionCard({
             {mine !== 'Approved' && (
               <button
                 onClick={() => decide('Approved')}
+                {...{ [ROW_ACTION_ATTR]: 'approve' }}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--success-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
@@ -705,6 +707,7 @@ function DecisionCard({
             {mine !== 'Issue' && (
               <button
                 onClick={() => decide('Issue')}
+                {...{ [ROW_ACTION_ATTR]: 'issue' }}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--warning-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
@@ -717,6 +720,7 @@ function DecisionCard({
             {mine !== 'Blocked' && (
               <button
                 onClick={() => decide('Blocked')}
+                {...{ [ROW_ACTION_ATTR]: 'block' }}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}

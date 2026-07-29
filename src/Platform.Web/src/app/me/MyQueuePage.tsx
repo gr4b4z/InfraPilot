@@ -7,6 +7,9 @@ import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
 import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
 import { roleDisplay } from '@/lib/roleLabel';
 import { FilterPanel, filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
@@ -303,10 +306,15 @@ export function MyQueuePage() {
           >
             {VIEW_LABELS[view]} ({filteredTickets.length})
           </h2>
-          <div className="space-y-2">
-            {filteredTickets.map((t) => (
+          <KeyboardList
+            className="space-y-2"
+            count={filteredTickets.length}
+            ariaLabel={`${VIEW_LABELS[view]} work items`}
+          >
+            {filteredTickets.map((t, index) => (
               <TicketRow
                 key={`${t.workItemKey}-${t.candidateId}-${t.decidedAt ?? 'pending'}-${t.decidedByEmail ?? ''}`}
+                index={index}
                 ticket={t}
                 onChanged={() => {
                   void fetchData(view, assigneeFilter, timeFrame, deciderFilter);
@@ -316,7 +324,7 @@ export function MyQueuePage() {
                 }}
               />
             ))}
-          </div>
+          </KeyboardList>
         </div>
       )}
     </div>
@@ -664,9 +672,12 @@ function emptyStateBody(filter: AssigneeFilterValue): string {
  * every leaf control having to know about the tile.
  */
 function TicketRow({
+  index,
   ticket,
   onChanged,
 }: {
+  /** Position in the list, for {@link useKeyboardListRow}'s roving tabindex. */
+  index: number;
   ticket: PendingTicket;
   onChanged: () => void;
 }) {
@@ -682,11 +693,17 @@ function TicketRow({
     !decided && !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
   const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
 
+  const rowProps = useKeyboardListRow(index, () => navigate(detailPath), {
+    label: `${ticket.workItemKey} — ${ticket.product} / ${ticket.service}, ${
+      decided ? `decided: ${ticket.decision}` : 'awaiting decision'
+    }. Open work item.`,
+  });
+
   return (
     <div
+      {...rowProps}
       className="card-hover rounded-xl border p-4 cursor-pointer"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-      onClick={() => navigate(detailPath)}
     >
       <div className="flex items-start gap-3">
         <Ticket size={16} style={{ color: 'var(--text-muted)', marginTop: 2, flexShrink: 0 }} />
@@ -709,6 +726,7 @@ function TicketRow({
                 onClick={(e) => e.stopPropagation()}
                 className="shrink-0 transition-opacity hover:opacity-70"
                 style={{ color: 'var(--text-muted)' }}
+                {...{ [ROW_ACTION_ATTR]: 'open-external' }}
                 title={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
                 aria-label={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
               >

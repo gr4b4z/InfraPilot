@@ -12,6 +12,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { PendingTicket, PromotionCandidate } from '@/lib/api';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { workItemDetailPath } from '@/lib/workItem';
@@ -102,8 +105,8 @@ export function MyTasksPage() {
             count={promotions.length}
             allLink={{ to: '/promotions', label: 'Open promotions' }}
           >
-            {promotions.map((c) => (
-              <PromotionTaskRow key={c.id} candidate={c} />
+            {promotions.map((c, index) => (
+              <PromotionTaskRow key={c.id} index={index} candidate={c} />
             ))}
           </Section>
 
@@ -113,9 +116,10 @@ export function MyTasksPage() {
             count={workItems.length}
             allLink={{ to: '/me/work-items', label: 'Open work items queue' }}
           >
-            {workItems.map((t) => (
+            {workItems.map((t, index) => (
               <WorkItemTaskRow
                 key={`${t.workItemKey}-${t.candidateId}`}
+                index={index}
                 ticket={t}
               />
             ))}
@@ -205,22 +209,30 @@ function Section({
           Nothing here right now.
         </p>
       ) : (
-        <div className="space-y-2">{children}</div>
+        // Each section is its own arrow-key list: the two groups are separate concerns, and running
+        // one cursor across both would let ArrowDown walk from a promotion into a work item.
+        <KeyboardList className="space-y-2" count={count} ariaLabel={title}>
+          {children}
+        </KeyboardList>
       )}
     </section>
   );
 }
 
-function PromotionTaskRow({ candidate }: { candidate: PromotionCandidate }) {
+function PromotionTaskRow({ index, candidate }: { index: number; candidate: PromotionCandidate }) {
   const navigate = useNavigate();
   const workItemCount = (candidate.sourceEventReferences ?? []).filter(
     (r) => r.type === 'work-item',
   ).length;
 
+  const rowProps = useKeyboardListRow(index, () => navigate(`/promotions/${candidate.id}`), {
+    label: `${candidate.product} / ${candidate.service} to ${candidate.targetEnv} — awaiting your approval. Open promotion.`,
+  });
+
   return (
     <div
+      {...rowProps}
       className="card-hover rounded-xl border p-4 flex items-start gap-3 cursor-pointer"
-      onClick={() => navigate(`/promotions/${candidate.id}`)}
       style={{
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
@@ -282,7 +294,7 @@ function PromotionTaskRow({ candidate }: { candidate: PromotionCandidate }) {
   );
 }
 
-function WorkItemTaskRow({ ticket }: { ticket: PendingTicket }) {
+function WorkItemTaskRow({ index, ticket }: { index: number; ticket: PendingTicket }) {
   const navigate = useNavigate();
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
   const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
@@ -293,10 +305,14 @@ function WorkItemTaskRow({ ticket }: { ticket: PendingTicket }) {
   // The carrying promotion has moved on (superseded / rejected) but the item is still unsigned.
   const orphaned = !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
 
+  const rowProps = useKeyboardListRow(index, () => navigate(detailPath), {
+    label: `${ticket.workItemKey} — ${ticket.product} / ${ticket.service}, assigned to you. Open work item.`,
+  });
+
   return (
     <div
+      {...rowProps}
       className="card-hover rounded-xl border p-4 flex items-start gap-3 cursor-pointer"
-      onClick={() => navigate(detailPath)}
       style={{
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
@@ -317,6 +333,7 @@ function WorkItemTaskRow({ ticket }: { ticket: PendingTicket }) {
               onClick={(e) => e.stopPropagation()}
               className="shrink-0 transition-opacity hover:opacity-70"
               style={{ color: 'var(--text-muted)' }}
+              {...{ [ROW_ACTION_ATTR]: 'open-external' }}
               title={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
               aria-label={`Open ${ticket.workItemKey} in ${ticket.provider ?? 'the tracker'}`}
             >
