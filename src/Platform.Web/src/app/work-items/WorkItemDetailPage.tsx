@@ -226,6 +226,10 @@ export function WorkItemDetailPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
+          {/* Who's on this work item, up front — it's read constantly (who do I ask, who already
+             signed off elsewhere) but assigning someone isn't an action worth a whole card, so it's
+             a compact chip row rather than the stacked per-role blocks used elsewhere. */}
+          <PeopleCard detail={detail} onChanged={load} />
           <DecisionCard detail={detail} onChanged={load} onError={setError} />
           <DecisionTrail detail={detail} />
           <CommentsCard
@@ -238,40 +242,55 @@ export function WorkItemDetailPage() {
         <div className="space-y-4">
           {/* First in the column: for a reviewer who arrived from the queue rather than from a
              promotion, this is the only route to the promotion this sign-off is holding up, so it
-             has to be reachable without scrolling past the change set and the people list. */}
+             has to be reachable without scrolling past the change set. */}
           <PromotionsCard detail={detail} />
 
           <ChangeSetCard detail={detail} />
-
-          {/* People — assignments write to the primary candidate's copy of this work-item
-             reference, which is where participants actually live. */}
-          <div
-            className="rounded-xl border p-5"
-            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-          >
-            <h2
-              className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              <Users size={12} /> People ({detail.participants.length})
-            </h2>
-            <WorkItemParticipants
-              candidateId={detail.primaryCandidateId}
-              referenceKey={detail.workItemKey}
-              participants={detail.participants}
-              onChanged={load}
-              readOnly={!detail.canManage}
-              layout="rows"
-            />
-            {!detail.canManage && detail.participants.length > 0 && (
-              <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                Assigning people requires the QA or Admin role.
-              </p>
-            )}
-          </div>
-
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * People assigned to this work item, as a single wrapping chip row rather than the stacked
+ * one-line-per-role blocks the promotion detail page uses for the same data — that layout was built
+ * to sit quietly in a sidebar; here People is core context for the sign-off decision, so it lives at
+ * the top of the main column but shouldn't cost more height than the header line it replaces.
+ *
+ * Assignments write to the primary candidate's copy of this work-item reference, which is where
+ * participants actually live.
+ */
+function PeopleCard({ detail, onChanged }: { detail: WorkItemDetail; onChanged: () => void }) {
+  return (
+    <div
+      className="rounded-xl border px-5 py-3 flex flex-wrap items-center gap-x-3 gap-y-1.5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <Users size={12} /> People
+      </h2>
+      <WorkItemParticipants
+        candidateId={detail.primaryCandidateId}
+        referenceKey={detail.workItemKey}
+        participants={detail.participants}
+        onChanged={onChanged}
+        readOnly={!detail.canManage}
+        layout="chips"
+      />
+      {!detail.canManage && detail.participants.length === 0 && (
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          Nobody assigned.
+        </span>
+      )}
+      {!detail.canManage && detail.participants.length > 0 && (
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          Assigning requires the QA or Admin role.
+        </span>
+      )}
     </div>
   );
 }
