@@ -118,7 +118,112 @@ public static class DeploymentSeedData
         }
 
         db.DeployEvents.AddRange(events);
+
+        // Captured pipeline output, so the detail page's log viewer and its error highlighting have
+        // something to show locally. Only a slice of events carry it — a real portal has plenty of
+        // deployments whose producer never sent logs, and the empty state should be visible too.
+        foreach (var ev in events)
+        {
+            db.DeployEventLogs.AddRange(BuildLogs(ev, rand));
+        }
+
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Synthesises the log blocks a Helm-style deploy would have printed. Failed events get the
+    /// diagnostics block too, ending on the same message their <c>run.failureReason</c> carries — the
+    /// point being that the highlighted error and the log agree, which is what makes the page useful.
+    /// </summary>
+    private static IEnumerable<DeployEventLog> BuildLogs(DeployEvent ev, Random rand)
+    {
+        // Every failure gets logs (that's when they matter); successes only sometimes.
+        var failed = ev.Status == "failed";
+        if (!failed && rand.NextDouble() > 0.6) yield break;
+
+        var releaseOutput =
+            $"Release \"{ev.Service}\" has been upgraded. Happy Helming!\n" +
+            $"NAME: {ev.Service}\n" +
+            $"LAST DEPLOYED: {ev.DeployedAt:ddd MMM d HH:mm:ss yyyy}\n" +
+            $"NAMESPACE: {ev.Environment}\n" +
+            $"STATUS: {(failed ? "failed" : "deployed")}\n" +
+            $"REVISION: {rand.Next(2, 60)}\n" +
+            $"CHART: {ev.Service}-{ev.Version}\n\n" +
+            "=== Deployments Status ===\n" +
+            $"NAME{new string(' ', 4)}READY   UP-TO-DATE   AVAILABLE\n" +
+            $"{ev.Service}    {(failed ? "0/2" : "2/2")}     {(failed ? "1" : "2")}            {(failed ? "0" : "2")}\n";
+
+        yield return MakeLog(ev, "helm upgrade output", "helm", 0, releaseOutput);
+
+        if (!failed) yield break;
+
+        // Read the cause off the run rather than re-rolling one: the highlighted error and the log
+        // have to say the same thing, or the page teaches the reader to distrust both.
+        var reason = ev.Run?.FailureReason ?? "release workloads did not become ready";
+        yield return MakeLog(ev, "failure diagnostics", "kubectl", 1,
+            "=== Pods Status ===\n" +
+            $"NAME                        READY   STATUS             RESTARTS\n" +
+            $"{ev.Service}-7d9c8b5f4-x2klm   0/1     CrashLoopBackOff   4\n\n" +
+            $"--- Logs for pod: {ev.Service}-7d9c8b5f4-x2klm ---\n" +
+            "info: Starting host\n" +
+            "warn: Configuration key 'ConnectionStrings:Default' not found, falling back\n" +
+            "fail: Microsoft.Extensions.Hosting.Internal.Host[11]\n" +
+            "      Hosting failed to start\n" +
+            "Unhandled exception. System.InvalidOperationException: Unable to resolve service\n" +
+            "   at Microsoft.Extensions.DependencyInjection.ActivatorUtilities.GetService(...)\n\n" +
+            "=== Events ===\n" +
+            $"Warning   BackOff   Back-off restarting failed container in pod/{ev.Service}\n\n" +
+            $"##[error]Helm deployment failed for {ev.Service} - {reason}\n");
+    }
+
+    private static DeployEventLog MakeLog(DeployEvent ev, string name, string source, int sequence, string content) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            DeployEventId = ev.Id,
+            Name = name,
+            Source = source,
+            Sequence = sequence,
+            Content = content,
+            Truncated = false,
+            ByteCount = System.Text.Encoding.UTF8.GetByteCount(content),
+            LineCount = content.Count(c => c == '\n') + 1,
+            OriginalByteCount = System.Text.Encoding.UTF8.GetByteCount(content),
+            CreatedAt = ev.DeployedAt,
+        };
+
+    /// <summary>
+    /// The CI run that performed the deployment: where to click, and — when it failed — the one-line
+    /// cause the pipeline identified. Modelled on the release repository's GitHub Actions workflow,
+    /// which is what deploys in practice, so <c>jobUrl</c> deep-links to the matrix leg for this
+    /// component rather than to the run as a whole.
+    /// </summary>
+    private static DeployRun BuildRun(
+        ProductCatalog product, string service, string environment, string version,
+        string status, DateTimeOffset deployedAt, Random rand, Person triggeredBy)
+    {
+        var runId = rand.NextInt64(30_000_000_000, 31_000_000_000);
+        var jobId = rand.NextInt64(90_000_000_000, 91_000_000_000);
+        var runUrl = $"https://github.com/acmetrix/release/actions/runs/{runId}";
+
+        return new DeployRun(
+            Provider: "github-actions",
+            RunId: runId.ToString(),
+            RunNumber: rand.Next(100, 999).ToString(),
+            Attempt: 1,
+            WorkflowName: $"Reconcile {environment}",
+            JobName: $"Deploy {(product.SourceStyle == SourceStyle.GitHub ? "Web" : "Helm")} ({service}, {version})",
+            RunUrl: runUrl,
+            JobUrl: $"{runUrl}/job/{jobId}",
+            TriggeredBy: triggeredBy.Name,
+            StartedAt: deployedAt.AddMinutes(-rand.Next(2, 12)),
+            CompletedAt: deployedAt,
+            FailureReason: status != "failed" ? null : rand.Next(3) switch
+            {
+                0 => $"pod {service}-7d9c8b5f4-x2klm keeps crash-looping (restartCount=4)",
+                1 => $"pod {service}-7d9c8b5f4-x2klm cannot start (container waiting reason=ImagePullBackOff)",
+                _ => "release workloads did not become ready within 1800 seconds",
+            });
     }
 
     private static IEnumerable<DeployEvent> GenerateServiceHistory(
@@ -166,14 +271,15 @@ public static class DeploymentSeedData
             var status = statusRoll < 0.05 ? "failed" : statusRoll < 0.08 ? "in_progress" : "succeeded";
 
             var shuffled = People.OrderBy(_ => rand.Next()).ToArray();
-            var references = BuildReferences(product, service, rand, shuffled);
+            var references = BuildReferences(product, service, environment, rand, shuffled);
             var enrichment = BuildEnrichment(rand);
+            var run = BuildRun(product, service, environment, version, status, timestamps[i], rand, shuffled[0]);
 
             yield return MakeEvent(
                 product.Name, service, environment, version, previousVersion,
                 SourceLabel(product.SourceStyle), timestamps[i],
                 isRollback, status,
-                references, enrichment);
+                references, enrichment, run);
 
             // Only update the env tracker for successful / in-progress deploys
             // so rollbacks don't poison the "last known good" pointer.
@@ -194,7 +300,8 @@ public static class DeploymentSeedData
         return Environments[0];
     }
 
-    private static List<ReferenceDto> BuildReferences(ProductCatalog product, string service, Random rand, Person[] people)
+    private static List<ReferenceDto> BuildReferences(
+        ProductCatalog product, string service, string environment, Random rand, Person[] people)
     {
         var refs = new List<ReferenceDto>();
 
@@ -278,6 +385,18 @@ public static class DeploymentSeedData
                 Participants: wiParticipants,
                 Content: wiContent));
         }
+
+        // Build manifest — the release repository's record of exactly what this version is made of
+        // (chart, images, source revision). The detail page hangs the version number off this link,
+        // so it's pinned to the release-repo commit that deployed rather than to a branch tip.
+        // Two GUIDs because a git sha is 40 hex characters and "N" only yields 32.
+        var manifestSha = (Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"))[..40];
+        refs.Add(new ReferenceDto("build-manifest",
+            $"https://github.com/acmetrix/release/blob/{manifestSha}/{environment}/{service}/build-metadata.yaml",
+            "github",
+            $"{service}/build-metadata.yaml",
+            manifestSha,
+            $"build-metadata.yaml @ {service}"));
 
         // Repository ~40% — just a pointer, no participants.
         if (rand.NextDouble() < 0.4)
@@ -367,7 +486,8 @@ public static class DeploymentSeedData
         string source, DateTimeOffset deployedAt,
         bool isRollback, string status,
         List<ReferenceDto> references,
-        EnrichmentData? enrichment = null)
+        EnrichmentData? enrichment = null,
+        DeployRun? run = null)
     {
         string? enrichmentJson = null;
         if (enrichment is not null)
@@ -396,6 +516,7 @@ public static class DeploymentSeedData
             ParticipantsJson = "[]",
             EnrichmentJson = enrichmentJson,
             MetadataJson = "{}",
+            RunJson = run is null ? null : JsonSerializer.Serialize(run, JsonOptions),
             CreatedAt = deployedAt,
         };
     }

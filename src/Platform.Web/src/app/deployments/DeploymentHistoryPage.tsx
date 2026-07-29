@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow, FileSearch } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
 
@@ -65,6 +65,13 @@ export function DeploymentHistoryPage() {
   useEffect(() => {
     setDisplayCount(PAGE_SIZE);
   }, [environment]);
+
+  // Where the detail page's back link should return to: this page with its environment filter intact,
+  // rather than the product matrix a level up.
+  const backHref = useMemo(
+    () => `/deployments/${product}/${service}/history${environment ? `?environment=${encodeURIComponent(environment)}` : ''}`,
+    [product, service, environment],
+  );
 
   const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
   const hasMore = displayCount < history.length;
@@ -143,6 +150,7 @@ export function DeploymentHistoryPage() {
               event={evt}
               isSelected={selectedId === evt.id}
               onClick={() => setSelectedId(selectedId === evt.id ? null : evt.id)}
+              detailHref={`/deployments/events/${evt.id}?from=${encodeURIComponent(backHref)}&fromLabel=${encodeURIComponent(service ?? 'history')}`}
             />
           ))}
           {hasMore && (
@@ -174,10 +182,11 @@ export function DeploymentHistoryPage() {
   );
 }
 
-function HistoryRow({ event: evt, isSelected, onClick }: {
+function HistoryRow({ event: evt, isSelected, onClick, detailHref }: {
   event: DeployEvent;
   isSelected: boolean;
   onClick: () => void;
+  detailHref: string;
 }) {
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
@@ -232,6 +241,19 @@ function HistoryRow({ event: evt, isSelected, onClick }: {
       <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
         {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
       </span>
+
+      {/* Route to the deployment's own page — where the pipeline output, the run that created it, and
+          the promotions it feeds live. stopPropagation so it doesn't also toggle the drawer, which is
+          what the rest of the row does. */}
+      <Link
+        to={detailHref}
+        onClick={(e) => e.stopPropagation()}
+        title="Open full deployment details"
+        className="p-1 rounded transition-opacity hover:opacity-70 shrink-0"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <FileSearch size={14} />
+      </Link>
     </div>
   );
 }

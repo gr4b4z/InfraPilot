@@ -85,6 +85,25 @@ public static class DeploymentEndpoints
             }
         });
 
+        // Single deploy event — everything the deployment detail page shows: the event, its captured
+        // pipeline output (as summaries; content is a separate call), the neighbouring deployments of
+        // the same service, and the promotions / work items this deployment connects to.
+        group.MapGet("/events/{id:guid}", async (
+            DeploymentService service, Guid id, int? historyLimit, CancellationToken ct) =>
+        {
+            var detail = await service.GetEventDetail(id, historyLimit is > 0 ? historyLimit.Value : 10, ct);
+            return detail is null ? Results.NotFound() : Results.Ok(detail);
+        });
+
+        // One block of captured output, fetched on demand — a Helm printout is too large to ride
+        // along with the detail response for a page that may never expand it.
+        group.MapGet("/events/{id:guid}/logs/{logId:guid}", async (
+            DeploymentService service, Guid id, Guid logId, CancellationToken ct) =>
+        {
+            var log = await service.GetLogContent(id, logId, ct);
+            return log is null ? Results.NotFound() : Results.Ok(log);
+        });
+
         // Product overview
         group.MapGet("/products", async (DeploymentService service, CancellationToken ct) =>
         {
@@ -206,6 +225,18 @@ public static class DeploymentEndpoints
         if (dto.DeployedAt == default) errors.Add("'deployedAt' is required");
         if (dto.Status is not null && !ValidStatuses.Contains(dto.Status))
             errors.Add($"'status' must be one of: {string.Join(", ", ValidStatuses)}");
+
+        // Log blocks are identified by name (that's the replace-on-retry key), so an unnamed block
+        // is rejected rather than silently dropped — a pipeline that captured output and got no
+        // error would otherwise never learn why its logs aren't showing.
+        if (dto.Logs is not null)
+        {
+            for (var i = 0; i < dto.Logs.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(dto.Logs[i].Name))
+                    errors.Add($"'logs[{i}].name' is required");
+            }
+        }
 
         // Reference-level participants: same shape as event-level — Role is required.
         if (dto.References is not null)

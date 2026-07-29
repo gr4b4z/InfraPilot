@@ -14,7 +14,26 @@ public record CreateDeployEventDto(
     Dictionary<string, object>? Metadata,
     string? Status = null,
     bool IsRollback = false,
-    string? PreviousVersion = null);
+    string? PreviousVersion = null,
+    // The CI run that performed this deployment, plus the error it identified. Optional: a producer
+    // that only reports "version V is live" has nothing to say here.
+    DeployRun? Run = null,
+    // Output the deploying pipeline captured — the Helm printout and its failure diagnostics. Sent
+    // with the event rather than through a follow-up call so a failed deploy is explainable the
+    // moment it appears, with no second request to lose.
+    List<CreateDeployLogDto>? Logs = null);
+
+/// <summary>
+/// One block of captured pipeline output. <c>Name</c> is the idempotency key within an event, so a
+/// retrying sender replaces its earlier copy instead of appending a duplicate. Set
+/// <c>Truncated</c> when the producer itself already dropped part of the log; the server sets it
+/// too when the content exceeds its own cap.
+/// </summary>
+public record CreateDeployLogDto(
+    string Name,
+    string? Source = null,
+    string? Content = null,
+    bool Truncated = false);
 
 /// <summary>
 /// Human/agent-authored manual deployment. Creates a NEW <c>DeployEvent</c> based on the latest one
@@ -87,7 +106,8 @@ public record DeployEventResponseDto(
     List<ReferenceDto> References,
     List<ParticipantDto> Participants,
     EnrichmentDto? Enrichment,
-    Dictionary<string, object>? Metadata);
+    Dictionary<string, object>? Metadata,
+    DeployRun? Run = null);
 
 public record EnrichmentDto(
     Dictionary<string, string> Labels,
@@ -95,6 +115,8 @@ public record EnrichmentDto(
     DateTimeOffset EnrichedAt);
 
 public record DeploymentStateDto(
+    // Identifies the event behind this cell so the UI can link straight to its detail page.
+    Guid Id,
     string Product,
     string Service,
     string Environment,
@@ -106,7 +128,86 @@ public record DeploymentStateDto(
     DateTimeOffset DeployedAt,
     List<ReferenceDto> References,
     List<ParticipantDto> Participants,
-    EnrichmentDto? Enrichment);
+    EnrichmentDto? Enrichment,
+    DeployRun? Run = null);
+
+// --- Detail view ---
+
+/// <summary>
+/// Everything the deployment detail page shows, in one round trip: the event itself, what its
+/// pipeline printed (as summaries — content is fetched per block on demand), the neighbouring
+/// deployments of the same service, and the promotions and work items that connect this deployment
+/// to the rest of the release process.
+/// </summary>
+public record DeployEventDetailDto(
+    DeployEventResponseDto Event,
+    List<DeployLogSummaryDto> Logs,
+    List<DeployEventHistoryEntryDto> History,
+    List<RelatedPromotionDto> Promotions,
+    List<RelatedWorkItemDto> WorkItems);
+
+/// <summary>
+/// A log block without its content. Sizes are reported so the UI can warn before pulling a
+/// multi-megabyte block, and so a zero-length capture is visibly distinct from a missing one.
+/// </summary>
+public record DeployLogSummaryDto(
+    Guid Id,
+    string Name,
+    string? Source,
+    int Sequence,
+    int ByteCount,
+    int LineCount,
+    bool Truncated,
+    DateTimeOffset CreatedAt);
+
+public record DeployLogContentDto(
+    Guid Id,
+    string Name,
+    string? Source,
+    string Content,
+    bool Truncated,
+    int OriginalByteCount);
+
+/// <summary>Compact neighbour row: enough to render a timeline and link onward, nothing more.</summary>
+public record DeployEventHistoryEntryDto(
+    Guid Id,
+    string Environment,
+    string Version,
+    string? PreviousVersion,
+    bool IsRollback,
+    string Status,
+    string Source,
+    DateTimeOffset DeployedAt,
+    string? FailureReason);
+
+/// <summary>
+/// A promotion candidate carrying the same (product, service, version) as this deployment.
+/// <c>Direction</c> says how the deployment relates to it: <c>outbound</c> when this environment is
+/// the promotion's source (this deploy is what may move forward), <c>inbound</c> when it is the
+/// target (this deploy is what the promotion delivered).
+/// </summary>
+public record RelatedPromotionDto(
+    Guid Id,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    string Status,
+    string Direction,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? ApprovedAt,
+    DateTimeOffset? DeployedAt);
+
+/// <summary>
+/// A work item this deployment carries. <c>SignOffTargetEnvs</c> lists the environments the ticket is
+/// gated for, taken from the promotions on this version — the work-item detail page keys sign-off on
+/// (key, product, targetEnv), so a link needs one of them. Empty when no promotion exists yet.
+/// </summary>
+public record RelatedWorkItemDto(
+    string Key,
+    string? Provider,
+    string? Url,
+    string? Title,
+    List<string> SignOffTargetEnvs);
 
 public record ProductSummaryDto(
     string Product,

@@ -23,6 +23,16 @@ public class DeploymentService
         PropertyNameCaseInsensitive = true,
     };
 
+    /// <summary>
+    /// Per-block cap on captured pipeline output. Beyond this the <b>tail</b> is kept: a failing
+    /// deploy prints its diagnostics last, so the end of the log is the part worth having. 512 KiB
+    /// comfortably holds a full Helm release printout plus its pod/event dumps.
+    /// </summary>
+    public const int LogContentLimitBytes = 512 * 1024;
+
+    /// <summary>Cap on how many blocks one event may carry, so a misbehaving producer can't flood the table.</summary>
+    public const int MaxLogsPerEvent = 20;
+
     public DeploymentService(
         PlatformDbContext db,
         IWebhookDispatcher webhookDispatcher,
@@ -121,6 +131,18 @@ public class DeploymentService
             .FirstOrDefaultAsync(ct);
         if (replayed is not null)
         {
+            // A replay still refreshes run details and logs. The first attempt of a pipeline can
+            // post before it has resolved its job URL or finished capturing output; the retry
+            // carries the fuller picture, and dropping it would leave the detail page thinner than
+            // the sender intended.
+            if (dto.Run is not null)
+            {
+                replayed.Run = dto.Run;
+                _db.DeployEvents.Update(replayed);
+            }
+            await SyncLogsAsync(replayed.Id, dto.Logs, ct);
+            await _db.SaveChangesAsync(ct);
+
             _logger.LogInformation(
                 "Replayed deploy event {Id}: {Product}/{Service} → {Environment} v{Version} already ingested; returning existing row",
                 replayed.Id, replayed.Product, replayed.Service, replayed.Environment, replayed.Version);
@@ -181,10 +203,12 @@ public class DeploymentService
                     Email: p.Email)).ToList(),
                 JsonOptions),
             MetadataJson = JsonSerializer.Serialize(dto.Metadata ?? new Dictionary<string, object>(), JsonOptions),
+            RunJson = dto.Run is null ? null : JsonSerializer.Serialize(dto.Run, JsonOptions),
             CreatedAt = DateTimeOffset.UtcNow,
         };
 
         _db.DeployEvents.Add(deployEvent);
+        await SyncLogsAsync(deployEvent.Id, dto.Logs, ct);
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
@@ -206,6 +230,10 @@ public class DeploymentService
             deployEvent.DeployedAt,
             references = deployEvent.References,
             participants = deployEvent.Participants,
+            // Subscribers alerting on failures need the cause and somewhere to click, not just
+            // status="failed".
+            runUrl = dto.Run?.JobUrl ?? dto.Run?.RunUrl,
+            failureReason = dto.Run?.FailureReason,
         }, new WebhookEventFilters(deployEvent.Product, deployEvent.Environment));
 
         // Fire-and-observe: generate promotion candidates / close in-flight ones. The hook is
@@ -214,6 +242,216 @@ public class DeploymentService
         await _promotionHook.OnIngestedAsync(deployEvent, ct);
 
         return new IngestResult(deployEvent, false);
+    }
+
+    // --- Captured pipeline output ---
+
+    /// <summary>
+    /// Stages the event's log blocks to match <paramref name="logs"/>, keyed by name: a block the
+    /// sender repeats is updated in place, one it stops sending is left alone. Deliberately not a
+    /// full reconcile — a producer may report the Helm output and its diagnostics from two different
+    /// calls, and deleting whatever the current call didn't mention would make the second call erase
+    /// the first. Blocks past <see cref="MaxLogsPerEvent"/> are dropped with a warning.
+    /// <para>Caller owns the surrounding <c>SaveChangesAsync</c>.</para>
+    /// </summary>
+    private async Task SyncLogsAsync(Guid eventId, List<CreateDeployLogDto>? logs, CancellationToken ct)
+    {
+        if (logs is null || logs.Count == 0) return;
+
+        // Named blocks only — the name is the identity, so an unnamed block can neither be replaced
+        // nor labelled in the UI.
+        var incoming = logs
+            .Where(l => !string.IsNullOrWhiteSpace(l.Name))
+            .GroupBy(l => l.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last()) // last wins: a sender repeating a name within one payload meant the later one
+            .ToList();
+
+        if (incoming.Count > MaxLogsPerEvent)
+        {
+            _logger.LogWarning(
+                "Deploy event {EventId} sent {Count} log blocks; keeping the first {Limit}",
+                eventId, incoming.Count, MaxLogsPerEvent);
+            incoming = incoming.Take(MaxLogsPerEvent).ToList();
+        }
+
+        var existing = await _db.DeployEventLogs
+            .Where(l => l.DeployEventId == eventId)
+            .ToListAsync(ct);
+        var byName = existing.ToDictionary(l => l.Name, StringComparer.OrdinalIgnoreCase);
+
+        // Continue numbering after what's already stored so blocks arriving in a later call sort
+        // after the earlier ones rather than colliding at 0.
+        var nextSequence = existing.Count == 0 ? 0 : existing.Max(l => l.Sequence) + 1;
+
+        foreach (var dto in incoming)
+        {
+            var name = dto.Name.Trim();
+            var (content, truncated, originalBytes) = CapLogContent(dto.Content ?? "");
+            truncated = truncated || dto.Truncated;
+
+            if (byName.TryGetValue(name, out var row))
+            {
+                row.Source = dto.Source;
+                row.Content = content;
+                row.Truncated = truncated;
+                row.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                row.LineCount = CountLines(content);
+                row.OriginalByteCount = originalBytes;
+                _db.DeployEventLogs.Update(row);
+                continue;
+            }
+
+            _db.DeployEventLogs.Add(new DeployEventLog
+            {
+                Id = Guid.NewGuid(),
+                DeployEventId = eventId,
+                Name = name,
+                Source = dto.Source,
+                Sequence = nextSequence++,
+                Content = content,
+                Truncated = truncated,
+                ByteCount = System.Text.Encoding.UTF8.GetByteCount(content),
+                LineCount = CountLines(content),
+                OriginalByteCount = originalBytes,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Trims content to <see cref="LogContentLimitBytes"/>, keeping the tail and prefixing a marker
+    /// so a reader is never left wondering whether the log simply started mid-sentence. Measured in
+    /// UTF-8 bytes (what the column costs), cut on a character boundary.
+    /// </summary>
+    public static (string Content, bool Truncated, int OriginalByteCount) CapLogContent(string content)
+    {
+        var originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
+        if (originalBytes <= LogContentLimitBytes) return (content, false, originalBytes);
+
+        // Character count is an upper bound on byte count for the tail, so slicing by characters
+        // then re-checking converges without a per-character scan.
+        var kept = content;
+        while (System.Text.Encoding.UTF8.GetByteCount(kept) > LogContentLimitBytes)
+        {
+            var overBy = System.Text.Encoding.UTF8.GetByteCount(kept) - LogContentLimitBytes;
+            kept = kept[Math.Min(kept.Length, overBy)..];
+        }
+        // Drop the partial first line — a log that opens mid-token reads like corruption.
+        var firstNewline = kept.IndexOf('\n');
+        if (firstNewline >= 0 && firstNewline < kept.Length - 1) kept = kept[(firstNewline + 1)..];
+
+        return ($"[… {originalBytes - System.Text.Encoding.UTF8.GetByteCount(kept)} bytes trimmed from the start of this log …]\n{kept}",
+            true, originalBytes);
+    }
+
+    /// <summary>
+    /// Returns one log block's content, or null when the block doesn't exist or belongs to a
+    /// different event (the id pair is checked, so a guessed log id can't leak another deployment's
+    /// output).
+    /// </summary>
+    public async Task<DeployLogContentDto?> GetLogContent(Guid eventId, Guid logId, CancellationToken ct = default)
+    {
+        var log = await _db.DeployEventLogs.AsNoTracking()
+            .FirstOrDefaultAsync(l => l.Id == logId && l.DeployEventId == eventId, ct);
+        return log is null
+            ? null
+            : new DeployLogContentDto(log.Id, log.Name, log.Source, log.Content, log.Truncated, log.OriginalByteCount);
+    }
+
+    // --- Detail view ---
+
+    /// <summary>
+    /// Assembles the deployment detail page's payload for one event: the event, its captured output
+    /// (summaries only — content is a separate call), the same service's neighbouring deployments,
+    /// and the promotions and work items that tie this deployment into the release process.
+    /// Returns null when no such event exists.
+    /// </summary>
+    public async Task<DeployEventDetailDto?> GetEventDetail(
+        Guid id, int historyLimit = 10, CancellationToken ct = default)
+    {
+        var ev = await _db.DeployEvents.AsNoTracking().FirstOrDefaultAsync(e => e.Id == id, ct);
+        if (ev is null) return null;
+
+        var overrides = await LoadOverridesByEventAsync([ev.Id], ct);
+        var eventDto = MapToResponseDto(ev, overrides.GetValueOrDefault(ev.Id));
+
+        // Projected without Content: the summary list exists precisely so opening the page doesn't
+        // drag every log block along with it. Sizes were materialised at ingest for this reason.
+        var logSummaries = await _db.DeployEventLogs.AsNoTracking()
+            .Where(l => l.DeployEventId == id)
+            .OrderBy(l => l.Sequence)
+            .Select(l => new DeployLogSummaryDto(
+                l.Id, l.Name, l.Source, l.Sequence, l.ByteCount, l.LineCount, l.Truncated, l.CreatedAt))
+            .ToListAsync(ct);
+
+        // Same service in the same environment: the question a reader has on this page is "what did
+        // this service do before/after here", not "what happened elsewhere".
+        var history = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == ev.Product && e.Service == ev.Service && e.Environment == ev.Environment)
+            .OrderByDescending(e => e.DeployedAt)
+            .Take(Math.Max(1, historyLimit))
+            .Select(e => new
+            {
+                e.Id, e.Environment, e.Version, e.PreviousVersion, e.IsRollback,
+                e.Status, e.Source, e.DeployedAt, e.RunJson,
+            })
+            .ToListAsync(ct);
+
+        var historyDtos = history
+            .Select(e => new DeployEventHistoryEntryDto(
+                e.Id, e.Environment, e.Version, e.PreviousVersion, e.IsRollback,
+                e.Status, e.Source, e.DeployedAt,
+                FailureReason: Deserialize<DeployRun>(e.RunJson)?.FailureReason))
+            .ToList();
+
+        // Promotions on the same (product, service, version). Outbound: this environment is the
+        // promotion's source, so this deploy is what may move forward. Inbound: it is the target, so
+        // this deploy is what the promotion delivered.
+        var promotions = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Product == ev.Product && c.Service == ev.Service && c.Version == ev.Version
+                     && (c.SourceEnv == ev.Environment || c.TargetEnv == ev.Environment))
+            .OrderByDescending(c => c.CreatedAt)
+            .Select(c => new
+            {
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status, c.CreatedAt, c.ApprovedAt, c.DeployedAt,
+            })
+            .ToListAsync(ct);
+
+        var promotionDtos = promotions
+            .Select(c => new RelatedPromotionDto(
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status.ToString(),
+                Direction: c.SourceEnv == ev.Environment ? "outbound" : "inbound",
+                c.CreatedAt, c.ApprovedAt, c.DeployedAt))
+            .ToList();
+
+        // Work items come from the relational projection rather than the event's JSON so the titles
+        // reflect any later Jira enrichment.
+        var workItemRows = await _db.DeployEventWorkItems.AsNoTracking()
+            .Where(w => w.DeployEventId == id)
+            .OrderBy(w => w.WorkItemKey)
+            .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title })
+            .ToListAsync(ct);
+
+        // Sign-off is keyed on (key, product, targetEnv), so a link needs a target env. Take them
+        // from the promotions carrying this version — those are the gates the ticket is actually in.
+        var signOffEnvs = promotionDtos
+            .Select(p => p.TargetEnv)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var workItemDtos = workItemRows
+            .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, signOffEnvs))
+            .ToList();
+
+        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);
+    }
+
+    private static int CountLines(string content)
+    {
+        if (content.Length == 0) return 0;
+        var lines = 1;
+        foreach (var c in content) if (c == '\n') lines++;
+        return lines;
     }
 
     /// <summary>
@@ -474,8 +712,9 @@ public class DeploymentService
             : Deserialize<EnrichmentDto>(e.EnrichmentJson);
 
         return new DeploymentStateDto(
-            e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment);
+            e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment,
+            Deserialize<DeployRun>(e.RunJson));
     }
 
     private static DeployEventResponseDto MapToResponseDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides)
@@ -489,7 +728,8 @@ public class DeploymentService
 
         return new DeployEventResponseDto(
             e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata,
+            Deserialize<DeployRun>(e.RunJson));
     }
 
     /// <summary>

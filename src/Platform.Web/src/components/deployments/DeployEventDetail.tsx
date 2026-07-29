@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
-import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2, PlusCircle } from 'lucide-react';
+import { X, ExternalLink, GitBranch, GitPullRequest, Ticket, Workflow, Users, Clock, Undo2, PlusCircle, AlertTriangle, FileSearch } from 'lucide-react';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -89,6 +89,25 @@ export function DeployEventDetail({ entry, product, onClose, onChanged }: Props)
           </button>
         </div>
 
+        {/* Failure, up front. The drawer can't hold the logs, so it states the cause the pipeline
+            reported and hands off to the detail page, where the output lives. */}
+        {entry.status === 'failed' && (
+          <div
+            className="px-3 py-2 rounded-lg text-[13px] space-y-1"
+            style={{ backgroundColor: 'var(--danger-bg)', color: 'var(--danger)' }}
+          >
+            <div className="flex items-center gap-2 font-medium">
+              <AlertTriangle size={14} />
+              Deployment failed
+            </div>
+            {entry.run?.failureReason && (
+              <p className="font-mono text-[11.5px] break-words" style={{ color: 'var(--text-primary)' }}>
+                {entry.run.failureReason}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Rollback banner */}
         {entry.isRollback && (
           <div
@@ -163,7 +182,19 @@ export function DeployEventDetail({ entry, product, onClose, onChanged }: Props)
         )}
 
         {/* Actions */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* Everything this drawer can't hold — the pipeline output, the run that created it, the
+              promotions and work items it connects to — lives on the detail page. First action,
+              because on a failed deployment it's where the answer is. */}
+          <Link
+            to={`/deployments/events/${entry.id}?from=${encodeURIComponent(`/deployments/${product}`)}&fromLabel=${encodeURIComponent(product)}`}
+            className="inline-flex items-center gap-1.5 text-[13px] font-semibold transition-opacity hover:opacity-80"
+            style={{ color: 'var(--accent)' }}
+          >
+            <FileSearch size={13} />
+            Full details
+          </Link>
+
           {/* History link */}
           <Link
             to={`/deployments/${product}/${entry.service}/history`}
