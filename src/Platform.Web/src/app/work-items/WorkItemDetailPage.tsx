@@ -9,7 +9,7 @@ import type {
   WorkItemDetail,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
-import { decisionStyle, providerLabel, shortHash } from '@/lib/workItem';
+import { decisionStyle, providerLabel, referringCandidateId, shortHash } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
@@ -58,6 +58,8 @@ export function WorkItemDetailPage() {
   const workItemKey = rawKey ?? '';
   const product = searchParams.get('product') ?? '';
   const targetEnv = searchParams.get('targetEnv') ?? '';
+  // Set when we were opened from a promotion — drives the breadcrumb back to it.
+  const fromCandidateId = referringCandidateId(searchParams.get('from'));
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
 
   const [detail, setDetail] = useState<WorkItemDetail | null>(null);
@@ -101,8 +103,12 @@ export function WorkItemDetailPage() {
         <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
           {error ?? 'Work item not found'}
         </p>
-        <Link to="/me/work-items" className="text-[13px] font-medium" style={{ color: 'var(--accent)' }}>
-          Back to work items
+        <Link
+          to={fromCandidateId ? `/promotions/${fromCandidateId}` : '/me/work-items'}
+          className="text-[13px] font-medium"
+          style={{ color: 'var(--accent)' }}
+        >
+          {fromCandidateId ? 'Back to promotion' : 'Back to work items'}
         </Link>
       </div>
     );
@@ -112,17 +118,37 @@ export function WorkItemDetailPage() {
   // below shows every one of them, so the summary badge only needs the canonical outcome.
   const headline = detail.approvals[0] ?? null;
   const headlineStyle = headline ? decisionStyle(headline.decision) : null;
-  const primary = detail.candidates.find((c) => c.isPrimary) ?? null;
+  // The promotion we were opened from, when it's one this work item still lists. A superseded
+  // referrer won't resolve (the API omits those), so the breadcrumb still links back by id but
+  // without the service/edge suffix.
+  const referrer = fromCandidateId
+    ? (detail.candidates.find((c) => c.id === fromCandidateId) ?? null)
+    : null;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <Link
-        to="/me/work-items"
-        className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        <ArrowLeft size={14} /> Back to work items
-      </Link>
+      {fromCandidateId ? (
+        <Link
+          to={`/promotions/${fromCandidateId}`}
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <ArrowLeft size={14} /> Back to promotion
+          {referrer && (
+            <span style={{ color: 'var(--text-muted)', opacity: 0.8 }}>
+              · {referrer.service} {referrer.sourceEnv} → {referrer.targetEnv}
+            </span>
+          )}
+        </Link>
+      ) : (
+        <Link
+          to="/me/work-items"
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <ArrowLeft size={14} /> Back to work items
+        </Link>
+      )}
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -210,6 +236,11 @@ export function WorkItemDetailPage() {
         </div>
 
         <div className="space-y-4">
+          {/* First in the column: for a reviewer who arrived from the queue rather than from a
+             promotion, this is the only route to the promotion this sign-off is holding up, so it
+             has to be reachable without scrolling past the change set and the people list. */}
+          <PromotionsCard detail={detail} />
+
           <ChangeSetCard detail={detail} />
 
           {/* People — assignments write to the primary candidate's copy of this work-item
@@ -239,72 +270,86 @@ export function WorkItemDetailPage() {
             )}
           </div>
 
-          {/* Promotions carrying this work item */}
-          <div
-            className="rounded-xl border p-5"
-            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-          >
-            <h2
-              className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              <GitPullRequest size={12} /> Promotions ({detail.candidates.length})
-            </h2>
-            {detail.candidates.length === 0 && (
-              <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                No live promotion carries this work item — it still needs signing off so it stops
-                sitting in the queue.
-              </p>
-            )}
-            <div className="space-y-2">
-              {detail.candidates.map((c) => (
-                <Link
-                  key={c.id}
-                  to={`/promotions/${c.id}`}
-                  className="block p-3 rounded-lg border transition-opacity hover:opacity-80"
-                  style={{
-                    borderColor: c.isPrimary ? 'var(--accent)' : 'var(--border-color)',
-                    backgroundColor: 'var(--bg-secondary)',
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span
-                      className="text-[13px] font-medium truncate"
-                      style={{ color: 'var(--text-primary)' }}
-                    >
-                      {c.service}
-                    </span>
-                    <span
-                      className="text-[11px] font-medium shrink-0"
-                      style={{ color: CANDIDATE_STATUS_COLOR[c.status] ?? 'var(--text-muted)' }}
-                    >
-                      {c.status}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 mt-1.5 text-[11px]">
-                    <EnvBadge env={c.sourceEnv} size="xs" />
-                    <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
-                    <EnvBadge env={c.targetEnv} size="xs" />
-                    <span className="font-mono ml-1" style={{ color: 'var(--text-muted)' }}>
-                      {c.version}
-                    </span>
-                  </div>
-                  <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                    {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
-                  </p>
-                </Link>
-              ))}
-            </div>
-            {primary && detail.candidates.length > 1 && (
-              <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                A sign-off here counts for every promotion above. People are assigned on{' '}
-                <span className="font-medium">{primary.service}</span> (the newest one). Superseded
-                builds aren&rsquo;t listed.
-              </p>
-            )}
-          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The promotions carrying this work item, each linking to its detail page. This is the return path
+ * out of a work item: a reviewer opens a ticket to sign it off, and the thing they were actually
+ * working on is the promotion waiting on that sign-off.
+ *
+ * Superseded builds are omitted by the API, so the count here is "live promotions", not history.
+ */
+function PromotionsCard({ detail }: { detail: WorkItemDetail }) {
+  const primary = detail.candidates.find((c) => c.isPrimary) ?? null;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <GitPullRequest size={12} /> Promotions ({detail.candidates.length})
+      </h2>
+      {detail.candidates.length === 0 && (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          No live promotion carries this work item — it still needs signing off so it stops sitting
+          in the queue.
+        </p>
+      )}
+      <div className="space-y-2">
+        {detail.candidates.map((c) => (
+          <Link
+            key={c.id}
+            to={`/promotions/${c.id}`}
+            className="block p-3 rounded-lg border transition-opacity hover:opacity-80"
+            style={{
+              borderColor: c.isPrimary ? 'var(--accent)' : 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+            }}
+            title={`Open the ${c.service} promotion ${c.sourceEnv} → ${c.targetEnv}`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className="text-[13px] font-medium truncate"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {c.service}
+              </span>
+              <span
+                className="text-[11px] font-medium shrink-0"
+                style={{ color: CANDIDATE_STATUS_COLOR[c.status] ?? 'var(--text-muted)' }}
+              >
+                {c.status}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 mt-1.5 text-[11px]">
+              <EnvBadge env={c.sourceEnv} size="xs" />
+              <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+              <EnvBadge env={c.targetEnv} size="xs" />
+              <span className="font-mono ml-1" style={{ color: 'var(--text-muted)' }}>
+                {c.version}
+              </span>
+            </div>
+            <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+            </p>
+          </Link>
+        ))}
+      </div>
+      {primary && detail.candidates.length > 1 && (
+        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          A sign-off here counts for every promotion above. People are assigned on{' '}
+          <span className="font-medium">{primary.service}</span> (the newest one). Superseded builds
+          aren&rsquo;t listed.
+        </p>
+      )}
     </div>
   );
 }

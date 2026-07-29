@@ -93,6 +93,7 @@ public class PromotionPolicyResolver
             RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
             AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
             AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
+            SourceRequiresDeploy = policy.SourceRequiresDeploy,
         };
     }
 }

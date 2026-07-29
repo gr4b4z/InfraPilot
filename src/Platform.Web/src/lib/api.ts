@@ -1247,8 +1247,12 @@ export interface PromotionPolicy {
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
+  sourceRequiresDeploy: boolean;
   createdAt: string;
   updatedAt: string;
+  // Set only on create/update responses: how many pending promotions were re-gated under the saved
+  // settings. Null when reading policies back.
+  reappliedCandidates: number | null;
 }
 
 export interface UpsertPromotionPolicyPayload {
@@ -1262,6 +1266,7 @@ export interface UpsertPromotionPolicyPayload {
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
+  sourceRequiresDeploy: boolean;
 }
 
 export interface FeatureFlag {

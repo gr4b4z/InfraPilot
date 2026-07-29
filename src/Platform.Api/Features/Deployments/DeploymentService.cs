@@ -89,13 +89,43 @@ public class DeploymentService
         return await IngestEvent(dto, ct);
     }
 
+    /// <summary>Outcome of an ingest: the stored event plus whether it was a replay of an existing row.</summary>
+    public record IngestResult(DeployEvent Event, bool Replayed);
+
     public async Task<DeployEvent> IngestEvent(CreateDeployEventDto dto, CancellationToken ct = default)
+        => (await IngestEventWithResult(dto, ct)).Event;
+
+    /// <summary>
+    /// Ingests a deploy event idempotently. A row whose natural key
+    /// <c>(Product, Service, Environment, Version, DeployedAt, Source)</c> — the same key
+    /// <see cref="RemoveDuplicates"/> uses — already exists is treated as a replay: the existing
+    /// row is returned with <c>Replayed=true</c> and no webhook / promotion hook fires again.
+    /// This makes pipeline retries safe as long as the sender keeps <c>deployedAt</c> stable
+    /// across attempts. The guard is check-then-insert (no unique index across providers), so a
+    /// truly concurrent duplicate can still slip through; <see cref="RemoveDuplicates"/> remains
+    /// the backstop for that case.
+    /// </summary>
+    public async Task<IngestResult> IngestEventWithResult(CreateDeployEventDto dto, CancellationToken ct = default)
     {
         var norm = _normalization.CurrentValue;
 
         // Optional canonicalisation — controlled by appsettings `Normalization:*`. Off by
         // default, so senders' original casing is preserved unless an admin opts in.
         var environment = norm.ApplyEnvironment(dto.Environment);
+
+        var replayed = await _db.DeployEvents
+            .Where(e => e.Product == dto.Product && e.Service == dto.Service
+                     && e.Environment == environment && e.Version == dto.Version
+                     && e.Source == dto.Source && e.DeployedAt == dto.DeployedAt)
+            .OrderBy(e => e.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+        if (replayed is not null)
+        {
+            _logger.LogInformation(
+                "Replayed deploy event {Id}: {Product}/{Service} → {Environment} v{Version} already ingested; returning existing row",
+                replayed.Id, replayed.Product, replayed.Service, replayed.Environment, replayed.Version);
+            return new IngestResult(replayed, true);
+        }
 
         // Use caller-supplied previousVersion when present (lets integrators assert the
         // predecessor they observed and detect drift vs. the server's history). Otherwise
@@ -180,7 +210,7 @@ public class DeploymentService
         // resilient even when the promotion machinery misbehaves.
         await _promotionHook.OnIngestedAsync(deployEvent, ct);
 
-        return deployEvent;
+        return new IngestResult(deployEvent, false);
     }
 
     /// <summary>

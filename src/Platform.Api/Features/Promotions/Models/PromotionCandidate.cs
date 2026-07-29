@@ -32,8 +32,11 @@ public class PromotionCandidate
 
     public PromotionStatus Status { get; set; } = PromotionStatus.Pending;
 
-    // Policy snapshot at creation time — preserves audit integrity even if the policy row
-    // is edited or deleted between candidate creation and approval.
+    // Resolved policy snapshot: the rules this candidate is actually gated on. Taken at creation
+    // time, and re-taken for still-Pending candidates when the policy is edited (see
+    // PromotionService.RefreshPolicySnapshotsAsync) so a settings change applies to in-flight
+    // promotions. Frozen from Approved onwards — the decision that fired keeps the rules it was
+    // judged under.
     public Guid? PolicyId { get; set; }
     public string? ResolvedPolicyJson { get; set; }
 

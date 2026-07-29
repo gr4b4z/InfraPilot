@@ -351,6 +351,8 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
+            // Default TRUE: pre-existing edges keep requiring a source deploy event.
+            e.Property(x => x.SourceRequiresDeploy).IsRequired().HasDefaultValue(true);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
             // Unique per (product, service?, source_env, target_env). SQL Server and Postgres both
             // treat NULL as distinct from NULL in unique indexes, which is the semantics we want:
