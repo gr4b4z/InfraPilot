@@ -43,7 +43,7 @@ public static class PromotionAdminEndpoints
             var rows = await db.PromotionPolicies.AsNoTracking()
                 .OrderBy(p => p.Product).ThenBy(p => p.Service).ThenBy(p => p.TargetEnv)
                 .ToListAsync();
-            return Results.Ok(new { policies = rows.Select(MapPolicy) });
+            return Results.Ok(new { policies = rows.Select(p => MapPolicy(p)) });
         });
 
         group.MapGet("/policies/{id:guid}", async (PlatformDbContext db, Guid id) =>
@@ -53,7 +53,8 @@ public static class PromotionAdminEndpoints
         });
 
         group.MapPost("/policies", async (
-            PlatformDbContext db, ICurrentUser user, UpsertPolicyRequest request) =>
+            PlatformDbContext db, PromotionService promotions, ICurrentUser user,
+            UpsertPolicyRequest request, CancellationToken ct) =>
         {
             var error = ValidatePolicyRequest(request);
             if (error is not null) return Results.BadRequest(new { error });
@@ -83,23 +84,36 @@ public static class PromotionAdminEndpoints
                 RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved,
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
                 AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems,
+                SourceRequiresDeploy = request.SourceRequiresDeploy,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
             db.PromotionPolicies.Add(policy);
             await db.SaveChangesAsync();
 
-            return Results.Created($"/api/promotions/admin/policies/{policy.Id}", MapPolicy(policy));
+            // A new policy can out-specify what pending candidates on this edge were created under
+            // (a fresh service-specific row overriding the product default), so re-apply it to them.
+            var reapplied = await promotions.RefreshPolicySnapshotsAsync(
+                policy.Product, policy.Service, policy.SourceEnv, policy.TargetEnv, ct);
+
+            return Results.Created(
+                $"/api/promotions/admin/policies/{policy.Id}",
+                MapPolicy(policy, reapplied));
         });
 
         group.MapPut("/policies/{id:guid}", async (
-            PlatformDbContext db, ICurrentUser user, Guid id, UpsertPolicyRequest request) =>
+            PlatformDbContext db, PromotionService promotions, ICurrentUser user, Guid id,
+            UpsertPolicyRequest request, CancellationToken ct) =>
         {
             var error = ValidatePolicyRequest(request);
             if (error is not null) return Results.BadRequest(new { error });
 
             var policy = await db.PromotionPolicies.FirstOrDefaultAsync(p => p.Id == id);
             if (policy is null) return Results.NotFound();
+
+            // The edit may re-scope the policy. Candidates under the OLD scope lose it (and fall back
+            // to whatever else resolves), candidates under the NEW scope gain it — both need a refresh.
+            var oldScope = (policy.Product, policy.Service, policy.SourceEnv, policy.TargetEnv);
 
             policy.Product = request.Product;
             policy.Service = string.IsNullOrWhiteSpace(request.Service) ? null : request.Service;
@@ -111,18 +125,36 @@ public static class PromotionAdminEndpoints
             policy.RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved;
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
             policy.AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems;
+            policy.SourceRequiresDeploy = request.SourceRequiresDeploy;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
 
             await db.SaveChangesAsync();
-            return Results.Ok(MapPolicy(policy));
+
+            var newScope = (policy.Product, policy.Service, policy.SourceEnv, policy.TargetEnv);
+            var reapplied = await promotions.RefreshPolicySnapshotsAsync(
+                newScope.Product, newScope.Service, newScope.SourceEnv, newScope.TargetEnv, ct);
+            if (oldScope != newScope)
+                reapplied += await promotions.RefreshPolicySnapshotsAsync(
+                    oldScope.Product, oldScope.Service, oldScope.SourceEnv, oldScope.TargetEnv, ct);
+
+            return Results.Ok(MapPolicy(policy, reapplied));
         });
 
-        group.MapDelete("/policies/{id:guid}", async (PlatformDbContext db, Guid id) =>
+        group.MapDelete("/policies/{id:guid}", async (
+            PlatformDbContext db, PromotionService promotions, Guid id, CancellationToken ct) =>
         {
             var policy = await db.PromotionPolicies.FirstOrDefaultAsync(p => p.Id == id);
             if (policy is null) return Results.NotFound();
+
+            var scope = (policy.Product, policy.Service, policy.SourceEnv, policy.TargetEnv);
             db.PromotionPolicies.Remove(policy);
             await db.SaveChangesAsync();
+
+            // Pending candidates on this edge now resolve to the product-default policy, if one exists.
+            // If nothing resolves they keep their original snapshot rather than becoming auto-approve.
+            await promotions.RefreshPolicySnapshotsAsync(
+                scope.Product, scope.Service, scope.SourceEnv, scope.TargetEnv, ct);
+
             return Results.NoContent();
         });
 
@@ -132,7 +164,12 @@ public static class PromotionAdminEndpoints
         return group;
     }
 
-    private static object MapPolicy(PromotionPolicy p) => new
+    /// <summary>
+    /// Response shape for a policy. <paramref name="reappliedCandidates"/> reports how many pending
+    /// promotions were re-snapshotted under the saved settings, so the UI can tell the operator their
+    /// change affected in-flight work; it is omitted on read-only responses.
+    /// </summary>
+    private static object MapPolicy(PromotionPolicy p, int? reappliedCandidates = null) => new
     {
         id = p.Id,
         product = p.Product,
@@ -155,8 +192,10 @@ public static class PromotionAdminEndpoints
         requireAllWorkItemsApproved = p.RequireAllWorkItemsApproved,
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
         autoApproveWhenNoWorkItems = p.AutoApproveWhenNoWorkItems,
+        sourceRequiresDeploy = p.SourceRequiresDeploy,
         createdAt = p.CreatedAt,
         updatedAt = p.UpdatedAt,
+        reappliedCandidates,
     };
 
     /// <summary>
@@ -238,7 +277,8 @@ public record UpsertPolicyRequest(
     string? EscalationGroup,
     bool RequireAllWorkItemsApproved = false,
     bool AutoApproveOnAllWorkItemsApproved = false,
-    bool AutoApproveWhenNoWorkItems = false);
+    bool AutoApproveWhenNoWorkItems = false,
+    bool SourceRequiresDeploy = true);
 
 /// <summary>One approval step in an <see cref="UpsertPolicyRequest"/>.</summary>
 public record UpsertStepRequest(string? Name, List<UpsertRequirementRequest>? Requirements);

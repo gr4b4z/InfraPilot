@@ -730,7 +730,12 @@ function CandidateCard({
                 return (
                   <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
                     <Link
-                      to={workItemDetailPath(workItemKey, candidate.product, candidate.targetEnv)}
+                      to={workItemDetailPath(
+                        workItemKey,
+                        candidate.product,
+                        candidate.targetEnv,
+                        candidate.id,
+                      )}
                       onClick={(e) => e.stopPropagation()}
                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
                       style={{
