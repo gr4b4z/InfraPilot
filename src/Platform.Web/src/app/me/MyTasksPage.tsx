@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { PendingTicket, PromotionCandidate } from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
+import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { useAuthStore } from '@/stores/authStore';
@@ -360,11 +361,7 @@ function WorkItemTaskRow({ ticket }: { ticket: PendingTicket }) {
             <span className="font-medium">{ticket.product}</span>
           </span>
           <span style={{ color: 'var(--text-muted)' }}>·</span>
-          <span className="inline-flex items-center gap-1">
-            <EnvBadge env={ticket.sourceEnv} size="xs" />
-            <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-            <EnvBadge env={ticket.targetEnv} size="xs" />
-          </span>
+          <WorkItemEnvironments environments={ticket.environments ?? []} />
           <span style={{ color: 'var(--text-muted)' }}>·</span>
           <span>
             <span style={{ color: 'var(--text-muted)' }}>Service:</span>{' '}

@@ -269,6 +269,15 @@ public static class WorkItemEndpoints
         workItemKey = d.WorkItemKey,
         product = d.Product,
         targetEnv = d.TargetEnv,
+        // Where the change is actually running — the environments a reviewer can exercise it in.
+        // Resolved from deploy events matching the carrying version, not from the promotion edge.
+        environments = d.Environments.Select(e => new
+        {
+            environment = e.Environment,
+            service = e.Service,
+            version = e.Version,
+            deployedAt = e.DeployedAt,
+        }),
         title = d.Title,
         url = d.Url,
         provider = d.Provider,
