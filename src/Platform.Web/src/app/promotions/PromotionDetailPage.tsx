@@ -15,7 +15,7 @@ import type {
   WorkItemContext,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
-import { roleDisplay } from '@/lib/roleLabel';
+import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
   ArrowLeft,
@@ -636,7 +636,7 @@ function PeopleCard({
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
   const [showForm, setShowForm] = useState(false);
-  const [roles, setRoles] = useState<string[]>([]);
+  const configuredRoles = useConfiguredRoles();
   const [role, setRole] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
@@ -648,14 +648,6 @@ function PeopleCard({
   >([]);
   const [userSearchOpen, setUserSearchOpen] = useState(false);
   const [userSearchLoading, setUserSearchLoading] = useState(false);
-
-  useEffect(() => {
-    if (!showForm || roles.length > 0) return;
-    api
-      .listPromotionRoles()
-      .then((d) => setRoles(d.roles || []))
-      .catch(() => setRoles([]));
-  }, [showForm, roles.length]);
 
   // Debounced directory search (Entra / local users via IIdentityService).
   useEffect(() => {
@@ -816,18 +808,33 @@ function PeopleCard({
           className="mt-4 pt-4 space-y-2 border-t"
           style={{ borderColor: 'var(--border-color)' }}
         >
-          <input
-            list="promotion-roles"
+          {/* The configured vocabulary, not free text: the server rejects roles that aren't in it,
+              and a typo here would otherwise become a slot nothing can label, filter, or route on. */}
+          <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            placeholder="Role (e.g. QA, reviewer)"
             className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
             style={{
               borderColor: 'var(--border-color)',
               backgroundColor: 'var(--bg-secondary)',
               color: 'var(--text-primary)',
             }}
-          />
+            disabled={configuredRoles.length === 0}
+          >
+            <option value="">
+              {configuredRoles.length === 0 ? 'No roles configured' : 'Pick a role…'}
+            </option>
+            {configuredRoles.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.displayName}
+              </option>
+            ))}
+          </select>
+          {configuredRoles.length === 0 && (
+            <p className="text-[12px]" style={{ color: 'var(--warning)' }}>
+              Add participant roles under Settings → Participant Roles before assigning anyone.
+            </p>
+          )}
           <div className="relative">
             <input
               value={userQuery}
@@ -880,13 +887,6 @@ function PeopleCard({
               </div>
             )}
           </div>
-          <datalist id="promotion-roles">
-            {roles.map((r) => (
-              // Suggest humanised forms ("QA", "Triggered by") so the user's pick is already
-              // how the card will render. The backend canonicalises on write.
-              <option key={r} value={roleDisplay({ role: r })} />
-            ))}
-          </datalist>
           <input
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
@@ -1563,10 +1563,10 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
                       : 'Resolving all work items auto-approves this promotion'}
                   </p>
                 )}
-                {/* Blocked items explain a shortfall that the approved count alone doesn't. */}
-                {(workItemGate.blocked ?? 0) > 0 && (
+                {/* Flagged items explain a shortfall that the approved count alone doesn't. */}
+                {(workItemGate.issues ?? 0) > 0 && (
                   <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--warning)' }}>
-                    {workItemGate.blocked} blocked — release or approve them to satisfy this gate
+                    {workItemGate.issues} with issues — resolve or approve them to satisfy this gate
                   </p>
                 )}
               </div>
@@ -1698,7 +1698,7 @@ function TicketRow({
     revision: reference.revision ?? undefined,
   });
 
-  // Pick a single decision (Approved / Blocked / Rejected) to render — first row wins. The API
+  // Pick a single decision (Approved / Issue / Blocked) to render — first row wins. The API
   // keeps one row per approver and the detail page shows the full trail, so the summary badge only
   // needs the canonical outcome.
   const decided = ctx?.approvals[0] ?? null;

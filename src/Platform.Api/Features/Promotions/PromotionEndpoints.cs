@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
@@ -171,7 +172,10 @@ public static class PromotionEndpoints
             });
         });
 
-        // Known participant roles (distinct, frequency-ordered) for the assign-participant picker.
+        // Participant roles actually *observed* in the data (distinct, frequency-ordered). Note this
+        // is the opposite question from "which roles may I assign?" — that one is answered by the
+        // configured vocabulary (Settings → Participant Roles), which is what the pickers list. This
+        // route reports what producers have sent, including roles nobody configured.
         group.MapGet("/roles", async (PromotionService svc) =>
         {
             var roles = await svc.GetKnownRolesAsync();
@@ -280,9 +284,21 @@ public static class PromotionEndpoints
 
         // Upsert a participant on the candidate. Role is canonicalised to lower-kebab-case;
         // display is controlled by the admin-managed role dictionary on the frontend.
+        //
+        // The role must be one the operator has configured (Settings → Participant Roles). Ingest is
+        // exempt — a producer's payload is recorded as sent — but a hand-made assignment onto an
+        // unknown role only ever produces a slot nothing can filter, label, or route on.
         group.MapPost("/{id:guid}/participants", async (
-            PromotionService svc, Guid id, UpsertParticipantRequest body) =>
+            PromotionService svc, ParticipantRoleCatalog roleCatalog, Guid id, UpsertParticipantRequest body) =>
         {
+            if (!await roleCatalog.IsConfiguredAsync(body.Role))
+            {
+                return Results.BadRequest(new
+                {
+                    error = ParticipantRoleCatalog.RejectionMessage(
+                        body.Role, await roleCatalog.GetCanonicalKeysAsync()),
+                });
+            }
             try
             {
                 var participant = new PromotionParticipant(
@@ -311,11 +327,23 @@ public static class PromotionEndpoints
         // Assign / reassign / clear a participant on a specific work-item reference of a candidate.
         // This is what the work-items queue's "Assign" writes to (candidates are self-contained, so
         // there is no deploy event to override). Body: { role, assignee: { email, displayName } | null }.
+        // Clearing a slot (assignee == null) is allowed on any role, configured or not: an ingested
+        // payload can put someone on a role nobody configured, and that assignment has to remain
+        // removable. Only naming a person requires a configured role.
         group.MapPatch("/{id:guid}/references/{referenceKey}/participants", async (
-            PromotionService svc, Guid id, string referenceKey, AssignReferenceParticipantRequest body) =>
+            PromotionService svc, ParticipantRoleCatalog roleCatalog,
+            Guid id, string referenceKey, AssignReferenceParticipantRequest body) =>
         {
             if (string.IsNullOrWhiteSpace(body.Role))
                 return Results.BadRequest(new { error = "role is required" });
+            if (body.Assignee is not null && !await roleCatalog.IsConfiguredAsync(body.Role))
+            {
+                return Results.BadRequest(new
+                {
+                    error = ParticipantRoleCatalog.RejectionMessage(
+                        body.Role, await roleCatalog.GetCanonicalKeysAsync()),
+                });
+            }
             try
             {
                 var assignee = body.Assignee is null

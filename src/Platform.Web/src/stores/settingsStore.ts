@@ -3,6 +3,7 @@ import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
+import { canonicaliseRoleKey } from '@/lib/roleKey';
 
 export interface EnvironmentConfig {
   key: string;
@@ -136,11 +137,15 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     return normalizeHexColor(configured) ?? autoEnvColor(key);
   },
 
+  // Both sides are canonicalised before matching: participant roles reach the client as the
+  // producer sent them ("QA", "triggeredBy") when role normalisation is switched off server-side,
+  // and a configured entry should still label them rather than falling through to the humaniser.
   getRoleDisplayName: (key) => {
     if (!key) return '';
-    const role = get().roles.find((r) => r.key === key);
+    const canonical = canonicaliseRoleKey(key);
+    const role = get().roles.find((r) => canonicaliseRoleKey(r.key) === canonical);
     if (role) return role.displayName;
-    return humaniseRoleKey(key);
+    return humaniseRoleKey(canonical || key);
   },
 
   getOrderedEnvironments: (keys) => {

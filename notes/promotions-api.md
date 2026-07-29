@@ -148,9 +148,52 @@ Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
 - `GET /api/promotions/{id}/comments`, `POST /api/promotions/{id}/comments`,
   `PATCH /api/promotions/comments/{commentId}`, `DELETE /api/promotions/comments/{commentId}`.
 - `POST /api/promotions/{id}/participants`, `DELETE /api/promotions/{id}/participants/{role}`.
+- `PATCH /api/promotions/{id}/references/{referenceKey}/participants` — assign / reassign / clear a
+  person on one work-item reference. Body `{ "role", "assignee": { "email", "displayName" } | null }`.
 - `GET /api/promotions/roles`, `GET /api/promotions/users/search?q=`,
   `GET /api/promotions/groups/search?q=` — directory-backed pickers (resolve against AD/Graph in
-  MSAL mode; local users/static groups in dev).
+  MSAL mode; local users/static groups in dev). Note `roles` here reports the roles **observed in
+  the data**, which is not the same as the roles you may assign — see below.
+
+### Work-item sign-off — `/api/work-items/{key}`
+
+Three decisions, each its own POST with body `{ product, targetEnv, comment? }`:
+
+| Route | Stored decision | Event |
+|---|---|---|
+| `POST /{key}/approvals` | `Approved` | `promotion.ticket.approved` |
+| `POST /{key}/issues` | `Issue` | `promotion.ticket.issue-raised` |
+| `POST /{key}/blocks` | `Blocked` | `promotion.ticket.blocked` |
+
+Only an approval releases the gate. An issue ("something's wrong") and a block ("not going out") are
+mechanically identical — both leave the item unresolved, which stalls the gate without terminating
+the candidate, and both are reversible; a new version of the promotion clears them and asks again.
+Vetoing is candidate-level (`POST /api/promotions/{id}/reject`), never something done to one ticket.
+
+**Renamed from Block/Reject.** These decisions were once named on a shift of one: today's issue was
+`Blocked` (`POST /blocks`, `promotion.ticket.blocked`) and today's block was `Rejected`
+(`POST /rejections`, `promotion.ticket.rejected`). The `RenameWorkItemDecisions` migration rewrote
+stored values so the database is consistent. Two things did not move: `POST /rejections` is gone
+rather than aliased (an alias would keep `/blocks` working while silently changing which decision it
+records), and audit rows written before the rename keep their original action names.
+
+### Participant roles
+
+Two different role sets, easily confused:
+
+- **The configured vocabulary** — `ui.app-settings` → `roles` (Settings → Participant Roles). The
+  roles the platform knows about: what the pickers and the work-item role filter list, and the only
+  ones a person can be *manually* assigned to. Naming someone on any other role returns `400`
+  (`POST /{id}/participants` and `PATCH …/references/{key}/participants`). Clearing a slot
+  (`assignee: null`) is always allowed, whatever its role — an ingested payload can put someone on a
+  role nobody configured, and that has to stay removable.
+- **The assignee-role set** — `promotions.assignee_roles`, default `["qa","reviewer","assignee"]`.
+  Only defines what counts as "assigned to somebody" when the work-items queue is filtered by person
+  with no role picked. Narrowing it does not narrow what an operator can filter on.
+
+**Ingest is exempt from both.** A producer's payload is a record of what happened, so any role is
+accepted and stored as sent. Roles that aren't in the configured vocabulary are reported back as
+`unknownRoles` on the work-items queue and flagged as unrecognised in the UI.
 
 ---
 

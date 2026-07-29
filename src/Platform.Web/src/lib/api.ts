@@ -307,10 +307,6 @@ class ApiClient {
     }>(`/promotions/${id}`);
   }
 
-  listPromotionRoles() {
-    return this.request<{ roles: string[] }>(`/promotions/roles`);
-  }
-
   searchPromotionUsers(q: string) {
     return this.request<{
       users: Array<{ id: string; displayName: string; email: string }>;
@@ -466,16 +462,21 @@ class ApiClient {
     );
   }
 
-  rejectWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+  /**
+   * Flag a problem on the work item. The promotion stays Pending and the same user can call
+   * `approveWorkItem` later to release the item.
+   */
+  raiseWorkItemIssue(key: string, product: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
-      `/work-items/${encodeURIComponent(key)}/rejections`,
+      `/work-items/${encodeURIComponent(key)}/issues`,
       { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
     );
   }
 
   /**
-   * Hold the work item back without vetoing the promotion. Unlike a rejection the candidate stays
-   * Pending, and the same user can call `approveWorkItem` later to release it.
+   * Hold the work item back. Says more than `raiseWorkItemIssue` and does the same thing: the
+   * promotion stays Pending, nothing is vetoed, and the decision can be changed later. Vetoing is a
+   * promotion-level action (`rejectPromotion`), never something done to one work item.
    */
   blockWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
@@ -534,9 +535,12 @@ class ApiClient {
   //   - role only            → at least one participant in that role.
   //   - assignee=email       → that email holds a role in the assignee set (or the role-filter
   //                            when set).
-  //   - assignee=unassigned  → no participant in the effective role set.
-  // Response also carries the (email, role) → count rollup and the canonical role set so the
-  // queue page can populate its dropdowns without a second call.
+  //   - assignee=unassigned  → nobody in the effective role set. With `role` set this is the
+  //                            "which items are missing a <role>?" query.
+  // `role` accepts any role — configured or not — and is matched against the work item's own
+  // participants, so it isn't limited to the roles that count as an assignment by default.
+  // Response also carries the (email, role) → count rollup, the configured role vocabulary, and
+  // the unrecognised roles seen on the queue, so the page can populate its dropdowns in one call.
   getMyPendingWorkItems(args?: {
     role?: string;
     assignee?: string;
@@ -899,11 +903,12 @@ export interface PromotionCandidate {
 }
 
 /**
- * A work-item sign-off outcome. Neither `Blocked` nor `Rejected` touches the promotion — both leave
- * the item unresolved, which stalls the gate without terminating the candidate, and both are
- * reversible. They differ only in what the reviewer is saying: "not yet" versus "no".
+ * A work-item sign-off outcome. Neither `Issue` nor `Blocked` touches the promotion — both leave the
+ * item unresolved, which stalls the gate without terminating the candidate, and both are reversible.
+ * They differ only in what the reviewer is saying: "something's wrong here" versus "this isn't going
+ * out". Vetoing belongs to the promotion, not to a single work item.
  */
-export type WorkItemDecision = 'Approved' | 'Rejected' | 'Blocked';
+export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked';
 
 export interface WorkItemApproval {
   id: string;
@@ -1093,8 +1098,18 @@ export interface MyPendingWorkItemsResponse {
   tickets: PendingTicket[];
   /** (email, role) rollup of the unfiltered authorized list. Sorted by count desc, displayName asc. */
   assignees: PendingAssignee[];
-  /** Canonical assignee-role set from PromotionAssigneeRoleSettings — feeds the role dropdown. */
+  /**
+   * The configured participant roles (Settings → Participant Roles), in configured order — the
+   * role dropdown's contents. Not derived from the queue: a role nobody is in is exactly the one
+   * you filter on to find the work items missing it.
+   */
   roles: string[];
+  /**
+   * Canonical roles present on the queue's work items that aren't configured. Ingest accepts
+   * whatever a producer sends, so these exist; the queue offers them as filter choices and flags
+   * them as unrecognised. Empty on the "decided" view.
+   */
+  unknownRoles: string[];
 }
 
 export interface PromotionParticipant {
@@ -1202,8 +1217,8 @@ export interface PromotionWorkItemGate {
   required: boolean;
   total: number;
   approved: number;
-  /** Work items held back by a Blocked decision — counted apart from `approved`. */
-  blocked?: number;
+  /** Work items carrying an Issue — counted apart from `approved` so a shortfall is explained. */
+  issues?: number;
   satisfied: boolean;
   /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
   autoApprove: boolean;

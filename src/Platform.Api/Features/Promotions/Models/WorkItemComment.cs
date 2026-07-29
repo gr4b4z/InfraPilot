@@ -11,7 +11,7 @@ namespace Platform.Api.Features.Promotions.Models;
 /// editable/deletable by their author (or an admin).</para>
 ///
 /// <para>The thread also carries <i>decision entries</i> — rows with <see cref="Decision"/> set, written
-/// automatically whenever someone approves / blocks / rejects the item, and by the system when a new
+/// automatically whenever someone approves the item, raises an issue on it, or blocks it, and by the system when a new
 /// promotion version resets a decision. They read as part of the conversation but are immutable: the
 /// edit and delete paths refuse them, because rewriting the record of a sign-off is not a comment edit.</para>
 /// </summary>
@@ -34,7 +34,7 @@ public class WorkItemComment
     /// <summary>
     /// Set when this entry records a sign-off rather than free-text discussion. Null for human comments.
     /// </summary>
-    public PromotionDecision? Decision { get; set; }
+    public WorkItemDecision? Decision { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? UpdatedAt { get; set; }
