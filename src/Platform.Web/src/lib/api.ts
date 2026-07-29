@@ -965,11 +965,29 @@ export interface WorkItemCandidateRef {
   isPrimary: boolean;
 }
 
+/**
+ * One environment a work item's change is deployed to — resolved server-side from the deploy events
+ * that shipped the carrying version, so it answers "where can I test this?" rather than "where is
+ * this promotion headed?". `deployedAt` is the most recent succeeded deploy of that version there.
+ */
+export interface WorkItemEnvironment {
+  environment: string;
+  service: string;
+  version: string;
+  deployedAt: string;
+}
+
 /** Full response shape for `GET /api/work-items/{key}/detail`. */
 export interface WorkItemDetail {
   workItemKey: string;
   product: string;
+  /**
+   * The promotion edge this sign-off gates. Identity (it keys the decisions and comments), not a
+   * property of the work item to present — `environments` is what says where the change is live.
+   */
   targetEnv: string;
+  /** Environments the change is deployed to, newest deploy first. */
+  environments: WorkItemEnvironment[];
   title: string | null;
   url: string | null;
   provider: string | null;
@@ -1019,6 +1037,7 @@ export interface WorkItemPullRequestRef {
 export interface PendingTicket {
   workItemKey: string;
   product: string;
+  /** The promotion edge the sign-off gates — identity, not display. See `WorkItemDetail.targetEnv`. */
   targetEnv: string;
   provider: string | null;
   url: string | null;
@@ -1026,7 +1045,8 @@ export interface PendingTicket {
   candidateId: string;
   service: string;
   version: string;
-  sourceEnv: string;
+  /** Environments this version is deployed to, newest deploy first — where the item can be tested. */
+  environments: WorkItemEnvironment[];
   blockingPromotions: number;
   /** Participants on this specific work-item reference (overrides applied). */
   participants: PromotionSourceEventParticipant[];

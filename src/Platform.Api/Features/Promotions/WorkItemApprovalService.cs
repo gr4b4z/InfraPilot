@@ -442,6 +442,13 @@ public class WorkItemApprovalService
     /// The summary feeds the front-end's role + person dropdowns so the picker only ever
     /// surfaces choices the user can actually narrow to. Filtering first then collecting would
     /// hide every alternative — pre-filter is the correct anchor.</para>
+    ///
+    /// <para>Person/role narrowing reads <b>the work item's own participants</b> — the people on its
+    /// work-item reference, plus the promotion-level fallback — which is exactly the set the row
+    /// displays. It deliberately does not consider the participants of the promotion's other
+    /// references (commits, pull requests): a commit author on an unrelated change in the same build
+    /// is not an assignee of this ticket, and counting them made "assigned to &lt;person&gt;" return
+    /// work items that person had nothing to do with.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetPendingForCurrentUserAsync(
         CancellationToken ct = default,
@@ -527,8 +534,17 @@ public class WorkItemApprovalService
             .ToHashSet();
 
         // Work-item management (view / assign / sign off) is the QA role's jurisdiction (Admin
-        // included) — independent of the promotion's approver requirements.
-        var canManageWorkItems = _currentUser.IsQA || _currentUser.IsAdmin;
+        // included) — independent of the promotion's approver requirements. A user without it has no
+        // work-item queue at all, so bail before the remaining lookups.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+        {
+            return new PendingQueueResult(new(), new(), assigneeRoles);
+        }
+
+        // Where each candidate's version actually landed. Resolved once for the whole queue so the
+        // rows can answer "which environments can I test this in?" without a query per row.
+        var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
+            queueCandidates.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct);
 
         // Index work-items by their candidate for fast lookup.
         var workItemsByCandidate = workItems
@@ -569,71 +585,13 @@ public class WorkItemApprovalService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) continue;
 
-            // Work items are the QA role's jurisdiction (Admin included): a QA/Admin sees every
-            // pending candidate's tickets so they can triage/assign/sign off, independent of the
-            // promotion's approver requirements. Non-QA/Admin users have no work-item queue.
-            if (!canManageWorkItems) continue;
-
             // Distinct work items on this candidate.
             var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
                 .GroupBy(w => w.WorkItemKey)
                 .Select(g => g.First());
 
-            // Merged participant view comes from the candidate's own data: reference-level
-            // participants nested under each reference, plus promotion-level participants.
-            var bundleAssignees = BuildMergedAssignees(c, assigneeRoleSet);
-
-            // Update the assignee summary BEFORE narrowing — computed against the unfiltered
-            // authorized list. Dedupe per (email, role) within a candidate.
-            var seenInCandidate = new HashSet<(string Email, string Role)>();
-            foreach (var p in bundleAssignees)
-            {
-                var key = (p.Email, p.Role);
-                if (!seenInCandidate.Add(key)) continue;
-                if (!assigneeAccumulator.TryGetValue(key, out var acc))
-                {
-                    acc = new AssigneeAccumulator(p.DisplayName, 0);
-                }
-                else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(p.DisplayName))
-                {
-                    // Prefer the first non-empty displayName we encounter; once set, keep it.
-                    acc = acc with { DisplayName = p.DisplayName };
-                }
-                acc = acc with { Count = acc.Count + 1 };
-                assigneeAccumulator[key] = acc;
-            }
-
-            // Apply role/person matrix narrowing. Empty merged view => "unassigned" by
-            // definition (legacy data, no participants, all tombstoned). The unassigned branch
-            // keys off the merged-view subset matching the effective role set.
-            if (assigneeFilterActive || roleFilterActive)
-            {
-                bool keep;
-                var inEffectiveRole = bundleAssignees
-                    .Where(p => effectiveRoleSet.Contains(p.Role))
-                    .ToList();
-
-                if (assigneeIsUnassigned)
-                {
-                    // No participant whose role ∈ effectiveRoleSet exists.
-                    keep = inEffectiveRole.Count == 0;
-                }
-                else if (assigneeFilterActive)
-                {
-                    // Specific email + role narrows.
-                    keep = inEffectiveRole.Any(p =>
-                        !string.IsNullOrEmpty(p.Email)
-                        && string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
-                }
-                else
-                {
-                    // role only (no person filter) — keep candidates with at least one
-                    // participant in the role.
-                    keep = inEffectiveRole.Count > 0;
-                }
-
-                if (!keep) continue;
-            }
+            var environments = deployedEnvironments.GetValueOrDefault(
+                new DeployedVersionKey(c.Product, c.Service, c.Version)) ?? new();
 
             foreach (var w in bundleItems)
             {
@@ -641,9 +599,66 @@ public class WorkItemApprovalService
                 if (decidedSet.Contains(tup)) continue;
                 // An orphan someone already approved is resolved, not stranded — retire it.
                 if (isOrphanSource && approvedByAnyone.Contains(tup)) continue;
-                if (!emitted.Add((w.WorkItemKey, c.Product, c.TargetEnv))) continue;
+                // Dedupe BEFORE the person/role narrowing so the newest candidate always owns the
+                // row, and the participants the filter reads are the ones the row will display. The
+                // other order would let an older candidate's copy of the ticket answer the filter
+                // while the row still rendered the newest one's people.
+                if (!emitted.Add(tup)) continue;
 
+                // The people on THIS work item — its own reference participants, with the
+                // promotion-level fallback — which is exactly what the row shows.
                 var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
+                var ticketAssignees = AssignableParticipants(ticketParticipants, assigneeRoleSet);
+
+                // Update the assignee summary BEFORE narrowing — computed against the unfiltered
+                // authorized list. Dedupe per (email, role) within the work item.
+                var seenOnItem = new HashSet<(string Email, string Role)>();
+                foreach (var p in ticketAssignees)
+                {
+                    var key = (p.Email, p.Role);
+                    if (!seenOnItem.Add(key)) continue;
+                    if (!assigneeAccumulator.TryGetValue(key, out var acc))
+                    {
+                        acc = new AssigneeAccumulator(p.DisplayName, 0);
+                    }
+                    else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(p.DisplayName))
+                    {
+                        // Prefer the first non-empty displayName we encounter; once set, keep it.
+                        acc = acc with { DisplayName = p.DisplayName };
+                    }
+                    acc = acc with { Count = acc.Count + 1 };
+                    assigneeAccumulator[key] = acc;
+                }
+
+                // Apply role/person matrix narrowing. No participant in the effective role set =>
+                // "unassigned" by definition (legacy data, no participants, all tombstoned).
+                if (assigneeFilterActive || roleFilterActive)
+                {
+                    var inEffectiveRole = ticketAssignees
+                        .Where(p => effectiveRoleSet.Contains(p.Role))
+                        .ToList();
+
+                    bool keep;
+                    if (assigneeIsUnassigned)
+                    {
+                        // No participant whose role ∈ effectiveRoleSet exists.
+                        keep = inEffectiveRole.Count == 0;
+                    }
+                    else if (assigneeFilterActive)
+                    {
+                        // Specific email + role narrows.
+                        keep = inEffectiveRole.Any(p =>
+                            string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
+                    }
+                    else
+                    {
+                        // role only (no person filter) — keep work items with at least one
+                        // participant in the role.
+                        keep = inEffectiveRole.Count > 0;
+                    }
+
+                    if (!keep) continue;
+                }
 
                 result.Add(new PendingTicketView(
                     WorkItemKey: w.WorkItemKey,
@@ -655,7 +670,7 @@ public class WorkItemApprovalService
                     CandidateId: c.Id,
                     Service: c.Service,
                     Version: c.Version,
-                    SourceEnv: c.SourceEnv,
+                    Environments: environments,
                     BlockingPromotions: blockingCount.GetValueOrDefault(tup, 1),
                     Participants: ticketParticipants,
                     // "Pending" for a live promotion; the dead candidate's status for an orphan, which
@@ -760,6 +775,9 @@ public class WorkItemApprovalService
                 .ToListAsync(ct))
               .ToDictionary(c => c.Id);
 
+        var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
+            candidatesById.Values.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct);
+
         var result = new List<PendingTicketView>();
         foreach (var a in approvals)
         {
@@ -791,7 +809,10 @@ public class WorkItemApprovalService
                 CandidateId: c2?.Id ?? Guid.Empty,
                 Service: c2?.Service ?? "",
                 Version: c2?.Version ?? "",
-                SourceEnv: c2?.SourceEnv ?? "",
+                Environments: c2 is null
+                    ? new List<WorkItemEnvironmentView>()
+                    : deployedEnvironments.GetValueOrDefault(
+                          new DeployedVersionKey(c2.Product, c2.Service, c2.Version)) ?? new(),
                 BlockingPromotions: 0,
                 Participants: ticketParticipants,
                 CandidateStatus: c2?.Status.ToString() ?? "Unknown",
@@ -864,10 +885,23 @@ public class WorkItemApprovalService
             : ordered.FirstOrDefault(c => ResolvesCommits(c, key)) ?? primary;
         var (commits, pullRequests) = ResolveChangeSet(changeSource, key);
 
+        // Environments the change is actually running in, unioned across every version that carried
+        // the ticket — superseded builds included, because an environment may still be sitting on one
+        // of them, and that's where someone would go to exercise the change.
+        var environments = (await ResolveDeployedEnvironmentsAsync(
+                ordered.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct))
+            .Values
+            .SelectMany(v => v)
+            .GroupBy(v => v.Environment, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(v => v.DeployedAt).First())
+            .OrderByDescending(v => v.DeployedAt)
+            .ToList();
+
         return new WorkItemDetail(
             WorkItemKey: key,
             Product: prod,
             TargetEnv: env,
+            Environments: environments,
             Title: title,
             Url: url,
             Provider: provider,
@@ -1210,39 +1244,86 @@ public class WorkItemApprovalService
     }
 
     /// <summary>
-    /// Builds the merged assignee view for a candidate from its own data: reference-level
-    /// participants nested under each work-item reference, plus promotion-level participants. Only
-    /// participants whose role canonicalises into <paramref name="assigneeRoleSet"/> are returned.
+    /// Narrows a work item's effective participants (see
+    /// <see cref="GetWorkItemParticipants"/>) to the ones that can be treated as an assignment:
+    /// a role that canonicalises into <paramref name="assigneeRoleSet"/> and a non-empty email.
+    /// This — not the candidate's full participant graph — is what the person/role filter matches
+    /// against, so filtering and display can't disagree about who a work item is assigned to.
     /// </summary>
-    private static List<MergedParticipant> BuildMergedAssignees(
-        PromotionCandidate candidate, HashSet<string> assigneeRoleSet)
+    private static List<MergedParticipant> AssignableParticipants(
+        IReadOnlyList<ParticipantDto> participants, HashSet<string> assigneeRoleSet)
     {
         var result = new List<MergedParticipant>();
         if (assigneeRoleSet.Count == 0) return result;
 
-        void Add(ParticipantDto p)
+        foreach (var p in participants)
         {
             var canon = RoleNormalizer.Normalize(p.Role);
-            if (canon.Length == 0 || !assigneeRoleSet.Contains(canon)) return;
-            if (string.IsNullOrEmpty(p.Email)) return;
+            if (canon.Length == 0 || !assigneeRoleSet.Contains(canon)) continue;
+            if (string.IsNullOrEmpty(p.Email)) continue;
             result.Add(new MergedParticipant(canon, p.Email!.Trim().ToLowerInvariant(), p.DisplayName));
         }
-
-        // Reference-level participants nested under each reference.
-        foreach (var r in candidate.References)
-        {
-            if (r.Participants is not { Count: > 0 } refParticipants) continue;
-            foreach (var p in refParticipants) Add(p);
-        }
-
-        // Promotion-level participants.
-        foreach (var p in candidate.Participants)
-            Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
 
         return result;
     }
 
     private readonly record struct MergedParticipant(string Role, string Email, string? DisplayName);
+
+    /// <summary>
+    /// The environments a given (product, service, version) has actually been deployed to, keyed by
+    /// that triple. This is the answer to "where can someone see and test this work item?" — a
+    /// question the promotion's source/target env never answered: the target env is where the build
+    /// is <i>asking</i> to go, not where the change is running.
+    ///
+    /// <para>Only succeeded deploys count, and each environment appears once with its most recent
+    /// deploy of that version (a version can be redeployed, or rolled back to).</para>
+    ///
+    /// <para>One query for the whole batch: the <c>Contains</c> predicates span the cross product of
+    /// the distinct products / services / versions asked for, and the exact triples are re-checked in
+    /// memory. That over-fetches rows for combinations that happen to share a version string across
+    /// services, which is cheap and bounded — a query per row would not be.</para>
+    /// </summary>
+    private async Task<Dictionary<DeployedVersionKey, List<WorkItemEnvironmentView>>>
+        ResolveDeployedEnvironmentsAsync(
+            IEnumerable<DeployedVersionKey> versions, CancellationToken ct)
+    {
+        var wanted = versions
+            .Where(v => v.Product.Length > 0 && v.Service.Length > 0 && v.Version.Length > 0)
+            .ToHashSet();
+        if (wanted.Count == 0) return new();
+
+        var products = wanted.Select(v => v.Product).Distinct().ToList();
+        var services = wanted.Select(v => v.Service).Distinct().ToList();
+        var versionStrings = wanted.Select(v => v.Version).Distinct().ToList();
+
+        var events = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Status == "succeeded"
+                     && products.Contains(e.Product)
+                     && services.Contains(e.Service)
+                     && versionStrings.Contains(e.Version))
+            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt })
+            .ToListAsync(ct);
+
+        var byVersion = new Dictionary<DeployedVersionKey, Dictionary<string, WorkItemEnvironmentView>>();
+        foreach (var e in events)
+        {
+            var key = new DeployedVersionKey(e.Product, e.Service, e.Version);
+            if (!wanted.Contains(key)) continue;
+
+            if (!byVersion.TryGetValue(key, out var envs))
+                byVersion[key] = envs = new Dictionary<string, WorkItemEnvironmentView>(StringComparer.OrdinalIgnoreCase);
+            if (envs.TryGetValue(e.Environment, out var seen) && seen.DeployedAt >= e.DeployedAt) continue;
+            envs[e.Environment] = new WorkItemEnvironmentView(
+                Environment: e.Environment,
+                Service: e.Service,
+                Version: e.Version,
+                DeployedAt: e.DeployedAt);
+        }
+
+        return byVersion.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value.Values.OrderByDescending(v => v.DeployedAt).ToList());
+    }
 
     private record struct AssigneeAccumulator(string? DisplayName, int Count);
 
@@ -1281,7 +1362,15 @@ public record TicketContext(
 public record WorkItemDetail(
     string WorkItemKey,
     string Product,
+    /// <summary>
+    /// The promotion edge this sign-off gates. Part of the work item's identity (decisions and
+    /// comments key on it) but not something the page presents as a property of the work item —
+    /// <see cref="Environments"/> is what tells a reviewer where the change can be exercised.
+    /// </summary>
     string TargetEnv,
+    /// <summary>Environments the change is deployed to, newest deploy first. See
+    /// <see cref="WorkItemEnvironmentView"/>.</summary>
+    IReadOnlyList<WorkItemEnvironmentView> Environments,
     string? Title,
     string? Url,
     string? Provider,
@@ -1323,6 +1412,20 @@ public record WorkItemPullRequestRef(
     string? Revision,
     IReadOnlyList<ParticipantDto> Participants);
 
+/// <summary>
+/// One environment a work item's change is deployed to, resolved from the deploy events that shipped
+/// the carrying version rather than from the promotion edge. <see cref="DeployedAt"/> is the most
+/// recent succeeded deploy of that version in that environment.
+/// </summary>
+public record WorkItemEnvironmentView(
+    string Environment,
+    string Service,
+    string Version,
+    DateTimeOffset DeployedAt);
+
+/// <summary>Identity of a shipped build — the grain deploy environments are resolved at.</summary>
+public readonly record struct DeployedVersionKey(string Product, string Service, string Version);
+
 /// <summary>One promotion candidate carrying a work item, as listed on the detail page.</summary>
 public record WorkItemCandidateRef(
     Guid Id,
@@ -1342,6 +1445,8 @@ public record WorkItemCandidateRef(
 public record PendingTicketView(
     string WorkItemKey,
     string Product,
+    /// <summary>The promotion edge the sign-off gates — identity, not display. See
+    /// <see cref="WorkItemDetail.TargetEnv"/>.</summary>
     string TargetEnv,
     string? Provider,
     string? Url,
@@ -1349,7 +1454,9 @@ public record PendingTicketView(
     Guid CandidateId,
     string Service,
     string Version,
-    string SourceEnv,
+    /// <summary>Environments the carrying version is deployed to, newest deploy first — where the
+    /// work item can actually be seen and tested.</summary>
+    IReadOnlyList<WorkItemEnvironmentView> Environments,
     int BlockingPromotions,
     IReadOnlyList<ParticipantDto> Participants,
     // Status of the candidate this row represents. "Pending" for the inbox; for decision-history

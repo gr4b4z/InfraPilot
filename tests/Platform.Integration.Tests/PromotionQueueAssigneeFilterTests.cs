@@ -449,6 +449,106 @@ public class PromotionQueueAssigneeFilterTests
         Assert.DoesNotContain(filtered.Tickets, t => t.WorkItemKey == "PRE-2");
     }
 
+    // ── Scoping: the person is looked for on the work item, nowhere else ──
+
+    [Fact]
+    public async Task AssigneeFilter_IgnoresParticipantsOnOtherReferences()
+    {
+        // Regression: the filter used to match against every participant on the promotion —
+        // reference-level people from commits and pull requests included — so "assigned to
+        // <committer>" returned work items that person had never been put on. Only the work item's
+        // own participants count.
+        var product = NewProduct();
+        await SeedPolicyAsync(product);
+
+        var scope = $"xref-{Guid.NewGuid():N}"[..13];
+        var committerEmail = $"committer-{scope}@example.com";
+
+        await CreatePromotionAsync(product, service: "svc-xref", references: new object[]
+        {
+            // The work item itself carries nobody.
+            new { type = "work-item", provider = "jira", key = "XREF-1", title = "Cross-reference bleed" },
+            // A commit in the same build does — in an assignee role, so the old candidate-wide
+            // match picked it up.
+            new
+            {
+                type = "commit",
+                provider = "gitlab",
+                key = "abc1234def5678",
+                title = "Fix the thing",
+                participants = new[]
+                {
+                    new { role = "qa", displayName = "Committer", email = committerEmail },
+                },
+            },
+        });
+
+        var byCommitter = await GetPendingAsync(assignee: committerEmail);
+        Assert.DoesNotContain(byCommitter, t => t.WorkItemKey == "XREF-1");
+
+        // Nobody is on the item, so it is unassigned — the commit author must not disguise that.
+        var unassigned = await GetPendingAsync(assignee: "unassigned");
+        Assert.Contains(unassigned, t => t.WorkItemKey == "XREF-1");
+
+        // And the rollup must not offer the committer as a narrowing choice that returns nothing.
+        var unfiltered = await GetPendingAsync(role: null, assignee: null);
+        Assert.Contains(unfiltered.Tickets, t => t.WorkItemKey == "XREF-1");
+        Assert.DoesNotContain(unfiltered.Assignees, a => a.Email == committerEmail);
+    }
+
+    [Fact]
+    public async Task AssigneeFilter_NarrowsPerWorkItem_NotPerPromotion()
+    {
+        // One promotion, two work items, a different QA on each. Narrowing has to return only the
+        // matching item — the whole promotion's worth of items used to come through together.
+        var product = NewProduct();
+        await SeedPolicyAsync(product);
+
+        var scope = $"peritem-{Guid.NewGuid():N}"[..16];
+        var aliceEmail = $"alice-{scope}@example.com";
+        var bobEmail = $"bob-{scope}@example.com";
+
+        await CreatePromotionAsync(product, service: "svc-per-item", references: new object[]
+        {
+            new
+            {
+                type = "work-item",
+                provider = "jira",
+                key = "PERITEM-A",
+                title = "Alice's item",
+                participants = new[]
+                {
+                    new { role = "qa", displayName = "Alice", email = aliceEmail },
+                },
+            },
+            new
+            {
+                type = "work-item",
+                provider = "jira",
+                key = "PERITEM-B",
+                title = "Bob's item",
+                participants = new[]
+                {
+                    new { role = "qa", displayName = "Bob", email = bobEmail },
+                },
+            },
+        });
+
+        var alices = await GetPendingAsync(assignee: aliceEmail);
+        Assert.Contains(alices, t => t.WorkItemKey == "PERITEM-A");
+        Assert.DoesNotContain(alices, t => t.WorkItemKey == "PERITEM-B");
+
+        var bobs = await GetPendingAsync(assignee: bobEmail);
+        Assert.Contains(bobs, t => t.WorkItemKey == "PERITEM-B");
+        Assert.DoesNotContain(bobs, t => t.WorkItemKey == "PERITEM-A");
+
+        // Both are on one promotion, so each person's rollup entry counts one work item, not two.
+        var unfiltered = await GetPendingAsync(role: null, assignee: null);
+        var aliceQa = unfiltered.Assignees.FirstOrDefault(a => a.Email == aliceEmail && a.Role == "qa");
+        Assert.NotNull(aliceQa);
+        Assert.Equal(1, aliceQa!.Count);
+    }
+
     [Fact]
     public async Task ResponseShape_RolesSet_DefaultMatchesConfigured()
     {
@@ -556,6 +656,15 @@ public class PromotionQueueAssigneeFilterTests
                 },
             };
 
+        return await CreatePromotionAsync(product, service, refsArr);
+    }
+
+    // Create a Pending staging→prod promotion carrying an arbitrary reference set. Lets a test put
+    // people on references that are NOT the work item (commits, pull requests), or several work items
+    // with different people on a single promotion — both cases the person/role filter has to keep
+    // apart. Returns the new candidate id.
+    private async Task<string> CreatePromotionAsync(string product, string service, object[] references)
+    {
         var version = $"v{Guid.NewGuid():N}"[..10];
 
         // Source validation requires a succeeded deploy of this version in the source env (staging).
@@ -577,7 +686,7 @@ public class PromotionQueueAssigneeFilterTests
             sourceEnv = "staging",
             targetEnv = "prod",
             version,
-            references = refsArr,
+            references,
             // triggered-by is intentionally NOT in the default assignee role set, so it
             // doesn't trip the "assigned" check.
             participants = new[]
