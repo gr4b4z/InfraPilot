@@ -23,6 +23,23 @@ public class AppSettingsService
         PropertyNameCaseInsensitive = true,
     };
 
+    /// <summary>
+    /// The built-in participant-role vocabulary. Separate from <see cref="Defaults"/> because
+    /// <see cref="ParticipantRoleSeeder"/> also merges it into an <i>existing</i> settings row: a
+    /// role the platform never learned about can't be assigned to or filtered on, and installs
+    /// predate the roles their producers now send.
+    /// </summary>
+    public static readonly List<RoleConfigDto> DefaultRoles =
+    [
+        new("triggered-by", "Triggered by"),
+        new("author", "Author"),
+        new("reviewer", "Reviewer"),
+        new("qa", "QA"),
+        new("qa-owner", "QA owner"),
+        new("assignee", "Assignee"),
+        new("reporter", "Reporter"),
+    ];
+
     // Built-in defaults — mirror the web client's former DEFAULT_* constants so a fresh
     // install (no saved row) behaves identically to the old localStorage-seeded store.
     public static readonly AppSettingsDto Defaults = new(
@@ -32,13 +49,11 @@ public class AppSettingsService
             new("staging", "Staging", "#d97706"),
             new("production", "Production", "#dc2626"),
         ],
-        Roles:
-        [
-            new("triggered-by", "Triggered by"),
-            new("author", "Author"),
-            new("reviewer", "Reviewer"),
-            new("qa", "QA"),
-        ],
+        // The roles producers actually send. Anything missing here reads as "not a configured role"
+        // in the UI and can't be assigned to, so the defaults cover the whole vocabulary the deploy
+        // ingest path emits (triggered-by, author, reviewer) plus what Jira contributes on a work
+        // item (assignee, reporter, qa-owner).
+        Roles: DefaultRoles,
         ActivityTemplate:
         [
             new("{ref:work-item:key} — {label:workItemTitle}", "secondary"),

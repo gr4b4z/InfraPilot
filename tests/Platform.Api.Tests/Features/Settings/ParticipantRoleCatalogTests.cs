@@ -47,7 +47,11 @@ public class ParticipantRoleCatalogTests : IDisposable
     public async Task FreshDb_ReturnsTheBuiltInDefaults()
     {
         var keys = await _sut.GetCanonicalKeysAsync();
-        Assert.Equal(new[] { "triggered-by", "author", "reviewer", "qa" }, keys);
+        // Covers every role the deploy-ingest and Jira paths emit, so a producer-sent role isn't
+        // flagged as unconfigured on a fresh install.
+        Assert.Equal(
+            new[] { "triggered-by", "author", "reviewer", "qa", "qa-owner", "assignee", "reporter" },
+            keys);
     }
 
     [Fact]

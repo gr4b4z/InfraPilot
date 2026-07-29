@@ -1703,11 +1703,9 @@ function TicketRow({
   // needs the canonical outcome.
   const decided = ctx?.approvals[0] ?? null;
   const decidedStyle = decided ? decisionStyle(decided.decision) : null;
-  const stateLabel = decidedStyle
-    ? decidedStyle.label
-    : ctx?.canApprove
-      ? 'Pending — your turn'
-      : 'Pending';
+  // Undecided is "Pending" regardless of whose turn it is. The badge reports the work item's state;
+  // whether the reader can act on it is already answered by the "Sign off & discuss" link below.
+  const stateLabel = decidedStyle ? decidedStyle.label : 'Pending';
   const stateColor = decidedStyle?.color ?? 'var(--warning)';
   const stateBg = decidedStyle?.bg ?? 'var(--warning-bg)';
 

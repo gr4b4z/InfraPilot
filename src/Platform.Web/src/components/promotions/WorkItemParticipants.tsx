@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { PromotionSourceEventParticipant } from '@/lib/api';
 import { roleDisplay, useConfiguredRoles, useIsUnrecognisedRole } from '@/lib/roleLabel';
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
 import { AlertTriangle, Plus, Users, X } from 'lucide-react';
 
 /**
@@ -46,6 +47,9 @@ export function WorkItemParticipants({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isUnrecognised = useIsUnrecognisedRole();
+  // One per layout, since only one of the two "Assign" buttons is ever rendered.
+  const rowsAssignRef = useRef<HTMLButtonElement>(null);
+  const chipsAssignRef = useRef<HTMLButtonElement>(null);
 
   const editable = !readOnly && !!candidateId && !!referenceKey;
 
@@ -149,6 +153,7 @@ export function WorkItemParticipants({
         )}
         <span className="inline-flex items-center relative">
           <button
+            ref={rowsAssignRef}
             type="button"
             onClick={() => setEditingRole(newAssignOpen ? null : '')}
             className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-opacity hover:opacity-80"
@@ -159,6 +164,7 @@ export function WorkItemParticipants({
           </button>
           {newAssignOpen && (
             <InlineUserPicker
+              anchorRef={rowsAssignRef}
               role={null}
               onPick={(picked) =>
                 submit(picked.role, { email: picked.email, displayName: picked.displayName })
@@ -188,6 +194,7 @@ export function WorkItemParticipants({
       ))}
       <span className="inline-flex items-center relative">
         <button
+          ref={chipsAssignRef}
           type="button"
           onClick={() => setEditingRole(newAssignOpen ? null : '')}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
@@ -199,6 +206,7 @@ export function WorkItemParticipants({
         </button>
         {newAssignOpen && (
           <InlineUserPicker
+            anchorRef={chipsAssignRef}
             role={null}
             onPick={(picked) =>
               submit(picked.role, { email: picked.email, displayName: picked.displayName })
@@ -247,6 +255,7 @@ function ParticipantRow({
   const editable = !!onReassign && !!onRemove;
   const label = participant.displayName ?? participant.email ?? '—';
   const unrecognised = useIsUnrecognisedRole()(participant.role);
+  const rowRef = useRef<HTMLDivElement>(null);
 
   const body = (
     <>
@@ -283,6 +292,7 @@ function ParticipantRow({
   return (
     <div className="relative min-w-0">
       <div
+        ref={rowRef}
         role="button"
         tabIndex={busy ? -1 : 0}
         onClick={onReassign}
@@ -305,6 +315,7 @@ function ParticipantRow({
       </div>
       {editing && onPick && onCancelEdit && (
         <InlineUserPicker
+          anchorRef={rowRef}
           role={participant.role}
           onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
           onCancel={onCancelEdit}
@@ -335,6 +346,7 @@ function ParticipantChip({
   busy: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const chipRef = useRef<HTMLButtonElement>(null);
   const overridden = participant.isOverride === true;
   const unrecognised = useIsUnrecognisedRole()(participant.role);
   const baseTooltip = overridden && participant.assignedBy
@@ -347,6 +359,7 @@ function ParticipantChip({
   return (
     <span className="inline-flex items-center relative">
       <button
+        ref={chipRef}
         type="button"
         onClick={() => setMenuOpen((v) => !v)}
         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
@@ -377,10 +390,7 @@ function ParticipantChip({
         {overridden && !unrecognised && <span style={{ color: 'var(--accent)' }}>•</span>}
       </button>
       {menuOpen && !editing && (
-        <div
-          className="absolute z-10 mt-1 top-full left-0 rounded-lg border shadow-lg"
-          style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
-        >
+        <AnchoredPopover anchorRef={chipRef} onClose={() => setMenuOpen(false)}>
           {/* Reassigning an unconfigured role is refused server-side, so the menu says why instead
               of offering a control that can only fail. Clearing stays available — that's the fix. */}
           {unrecognised ? (
@@ -409,10 +419,11 @@ function ParticipantChip({
           >
             Clear (tombstone)
           </button>
-        </div>
+        </AnchoredPopover>
       )}
       {editing && (
         <InlineUserPicker
+          anchorRef={chipRef}
           role={participant.role}
           onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
           onCancel={onCancelEdit}
@@ -424,9 +435,12 @@ function ParticipantChip({
 }
 
 /**
- * Inline user picker — debounced search against /promotions/users/search. Anchored absolutely to
- * its parent (which must be `position: relative`); pops out below with a fixed width so the anchor
- * itself stays narrow.
+ * Inline user picker — debounced search against /promotions/users/search. Pops out below its anchor
+ * with a fixed width so the anchor itself stays narrow.
+ *
+ * Rendered through {@link AnchoredPopover}, i.e. into `document.body`, because these chips live
+ * inside `.card-hover` list cards: the hover transform makes each card a stacking context, which used
+ * to leave the picker painted underneath the following card.
  *
  * Two modes via the `role` prop:
  *   - role = string  → reassigning that role; only the person is selected. When the role isn't in
@@ -450,6 +464,7 @@ export function InlineUserPicker({
   removeLabel = 'Remove',
   busy,
   align = 'left',
+  anchorRef,
 }: {
   role: string | null;
   onPick: (picked: { role: string; email: string; displayName: string }) => void;
@@ -460,6 +475,8 @@ export function InlineUserPicker({
   busy: boolean;
   /** Which edge the popover hangs from — `right` keeps it on screen when the anchor is right-aligned. */
   align?: 'left' | 'right';
+  /** The control the picker hangs off. */
+  anchorRef: React.RefObject<HTMLElement | null>;
 }) {
   const roleEditable = role === null;
   const [roleInput, setRoleInput] = useState('');
@@ -507,9 +524,13 @@ export function InlineUserPicker({
   };
 
   return (
-    <div
-      className={`absolute z-20 mt-1 top-full ${align === 'right' ? 'right-0' : 'left-0'} rounded-lg border shadow-lg p-2 w-72`}
-      style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+    <AnchoredPopover
+      anchorRef={anchorRef}
+      onClose={onCancel}
+      align={align}
+      width={288}
+      className="p-2"
+      style={{ backgroundColor: 'var(--bg-primary)' }}
     >
       <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
         {roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`}
@@ -638,6 +659,6 @@ export function InlineUserPicker({
           Cancel
         </button>
       </div>
-    </div>
+    </AnchoredPopover>
   );
 }

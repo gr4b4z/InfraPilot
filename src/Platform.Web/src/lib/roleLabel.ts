@@ -21,9 +21,14 @@ export interface ConfiguredRole {
 
 /**
  * The participant roles an admin has configured (Settings → Participant Roles), canonicalised
- * and deduped, in configured order. This is the set a person may be assigned to — the server
+ * and deduped, **sorted by display name**. This is the set a person may be assigned to — the server
  * rejects anything else on the manual-assignment endpoints — so every role picker lists exactly
  * this, rather than whichever roles happen to appear in the data on screen.
+ *
+ * Sorted rather than left in configured order: the configured order is how an admin happened to
+ * arrange a settings list, which tells a reader scanning a picker for "QA owner" nothing. Environment
+ * pickers are the deliberate exception — there the configured order is the deployment order, which is
+ * meaningful — and they use {@link useSettingsStore}'s `getOrderedEnvironments` instead.
  */
 export function useConfiguredRoles(): ConfiguredRole[] {
   const roles = useSettingsStore((s) => s.roles);
@@ -36,7 +41,9 @@ export function useConfiguredRoles(): ConfiguredRole[] {
       seen.add(key);
       out.push({ key, displayName: r.displayName?.trim() || key });
     }
-    return out;
+    return out.sort((a, b) =>
+      a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }),
+    );
   }, [roles]);
 }
 
