@@ -108,6 +108,7 @@ public static class PromotionSeedData
                 Provider = r.Provider,
                 Url = r.Url,
                 Title = r.Title,
+                Content = r.Content,
                 Revision = r.Revision,
                 CreatedAt = candidate.CreatedAt,
             });

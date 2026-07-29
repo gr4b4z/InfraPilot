@@ -7,4 +7,5 @@ public record Reference(
     string? Key = null,
     string? Revision = null,
     string? Title = null,
-    IReadOnlyList<Participant>? Participants = null);
+    IReadOnlyList<Participant>? Participants = null,
+    string? Content = null);

@@ -268,10 +268,15 @@ public static class DeploymentSeedData
                 wiParticipants.Add(new("assignee", assignee.Name, assignee.Email));
             }
 
+            // Most seeded tickets carry a description, but not all — the detail page hides its
+            // Content section entirely when there's none, and that path should show up locally too.
+            var wiContent = rand.NextDouble() < 0.75 ? WorkItemBody(wiTitle, service, rand) : null;
+
             refs.Add(new ReferenceDto("work-item",
                 $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
                 Title: wiTitle,
-                Participants: wiParticipants));
+                Participants: wiParticipants,
+                Content: wiContent));
         }
 
         // Repository ~40% — just a pointer, no participants.
@@ -291,6 +296,33 @@ public static class DeploymentSeedData
         return refs;
     }
 
+    /// <summary>
+    /// A Jira-shaped description for a seeded work item: a line of context, then acceptance
+    /// criteria. Composed from the ticket's own title rather than drawn from a parallel list so the
+    /// body always matches the summary above it, and deliberately multi-paragraph so the detail
+    /// page's Content section has real line breaks to render — and occasionally enough of them to
+    /// exercise the "Show more" collapse.
+    /// </summary>
+    private static string WorkItemBody(string title, string service, Random rand)
+    {
+        var summary = title[..1].ToLowerInvariant() + title[1..];
+        var criteria = new[]
+        {
+            $"- Covered by an automated test in `{service}`",
+            "- No change to the public contract",
+            "- Verified in staging before promotion",
+            "- Rollback is a redeploy of the previous version",
+            "- Dashboards and alerts updated where affected",
+        };
+        // 2–5 criteria: enough variance that some seeded tickets are short and some run long.
+        var taken = criteria.Take(2 + rand.Next(4));
+
+        return $"Reported by the {service} on-call rotation.\n\n"
+             + $"We need to {summary}. The current behaviour has been in place since the last\n"
+             + "major release and is now blocking downstream work.\n\n"
+             + "Acceptance criteria:\n"
+             + string.Join("\n", taken);
+    }
 
     private static EnrichmentData BuildEnrichment(Random rand)
     {

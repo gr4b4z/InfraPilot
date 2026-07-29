@@ -51,7 +51,13 @@ public record ReferenceDto(
     // `commit` references (matched on Key) and to the `pull-request` references those commits
     // merged (matched on Revision), so the detail page can show the change that carried it.
     // Meaningless on other reference types; ignored there.
-    IReadOnlyList<string>? Commits = null);
+    IReadOnlyList<string>? Commits = null,
+    // The reference's body, verbatim from the source system: a Jira ticket's description, a
+    // PR's description, a commit message body. Where Title is the one-line summary, this is
+    // the prose under it — what a reviewer reads to understand what they're signing off on.
+    // Unbounded by design (a ticket description can run long); stored as-is and rendered as
+    // plain text, never interpreted as markup.
+    string? Content = null);
 
 public record ParticipantDto(
     string Role,

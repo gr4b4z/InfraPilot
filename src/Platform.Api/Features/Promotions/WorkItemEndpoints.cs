@@ -279,6 +279,9 @@ public static class WorkItemEndpoints
             deployedAt = e.DeployedAt,
         }),
         title = d.Title,
+        // The work item's body, verbatim from the source system. Null when the producer sent none —
+        // the page renders no Content section at all in that case.
+        content = d.Content,
         url = d.Url,
         provider = d.Provider,
         pendingCandidateId = d.PendingCandidateId,
