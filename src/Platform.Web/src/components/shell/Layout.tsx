@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
 import { useSseEvents } from '@/hooks/useSseEvents';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useMyTasksPolling } from '@/stores/myTasksStore';
 
@@ -11,7 +12,10 @@ export function Layout() {
   // Feeds the sidebar counters, the topbar bell badge and the My Tasks page from one fetch.
   useMyTasksPolling();
   const { sidebarOpen, sidebarExpanded } = useConversationStore();
-  const chatTakesOver = sidebarOpen && sidebarExpanded;
+  const isDesktop = useIsDesktop();
+  // Below `lg` there isn't room for a conversation and a table side by side, so an open chat always
+  // takes the content area over — the expanded/docked distinction only exists on wide viewports.
+  const chatTakesOver = sidebarOpen && (sidebarExpanded || !isDesktop);
 
   return (
     <div
@@ -29,7 +33,7 @@ export function Layout() {
             >
               {/* No width cap here: these are dense operational tables that should use the
                   whole viewport. Long-form pages set their own reading width instead. */}
-              <div className="p-6 lg:p-8">
+              <div className="p-4 sm:p-6 lg:p-8">
                 <Outlet />
               </div>
             </main>

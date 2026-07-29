@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell, Maximize2, Minimize2 } from 'lucide-react';
 import { useConversationStore } from '@/stores/conversationStore';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { ChatCard } from '@/components/chat/ChatCard';
 import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
@@ -28,6 +29,7 @@ export function ChatSidebar() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const isDesktop = useIsDesktop();
   const assistantName = getAssistantName();
 
   // Auto-scroll on new messages
@@ -35,12 +37,13 @@ export function ChatSidebar() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Focus input when sidebar opens
+  // Focus input when the panel opens — but not on a phone, where focusing raises the keyboard over
+  // the conversation the user just opened to read.
   useEffect(() => {
-    if (sidebarOpen) {
+    if (sidebarOpen && isDesktop) {
       setTimeout(() => inputRef.current?.focus(), 150);
     }
-  }, [sidebarOpen]);
+  }, [sidebarOpen, isDesktop]);
 
   // Clear catalog-specific context when the user navigates away from a catalog form.
   // Without this, a stale catalogSlug leaks into subsequent requests on other pages.
@@ -135,13 +138,17 @@ export function ChatSidebar() {
 
   if (!sidebarOpen) return null;
 
+  // Below `lg` the panel is the content area (Layout hides `main` while it's open), so it fills the
+  // width rather than reserving a 380px column that wouldn't fit next to anything.
+  const docked = isDesktop && !sidebarExpanded;
+
   return (
     <div
       className="flex flex-col border-l h-full"
       style={{
-        ...(sidebarExpanded
-          ? { flex: 1, minWidth: 0 }
-          : { width: 380, minWidth: 380, flex: 'none' }),
+        ...(docked
+          ? { width: 380, minWidth: 380, flex: 'none' }
+          : { flex: 1, minWidth: 0 }),
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
       }}
@@ -173,9 +180,10 @@ export function ChatSidebar() {
           >
             <RotateCcw size={14} />
           </button>
+          {/* Expand/dock is meaningless below `lg`, where the panel is already the whole view. */}
           <button
             onClick={toggleSidebarExpanded}
-            className="p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
+            className="hidden lg:block p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
             style={{ color: 'var(--text-muted)' }}
             title={sidebarExpanded ? 'Collapse to sidebar' : 'Expand to full view'}
           >
@@ -185,6 +193,7 @@ export function ChatSidebar() {
             onClick={() => setSidebarOpen(false)}
             className="p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
             style={{ color: 'var(--text-muted)' }}
+            aria-label="Close assistant"
           >
             <X size={16} />
           </button>

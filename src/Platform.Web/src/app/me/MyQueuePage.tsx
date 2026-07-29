@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
 import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
 import { roleDisplay } from '@/lib/roleLabel';
+import { FilterPanel, filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
@@ -139,6 +140,24 @@ export function MyQueuePage() {
     [tickets, scopeFilter],
   );
 
+  // Badge on the collapsed filter toggle. Counts only the controls actually on screen for the
+  // current view — a stale time frame behind a collapsed panel on a tab that doesn't use it would
+  // be a filter the user can't find and isn't affected by. Mirrors the render conditions below.
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (view === 'decided') {
+      if (timeFrame !== '1d') n++;
+      if (deciderFilter.mode !== 'all') n++;
+    } else {
+      if (assigneeFilter.role !== null) n++;
+      if (view !== 'mine' && assigneeFilter.mode !== 'all') n++;
+    }
+    for (const key of ['product', 'service', 'targetEnv', 'deployedEnv'] as const) {
+      if (scopeFilter[key] !== null) n++;
+    }
+    return n;
+  }, [view, timeFrame, deciderFilter, assigneeFilter, scopeFilter]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -156,7 +175,9 @@ export function MyQueuePage() {
       {/* Tabs over the queue, matching the promotions list. Only "Assigned to me" carries a
           badge: its count is fetched for the shell anyway, whereas a number on the other two
           would need a second query per tab just to label a tab nobody has opened. */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Scrolls sideways below `sm` rather than wrapping to three rows on a phone, matching the
+          promotions list. */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
         {QUEUE_VIEWS.map((key) => {
           const active = view === key;
           const count = key === 'mine' ? assignedToMeCount : 0;
@@ -166,7 +187,7 @@ export function MyQueuePage() {
               type="button"
               onClick={() => handleViewChange(key)}
               aria-pressed={active}
-              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
+              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
               style={{
                 borderColor: active ? 'var(--accent)' : 'var(--border-color)',
                 backgroundColor: active ? 'var(--accent-bg)' : 'var(--bg-primary)',
@@ -190,7 +211,7 @@ export function MyQueuePage() {
         })}
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap">
+      <FilterPanel activeCount={activeFilterCount}>
         {/* Time frame + decider narrowing are only meaningful on the decided view. */}
         {view === 'decided' && (
           <>
@@ -219,7 +240,7 @@ export function MyQueuePage() {
           onChange={handleScopeChange}
           tickets={tickets}
         />
-      </div>
+      </FilterPanel>
 
       {error && (
         <div
@@ -423,14 +444,14 @@ function TimeFrameFilter({
 }) {
   return (
     <label
-      className="inline-flex items-center gap-1.5 text-[12px]"
+      className={filterLabelClass}
       style={{ color: 'var(--text-muted)' }}
     >
       <span>Time frame</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as TimeFrameValue)}
-        className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+        className={filterSelectClass}
         style={{
           borderColor: 'var(--border-color)',
           backgroundColor: 'var(--bg-primary)',
@@ -545,14 +566,14 @@ function DeciderFilter({
 
   return (
     <label
-      className="inline-flex items-center gap-1.5 text-[12px]"
+      className={filterLabelClass}
       style={{ color: 'var(--text-muted)' }}
     >
       <span>Decided by</span>
       <select
         value={selectValue}
         onChange={(e) => handleChange(e.target.value)}
-        className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+        className={filterSelectClass}
         style={{
           borderColor: 'var(--border-color)',
           backgroundColor: 'var(--bg-primary)',

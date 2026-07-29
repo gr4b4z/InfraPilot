@@ -8,6 +8,7 @@ import { roleDisplay } from '@/lib/roleLabel';
 import { readEnumPref, writePref, PROMOTIONS_VIEW_PREF } from '@/lib/prefs';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
+import { FilterPanel } from '@/components/ui/FilterPanel';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { formatDistanceToNow } from 'date-fns';
@@ -438,7 +439,9 @@ export function PromotionsPage() {
       </div>
 
       {/* Secondary filters */}
-      <div className="flex items-center gap-3 flex-wrap">
+      <FilterPanel
+        activeCount={[productFilter, serviceFilter, targetEnvFilter, referenceFilter].filter(Boolean).length}
+      >
         <select
           value={productFilter}
           onChange={(e) => setProductFilter(e.target.value)}
@@ -488,21 +491,23 @@ export function PromotionsPage() {
           placeholder="Reference (PR, work item, commit...)"
           value={referenceFilter}
           onChange={(e) => setReferenceFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-[13px] min-w-[240px]"
+          className="rounded-lg border px-3 py-1.5 text-[13px] sm:min-w-[240px]"
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
             color: 'var(--text-primary)',
           }}
         />
-      </div>
+      </FilterPanel>
 
       {/* Tabs over the promotions set. Resolved sits here rather than behind a "show resolved"
           disclosure at the bottom of the page: it's a slice of the same list, and hiding it below
           the fold made looking something up feel like an archaeology exercise. Counts are only
           shown for the eagerly-fetched tabs — a badge on a lazy tab would either lie until you
           opened it or force the fetch the laziness exists to avoid. */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Six pills wrap to four rows on a phone and push the list off-screen, so below `sm` this
+          scrolls sideways instead — the usual mobile tab strip. */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
@@ -518,7 +523,7 @@ export function PromotionsPage() {
               type="button"
               onClick={() => changeView(tab.key)}
               aria-pressed={active}
-              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
+              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
               style={{
                 borderColor: active ? 'var(--accent)' : 'var(--border-color)',
                 backgroundColor: active ? 'var(--accent-bg)' : 'var(--bg-primary)',

@@ -47,6 +47,8 @@ export function AnchoredPopover({
   style,
   /** Fixed width in px. Without one the popover sizes to its content. */
   width,
+  /** Accessible name for the dialog. Supply one whenever the trigger's label isn't enough. */
+  ariaLabel,
 }: {
   anchorRef: React.RefObject<HTMLElement | null>;
   onClose: () => void;
@@ -55,6 +57,7 @@ export function AnchoredPopover({
   className?: string;
   style?: React.CSSProperties;
   width?: number;
+  ariaLabel?: string;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
@@ -126,6 +129,9 @@ export function AnchoredPopover({
         top: position?.top ?? -9999,
         left: position?.left ?? -9999,
         width,
+        // A fixed width wider than a phone would run off the edge; the clamp in `reposition` only
+        // moves the box, it can't shrink it.
+        maxWidth: `calc(100vw - ${VIEWPORT_MARGIN * 2}px)`,
         // Above the app shell (sidebar/topbar) — this is the topmost thing on screen while open.
         zIndex: 1000,
         backgroundColor: 'var(--bg-secondary)',
@@ -133,6 +139,7 @@ export function AnchoredPopover({
         ...style,
       }}
       role="dialog"
+      aria-label={ariaLabel}
     >
       {children}
     </div>,

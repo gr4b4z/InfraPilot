@@ -22,6 +22,7 @@ import {
 import { CreateRollbackPanel } from './CreateRollbackPanel';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
+import { FilterPanel } from '@/components/ui/FilterPanel';
 
 const STATUS_CONFIG: Record<
   RollbackStatus,
@@ -199,7 +200,9 @@ export function RollbacksPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-3 flex-wrap">
+      <FilterPanel
+        activeCount={[statusFilter, productFilter, targetEnvFilter].filter(Boolean).length}
+      >
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
@@ -247,7 +250,7 @@ export function RollbacksPage() {
             </option>
           ))}
         </select>
-      </div>
+      </FilterPanel>
 
       {loading ? (
         <div className="space-y-3">
