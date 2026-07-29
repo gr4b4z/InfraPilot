@@ -32,7 +32,7 @@ export function ApprovalsPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: 'Pending', value: pending.length, icon: Clock, color: 'var(--warning)', bg: 'var(--warning-bg)' },
           { label: 'Approved', value: approvals.filter(a => a.status === 'Approved').length, icon: CheckCircle, color: 'var(--success)', bg: 'var(--success-bg)' },

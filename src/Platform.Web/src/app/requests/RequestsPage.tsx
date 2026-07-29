@@ -52,11 +52,12 @@ export function RequestsPage() {
         </button>
       </div>
 
-      {/* Scope toggle + stats */}
-      <div className="flex items-center justify-between gap-4">
+      {/* Scope toggle + stats. The segmented control and the three counts together need ~380px, so
+          below `sm` the counts drop to their own line rather than squeezing the toggle. */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
         {/* Segmented control */}
         <div
-          className="inline-flex rounded-lg p-0.5 gap-0.5"
+          className="inline-flex self-start rounded-lg p-0.5 gap-0.5"
           style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}
         >
           <button
