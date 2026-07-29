@@ -826,6 +826,95 @@ public class WorkItemApprovalTests
     // NOTE: GetPendingForCurrentUser_ExcludesTicketsWhereUserIsExcludedByRole was dropped — the
     // excluded-role (separation-of-duties) filtering it asserted was removed (D17).
 
+    // ── Deployed environments ───────────────────────────────────────────────
+    // A work item reports where its change is actually running, resolved from the deploy events that
+    // shipped the carrying version. It deliberately does NOT report the promotion's source/target
+    // edge: the target env is where the build is asking to go, which is the one place the change
+    // can't be tested yet.
+
+    [Fact]
+    public async Task GetPendingForCurrentUser_ReportsEnvironmentsTheVersionIsDeployedTo()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Candidate is acme/api v1.0.0 staging → prod; the seed also lands v1.0.0 in staging.
+            await SeedPolicyEventCandidateAsync(db, "ENV-1", approverGroup: "ReleaseApprovers");
+
+            db.DeployEvents.AddRange(
+                // Same version, another environment — belongs on the row.
+                NewDeployEventFor("acme", "api", "dev", "v1.0.0"),
+                // A different version of the same service — not this work item's change.
+                NewDeployEventFor("acme", "api", "prod", "v0.9.0"),
+                // Right version, failed deploy — nothing to test there.
+                NewDeployEventFor("acme", "api", "uat", "v1.0.0", status: "failed"),
+                // Another service that happens to share the version string.
+                NewDeployEventFor("acme", "other", "qa", "v1.0.0"));
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var row = Assert.Single((await svc.GetPendingForCurrentUserAsync(default)).Tickets);
+
+            Assert.Equal(
+                new[] { "dev", "staging" },
+                row.Environments.Select(e => e.Environment).OrderBy(e => e).ToArray());
+            Assert.All(row.Environments, e => Assert.Equal("v1.0.0", e.Version));
+            Assert.All(row.Environments, e => Assert.Equal("api", e.Service));
+        }
+    }
+
+    [Fact]
+    public async Task GetDetail_UnionsEnvironmentsAcrossEveryVersionThatCarriedTheItem()
+    {
+        // An environment may still be sitting on a build that was superseded before it shipped, and
+        // that build carried the ticket too — so it's a place the change can be exercised.
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "ENVD-1", approverGroup: "ReleaseApprovers");
+
+            var older = NewCandidate("ReleaseApprovers");
+            older.Version = "v0.9.0";
+            older.Status = PromotionStatus.Superseded;
+            older.CreatedAt = DateTimeOffset.UtcNow.AddHours(-2);
+            db.PromotionCandidates.Add(older);
+            db.PromotionWorkItems.Add(new PromotionWorkItem
+            {
+                Id = Guid.NewGuid(),
+                CandidateId = older.Id,
+                WorkItemKey = "ENVD-1",
+                Product = "acme",
+                TargetEnv = "prod",
+                CreatedAt = DateTimeOffset.UtcNow.AddHours(-2),
+            });
+            db.DeployEvents.Add(NewDeployEventFor("acme", "api", "dev", "v0.9.0"));
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("ENVD-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+
+            var byEnv = detail!.Environments.ToDictionary(e => e.Environment, e => e.Version);
+            Assert.Equal("v1.0.0", byEnv["staging"]);
+            Assert.Equal("v0.9.0", byEnv["dev"]);
+            Assert.Equal(2, byEnv.Count);
+        }
+    }
+
     // ── Decided-history tests (GetDecidedAsync) ─────────────────────────────
 
     [Fact]
@@ -1218,6 +1307,29 @@ public class WorkItemApprovalTests
             CreatedAt = DateTimeOffset.UtcNow,
         };
     }
+
+    /// <summary>
+    /// A bare deploy event for a specific (product, service, environment, version). Used by the
+    /// deployed-environments tests, which care about the deploy coordinates and nothing else.
+    /// </summary>
+    private static DeployEvent NewDeployEventFor(
+        string product, string service, string environment, string version,
+        string status = "succeeded", DateTimeOffset? deployedAt = null)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            Product = product,
+            Service = service,
+            Environment = environment,
+            Version = version,
+            Source = "ci",
+            Status = status,
+            DeployedAt = deployedAt ?? DateTimeOffset.UtcNow,
+            ReferencesJson = "[]",
+            ParticipantsJson = "[]",
+            MetadataJson = "{}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
 
     private static PromotionCandidate NewCandidate(
         string? approverGroup,

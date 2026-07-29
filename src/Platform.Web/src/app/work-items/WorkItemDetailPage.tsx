@@ -14,6 +14,7 @@ import { refreshMyTasks } from '@/stores/myTasksStore';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   ArrowLeft,
@@ -171,10 +172,9 @@ export function WorkItemDetailPage() {
               <span className="font-medium">{detail.product}</span>
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
-            <span className="inline-flex items-center gap-1">
-              <span style={{ color: 'var(--text-muted)' }}>Target:</span>
-              <EnvBadge env={detail.targetEnv} size="xs" />
-            </span>
+            {/* Where the change can be exercised — not where the promotion is headed. The promotion
+                edges themselves are in the Promotions card, which is where they belong. */}
+            <WorkItemEnvironments environments={detail.environments ?? []} />
           </div>
         </div>
         {headline && headlineStyle && (
