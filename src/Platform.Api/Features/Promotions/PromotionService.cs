@@ -113,11 +113,16 @@ public class PromotionService
 
         // Ground the promotion in real source state: the exact version must have a succeeded deploy
         // in the source environment. Blocks promotions from an unknown / never-shipped source.
-        var sourceDeployed = await _db.DeployEvents.AsNoTracking().AnyAsync(e =>
-            e.Product == product && e.Service == service && e.Environment == sourceEnv
-            && e.Version == version && e.Status == "succeeded", ct);
-        if (!sourceDeployed)
-            throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
+        // Policies with SourceRequiresDeploy=false opt out — their source is a landing zone /
+        // release track that never receives deploy events, not a runtime environment.
+        if (policy.SourceRequiresDeploy)
+        {
+            var sourceDeployed = await _db.DeployEvents.AsNoTracking().AnyAsync(e =>
+                e.Product == product && e.Service == service && e.Environment == sourceEnv
+                && e.Version == version && e.Status == "succeeded", ct);
+            if (!sourceDeployed)
+                throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
+        }
 
         // Reject redundant promotions: if the target env is already running this exact version
         // (via a prior promotion, a rollback, or an out-of-band deploy) there is nothing to promote.
@@ -1032,22 +1037,26 @@ public class PromotionService
         // off this version), block — promoting would push a version no live env runs. This clears
         // automatically once the source is redeployed to the version (see idempotent reactivation
         // in CreateCandidateAsync). Checked before auto-approve so even auto policies can't promote
-        // a drifted version.
-        var sourceCurrent = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == candidate.Product && e.Service == candidate.Service
-                     && e.Environment == candidate.SourceEnv)
-            .OrderByDescending(e => e.DeployedAt)
-            .Select(e => e.Version)
-            .FirstOrDefaultAsync(ct);
-        // Only block on positive evidence of drift: a source deploy exists and runs a *different*
-        // version. No source history (null) means we can't conclude drift, so don't block.
-        if (sourceCurrent is not null
-            && !string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
-            return new GateResult(false, new[]
-            {
-                $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
-                $"(now {sourceCurrent}) — promotion is stale until redeployed",
-            });
+        // a drifted version. Skipped when the policy opted out of source deploys entirely
+        // (SourceRequiresDeploy=false): a landing-zone source has no meaningful "current version".
+        if (snapshot.SourceRequiresDeploy)
+        {
+            var sourceCurrent = await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Product == candidate.Product && e.Service == candidate.Service
+                         && e.Environment == candidate.SourceEnv)
+                .OrderByDescending(e => e.DeployedAt)
+                .Select(e => e.Version)
+                .FirstOrDefaultAsync(ct);
+            // Only block on positive evidence of drift: a source deploy exists and runs a *different*
+            // version. No source history (null) means we can't conclude drift, so don't block.
+            if (sourceCurrent is not null
+                && !string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
+                return new GateResult(false, new[]
+                {
+                    $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
+                    $"(now {sourceCurrent}) — promotion is stale until redeployed",
+                });
+        }
 
         // 1. Work items REQUIRED but not all approved → blocked.
         if (snapshot.RequireAllWorkItemsApproved

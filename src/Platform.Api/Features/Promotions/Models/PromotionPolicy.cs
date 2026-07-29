@@ -69,6 +69,15 @@ public class PromotionPolicy
     /// </summary>
     public bool AutoApproveWhenNoWorkItems { get; set; } = false;
 
+    /// <summary>
+    /// When <c>true</c> (the default), an external candidate is rejected unless the exact version
+    /// has a succeeded deploy event in <see cref="SourceEnv"/>. Set to <c>false</c> for edges whose
+    /// source is not a real runtime environment — e.g. a CI landing zone / release track directory
+    /// ("stable") that versions pass through without ever being deployed there. Disabling it also
+    /// disables the source-drift gate check, which is meaningless without source deploy history.
+    /// </summary>
+    public bool SourceRequiresDeploy { get; set; } = true;
+
     // Timeouts / escalation
     public int TimeoutHours { get; set; } = 24;
     public string? EscalationGroup { get; set; }

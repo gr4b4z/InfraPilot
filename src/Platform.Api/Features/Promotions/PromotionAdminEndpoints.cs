@@ -83,6 +83,7 @@ public static class PromotionAdminEndpoints
                 RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved,
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
                 AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems,
+                SourceRequiresDeploy = request.SourceRequiresDeploy,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -111,6 +112,7 @@ public static class PromotionAdminEndpoints
             policy.RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved;
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
             policy.AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems;
+            policy.SourceRequiresDeploy = request.SourceRequiresDeploy;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
 
             await db.SaveChangesAsync();
@@ -155,6 +157,7 @@ public static class PromotionAdminEndpoints
         requireAllWorkItemsApproved = p.RequireAllWorkItemsApproved,
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
         autoApproveWhenNoWorkItems = p.AutoApproveWhenNoWorkItems,
+        sourceRequiresDeploy = p.SourceRequiresDeploy,
         createdAt = p.CreatedAt,
         updatedAt = p.UpdatedAt,
     };
@@ -238,7 +241,8 @@ public record UpsertPolicyRequest(
     string? EscalationGroup,
     bool RequireAllWorkItemsApproved = false,
     bool AutoApproveOnAllWorkItemsApproved = false,
-    bool AutoApproveWhenNoWorkItems = false);
+    bool AutoApproveWhenNoWorkItems = false,
+    bool SourceRequiresDeploy = true);
 
 /// <summary>One approval step in an <see cref="UpsertPolicyRequest"/>.</summary>
 public record UpsertStepRequest(string? Name, List<UpsertRequirementRequest>? Requirements);

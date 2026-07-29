@@ -41,6 +41,11 @@ public record ResolvedPolicySnapshot(
     /// <inheritdoc cref="PromotionPolicy.AutoApproveWhenNoWorkItems"/>
     public bool AutoApproveWhenNoWorkItems { get; init; } = false;
 
+    /// <inheritdoc cref="PromotionPolicy.SourceRequiresDeploy"/>
+    /// <remarks>Defaults to <c>true</c> so snapshot JSON written before this field existed keeps
+    /// the original behaviour (source deploy required, drift check active).</remarks>
+    public bool SourceRequiresDeploy { get; init; } = true;
+
     /// <summary>Flattened requirement set across every step — the unit of gate satisfaction.</summary>
     public IReadOnlyList<ApproverRequirement> AllRequirements =>
         ApprovalSteps.SelectMany(s => s.Requirements).ToList();

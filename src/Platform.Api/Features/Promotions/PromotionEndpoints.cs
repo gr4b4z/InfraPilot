@@ -460,22 +460,25 @@ public static class PromotionEndpoints
             {
                 candidate = await svc.CreateExternalCandidateAsync(dto, ct);
             }
+            // Each 422 carries a stable machine-readable `code` alongside the human `error` so
+            // pipeline callers can branch (skip / remediate / alert) without parsing messages.
             catch (SourceDeploymentNotFoundException ex)
             {
                 // The (product, service, sourceEnv, version) has no succeeded deployment — cannot
                 // promote an unknown source.
-                return Results.UnprocessableEntity(new { error = ex.Message });
+                return Results.UnprocessableEntity(new { code = "source_deploy_missing", error = ex.Message });
             }
             catch (TargetAlreadyAtVersionException ex)
             {
                 // The target env already runs this version — nothing to promote.
-                return Results.UnprocessableEntity(new { error = ex.Message });
+                return Results.UnprocessableEntity(new { code = "target_already_at_version", error = ex.Message });
             }
             if (candidate is null)
             {
                 // No policy resolved for this source→target edge — the product isn't enrolled.
                 return Results.UnprocessableEntity(new
                 {
+                    code = "policy_missing",
                     error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
                 });
             }

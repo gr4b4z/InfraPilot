@@ -1247,6 +1247,7 @@ export interface PromotionPolicy {
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
+  sourceRequiresDeploy: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1262,6 +1263,7 @@ export interface UpsertPromotionPolicyPayload {
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
+  sourceRequiresDeploy: boolean;
 }
 
 export interface FeatureFlag {
