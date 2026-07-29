@@ -12,6 +12,7 @@ import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { formatDistanceToNow } from 'date-fns';
 import {
   Ticket,
+  AlertTriangle,
   Ban,
   CheckCircle,
   XCircle,
@@ -47,11 +48,15 @@ import {
  */
 export function MyQueuePage() {
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
-  // Server-supplied (email, role) rollup + canonical role set, both feeding the dropdowns.
-  // Computed against the user's authorized list pre-narrowing — the queue itself, not the
-  // org directory — so every choice is one we can actually render results for.
+  // Server-supplied (email, role) rollup feeding the person dropdown. Computed against the user's
+  // authorized list pre-narrowing — the queue itself, not the org directory — so every person
+  // offered is one we can actually render results for.
   const [assignees, setAssignees] = useState<PendingAssignee[]>([]);
+  // The configured participant roles (the role dropdown's contents) and the roles the queue
+  // carries that nobody configured. The former is deliberately independent of what's on screen:
+  // "which items have no QA owner?" is a question about a role that may appear nowhere.
   const [roles, setRoles] = useState<string[]>([]);
+  const [unknownRoles, setUnknownRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Hydrate the filter from localStorage so the user's pick survives reloads. Only happens
@@ -64,7 +69,7 @@ export function MyQueuePage() {
   // Time frame — only meaningful on the "decided" view; defaults to last day.
   const [timeFrame, setTimeFrame] = useState<TimeFrameValue>(() => loadTimeFrame());
   // Decider narrowing — only meaningful on the "decided" view. Filters by who clicked
-  // Approve / Reject ("Me" = the current user's own decisions). Persisted via localStorage.
+  // decision ("Me" = the current user's own decisions). Persisted via localStorage.
   const [deciderFilter, setDeciderFilter] = useState<DeciderFilterValue>(() => loadDeciderFilter());
   // The auth store already carries the current user's email — same source PromotionDetailPage
   // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
@@ -77,7 +82,7 @@ export function MyQueuePage() {
   // Defined as an async function so the initial fetch from `useEffect` can be a
   // microtask (avoids the eslint react-hooks/set-state-in-effect rule and the
   // associated cascading-render warning) while still letting decision handlers
-  // call `fetchData()` directly to refresh after Approve / Reject.
+  // call `fetchData()` directly to refresh after a decision.
   const fetchData = async (
     nextView: QueueView,
     filter: AssigneeFilterValue,
@@ -92,6 +97,7 @@ export function MyQueuePage() {
       setTickets(res.tickets ?? []);
       setAssignees(res.assignees ?? []);
       setRoles(res.roles ?? []);
+      setUnknownRoles(res.unknownRoles ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load work items');
     } finally {
@@ -207,6 +213,7 @@ export function MyQueuePage() {
             onChange={handleFilterChange}
             assignees={assignees}
             roles={roles}
+            unknownRoles={unknownRoles}
             hidePerson={view === 'mine'}
           />
         )}
@@ -443,7 +450,7 @@ function TimeFrameFilter({
 }
 
 // ── Decider filter (only meaningful on "decided" view) ───────────────────────────────────
-// Narrows the decision history by who clicked Approve / Reject. Distinct from the pending
+// Narrows the decision history by who recorded the decision. Distinct from the pending
 // AssigneeFilter (which narrows by work-item participant/role) — a decider has no role and
 // "unassigned" is not a valid choice, so this is its own lightweight picker.
 
@@ -630,7 +637,7 @@ function emptyStateBody(filter: AssigneeFilterValue): string {
 }
 
 /**
- * One queue row. Navigational, not transactional: sign-off (Approve / Block / Reject) and the
+ * One queue row. Navigational, not transactional: sign-off (Approve / Issue / Block) and the
  * discussion thread live on the work-item detail page, so the row's job is to surface state and get
  * you there. Assigning people stays inline — it's the one edit that's useful while triaging a list.
  *
@@ -805,7 +812,7 @@ function DecisionBanner({
 }) {
   const s = decisionStyle(decision);
   const decider = decidedByName ?? decidedByEmail ?? 'someone';
-  const Icon = decision === 'Approved' ? CheckCircle : decision === 'Blocked' ? Ban : XCircle;
+  const Icon = decision === 'Approved' ? CheckCircle : decision === 'Issue' ? AlertTriangle : Ban;
   return (
     <div
       className="mt-2.5 rounded-lg border px-3 py-2 text-[12px] space-y-1"
@@ -814,7 +821,7 @@ function DecisionBanner({
       <div className="inline-flex items-center gap-2 font-medium flex-wrap">
         <Icon size={12} />
         <span>
-          {s.label} by <span title={decidedByEmail ?? undefined}>{decider}</span>
+          {s.attributed} by <span title={decidedByEmail ?? undefined}>{decider}</span>
         </span>
         {decidedAt && (
           <span className="font-normal" style={{ color: 'var(--text-muted)' }}>

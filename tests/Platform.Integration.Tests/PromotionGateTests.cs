@@ -24,7 +24,8 @@ namespace Platform.Integration.Tests;
 /// step tree. Drives candidates through
 /// <see cref="PromotionService.ApproveAsync"/>, <see cref="PromotionService.ReevaluateAsync"/>
 /// and <see cref="WorkItemApprovalService.ApproveAsync"/> /
-/// <see cref="WorkItemApprovalService.RejectAsync"/> and asserts the candidate-level transitions,
+/// <see cref="WorkItemApprovalService.RaiseIssueAsync"/> /
+/// <see cref="WorkItemApprovalService.BlockAsync"/> and asserts the candidate-level transitions,
 /// audit entries (legacy + ticket-level + coarse), and webhook dispatches that come out of them.
 ///
 /// <para>Each test owns its own <see cref="GateTestFactory"/> for isolation. The factory mirrors
@@ -96,15 +97,15 @@ public class PromotionGateTests
             Arg.Any<WebhookEventFilters>());
     }
 
-    // ── 1a. WorkItemsOnly_Block_StallsGateWithoutTerminatingCandidate ─────────
+    // ── 1a. WorkItemsOnly_Issue_StallsGateThenApproveReleasesIt ───────────────
 
     /// <summary>
-    /// A block is the reversible middle ground between silence and a veto: the gate stays unmet (so
-    /// no auto-promotion) but the candidate stays Pending (unlike a rejection, which terminates it).
-    /// Approving afterwards releases the hold and the gate fires as normal.
+    /// An issue is the reversible middle ground between silence and a block: the gate stays unmet (so
+    /// no auto-promotion) but the candidate stays Pending. Approving afterwards clears it and the gate
+    /// fires as normal.
     /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_Block_StallsGateThenApproveReleasesIt()
+    public async Task WorkItemsOnly_Issue_StallsGateThenApproveReleasesIt()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -124,7 +125,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.BlockAsync("FOO-1", "acme", "prod", "waiting on test data", default);
+            await svc.RaiseIssueAsync("FOO-1", "acme", "prod", "waiting on test data", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -136,20 +137,20 @@ public class PromotionGateTests
             Assert.Null(candidate.ApprovedAt);
 
             var ticket = await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "promotion.ticket.blocked").ToListAsync();
+                .Where(a => a.Action == "promotion.ticket.issue-raised").ToListAsync();
             Assert.Single(ticket);
         }
 
         await factory.WebhookDispatcher.Received().DispatchAsync(
-            "promotion.ticket.blocked",
+            "promotion.ticket.issue-raised",
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
 
-        // Releasing the hold satisfies the gate.
+        // Resolving the issue satisfies the gate.
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "unblocked", default);
+            await svc.ApproveAsync("FOO-1", "acme", "prod", "resolved", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -326,20 +327,20 @@ public class PromotionGateTests
         }
     }
 
-    // ── 5. WorkItemsOnly_TicketRejected_StallsGateWithoutTerminatingCandidate ──
+    // ── 5. WorkItemsOnly_TicketBlocked_StallsGateWithoutTerminatingCandidate ──
 
     /// <summary>
-    /// A work-item rejection is a verdict on the ticket, not on the promotion: it holds the gate
-    /// (the item never counts as resolved) but leaves the candidate Pending, exactly like a block.
-    /// It used to cascade into <c>promotion.rejected</c>; that veto is gone, so a reject is
-    /// recoverable — the same user can approve later, or a new version resets the decision.
+    /// A work-item block is a verdict on the ticket, not on the promotion: it holds the gate (the item
+    /// never counts as resolved) but leaves the candidate Pending, exactly like an issue. It used to
+    /// cascade into <c>promotion.rejected</c>; that veto is gone, so a block is recoverable — the same
+    /// user can approve later, or a new version resets the decision.
     /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_TicketRejected_StallsGateWithoutTerminatingCandidate()
+    public async Task WorkItemsOnly_TicketBlocked_StallsGateWithoutTerminatingCandidate()
     {
         await using var factory = new GateTestFactory();
-        factory.Current.Email = "rejector@example.com";
-        factory.Current.Name = "Rejector";
+        factory.Current.Email = "blocker@example.com";
+        factory.Current.Name = "Blocker";
         factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
@@ -355,7 +356,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.RejectAsync("FOO-1", "acme", "prod", "not ready", default);
+            await svc.BlockAsync("FOO-1", "acme", "prod", "not ready", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -369,15 +370,15 @@ public class PromotionGateTests
             Assert.Empty(await db.AuditLog.AsNoTracking()
                 .Where(a => a.Action == "promotion.rejected").ToListAsync());
 
-            // Ticket-level audit is still emitted for the rejection.
+            // Ticket-level audit is still emitted for the block.
             var ticket = await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "promotion.ticket.rejected").ToListAsync();
+                .Where(a => a.Action == "promotion.ticket.blocked").ToListAsync();
             Assert.Single(ticket);
 
             // And the decision lands in the work item's comment thread.
             var entry = await db.WorkItemComments.AsNoTracking()
                 .SingleAsync(c => c.WorkItemKey == "FOO-1");
-            Assert.Equal(PromotionDecision.Rejected, entry.Decision);
+            Assert.Equal(WorkItemDecision.Blocked, entry.Decision);
             Assert.Contains("not ready", entry.Body);
         }
 
@@ -669,7 +670,7 @@ public class PromotionGateTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var row = await svc.ApproveAsync("ORPH-1", "acme", "prod", null, default);
-            Assert.Equal(PromotionDecision.Approved, row.Decision);
+            Assert.Equal(WorkItemDecision.Approved, row.Decision);
         }
 
         using (var scope = factory.Services.CreateScope())

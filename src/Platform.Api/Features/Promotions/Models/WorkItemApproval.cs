@@ -13,6 +13,10 @@ namespace Platform.Api.Features.Promotions.Models;
 /// <see cref="UpdatedAt"/> is the only trace of the earlier value on the row itself — the audit
 /// log keeps the full sequence. Multi-approver-per-work-item is a future policy.
 /// </summary>
+/// <remarks>
+/// <see cref="Decision"/> is stored as its name; see <see cref="WorkItemDecision"/> for what the
+/// values meant before they were renamed.
+/// </remarks>
 public class WorkItemApproval
 {
     public Guid Id { get; set; }
@@ -21,7 +25,7 @@ public class WorkItemApproval
     public string TargetEnv { get; set; } = "";
     public string ApproverEmail { get; set; } = "";
     public string ApproverName { get; set; } = "";
-    public PromotionDecision Decision { get; set; }
+    public WorkItemDecision Decision { get; set; }
     public string? Comment { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 

@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { roleDisplay } from '@/lib/roleLabel';
 import type { PendingAssignee } from '@/lib/api';
 
@@ -6,25 +7,33 @@ import type { PendingAssignee } from '@/lib/api';
  * Picker for narrowing the My-queue list by (role, person).
  *
  * Two side-by-side native selects:
- *   - Role: "Any role" + each role from the server-supplied canonical role set.
- *   - Person: "Anyone" + "Me" + "Unassigned" + each distinct person seen on the user's
+ *   - Role: "Any role" + every configured participant role, then any unrecognised role the queue
+ *     actually carries under its own group.
+ *   - Person: "Anyone" + "Me" + the "nobody" option + each distinct person seen on the user's
  *     authorized list, filtered by the currently-selected role.
  *
+ * Role and person compose into the question this filter exists to answer: pick a role, pick
+ * "nobody assigned", and the list becomes the work items missing that role — the ones whose
+ * sign-off has nobody to chase. The role list is the configured vocabulary rather than the roles
+ * present in the data precisely because of that combination: a role nobody has been put on
+ * anywhere would otherwise be the one choice the dropdown couldn't offer.
+ *
  * Pure display narrowing — server-side authorisation (group membership, excluded role,
- * not-yet-decided) is unchanged. Choices come from the user's queue itself (server returns
- * the (email, role) rollup pre-narrowing) so the dropdowns never offer a zero-result pick.
+ * not-yet-decided) is unchanged. Person choices come from the user's queue itself (server returns
+ * the (email, role) rollup pre-narrowing) so that dropdown never offers a zero-result pick.
  *
  * "Unassigned" and "Me" stay as person values, not separate modes — see
  * <see cref="MyQueuePage"/> for how the matrix maps to the API call.
  */
 export type AssigneeFilterValue = {
-  /** Canonical role from the server's role set, or null for "any role". */
+  /** Canonical role key, or null for "any role". */
   role: string | null;
   /**
    * Person mode:
    *   - 'all'        — no person narrowing.
    *   - 'me'         — match current user's email.
-   *   - 'unassigned' — no participant in the effective role set.
+   *   - 'unassigned' — nobody holds the role (or, with no role picked, none of the roles that
+   *                    count as an assignment).
    *   - 'person'     — specific email + displayName.
    */
   mode: 'all' | 'me' | 'unassigned' | 'person';
@@ -44,14 +53,21 @@ export function AssigneeFilter({
   onChange,
   assignees,
   roles,
+  unknownRoles = [],
   hidePerson = false,
 }: {
   value: AssigneeFilterValue;
   onChange: (next: AssigneeFilterValue) => void;
   /** (email, role) → count rollup from the queue endpoint. Empty when the queue is empty. */
   assignees: PendingAssignee[];
-  /** Canonical assignee-role set from the server. */
+  /** Configured participant roles from the server, in configured order. */
   roles: string[];
+  /**
+   * Roles carried by the queue's work items that aren't configured. Offered under their own
+   * group: they're the roles you'd want to find in order to fix them, and leaving them out would
+   * make those assignments unreachable from here.
+   */
+  unknownRoles?: string[];
   /**
    * Drop the person select, keeping only the role one. Used on the "Assigned to me" tab, where
    * the person is fixed by the tab — offering a picker that could contradict it would make the
@@ -80,6 +96,28 @@ export function AssigneeFilter({
     }
     return out;
   }, [assignees, value.role]);
+
+  // Unrecognised roles to offer. The active pick is kept in the list even when the queue no longer
+  // carries it (its last holder was reassigned, say, or an admin dropped it from the vocabulary):
+  // a select whose value has no option renders as "Any role" while the filter is still narrowing,
+  // which reads as a broken queue rather than an active filter.
+  const unknownOptions = useMemo(() => {
+    const out = [...unknownRoles];
+    if (value.role && !roles.includes(value.role) && !out.includes(value.role)) {
+      out.push(value.role);
+    }
+    return out;
+  }, [unknownRoles, roles, value.role]);
+
+  // The picked role isn't in the configured vocabulary — worth saying out loud, since it explains
+  // both the raw label and why nobody can be assigned to it.
+  const roleIsUnknown = !!value.role && unknownOptions.includes(value.role);
+
+  // "Nobody" reads differently depending on whether a role is in play: with one, it's that role's
+  // slot that's empty; without one, it's the whole assignment.
+  const unassignedLabel = value.role
+    ? `No ${roleDisplay({ role: value.role })} assigned`
+    : 'Nobody assigned';
 
   // If the current person pick is no longer available (e.g. role narrowed and they don't
   // appear in the new set), reset to "Anyone" rather than silently render an invalid value.
@@ -170,7 +208,26 @@ export function AssigneeFilter({
               {roleDisplay({ role: r })}
             </option>
           ))}
+          {unknownOptions.length > 0 && (
+            <optgroup label="Not configured">
+              {unknownOptions.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
+        {roleIsUnknown && (
+          <span
+            className="inline-flex items-center gap-1 text-[11px]"
+            style={{ color: 'var(--warning)' }}
+            title={`"${value.role}" is not a configured participant role. Add it under Settings → Participant Roles to assign people to it.`}
+          >
+            <AlertTriangle size={11} />
+            Not configured
+          </span>
+        )}
       </label>
 
       {!hidePerson && (
@@ -191,7 +248,7 @@ export function AssigneeFilter({
         >
           <option value={ANYONE}>Anyone</option>
           <option value={ME}>Me</option>
-          <option value={UNASSIGNED}>Unassigned</option>
+          <option value={UNASSIGNED}>{unassignedLabel}</option>
           {people.length > 0 && (
             <optgroup label="On your queue">
               {people.map((p) => (

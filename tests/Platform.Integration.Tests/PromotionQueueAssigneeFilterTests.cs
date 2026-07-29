@@ -550,22 +550,25 @@ public class PromotionQueueAssigneeFilterTests
     }
 
     [Fact]
-    public async Task ResponseShape_RolesSet_DefaultMatchesConfigured()
+    public async Task ResponseShape_RolesSet_IsTheConfiguredVocabularyNotTheAssigneeRoleSet()
     {
-        // Default: ["qa","reviewer","assignee"].
+        // `roles` is the role dropdown's contents: the configured participant roles (Settings →
+        // Participant Roles), whose defaults are ["triggered-by","author","reviewer","qa"]. It is
+        // deliberately NOT the assignee-role set — that one only defines what counts as "assigned
+        // to somebody" when no role is picked, and narrowing it must not narrow what an operator
+        // can filter on. See WorkItemRoleVocabularyTests for the vocabulary's own coverage.
         var defaultResult = await GetPendingAsync(role: null, assignee: null);
         Assert.Contains("qa", defaultResult.Roles);
         Assert.Contains("reviewer", defaultResult.Roles);
-        Assert.Contains("assignee", defaultResult.Roles);
+        Assert.Contains("author", defaultResult.Roles);
+        Assert.DoesNotContain("assignee", defaultResult.Roles);
 
-        // Override to ["qa"] — only qa should be present.
         await SetAssigneeRoleSettingAsync("[\"qa\"]");
         try
         {
             var overridden = await GetPendingAsync(role: null, assignee: null);
             Assert.Contains("qa", overridden.Roles);
-            Assert.DoesNotContain("reviewer", overridden.Roles);
-            Assert.DoesNotContain("assignee", overridden.Roles);
+            Assert.Contains("reviewer", overridden.Roles);
         }
         finally
         {

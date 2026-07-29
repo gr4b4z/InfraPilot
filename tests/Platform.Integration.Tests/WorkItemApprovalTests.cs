@@ -66,7 +66,7 @@ public class WorkItemApprovalTests
             Assert.Equal("acme", row.Product);
             Assert.Equal("prod", row.TargetEnv);
             Assert.Equal("approver@example.com", row.ApproverEmail);
-            Assert.Equal(PromotionDecision.Approved, row.Decision);
+            Assert.Equal(WorkItemDecision.Approved, row.Decision);
             Assert.Equal("looks good", row.Comment);
         }
 
@@ -133,7 +133,7 @@ public class WorkItemApprovalTests
                 TargetEnv = "prod",
                 ApproverEmail = "approver@example.com",
                 ApproverName = "Approver User",
-                Decision = PromotionDecision.Approved,
+                Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -248,7 +248,7 @@ public class WorkItemApprovalTests
     }
 
     [Fact]
-    public async Task Reject_RecordsRowWithRejectedDecision()
+    public async Task Block_RecordsRowWithBlockedDecision()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -264,15 +264,15 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var row = await svc.RejectAsync("FOO-1", "acme", "prod", "blocked", default);
-            Assert.Equal(PromotionDecision.Rejected, row.Decision);
+            var row = await svc.BlockAsync("FOO-1", "acme", "prod", "not going out", default);
+            Assert.Equal(WorkItemDecision.Blocked, row.Decision);
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var audit = await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "work-item.rejected").ToListAsync();
+                .Where(a => a.Action == "work-item.blocked").ToListAsync();
             Assert.Single(audit);
         }
     }
@@ -300,7 +300,7 @@ public class WorkItemApprovalTests
                     Id = Guid.NewGuid(),
                     WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
                     ApproverEmail = "alice@example.com", ApproverName = "Alice",
-                    Decision = PromotionDecision.Approved,
+                    Decision = WorkItemDecision.Approved,
                     CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
                 },
                 new WorkItemApproval
@@ -308,7 +308,7 @@ public class WorkItemApprovalTests
                     Id = Guid.NewGuid(),
                     WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
                     ApproverEmail = "bob@example.com", ApproverName = "Bob",
-                    Decision = PromotionDecision.Approved,
+                    Decision = WorkItemDecision.Approved,
                     CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
                 });
             await db.SaveChangesAsync();
@@ -347,7 +347,7 @@ public class WorkItemApprovalTests
                 Id = Guid.NewGuid(),
                 WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
                 ApproverEmail = "me@example.com", ApproverName = "Me",
-                Decision = PromotionDecision.Approved,
+                Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -370,7 +370,7 @@ public class WorkItemApprovalTests
     /// from a rejection, which vetoes and terminates it.
     /// </summary>
     [Fact]
-    public async Task Block_RecordsRow_AndLeavesCandidatePending()
+    public async Task Issue_RecordsRow_AndLeavesCandidatePending()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "qa@example.com";
@@ -389,8 +389,8 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var row = await svc.BlockAsync("FOO-1", "acme", "prod", "waiting on test data", default);
-            Assert.Equal(PromotionDecision.Blocked, row.Decision);
+            var row = await svc.RaiseIssueAsync("FOO-1", "acme", "prod", "waiting on test data", default);
+            Assert.Equal(WorkItemDecision.Issue, row.Decision);
             Assert.Null(row.UpdatedAt);
         }
 
@@ -408,7 +408,7 @@ public class WorkItemApprovalTests
     /// it, stamping UpdatedAt and preserving CreatedAt.
     /// </summary>
     [Fact]
-    public async Task Approve_AfterBlock_UpdatesExistingRowInPlace()
+    public async Task Approve_AfterIssue_UpdatesExistingRowInPlace()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "qa@example.com";
@@ -426,8 +426,8 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var blocked = await svc.BlockAsync("FOO-1", "acme", "prod", "blocked", default);
-            rowId = blocked.Id;
+            var raised = await svc.RaiseIssueAsync("FOO-1", "acme", "prod", "needs a fix", default);
+            rowId = raised.Id;
 
             // Read CreatedAt back from storage rather than trusting the in-memory value: SQLite
             // round-trips DateTimeOffset at lower precision, so comparing the two would fail on
@@ -441,7 +441,7 @@ public class WorkItemApprovalTests
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var approved = await svc.ApproveAsync("FOO-1", "acme", "prod", "unblocked", default);
             Assert.Equal(rowId, approved.Id);
-            Assert.Equal(PromotionDecision.Approved, approved.Decision);
+            Assert.Equal(WorkItemDecision.Approved, approved.Decision);
             Assert.Equal("unblocked", approved.Comment);
             Assert.NotNull(approved.UpdatedAt);
         }
@@ -458,7 +458,7 @@ public class WorkItemApprovalTests
     }
 
     [Fact]
-    public async Task Block_Throws_WhenAlreadyBlockedByTheSameUser()
+    public async Task Issue_Throws_WhenAlreadyRaisedByTheSameUser()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "qa@example.com";
@@ -473,14 +473,14 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.BlockAsync("FOO-1", "acme", "prod", null, default);
+            await svc.RaiseIssueAsync("FOO-1", "acme", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.BlockAsync("FOO-1", "acme", "prod", null, default));
+                svc.RaiseIssueAsync("FOO-1", "acme", "prod", null, default));
             Assert.Contains("already", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -894,7 +894,7 @@ public class WorkItemApprovalTests
                 Id = Guid.NewGuid(),
                 WorkItemKey = "FOO-2", Product = "acme", TargetEnv = "prod",
                 ApproverEmail = "me@example.com", ApproverName = "Me",
-                Decision = PromotionDecision.Approved,
+                Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -1023,7 +1023,7 @@ public class WorkItemApprovalTests
                     Id = Guid.NewGuid(),
                     WorkItemKey = "OLD-1", Product = "acme", TargetEnv = "prod",
                     ApproverEmail = "me@example.com", ApproverName = "Me",
-                    Decision = PromotionDecision.Approved,
+                    Decision = WorkItemDecision.Approved,
                     CreatedAt = DateTimeOffset.UtcNow.AddDays(-10),
                 },
                 new WorkItemApproval
@@ -1031,7 +1031,7 @@ public class WorkItemApprovalTests
                     Id = Guid.NewGuid(),
                     WorkItemKey = "NEW-1", Product = "acme", TargetEnv = "prod",
                     ApproverEmail = "me@example.com", ApproverName = "Me",
-                    Decision = PromotionDecision.Rejected,
+                    Decision = WorkItemDecision.Blocked,
                     CreatedAt = DateTimeOffset.UtcNow,
                 });
             await db.SaveChangesAsync();
@@ -1064,9 +1064,9 @@ public class WorkItemApprovalTests
             await SeedPolicyEventCandidateAsync(db, "K-2", approverGroup: "ReleaseApprovers", service: "b");
             await SeedPolicyEventCandidateAsync(db, "K-3", approverGroup: "ReleaseApprovers", service: "c");
             db.WorkItemApprovals.AddRange(
-                Approval("K-1", "alice@example.com", "Alice", PromotionDecision.Approved),
-                Approval("K-2", "alice@example.com", "Alice", PromotionDecision.Rejected),
-                Approval("K-3", "bob@example.com", "Bob", PromotionDecision.Approved));
+                Approval("K-1", "alice@example.com", "Alice", WorkItemDecision.Approved),
+                Approval("K-2", "alice@example.com", "Alice", WorkItemDecision.Blocked),
+                Approval("K-3", "bob@example.com", "Bob", WorkItemDecision.Approved));
             await db.SaveChangesAsync();
         }
 
@@ -1157,7 +1157,7 @@ public class WorkItemApprovalTests
                 Id = Guid.NewGuid(),
                 WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
                 ApproverEmail = "approver@example.com", ApproverName = "Approver",
-                Decision = PromotionDecision.Approved,
+                Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -1195,7 +1195,7 @@ public class WorkItemApprovalTests
     }
 
     [Fact]
-    public async Task POST_Rejections_Returns200_AndRecordsRejected()
+    public async Task POST_Issues_Returns200_AndRecordsIssue()
     {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -1209,18 +1209,18 @@ public class WorkItemApprovalTests
         }
 
         var client = factory.CreateAdminClient();
-        var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/rejections",
-            new { product = "acme", targetEnv = "prod", comment = "blocked" });
+        var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/issues",
+            new { product = "acme", targetEnv = "prod", comment = "found a regression" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await Deserialize(response);
-        Assert.Equal("Rejected", body.GetProperty("decision").GetString());
+        Assert.Equal("Issue", body.GetProperty("decision").GetString());
 
         using var scope2 = factory.Services.CreateScope();
         var db2 = scope2.ServiceProvider.GetRequiredService<PlatformDbContext>();
         var rows = await db2.WorkItemApprovals.AsNoTracking().ToListAsync();
         Assert.Single(rows);
-        Assert.Equal(PromotionDecision.Rejected, rows[0].Decision);
+        Assert.Equal(WorkItemDecision.Issue, rows[0].Decision);
     }
 
     [Fact]
@@ -1297,7 +1297,7 @@ public class WorkItemApprovalTests
                 Id = Guid.NewGuid(),
                 WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
                 ApproverEmail = "me@example.com", ApproverName = "Me",
-                Decision = PromotionDecision.Approved,
+                Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -1320,7 +1320,7 @@ public class WorkItemApprovalTests
     /// </summary>
     /// <summary>Convenience factory for a <see cref="WorkItemApproval"/> row (created now).</summary>
     private static WorkItemApproval Approval(
-        string workItemKey, string approverEmail, string approverName, PromotionDecision decision,
+        string workItemKey, string approverEmail, string approverName, WorkItemDecision decision,
         string product = "acme", string targetEnv = "prod")
         => new()
         {

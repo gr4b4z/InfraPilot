@@ -29,7 +29,7 @@ const AVAILABLE_EVENTS = [
   'promotion.deployed',
   'promotion.updated',
   'promotion.ticket.approved',
-  'promotion.ticket.rejected',
+  'promotion.ticket.issue-raised',
   'promotion.ticket.blocked',
   'rollback.approved',
   'rollback.rejected',

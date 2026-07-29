@@ -1,18 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Plus, Trash2, Check } from 'lucide-react';
 import { useSettingsStore, type RoleConfig } from '@/stores/settingsStore';
-
-// Mirrors the server-side RoleNormalizer so admin-entered keys match what the backend stores.
-function canonicaliseRoleKey(input: string): string {
-  if (!input) return '';
-  let s = input.trim();
-  s = s.replace(/([a-z0-9])([A-Z])/g, '$1-$2'); // camelCase boundary
-  s = s.toLowerCase();
-  s = s.replace(/[\s_]+/g, '-');
-  s = s.replace(/[^a-z0-9-]/g, '-');
-  s = s.replace(/-+/g, '-').replace(/^-|-$/g, '');
-  return s;
-}
+// Shared with the pickers and the unrecognised-role marking, so "is this the same role?" is one
+// answer everywhere.
+import { canonicaliseRoleKey } from '@/lib/roleKey';
 
 export function RolesSettings() {
   const { roles, setRoles } = useSettingsStore();
@@ -62,10 +53,12 @@ export function RolesSettings() {
           Participant Roles
         </h2>
         <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-          Map role keys from deploy-event ingest and promotion assignments to friendly display
-          names. The platform canonicalises role strings to lower-kebab-case by default
-          (<code>triggered-by</code>, <code>qa</code>); unknown keys fall back to a humanised
-          form of the key.
+          The roles the platform knows about. This list is what the role filters and assignment
+          pickers offer, and the only set someone can be manually assigned to — a role that isn't
+          here is flagged as unrecognised wherever it shows up. Ingest still accepts any role a
+          producer sends. Keys are canonicalised to lower-kebab-case
+          (<code>triggered-by</code>, <code>qa</code>); ones with no entry here fall back to a
+          humanised form of the key for display.
         </p>
       </div>
 
