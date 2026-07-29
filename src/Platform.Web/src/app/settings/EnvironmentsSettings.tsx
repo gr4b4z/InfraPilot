@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { GripVertical, Plus, Trash2, Check, ChevronDown, Wand2 } from 'lucide-react';
 import { useSettingsStore, type EnvironmentConfig } from '@/stores/settingsStore';
 import { ENV_COLOR_PRESETS, autoEnvColor, envColorStyles, normalizeHexColor } from '@/lib/envColor';
+import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
 
 export function EnvironmentsSettings() {
   const { environments, setEnvironments } = useSettingsStore();
@@ -80,7 +81,12 @@ export function EnvironmentsSettings() {
         </p>
       </div>
 
-      <div className="space-y-1.5">
+      {/* Five columns — two of them free-text — need ~520px before the inputs stop being usable,
+          so on a narrow screen the editor scrolls sideways rather than compressing. The colour
+          picker escapes this container through a portal (see ColorCell) so the scroll box can't
+          clip it. */}
+      <div className="overflow-x-auto">
+      <div className="space-y-1.5 min-w-[520px]">
         <div
           className="grid grid-cols-[28px_1fr_1fr_150px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
           style={{ color: 'var(--text-muted)' }}
@@ -110,7 +116,7 @@ export function EnvironmentsSettings() {
               value={item.key}
               onChange={(e) => updateItem(index, 'key', e.target.value)}
               placeholder="e.g. staging"
-              className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',
@@ -122,7 +128,7 @@ export function EnvironmentsSettings() {
               value={item.displayName}
               onChange={(e) => updateItem(index, 'displayName', e.target.value)}
               placeholder="e.g. Staging"
-              className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',
@@ -145,6 +151,7 @@ export function EnvironmentsSettings() {
             </button>
           </div>
         ))}
+      </div>
       </div>
 
       <button
@@ -199,33 +206,18 @@ function ColorCell({
   onClose: () => void;
   onChange: (color: string | null) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLButtonElement>(null);
   const explicit = normalizeHexColor(env.color);
   const resolved = explicit ?? autoEnvColor(env.key);
   const styles = envColorStyles(resolved);
   const label = env.displayName.trim() || env.key.trim() || 'Environment';
 
-  // Dismiss on outside click / Escape — a picker left open while the admin edits another row
-  // would obscure it, and there's no explicit "done" action to close it otherwise.
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open, onClose]);
-
+  // Outside-click / Escape / scroll dismissal all come from AnchoredPopover — a picker left open
+  // while the admin edits another row would obscure it, and there's no explicit "done" action.
   return (
-    <div className="relative" ref={ref}>
+    <div>
       <button
+        ref={anchorRef}
         type="button"
         onClick={onToggle}
         aria-haspopup="dialog"
@@ -258,16 +250,14 @@ function ColorCell({
       </button>
 
       {open && (
-        <div
-          role="dialog"
-          aria-label="Pick environment colour"
-          className="absolute right-0 z-20 mt-1 p-3 rounded-xl border shadow-lg space-y-3"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-elevated)',
-            width: 208,
-            boxShadow: 'var(--shadow-lg)',
-          }}
+        <AnchoredPopover
+          anchorRef={anchorRef}
+          onClose={onClose}
+          align="right"
+          width={208}
+          ariaLabel="Pick environment colour"
+          className="p-3 space-y-3"
+          style={{ backgroundColor: 'var(--bg-elevated)', boxShadow: 'var(--shadow-lg)' }}
         >
           <div className="grid grid-cols-7 gap-1.5">
             {ENV_COLOR_PRESETS.map((preset) => {
@@ -338,7 +328,7 @@ function ColorCell({
             <Wand2 size={12} />
             Auto
           </button>
-        </div>
+        </AnchoredPopover>
       )}
     </div>
   );

@@ -292,7 +292,7 @@ export function WebhookDetailPage() {
 
         {editing ? (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>Name</label>
                 <input
@@ -333,7 +333,7 @@ export function WebhookDetailPage() {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
                   Filter: Product <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
@@ -361,7 +361,7 @@ export function WebhookDetailPage() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-[13px]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-[13px]">
             <div>
               <span style={{ color: 'var(--text-muted)' }}>Events</span>
               <div className="flex flex-wrap gap-1 mt-1">
@@ -485,7 +485,7 @@ export function WebhookDetailPage() {
                     className="ml-8 mr-3 mb-2 p-3 rounded-lg text-[12px] space-y-2"
                     style={{ backgroundColor: 'var(--bg-primary)' }}
                   >
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <span style={{ color: 'var(--text-muted)' }}>ID:</span>{' '}
                         <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{d.id}</span>

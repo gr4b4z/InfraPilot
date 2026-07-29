@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { PendingTicket } from '@/lib/api';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
 
 /**
  * Picker for narrowing the My-queue list by product / service / environment.
@@ -88,14 +89,14 @@ export function ScopeFilter({
   return (
     <>
       <label
-        className="inline-flex items-center gap-1.5 text-[12px]"
+        className={filterLabelClass}
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Product</span>
         <select
           value={value.product ?? ANY}
           onChange={(e) => setField('product', e.target.value)}
-          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          className={filterSelectClass}
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
@@ -110,14 +111,14 @@ export function ScopeFilter({
       </label>
 
       <label
-        className="inline-flex items-center gap-1.5 text-[12px]"
+        className={filterLabelClass}
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Service</span>
         <select
           value={value.service ?? ANY}
           onChange={(e) => setField('service', e.target.value)}
-          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          className={filterSelectClass}
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
@@ -132,7 +133,7 @@ export function ScopeFilter({
       </label>
 
       <label
-        className="inline-flex items-center gap-1.5 text-[12px]"
+        className={filterLabelClass}
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Target env</span>
@@ -141,7 +142,7 @@ export function ScopeFilter({
         <select
           value={value.targetEnv ?? ANY}
           onChange={(e) => setField('targetEnv', e.target.value)}
-          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          className={filterSelectClass}
           style={envSelectStyle}
         >
           <option value={ANY}>Any env</option>
@@ -156,14 +157,14 @@ export function ScopeFilter({
           deploy data to narrow by. */}
       {deployedEnvs.length > 0 && (
         <label
-          className="inline-flex items-center gap-1.5 text-[12px]"
+          className={filterLabelClass}
           style={{ color: 'var(--text-muted)' }}
         >
           <span>Testable in</span>
           <select
             value={value.deployedEnv ?? ANY}
             onChange={(e) => setField('deployedEnv', e.target.value)}
-            className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+            className={filterSelectClass}
             style={deployedEnvSelectStyle}
           >
             <option value={ANY}>Any env</option>

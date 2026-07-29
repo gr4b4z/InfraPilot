@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { roleDisplay } from '@/lib/roleLabel';
+import { filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
 import type { PendingAssignee } from '@/lib/api';
 
 /**
@@ -185,16 +186,16 @@ export function AssigneeFilter({
   };
 
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="flex w-full flex-col gap-2 sm:inline-flex sm:w-auto sm:flex-row sm:items-center">
       <label
-        className="inline-flex items-center gap-1.5 text-[12px]"
+        className={filterLabelClass}
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Role</span>
         <select
           value={value.role ?? ANY_ROLE}
           onChange={(e) => handleRoleChange(e.target.value)}
-          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          className={filterSelectClass}
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
@@ -225,14 +226,14 @@ export function AssigneeFilter({
 
       {!hidePerson && (
       <label
-        className="inline-flex items-center gap-1.5 text-[12px]"
+        className={filterLabelClass}
         style={{ color: 'var(--text-muted)' }}
       >
         <span>Assignee</span>
         <select
           value={personValue}
           onChange={(e) => handlePersonChange(e.target.value)}
-          className="rounded-lg border px-2 py-1.5 text-[12px] font-medium"
+          className={filterSelectClass}
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',

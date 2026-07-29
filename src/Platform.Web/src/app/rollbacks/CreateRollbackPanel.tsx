@@ -178,11 +178,12 @@ export function CreateRollbackPanel({
   return (
     <>
       <div className="fixed inset-0 z-40" style={{ backgroundColor: 'rgba(0,0,0,0.35)' }} onClick={onClose} />
+      {/* Full-bleed sheet on a phone, 480px drawer once there's room beside it. */}
       <div
-        className="fixed inset-y-0 right-0 w-[480px] z-50 border-l shadow-lg overflow-y-auto"
+        className="fixed inset-y-0 right-0 w-full sm:w-[480px] z-50 border-l shadow-lg overflow-y-auto"
         style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
       >
-        <div className="p-5 space-y-5">
+        <div className="p-4 sm:p-5 space-y-5">
           {/* Header */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">

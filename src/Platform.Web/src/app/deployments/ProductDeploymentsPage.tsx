@@ -24,6 +24,8 @@ import {
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
 
 type ViewTab = 'state' | 'activity' | 'compare';
 type TimeFilter = 'all' | 'today' | '24h' | '7d' | 'custom';
@@ -664,8 +666,16 @@ export function ProductDeploymentsPage() {
                 ))}
               </tr>
             </thead>
-            <tbody>
-              {services.map((service) => (
+            {/* The matrix is a 2D grid: Up/Down move service, Left/Right move environment. Every
+                environment cell is registered — including the empty ones — because skipping them
+                would make the column indices lie and Left/Right would jump rows. */}
+            <KeyboardList
+              as="tbody"
+              count={services.length * environments.length}
+              columns={environments.length}
+              ariaLabel={`${product} deployment matrix`}
+            >
+              {services.map((service, serviceIdx) => (
                 <tr
                   key={service}
                   style={{ borderBottom: '1px solid var(--border-color)' }}
@@ -682,72 +692,23 @@ export function ProductDeploymentsPage() {
                       {service}
                     </Link>
                   </td>
-                  {environments.map((env, envIdx) => {
-                    const cell = getCell(service, env);
-                    const behind = isBehind(service, envIdx);
-                    const highlighted =
-                      timeFilter !== 'all' &&
-                      recentKeys.has(`${service}::${env}`);
-                    if (!cell) {
-                      return (
-                        <td
-                          key={env}
-                          className="text-center px-4 py-3"
-                          style={{ color: 'var(--text-muted)' }}
-                        >
-                          —
-                        </td>
-                      );
-                    }
-                    return (
-                      <td
-                        key={env}
-                        className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
-                        style={{
-                          borderLeft: highlighted
-                            ? '3px solid var(--accent)'
-                            : '3px solid transparent',
-                          backgroundColor: highlighted
-                            ? 'var(--accent-muted)'
-                            : undefined,
-                        }}
-                        onClick={() => openDeployment(cell)}
-                      >
-                        <div className="inline-flex flex-col items-center gap-0.5">
-                          <span className="inline-flex items-center gap-1">
-                            <span
-                              className="font-mono text-[12px] font-medium"
-                              style={{
-                                color: behind
-                                  ? 'var(--warning)'
-                                  : statusColor(cell.status),
-                              }}
-                            >
-                              {behind && '\u26a0 '}v{cell.version}
-                            </span>
-                            <RollbackIndicator
-                              isRollback={cell.isRollback}
-                              previousVersion={cell.previousVersion}
-                            />
-                          </span>
-                          {cell.status && cell.status !== 'succeeded' && (
-                            <StatusBadge status={cell.status} />
-                          )}
-                          <span
-                            className="text-[11px]"
-                            style={{ color: 'var(--text-muted)' }}
-                          >
-                            {formatDistanceToNow(new Date(cell.deployedAt), {
-                              addSuffix: true,
-                            })}
-                          </span>
-                        </div>
-                      </td>
-                    );
-                  })}
+                  {environments.map((env, envIdx) => (
+                    <MatrixCell
+                      key={env}
+                      index={serviceIdx * environments.length + envIdx}
+                      service={service}
+                      envLabel={getDisplayName(env)}
+                      cell={getCell(service, env)}
+                      behind={!!isBehind(service, envIdx)}
+                      highlighted={
+                        timeFilter !== 'all' && recentKeys.has(`${service}::${env}`)
+                      }
+                      onOpen={openDeployment}
+                    />
+                  ))}
                 </tr>
               ))}
-            </tbody>
+            </KeyboardList>
           </table>
         </div>
       ) : tab === 'compare' ? (
@@ -796,6 +757,84 @@ export function ProductDeploymentsPage() {
 }
 
 /* ── Reusable sub-components ── */
+
+/**
+ * One (service × environment) cell of the state matrix, and the keyboard route into a deployment.
+ *
+ * Extracted from the render loop because each cell needs its own {@link useKeyboardListRow} call, and
+ * a hook can't be called from inside a `.map` callback in the parent's body.
+ *
+ * Cells with nothing deployed are still focusable but not activatable: the grid's column arithmetic
+ * depends on every environment occupying a slot, so skipping them would make Left/Right jump rows.
+ */
+function MatrixCell({
+  index,
+  service,
+  envLabel,
+  cell,
+  behind,
+  highlighted,
+  onOpen,
+}: {
+  index: number;
+  service: string;
+  envLabel: string;
+  cell: DeploymentStateEntry | undefined;
+  behind: boolean;
+  highlighted: boolean;
+  onOpen: (entry: { id: string }) => void;
+}) {
+  // `role: null` keeps the implicit cell role — see useKeyboardListRow.
+  const rowProps = useKeyboardListRow(index, () => cell && onOpen(cell), {
+    role: null,
+    disabled: !cell,
+    label: cell
+      ? `${service} in ${envLabel}, version ${cell.version}${behind ? ', behind' : ''}. Open deployment.`
+      : `${service} in ${envLabel}, not deployed`,
+  });
+
+  if (!cell) {
+    return (
+      <td
+        {...rowProps}
+        className="text-center px-4 py-3"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        —
+      </td>
+    );
+  }
+
+  return (
+    <td
+      {...rowProps}
+      className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
+      style={{
+        borderLeft: highlighted ? '3px solid var(--accent)' : '3px solid transparent',
+        backgroundColor: highlighted ? 'var(--accent-muted)' : undefined,
+      }}
+    >
+      <div className="inline-flex flex-col items-center gap-0.5">
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="font-mono text-[12px] font-medium"
+            style={{ color: behind ? 'var(--warning)' : statusColor(cell.status) }}
+          >
+            {behind && '⚠ '}v{cell.version}
+          </span>
+          <RollbackIndicator
+            isRollback={cell.isRollback}
+            previousVersion={cell.previousVersion}
+          />
+        </span>
+        {cell.status && cell.status !== 'succeeded' && <StatusBadge status={cell.status} />}
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {formatDistanceToNow(new Date(cell.deployedAt), { addSuffix: true })}
+        </span>
+      </div>
+    </td>
+  );
+}
 
 function ExportMenu({
   onCSV,
