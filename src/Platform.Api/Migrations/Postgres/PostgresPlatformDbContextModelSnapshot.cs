@@ -273,6 +273,9 @@ namespace Platform.Api.Migrations.Postgres
                         .HasColumnType("jsonb")
                         .HasDefaultValue("[]");
 
+                    b.Property<string>("RunJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("Service")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -306,6 +309,58 @@ namespace Platform.Api.Migrations.Postgres
                         .IsDescending(false, false, false, true);
 
                     b.ToTable("deploy_events", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("ByteCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("DeployEventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("LineCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("OriginalByteCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<bool>("Truncated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeployEventId");
+
+                    b.HasIndex("DeployEventId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("deploy_event_logs", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>
@@ -1467,6 +1522,15 @@ namespace Platform.Api.Migrations.Postgres
                         .IsRequired();
 
                     b.Navigation("CatalogItem");
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventLog", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
+                        .WithMany()
+                        .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>

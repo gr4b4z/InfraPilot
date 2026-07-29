@@ -150,6 +150,21 @@ class ApiClient {
     return this.request<import('./types').DeployEvent[]>(`/deployments/history/${product}/${service}${query}`);
   }
 
+  /**
+   * Everything the deployment detail page shows, in one call: the event with its CI run, the log
+   * blocks it captured (as summaries — text comes from {@link getDeploymentLog}), the neighbouring
+   * deployments of the same service, and the promotions and work items it connects to.
+   */
+  getDeploymentEvent(id: string, params?: { historyLimit?: number }) {
+    const query = params?.historyLimit ? `?historyLimit=${params.historyLimit}` : '';
+    return this.request<import('./types').DeploymentDetail>(`/deployments/events/${id}${query}`);
+  }
+
+  /** One log block's text. Separate from the detail call because a Helm printout is large. */
+  getDeploymentLog(eventId: string, logId: string) {
+    return this.request<import('./types').DeployLogContent>(`/deployments/events/${eventId}/logs/${logId}`);
+  }
+
   getRecentDeployments(product: string, environment: string, since?: string) {
     const query = since ? '?since=' + since : '';
     return this.request<import('./types').DeployEvent[]>(`/deployments/recent/${product}/${environment}${query}`);

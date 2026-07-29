@@ -9,6 +9,7 @@ import { ApprovalDetailPage } from '@/app/approvals/ApprovalDetailPage';
 import { DeploymentsPage } from '@/app/deployments/DeploymentsPage';
 import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage';
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
+import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
@@ -52,6 +53,10 @@ function App() {
           <Route path="/approvals" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalsPage /></FeatureRoute>} />
           <Route path="/approvals/:id" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalDetailPage /></FeatureRoute>} />
           <Route path="/deployments" element={<DeploymentsPage />} />
+          {/* Deploy-event detail. Keyed on the event id alone — product and service are properties of
+              the event, not of its identity — and ranked above /deployments/:product by the router's
+              static-segment-wins rule, so "events" can't be read as a product name. */}
+          <Route path="/deployments/events/:id" element={<DeploymentDetailPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
