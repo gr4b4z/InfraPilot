@@ -79,7 +79,7 @@ export function RolesSettings() {
               value={item.key}
               onChange={(e) => updateItem(index, 'key', e.target.value)}
               placeholder="e.g. triggered-by"
-              className="px-2.5 py-1.5 rounded-lg border text-[13px] font-mono outline-none transition-colors focus:border-[var(--accent)]"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] font-mono outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',
@@ -91,7 +91,7 @@ export function RolesSettings() {
               value={item.displayName}
               onChange={(e) => updateItem(index, 'displayName', e.target.value)}
               placeholder="e.g. Triggered by"
-              className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',

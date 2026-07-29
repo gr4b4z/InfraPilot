@@ -1,9 +1,10 @@
-import { Bell, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
+import { Bell, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksCount } from '@/stores/myTasksStore';
+import { useUiStore } from '@/stores/uiStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
 
@@ -11,8 +12,18 @@ type ThemeMode = 'light' | 'dark' | 'system';
 
 const THEME_STORAGE_KEY = 'theme-mode';
 
+/** Cycle order for the condensed single-button theme control shown on narrow screens. */
+const THEME_CYCLE: ThemeMode[] = ['light', 'dark', 'system'];
+
+const THEME_ICONS: Record<ThemeMode, typeof Sun> = {
+  light: Sun,
+  dark: Moon,
+  system: Monitor,
+};
+
 export function Topbar() {
   const { sidebarOpen, toggleSidebar } = useConversationStore();
+  const toggleNavDrawer = useUiStore((s) => s.toggleNavDrawer);
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -93,29 +104,47 @@ export function Topbar() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleSidebar]);
 
+  const CycleIcon = THEME_ICONS[themeMode];
+
   return (
     <header
-      className="flex items-center h-14 px-6 border-b gap-4 shrink-0"
+      className="flex items-center h-14 px-3 sm:px-4 lg:px-6 border-b gap-2 sm:gap-3 lg:gap-4 shrink-0"
       style={{
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
       }}
     >
-      {/* AI command bar */}
+      {/* Drawer trigger. Only below `lg` — above it the sidebar is always on screen. */}
+      <button
+        onClick={toggleNavDrawer}
+        className="shrink-0 p-2 -ml-1 rounded-lg transition-colors hover:bg-[var(--bg-secondary)] lg:hidden"
+        style={{ color: 'var(--text-secondary)' }}
+        aria-label="Open navigation"
+      >
+        <Menu size={18} />
+      </button>
+
+      {/* AI command bar. Collapses to a single icon button below `sm`: the placeholder needs ~220px
+          to read as a search field, and taking that from a 375px header leaves nothing for the
+          account controls. */}
       <button
         onClick={toggleSidebar}
-        className="flex items-center flex-1 max-w-lg gap-2.5 px-3 py-[7px] rounded-lg cursor-pointer transition-all duration-150"
+        className="flex items-center shrink-0 justify-center w-9 h-9 rounded-lg cursor-pointer transition-all duration-150 sm:shrink sm:w-auto sm:h-auto sm:flex-1 sm:max-w-lg sm:justify-start sm:gap-2.5 sm:px-3 sm:py-[7px]"
         style={{
           backgroundColor: sidebarOpen ? 'var(--accent-muted)' : 'var(--bg-secondary)',
           border: `1px solid ${sidebarOpen ? 'var(--accent)' : 'var(--border-color)'}`,
         }}
+        aria-label="Ask AI assistant or search"
       >
         <Sparkles size={14} style={{ color: 'var(--accent)' }} />
-        <span className="flex-1 text-left text-[13px]" style={{ color: 'var(--text-muted)' }}>
+        <span
+          className="hidden sm:block flex-1 text-left text-[13px] truncate"
+          style={{ color: 'var(--text-muted)' }}
+        >
           Ask AI assistant or search...
         </span>
         <kbd
-          className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
+          className="hidden md:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
           style={{
             backgroundColor: 'var(--bg-primary)',
             color: 'var(--text-muted)',
@@ -128,7 +157,22 @@ export function Topbar() {
 
       {/* Right actions */}
       <div className="flex items-center gap-1 ml-auto">
-        <div className="flex items-center gap-1 px-1 py-1 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+        {/* Three side-by-side modes cost ~110px, which a phone header can't spare — below `sm` the
+            same three states are cycled through by one button instead. */}
+        <button
+          onClick={() => setThemeMode(THEME_CYCLE[(THEME_CYCLE.indexOf(themeMode) + 1) % THEME_CYCLE.length])}
+          className="sm:hidden p-2 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
+          style={{ color: 'var(--text-muted)' }}
+          title={`Theme: ${themeLabel} — tap to change`}
+          aria-label={`Theme: ${themeLabel}. Activate to change.`}
+        >
+          <CycleIcon size={16} />
+        </button>
+
+        <div
+          className="hidden sm:flex items-center gap-1 px-1 py-1 rounded-lg"
+          style={{ backgroundColor: 'var(--bg-secondary)' }}
+        >
           <button
             onClick={() => setThemeMode('light')}
             className="p-2 rounded-md transition-colors"

@@ -12,10 +12,12 @@ const categoryLabels: Record<string, string> = {
 
 export function CategoryFilter({ categories, selected, onSelect }: Props) {
   return (
-    <div className="flex gap-1.5 flex-wrap">
+    // Scrolls sideways on a phone instead of wrapping: the chips sit above the service grid, and
+    // three rows of them would push the grid itself off-screen.
+    <div className="flex gap-1.5 w-full overflow-x-auto pb-1 sm:w-auto sm:flex-wrap sm:overflow-x-visible sm:pb-0">
       <button
         onClick={() => onSelect(null)}
-        className="px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-all duration-150"
+        className="shrink-0 whitespace-nowrap px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-all duration-150"
         style={{
           backgroundColor: selected === null ? 'var(--accent)' : 'transparent',
           borderColor: selected === null ? 'var(--accent)' : 'var(--border-color)',
@@ -28,7 +30,7 @@ export function CategoryFilter({ categories, selected, onSelect }: Props) {
         <button
           key={cat}
           onClick={() => onSelect(cat)}
-          className="px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-all duration-150"
+          className="shrink-0 whitespace-nowrap px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-all duration-150"
           style={{
             backgroundColor: selected === cat ? 'var(--accent)' : 'transparent',
             borderColor: selected === cat ? 'var(--accent)' : 'var(--border-color)',

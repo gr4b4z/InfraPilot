@@ -675,7 +675,7 @@ export function PromotionSettings() {
                   {editingId ? 'Edit Policy' : 'New Policy'}
                 </h4>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {/* Product */}
                   <div className="space-y-1">
                     <label className={labelClass} style={labelStyle}>
@@ -872,7 +872,7 @@ export function PromotionSettings() {
                                 </button>
                               </div>
 
-                              <div className="grid grid-cols-2 gap-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div className="space-y-1">
                                   <label className={labelClass} style={labelStyle}>
                                     AD Groups

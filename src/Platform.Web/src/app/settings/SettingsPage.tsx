@@ -87,15 +87,17 @@ export function SettingsPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-[220px_1fr] gap-6">
-        {/* Left nav */}
-        <nav className="space-y-0.5">
+      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4 lg:gap-6">
+        {/* Left nav. Below `lg` it becomes a horizontally scrolling strip above the section — a
+            220px column plus a settings form doesn't fit, and eleven stacked links would bury the
+            section the user came to edit. */}
+        <nav className="flex gap-1.5 overflow-x-auto pb-1 lg:block lg:space-y-0.5 lg:overflow-x-visible lg:pb-0">
           {NAV.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition-colors ${
+                `flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] transition-colors lg:shrink lg:whitespace-normal ${
                   isActive ? 'font-medium' : 'font-normal'
                 }`
               }
