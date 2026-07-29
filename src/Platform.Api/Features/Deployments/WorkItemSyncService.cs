@@ -92,13 +92,14 @@ public class WorkItemSyncService
 
             if (existingByKey.TryGetValue(r.Key!, out var row))
             {
-                var before = (row.Provider, row.Url, row.Title, row.Revision, row.Product);
+                var before = (row.Provider, row.Url, row.Title, row.Content, row.Revision, row.Product);
                 row.Provider = r.Provider;
                 row.Url = r.Url;
                 row.Title = title;
+                row.Content = r.Content;
                 row.Revision = r.Revision;
                 row.Product = ev.Product;
-                if (before != (row.Provider, row.Url, row.Title, row.Revision, row.Product))
+                if (before != (row.Provider, row.Url, row.Title, row.Content, row.Revision, row.Product))
                     changed++;
             }
             else
@@ -112,6 +113,7 @@ public class WorkItemSyncService
                     Provider = r.Provider,
                     Url = r.Url,
                     Title = title,
+                    Content = r.Content,
                     Revision = r.Revision,
                     CreatedAt = DateTimeOffset.UtcNow,
                 });

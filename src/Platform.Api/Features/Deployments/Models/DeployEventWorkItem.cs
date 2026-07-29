@@ -24,6 +24,11 @@ public class DeployEventWorkItem
     public string? Provider { get; set; }
     public string? Url { get; set; }
     public string? Title { get; set; }
+
+    // The ticket body as the producer sent it — Jira description, PR description, commit message
+    // body. Unbounded: a description is prose, not a label.
+    public string? Content { get; set; }
+
     public string? Revision { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

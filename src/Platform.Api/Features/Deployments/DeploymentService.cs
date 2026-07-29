@@ -169,7 +169,10 @@ public class DeploymentService
                         : r.Participants.Select(p => new ParticipantDto(
                             Role: norm.ApplyRole(p.Role),
                             DisplayName: p.DisplayName,
-                            Email: p.Email)).ToList())).ToList(),
+                            Email: p.Email)).ToList(),
+                    // Stored verbatim — normalisation applies to roles and environment names,
+                    // not to a ticket body.
+                    Content: r.Content)).ToList(),
                 JsonOptions),
             ParticipantsJson = JsonSerializer.Serialize(
                 (dto.Participants ?? []).Select(p => new ParticipantDto(

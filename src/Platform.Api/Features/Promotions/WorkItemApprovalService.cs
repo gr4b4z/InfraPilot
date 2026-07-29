@@ -870,6 +870,7 @@ public class WorkItemApprovalService
         // an older candidate may carry a title the newest ingest omitted.
         var primaryRow = rows.FirstOrDefault(w => w.CandidateId == primary.Id);
         var title = primaryRow?.Title ?? rows.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t));
+        var content = primaryRow?.Content ?? rows.Select(w => w.Content).FirstOrDefault(c => !string.IsNullOrEmpty(c));
         var url = primaryRow?.Url ?? rows.Select(w => w.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
         var provider = primaryRow?.Provider ?? rows.Select(w => w.Provider).FirstOrDefault(p => !string.IsNullOrEmpty(p));
 
@@ -903,6 +904,8 @@ public class WorkItemApprovalService
             TargetEnv: env,
             Environments: environments,
             Title: title,
+            // Blank-to-null so the client has one emptiness check ("no content") rather than two.
+            Content: string.IsNullOrWhiteSpace(content) ? null : content,
             Url: url,
             Provider: provider,
             PendingCandidateId: ctx.PendingCandidateId,
@@ -1372,6 +1375,12 @@ public record WorkItemDetail(
     /// <see cref="WorkItemEnvironmentView"/>.</summary>
     IReadOnlyList<WorkItemEnvironmentView> Environments,
     string? Title,
+    /// <summary>
+    /// The work item's body as the producer sent it — the Jira description, PR description, or
+    /// commit message body. Null (or blank) when the payload carried none, in which case the
+    /// detail page shows no Content section at all rather than an empty one.
+    /// </summary>
+    string? Content,
     string? Url,
     string? Provider,
     Guid? PendingCandidateId,
