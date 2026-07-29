@@ -54,6 +54,7 @@ const STATUS_OPTIONS: Array<{ label: string; value: string }> = [
 ];
 
 export function RollbacksPage() {
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
   const [searchParams, setSearchParams] = useSearchParams();
   const [requests, setRequests] = useState<RollbackRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,12 +155,14 @@ export function RollbacksPage() {
     return Array.from(set).sort();
   }, [requests, productFilter]);
 
+  // Configured order, not alphabetical: environments read as a pipeline (dev → staging → prod), and
+  // that sequence is more useful in a picker than the alphabet.
   const targetEnvOptions = useMemo(() => {
     const set = new Set<string>();
     for (const r of requests) if (r.targetEnv) set.add(r.targetEnv);
     if (targetEnvFilter) set.add(targetEnvFilter);
-    return Array.from(set).sort();
-  }, [requests, targetEnvFilter]);
+    return getOrderedEnvironments(Array.from(set));
+  }, [requests, targetEnvFilter, getOrderedEnvironments]);
 
   const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);

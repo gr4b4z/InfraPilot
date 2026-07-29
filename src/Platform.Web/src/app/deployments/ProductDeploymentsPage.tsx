@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo, useCallback, type ReactNode } from 'react';
-import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
+import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore, resolveTemplate } from '@/stores/settingsStore';
-import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { useEnvColorOrNull, useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { formatDistanceToNow } from 'date-fns';
@@ -88,7 +88,15 @@ export function ProductDeploymentsPage() {
   const { stateMatrix, recentActivity, loading, fetchState, fetchRecentByProduct } =
     useDeploymentStore();
   const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
-  const [selected, setSelected] = useState<DeploymentStateEntry | null>(null);
+  const navigate = useNavigate();
+  // Clicking a deployment goes to its own page rather than opening a drawer: the drawer could only
+  // ever show a summary, while the questions people arrive with — why did it fail, what did it print,
+  // what does it feed — need the room the detail page has.
+  const openDeployment = useCallback(
+    (entry: { id: string }) =>
+      navigate(deploymentDetailPath(entry.id, { path: `/deployments/${product}`, label: product ?? 'deployments' })),
+    [navigate, product],
+  );
 
   // Read filter state from URL search params
   const tab: ViewTab = isViewTab(searchParams.get('tab')) ? searchParams.get('tab') as ViewTab : 'state';
@@ -703,7 +711,7 @@ export function ProductDeploymentsPage() {
                             ? 'var(--accent-muted)'
                             : undefined,
                         }}
-                        onClick={() => setSelected(cell)}
+                        onClick={() => openDeployment(cell)}
                       >
                         <div className="inline-flex flex-col items-center gap-0.5">
                           <span className="inline-flex items-center gap-1">
@@ -751,7 +759,7 @@ export function ProductDeploymentsPage() {
           fromLabel={getDisplayName(resolvedFrom)}
           toLabel={getDisplayName(resolvedTo)}
           mode={compareMode}
-          onRowClick={(cell) => setSelected(cell)}
+          onRowClick={(cell) => openDeployment(cell)}
         />
       ) : filteredActivity.length === 0 ? (
         <div
@@ -775,7 +783,7 @@ export function ProductDeploymentsPage() {
                   key={evt.id}
                   event={evt}
                   showEnv={envFilter !== 'all'}
-                  onClick={() => setSelected(evt)}
+                  onClick={() => openDeployment(evt)}
                 />
               ))}
             </div>
@@ -783,14 +791,6 @@ export function ProductDeploymentsPage() {
         </div>
       )}
 
-      {selected && (
-        <DeployEventDetail
-          entry={selected}
-          product={product!}
-          onClose={() => setSelected(null)}
-          onChanged={() => fetchState(product!)}
-        />
-      )}
     </div>
   );
 }

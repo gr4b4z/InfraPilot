@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow, FileSearch } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
 
@@ -45,7 +45,6 @@ export function DeploymentHistoryPage() {
   const environment = searchParams.get('environment') ?? undefined;
   const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
@@ -75,7 +74,6 @@ export function DeploymentHistoryPage() {
 
   const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
   const hasMore = displayCount < history.length;
-  const selectedEvent = useMemo(() => history.find((e) => e.id === selectedId) ?? null, [history, selectedId]);
 
   const setEnvironmentFilter = useCallback((env: string | undefined) => {
     setSearchParams(env ? { environment: env } : {});
@@ -148,9 +146,7 @@ export function DeploymentHistoryPage() {
             <HistoryRow
               key={evt.id}
               event={evt}
-              isSelected={selectedId === evt.id}
-              onClick={() => setSelectedId(selectedId === evt.id ? null : evt.id)}
-              detailHref={`/deployments/events/${evt.id}?from=${encodeURIComponent(backHref)}&fromLabel=${encodeURIComponent(service ?? 'history')}`}
+              detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
           ))}
           {hasMore && (
@@ -171,34 +167,30 @@ export function DeploymentHistoryPage() {
         </div>
       )}
 
-      {selectedEvent && product && (
-        <DeployEventDetail
-          entry={selectedEvent}
-          product={product}
-          onClose={() => setSelectedId(null)}
-        />
-      )}
     </div>
   );
 }
 
-function HistoryRow({ event: evt, isSelected, onClick, detailHref }: {
+/**
+ * One deployment in the history list. The whole row is a link to that deployment's page — a real
+ * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
+ * a reader expects of a navigation.
+ */
+function HistoryRow({ event: evt, detailHref }: {
   event: DeployEvent;
-  isSelected: boolean;
-  onClick: () => void;
   detailHref: string;
 }) {
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
 
   return (
-    <div
-      className="rounded-lg border px-3 py-2.5 flex items-center gap-3 cursor-pointer transition-colors hover:opacity-90"
+    <Link
+      to={detailHref}
+      className="card-hover rounded-lg border px-3 py-2.5 flex items-center gap-3 transition-colors"
       style={{
-        borderColor: isSelected ? 'var(--accent)' : 'var(--border-color)',
-        backgroundColor: isSelected ? 'var(--accent-muted)' : 'var(--bg-secondary)',
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-secondary)',
       }}
-      onClick={onClick}
     >
       <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: statusColor(evt.status) }}>
         v{evt.version}
@@ -242,19 +234,8 @@ function HistoryRow({ event: evt, isSelected, onClick, detailHref }: {
         {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
       </span>
 
-      {/* Route to the deployment's own page — where the pipeline output, the run that created it, and
-          the promotions it feeds live. stopPropagation so it doesn't also toggle the drawer, which is
-          what the rest of the row does. */}
-      <Link
-        to={detailHref}
-        onClick={(e) => e.stopPropagation()}
-        title="Open full deployment details"
-        className="p-1 rounded transition-opacity hover:opacity-70 shrink-0"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        <FileSearch size={14} />
-      </Link>
-    </div>
+      <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+    </Link>
   );
 }
 

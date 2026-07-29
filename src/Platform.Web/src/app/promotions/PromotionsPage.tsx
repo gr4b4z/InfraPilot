@@ -137,6 +137,7 @@ function EmptyState({ view }: { view: View }) {
 
 export function PromotionsPage() {
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
   // The page is pending-by-default: `candidates` holds only Pending promotions.
   // Resolved (Approved/Deploying/Deployed/Rejected) promotions are never fetched
   // until the user explicitly opens the resolved section (lazy-loaded below).
@@ -367,12 +368,14 @@ export function PromotionsPage() {
 
   // Known target envs from the currently-loaded candidate set, for the dropdown. Keeping the
   // current filter selection in the list even if nothing matches so the user can clear it.
+  // Configured order, not alphabetical: that's the deployment order (dev → staging → prod), the
+  // sequence a reader is already thinking in when picking a target environment.
   const targetEnvOptions = useMemo(() => {
     const set = new Set<string>();
     for (const c of candidates) if (c.targetEnv) set.add(c.targetEnv);
     if (targetEnvFilter) set.add(targetEnvFilter);
-    return Array.from(set).sort();
-  }, [candidates, targetEnvFilter]);
+    return getOrderedEnvironments(Array.from(set));
+  }, [candidates, targetEnvFilter, getOrderedEnvironments]);
 
   const productOptions = useMemo(() => {
     const set = new Set<string>();

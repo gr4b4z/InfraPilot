@@ -50,6 +50,7 @@ export function ScopeFilter({
   /** Unfiltered queue rows — used to compute the available options. */
   tickets: PendingTicket[];
 }) {
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
   const { products, services, targetEnvs, deployedEnvs } = useMemo(() => {
     const p = new Set<string>();
     const s = new Set<string>();
@@ -68,10 +69,13 @@ export function ScopeFilter({
     return {
       products: [...p].sort(sortAlpha),
       services: [...s].sort(sortAlpha),
-      targetEnvs: [...e].sort(sortAlpha),
-      deployedEnvs: [...d].sort(sortAlpha),
+      // Environments keep their configured order — that's the deployment order (dev → staging →
+      // prod), which is the sequence a reader is thinking in. Alphabetising it would interleave the
+      // pipeline stages meaninglessly.
+      targetEnvs: getOrderedEnvironments([...e]),
+      deployedEnvs: getOrderedEnvironments([...d]),
     };
-  }, [tickets]);
+  }, [tickets, getOrderedEnvironments]);
 
   const setField = <K extends keyof ScopeFilterValue>(key: K, raw: string) => {
     onChange({ ...value, [key]: raw === ANY ? null : raw });
