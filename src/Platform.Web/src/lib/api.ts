@@ -989,6 +989,13 @@ export interface WorkItemDetail {
   /** Environments the change is deployed to, newest deploy first. */
   environments: WorkItemEnvironment[];
   title: string | null;
+  /**
+   * The work item's body, copied verbatim from the source system — a Jira description, a PR
+   * description, a commit message body. Where `title` is the one-line summary, this is the prose
+   * under it. Null when the producer sent none; the server blanks-to-null, so a non-null value
+   * always has something in it.
+   */
+  content: string | null;
   url: string | null;
   provider: string | null;
   pendingCandidateId: string | null;

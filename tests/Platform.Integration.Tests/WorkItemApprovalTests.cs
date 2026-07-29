@@ -685,6 +685,93 @@ public class WorkItemApprovalTests
         }
     }
 
+    /// <summary>
+    /// The body the producer sent on the work-item reference reaches the detail page verbatim,
+    /// newlines and all — it's shown as-is, so nothing may normalise it on the way out.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_ReturnsContentVerbatim()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        const string body = "Checkout double-charges on retry.\n\nRepro:\n1. Submit\n2. Retry";
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                content: body);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal(body, detail!.Content);
+        }
+    }
+
+    /// <summary>
+    /// Content follows the same "prefer primary, else whoever has it" rule as title and url: a later
+    /// ingest that omitted the description shouldn't blank out a body an earlier one supplied.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_FallsBackToAnotherCandidatesContent_WhenPrimaryRowHasNone()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Older candidate carries the description; the newer (primary) one doesn't.
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                service: "api", createdAt: DateTimeOffset.UtcNow.AddHours(-2),
+                content: "the original description");
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                service: "web", createdAt: DateTimeOffset.UtcNow, content: null);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal("the original description", detail!.Content);
+        }
+    }
+
+    /// <summary>
+    /// A whitespace-only body is no body. Normalising it to null server-side leaves the client one
+    /// emptiness check, and keeps it from rendering a Content section with nothing in it.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_ReturnsNullContent_WhenBodyIsBlank()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                content: "   \n  ");
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Null(detail!.Content);
+        }
+    }
+
     [Fact]
     public async Task GetTicketContext_CannotApprove_WhenTicketIsUnknown()
     {
@@ -1257,7 +1344,8 @@ public class WorkItemApprovalTests
             string service = "api",
             string sourceEnv = "staging",
             string targetEnv = "prod",
-            DateTimeOffset? createdAt = null)
+            DateTimeOffset? createdAt = null,
+            string? content = null)
     {
         var ev = NewDeployEvent(participants, product, service, sourceEnv);
         db.DeployEvents.Add(ev);
@@ -1275,6 +1363,7 @@ public class WorkItemApprovalTests
             WorkItemKey = workItemKey,
             Product = product,
             TargetEnv = targetEnv,
+            Content = content,
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.PromotionWorkItems.Add(wi);
