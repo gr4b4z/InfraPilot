@@ -174,6 +174,7 @@ export function WorkItemDetailPage() {
                 href={detail.url}
                 target="_blank"
                 rel="noopener noreferrer"
+                {...{ [ROW_ACTION_ATTR]: 'open-external' }}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] font-semibold shrink-0 transition-colors hover:bg-[var(--accent-bg)]"
                 style={{
                   borderColor: 'var(--accent)',

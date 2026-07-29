@@ -13,6 +13,7 @@ import {
   KeyboardListContext,
   type KeyboardListContextValue,
 } from '@/hooks/keyboardList';
+import { isTypingTarget } from '@/lib/keys';
 
 /** Anything inside a row that would otherwise become its own tab stop. */
 const NESTED_FOCUSABLE =
@@ -91,19 +92,27 @@ export function KeyboardList({
   }, [count]);
 
   // Land on the first row as soon as the list has one, so the arrow keys work on arrival instead of
-  // needing a Tab first. Guarded three ways, because auto-focus is the kind of thing that becomes
-  // hostile the moment it fires when it shouldn't:
-  //   - once per mount, so re-renders and refetches don't yank the caret back to the top;
-  //   - only when focus is unclaimed (still on <body> or the main region), so it never interrupts
-  //     someone typing in a filter or reading with the skip link focused;
-  //   - `preventScroll`, since jumping the viewport on page load reads as a glitch.
+  // needing a Tab first.
+  //
+  // The guard is a blocklist, not an allowlist. It used to only fire when focus was still on <body>
+  // or the main region, which missed the most ordinary way of arriving: clicking "Promotions" in the
+  // sidebar leaves focus on that nav link, so the list came up with the caret still in the nav and
+  // the arrow keys doing nothing. Now anything that isn't a place we must not interrupt is fair game.
+  //
+  // What we must not interrupt:
+  //   - a text field, or the shortcut would fight typing;
+  //   - an open dialog or popover, which owns the keyboard while it is up;
+  //   - another keyboard list, so two lists on one page don't fight over the caret.
+  // Plus: once per mount, so refetches and filter changes don't yank the caret back to the top, and
+  // `preventScroll`, since jumping the viewport on arrival reads as a glitch.
   useEffect(() => {
     if (!autoFocus || hasAutoFocused.current || count === 0) return;
     const active = document.activeElement;
-    const unclaimed = active === null
-      || active === document.body
-      || (active instanceof HTMLElement && active.id === 'main-content');
-    if (!unclaimed) return;
+    if (active instanceof HTMLElement) {
+      if (isTypingTarget(active)) return;
+      if (active.closest('[role="dialog"]')) return;
+      if (active.closest(KEYBOARD_ROW_SELECTOR)) return;
+    }
     const first = elements.current.get(0);
     if (!first) return;
     hasAutoFocused.current = true;
