@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
@@ -38,7 +38,6 @@ public class WorkItemApprovalService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly PromotionService _promotion;
-    private readonly PromotionAssigneeRoleSettings _assigneeRoles;
     private readonly ParticipantRoleCatalog _roleCatalog;
     private readonly ILogger<WorkItemApprovalService> _logger;
 
@@ -65,7 +64,6 @@ public class WorkItemApprovalService
         IAuditLogger audit,
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
-        PromotionAssigneeRoleSettings assigneeRoles,
         ParticipantRoleCatalog roleCatalog,
         ILogger<WorkItemApprovalService> logger)
     {
@@ -75,7 +73,6 @@ public class WorkItemApprovalService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _promotion = promotion;
-        _assigneeRoles = assigneeRoles;
         _roleCatalog = roleCatalog;
         _logger = logger;
     }
@@ -496,11 +493,6 @@ public class WorkItemApprovalService
 
         var queueCandidates = pending.Concat(stranded).ToList();
 
-        // The assignee-role set defines what "assigned to somebody" means when no role filter is
-        // given (see PromotionAssigneeRoleSettings). It is NOT what the role dropdown offers.
-        var assigneeRoles = await _assigneeRoles.GetAsync(ct);
-        var assigneeRoleSet = new HashSet<string>(assigneeRoles, StringComparer.OrdinalIgnoreCase);
-
         // The configured participant-role vocabulary — always resolved, since the response surfaces
         // it as the role dropdown's contents whether or not the caller passed a filter.
         var configuredRoles = await _roleCatalog.GetCanonicalKeysAsync(ct);
@@ -527,16 +519,14 @@ public class WorkItemApprovalService
             : RoleNormalizer.Normalize(roleFilter);
         var roleFilterActive = !string.IsNullOrEmpty(canonicalRoleFilter);
 
-        // Effective role set used for matching — single role when role-filter is active,
-        // otherwise the full assignee-role set (the "any role" semantics).
+        // Effective role set used for matching: the single picked role, or null for "any role".
         //
-        // A role filter is honoured for ANY role, not only those in the assignee-role set: the
-        // question "which items have nobody as qa-owner?" has to be answerable for every configured
-        // role (and for an unrecognised one the queue reports), otherwise picking such a role would
-        // silently match nothing and report every item as unassigned.
-        HashSet<string> effectiveRoleSet = roleFilterActive
+        // A role filter is honoured for ANY role, configured or not — the question "which items have
+        // nobody as qa-owner?" has to be answerable for every role the queue can report, otherwise
+        // picking one would silently match nothing and report every item as unassigned.
+        HashSet<string>? effectiveRoleSet = roleFilterActive
             ? new HashSet<string>(new[] { canonicalRoleFilter! }, StringComparer.OrdinalIgnoreCase)
-            : assigneeRoleSet;
+            : null;
 
         // Candidate-scoped work-item index — the candidate is self-contained, so its tickets come
         // from PromotionWorkItem by candidate id (not from deploy-event bundles).
@@ -648,7 +638,8 @@ public class WorkItemApprovalService
                 // The people on THIS work item — its own reference participants, with the
                 // promotion-level fallback — which is exactly what the row shows.
                 var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
-                var ticketAssignees = AssignableParticipants(ticketParticipants, assigneeRoleSet);
+                // Any role counts as an assignment — see AssignableParticipants.
+                var ticketAssignees = AssignableParticipants(ticketParticipants, roleSet: null);
 
                 // Unrecognised roles are collected BEFORE narrowing too, for the same reason the
                 // assignee rollup is: the dropdown has to keep offering a choice even while the
@@ -684,10 +675,8 @@ public class WorkItemApprovalService
                 // "unassigned" by definition (legacy data, no participants, all tombstoned).
                 if (assigneeFilterActive || roleFilterActive)
                 {
-                    // With a role filter, re-derive the match set from the work item's full
-                    // participant list scoped to that one role — narrowing `ticketAssignees` instead
-                    // would first drop every role outside the assignee-role set, so filtering on any
-                    // other role reported "nobody is assigned" for the whole queue.
+                    // With a role filter, narrow to that one role; without one, every named person
+                    // counts (ticketAssignees is already the any-role set).
                     var inEffectiveRole = roleFilterActive
                         ? AssignableParticipants(ticketParticipants, effectiveRoleSet)
                         : ticketAssignees;
@@ -1307,26 +1296,43 @@ public class WorkItemApprovalService
     /// <summary>
     /// Narrows a work item's effective participants (see
     /// <see cref="GetWorkItemParticipants"/>) to the ones that can be treated as an assignment:
-    /// a role that canonicalises into <paramref name="assigneeRoleSet"/> and a non-empty email.
-    /// This — not the candidate's full participant graph — is what the person/role filter matches
-    /// against, so filtering and display can't disagree about who a work item is assigned to.
+    /// a non-empty email and, when <paramref name="roleSet"/> is supplied, a role that canonicalises
+    /// into it. This — not the candidate's full participant graph — is what the person/role filter
+    /// matches against, so filtering and display can't disagree about who a work item is assigned to.
+    ///
+    /// <para>Pass <c>null</c> for <paramref name="roleSet"/> to accept <b>any</b> role. That is what
+    /// "assigned to me" means: being named on a work item at all puts it in your queue, whether you
+    /// are its assignee, its QA owner, or its reporter. Restricting that to a privileged subset of
+    /// roles hid items from the very people recorded against them.</para>
+    ///
+    /// <para>"Any role" excludes <see cref="PipelineMetadataRoles"/> — see there for why. An explicit
+    /// role filter still honours them, so "which items did I trigger?" remains answerable.</para>
     /// </summary>
     private static List<MergedParticipant> AssignableParticipants(
-        IReadOnlyList<ParticipantDto> participants, HashSet<string> assigneeRoleSet)
+        IReadOnlyList<ParticipantDto> participants, HashSet<string>? roleSet)
     {
         var result = new List<MergedParticipant>();
-        if (assigneeRoleSet.Count == 0) return result;
 
         foreach (var p in participants)
         {
             var canon = RoleNormalizer.Normalize(p.Role);
-            if (canon.Length == 0 || !assigneeRoleSet.Contains(canon)) continue;
+            if (canon.Length == 0) continue;
+            if (roleSet is null ? PipelineMetadataRoles.Contains(canon) : !roleSet.Contains(canon)) continue;
             if (string.IsNullOrEmpty(p.Email)) continue;
             result.Add(new MergedParticipant(canon, p.Email!.Trim().ToLowerInvariant(), p.DisplayName));
         }
 
         return result;
     }
+
+    /// <summary>
+    /// Roles that record how a build happened rather than who is answerable for the change in it. They
+    /// are the one exception to "any role counts as an assignment": whoever clicked run on a pipeline
+    /// would otherwise become the assignee of every work item that build carried, and the
+    /// "nobody assigned" filter — which exists to find unowned work — would never match anything.
+    /// </summary>
+    private static readonly HashSet<string> PipelineMetadataRoles =
+        new(new[] { RoleNormalizer.Normalize("triggered-by") }, StringComparer.OrdinalIgnoreCase);
 
     private readonly record struct MergedParticipant(string Role, string Email, string? DisplayName);
 

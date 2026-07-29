@@ -14,6 +14,7 @@ import {
   History,
   Loader2,
   PlayCircle,
+  PlusCircle,
   ScrollText,
   Ticket,
   Undo2,
@@ -27,6 +28,7 @@ import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { DeploymentLogViewer } from '@/components/deployments/DeploymentLogViewer';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
+import { useAuthStore } from '@/stores/authStore';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { providerLabel, workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
@@ -84,9 +86,11 @@ export function DeploymentDetailPage() {
   const [detail, setDetail] = useState<DeploymentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showManualForm, setShowManualForm] = useState(false);
 
   const promotionsEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Promotions));
   const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -199,8 +203,28 @@ export function DeploymentDetailPage() {
               <Undo2 size={13} /> Roll back
             </Link>
           )}
+          {/* Admin-only. Records a NEW deployment based on this one, attributed to the signed-in user
+              rather than to CI — the only way to reflect something done by hand. It used to live in the
+              deployments drawer; this page replaced that drawer, so the action moved with it. */}
+          {isAdmin && (
+            <button
+              onClick={() => setShowManualForm((v) => !v)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
+              style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
+            >
+              <PlusCircle size={13} /> Manual deploy
+            </button>
+          )}
         </div>
       </div>
+
+      {isAdmin && showManualForm && (
+        <ManualDeployCard
+          event={evt}
+          onDone={() => { setShowManualForm(false); void load(); }}
+          onCancel={() => setShowManualForm(false)}
+        />
+      )}
 
       {/* The specific error, as the pipeline itself named it — above everything else, because on a
           failed deployment this one sentence is what the page is for. */}
@@ -390,6 +414,132 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <span className="text-right min-w-0 break-words" style={{ color: 'var(--text-secondary)' }}>{children}</span>
     </div>
   );
+}
+
+/**
+ * Records a new deployment by hand, based on this one — changing only version and status, with the
+ * server stamping `source="manual"` and the caller as `triggered-by` so it can never be mistaken for a
+ * CI report. The note is required: a manual entry without a reason is a mystery to whoever reads the
+ * history next.
+ *
+ * Admin-only, and gated again server-side; this form is a convenience, not the authorisation.
+ */
+function ManualDeployCard({ event: evt, onDone, onCancel }: {
+  event: DeploymentDetail['event'];
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [version, setVersion] = useState(evt.version);
+  const [status, setStatus] = useState(evt.status ?? 'succeeded');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = version.trim().length > 0 && note.trim().length > 0 && !saving;
+
+  const submit = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.createManualDeploy({
+        product: evt.product,
+        service: evt.service,
+        environment: evt.environment,
+        version: version.trim(),
+        status: status.trim() || undefined,
+        note: note.trim(),
+      });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create manual deployment');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fieldStyle = {
+    borderColor: 'var(--border-color)',
+    backgroundColor: 'var(--bg-secondary)',
+    color: 'var(--text-primary)',
+  };
+
+  return (
+    <Card title="Manual deployment" icon={PlusCircle}>
+      <p className="text-[12px] mb-3" style={{ color: 'var(--text-muted)' }}>
+        Records a <b>new</b> deployment of {evt.service} to <EnvLabelInline env={evt.environment} />,
+        attributed to you rather than to CI. A note is required.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="block text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          Version
+          <input
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            className="mt-1 w-full rounded-lg border px-3 py-1.5 text-[13px] font-mono"
+            style={fieldStyle}
+          />
+        </label>
+        <label className="block text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          Status
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="mt-1 w-full rounded-lg border px-3 py-1.5 text-[13px]"
+            style={fieldStyle}
+          >
+            {/* The three the server accepts, so a typo can't produce a 400. */}
+            <option value="succeeded">Succeeded</option>
+            <option value="failed">Failed</option>
+            <option value="in_progress">In progress</option>
+          </select>
+        </label>
+      </div>
+      <label className="block text-[12px] mt-3" style={{ color: 'var(--text-muted)' }}>
+        Note (required)
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          placeholder="Why are you recording this by hand?"
+          className="mt-1 w-full rounded-lg border px-3 py-1.5 text-[13px] resize-none"
+          style={fieldStyle}
+        />
+      </label>
+      {error && (
+        <p className="text-[12px] mt-2" style={{ color: 'var(--danger)' }}>{error}</p>
+      )}
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          onClick={submit}
+          disabled={!canSubmit}
+          title={note.trim().length === 0 ? 'A note is required' : undefined}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity"
+          style={{
+            backgroundColor: 'var(--accent)',
+            color: '#fff',
+            opacity: canSubmit ? 1 : 0.5,
+            cursor: canSubmit ? 'pointer' : 'not-allowed',
+          }}
+        >
+          <PlusCircle size={13} />
+          {saving ? 'Creating…' : 'Create deployment'}
+        </button>
+        <button
+          onClick={onCancel}
+          className="text-[13px] transition-opacity hover:opacity-80"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Cancel
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+/** The environment name as configured, inline in a sentence. */
+function EnvLabelInline({ env }: { env: string }) {
+  const { getDisplayName } = useSettingsStore();
+  return <b>{getDisplayName(env)}</b>;
 }
 
 /**

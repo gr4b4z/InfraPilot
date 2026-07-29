@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -141,38 +141,32 @@ public class PromotionQueueAssigneeFilterTests
         Assert.DoesNotContain(unassigned, t => t.WorkItemKey == "NAMED-1");
     }
 
-    // ── 4. Setting override changes which roles count as "assigned" ──
+    // ── 4. Any role counts as an assignment ──
 
     [Fact]
-    public async Task AssigneeFilter_RoleSetOverride_RestrictsAssigneeRoles()
+    public async Task AssigneeFilter_AnyRole_CountsAsAssigned()
     {
         var product = NewProduct();
         await SeedPolicyAsync(product);
 
-        // Reviewer-only — with the default role set ["qa","reviewer","assignee"] this
-        // candidate is "assigned"; with the override ["qa"] it's NOT, so it should appear
-        // under the unassigned filter once we override.
+        // A reporter is not the assignee, the QA, or the reviewer — but they are named on the item, so
+        // it is assigned, it is theirs to find, and it must not read as "nobody assigned". Restricting
+        // this to a privileged subset of roles hid items from the very people recorded against them.
         await CreatePromotionWithReferenceAsync(
             product,
-            service: "svc-rev-only",
-            referenceKey: "REV-1",
+            service: "svc-reporter-only",
+            referenceKey: "REP-1",
             referenceParticipants: new[]
             {
-                new { role = "reviewer", displayName = "Other", email = "other@example.com" },
+                new { role = "reporter", displayName = "Other", email = "other@example.com" },
             });
 
-        // Sanity: with the default set, the reviewer-only candidate is NOT unassigned.
-        var beforeOverride = await GetPendingAsync(assignee: "unassigned");
-        Assert.DoesNotContain(beforeOverride, t => t.WorkItemKey == "REV-1");
+        var unassigned = await GetPendingAsync(assignee: "unassigned");
+        Assert.DoesNotContain(unassigned, t => t.WorkItemKey == "REP-1");
 
-        // Insert / update the platform_settings row so only "qa" counts as an assignee role.
-        await SetAssigneeRoleSettingAsync("[\"qa\"]");
-
-        var afterOverride = await GetPendingAsync(assignee: "unassigned");
-        Assert.Contains(afterOverride, t => t.WorkItemKey == "REV-1");
-
-        // Reset for any sibling tests that expect the default. The fixture is shared.
-        await ResetAssigneeRoleSettingAsync();
+        // And the person is offered in the assignee rollup that backs the person dropdown.
+        var all = await GetPendingAsync(role: null, assignee: null);
+        Assert.Contains(all.Assignees, a => a.Email == "other@example.com" && a.Role == "reporter");
     }
 
     // Deleted AssigneeFilter_TombstonedAssignee_IsTreatedAsUnassigned: the pending-queue assignee
@@ -550,30 +544,19 @@ public class PromotionQueueAssigneeFilterTests
     }
 
     [Fact]
-    public async Task ResponseShape_RolesSet_IsTheConfiguredVocabularyNotTheAssigneeRoleSet()
+    public async Task ResponseShape_RolesSet_IsTheConfiguredVocabulary()
     {
         // `roles` is the role dropdown's contents: the configured participant roles (Settings →
-        // Participant Roles), whose defaults are ["triggered-by","author","reviewer","qa"]. It is
-        // deliberately NOT the assignee-role set — that one only defines what counts as "assigned
-        // to somebody" when no role is picked, and narrowing it must not narrow what an operator
-        // can filter on. See WorkItemRoleVocabularyTests for the vocabulary's own coverage.
-        var defaultResult = await GetPendingAsync(role: null, assignee: null);
-        Assert.Contains("qa", defaultResult.Roles);
-        Assert.Contains("reviewer", defaultResult.Roles);
-        Assert.Contains("author", defaultResult.Roles);
-        Assert.DoesNotContain("assignee", defaultResult.Roles);
-
-        await SetAssigneeRoleSettingAsync("[\"qa\"]");
-        try
-        {
-            var overridden = await GetPendingAsync(role: null, assignee: null);
-            Assert.Contains("qa", overridden.Roles);
-            Assert.Contains("reviewer", overridden.Roles);
-        }
-        finally
-        {
-            await ResetAssigneeRoleSettingAsync();
-        }
+        // Participant Roles), independent of which roles the queue's items happen to carry — the
+        // question "which items have nobody as QA owner?" is about a role that may appear nowhere.
+        // See WorkItemRoleVocabularyTests for the vocabulary's own coverage.
+        var result = await GetPendingAsync(role: null, assignee: null);
+        Assert.Contains("qa", result.Roles);
+        Assert.Contains("reviewer", result.Roles);
+        Assert.Contains("author", result.Roles);
+        Assert.Contains("qa-owner", result.Roles);
+        Assert.Contains("assignee", result.Roles);
+        Assert.Contains("reporter", result.Roles);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -738,48 +721,7 @@ public class PromotionQueueAssigneeFilterTests
         });
     }
 
-    /// <summary>
-    /// Inserts (or updates) the <c>promotions.assignee_roles</c> setting directly via the DB
-    /// — no admin endpoint exists for this setting on purpose. Mirrors the operator workflow
-    /// documented on <see cref="PromotionAssigneeRoleSettings"/>.
-    /// </summary>
-    private async Task SetAssigneeRoleSettingAsync(string json)
-    {
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-        var existing = await db.PlatformSettings
-            .FirstOrDefaultAsync(s => s.Key == PromotionAssigneeRoleSettings.SettingKey);
-        if (existing is null)
-        {
-            db.PlatformSettings.Add(new PlatformSetting
-            {
-                Key = PromotionAssigneeRoleSettings.SettingKey,
-                Value = json,
-                UpdatedAt = DateTimeOffset.UtcNow,
-                UpdatedBy = "test",
-            });
-        }
-        else
-        {
-            existing.Value = json;
-            existing.UpdatedAt = DateTimeOffset.UtcNow;
-            existing.UpdatedBy = "test";
-        }
-        await db.SaveChangesAsync();
-    }
 
-    private async Task ResetAssigneeRoleSettingAsync()
-    {
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-        var existing = await db.PlatformSettings
-            .FirstOrDefaultAsync(s => s.Key == PromotionAssigneeRoleSettings.SettingKey);
-        if (existing is not null)
-        {
-            db.PlatformSettings.Remove(existing);
-            await db.SaveChangesAsync();
-        }
-    }
 
     private HttpClient CreateAuthenticatedClient(string email, string password)
     {

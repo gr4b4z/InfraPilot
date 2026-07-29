@@ -171,7 +171,6 @@ builder.Services.AddScoped<DeploymentService>();
 builder.Services.AddScoped<ReferenceParticipantOverrideService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
-builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionAssigneeRoleSettings>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
@@ -256,6 +255,11 @@ var app = builder.Build();
     // Seed feature flags so admins can flip them from the UI without touching appsettings.
     // Only inserts missing rows — never overwrites an operator's explicit value.
     await FeatureFlagSeeder.SeedDefaults(db, builder.Configuration);
+
+    // One-time backfill of the built-in participant roles into an already-saved settings row, so an
+    // install that predates a role its producers now send can still assign and filter on it.
+    await ParticipantRoleSeeder.MergeDefaults(
+        db, scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ParticipantRoleSeeder)));
 
     // Seed catalog from YAML (production-safe: only adds new slugs)
     var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();
