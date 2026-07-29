@@ -8,6 +8,8 @@ import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
 import { roleDisplay } from '@/lib/roleLabel';
 import { FilterPanel, filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
 import { KeyboardList } from '@/components/ui/KeyboardList';
+import { RovingGroup } from '@/components/ui/RovingGroup';
+import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
@@ -143,6 +145,32 @@ export function MyQueuePage() {
     [tickets, scopeFilter],
   );
 
+  // `/` searches the queue that is loaded, client-side: these rows are already the authorised set,
+  // and re-querying the server would only be able to narrow by the same filters the panel above
+  // offers. Re-registers when the rows change so the search always sees what is on screen.
+  useSearchScope(
+    {
+      label: 'This queue',
+      placeholder: 'Filter these work items — key, title, product or service…',
+      search: async (query) => {
+        const needle = query.toLowerCase();
+        return filteredTickets
+          .filter((t) =>
+            [t.workItemKey, t.title ?? '', t.product, t.service]
+              .some((field) => field.toLowerCase().includes(needle)),
+          )
+          .slice(0, 25)
+          .map((t) => ({
+            id: `${t.workItemKey}-${t.candidateId}`,
+            title: t.title ? `${t.workItemKey} — ${t.title}` : t.workItemKey,
+            subtitle: `${t.product} / ${t.service} · ${t.targetEnv}`,
+            to: workItemDetailPath(t.workItemKey, t.product, t.targetEnv),
+          }));
+      },
+    },
+    [filteredTickets],
+  );
+
   // Badge on the collapsed filter toggle. Counts only the controls actually on screen for the
   // current view — a stale time frame behind a collapsed panel on a tab that doesn't use it would
   // be a filter the user can't find and isn't affected by. Mirrors the render conditions below.
@@ -179,8 +207,11 @@ export function MyQueuePage() {
           badge: its count is fetched for the shell anyway, whereas a number on the other two
           would need a second query per tab just to label a tab nobody has opened. */}
       {/* Scrolls sideways below `sm` rather than wrapping to three rows on a phone, matching the
-          promotions list. */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">
+          promotions list. One tab stop, arrows inside. */}
+      <RovingGroup
+        ariaLabel="Queue views"
+        className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0"
+      >
         {QUEUE_VIEWS.map((key) => {
           const active = view === key;
           const count = key === 'mine' ? assignedToMeCount : 0;
@@ -212,7 +243,7 @@ export function MyQueuePage() {
             </button>
           );
         })}
-      </div>
+      </RovingGroup>
 
       <FilterPanel activeCount={activeFilterCount}>
         {/* Time frame + decider narrowing are only meaningful on the decided view. */}

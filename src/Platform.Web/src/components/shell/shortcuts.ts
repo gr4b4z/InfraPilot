@@ -3,11 +3,8 @@ import { commandKeyLabel } from '@/lib/keys';
 /**
  * The app's keyboard vocabulary, in one list.
  *
- * This is the source the help overlay renders, so a shortcut that isn't described here is a
- * shortcut nobody can discover. Add the entry in the same change that adds the binding.
- *
- * Chords are written the way they're typed — `g` then `d` — because that's what the user has to do,
- * not the internal `'g d'` map key.
+ * This is the source the help overlay renders, so a shortcut that isn't described here is a shortcut
+ * nobody can discover. Add the entry in the same change that adds the binding.
  */
 export interface ShortcutGroup {
   title: string;
@@ -17,43 +14,39 @@ export interface ShortcutGroup {
 export function shortcutGroups(): ShortcutGroup[] {
   return [
     {
-      title: 'Go to',
+      title: 'Move around',
       items: [
-        { keys: ['g', 'd'], description: 'Deployments' },
-        { keys: ['g', 'p'], description: 'Promotions' },
-        { keys: ['g', 'w'], description: 'Work items queue' },
-        { keys: ['g', 't'], description: 'My tasks' },
-        { keys: ['g', 'c'], description: 'Service catalog' },
-        { keys: ['g', 'r'], description: 'Rollbacks' },
-      ],
-    },
-    {
-      title: 'Find and ask',
-      items: [
-        { keys: ['/'], description: 'Find a work item by key or title' },
+        { keys: [':'], description: 'Go to… — opens a menu of destinations' },
+        { keys: ['/'], description: 'Search whatever the current page lists' },
+        { keys: ['Esc'], description: 'Close what is open, or go back' },
         { keys: [`${commandKeyLabel()}`, 'K'], description: 'Ask the AI assistant' },
         { keys: ['?'], description: 'Show this help' },
-        { keys: ['Esc'], description: 'Close a dialog, popover or drawer' },
       ],
     },
     {
-      title: 'In a list',
+      title: 'Within a page',
       items: [
-        { keys: ['↑', '↓'], description: 'Move between rows (or j / k)' },
-        { keys: ['←', '→'], description: 'Move across environments in the deployment matrix' },
-        { keys: ['Home', 'End'], description: 'First / last row' },
-        { keys: ['Enter'], description: 'Open the focused row' },
-        { keys: ['Tab'], description: 'Move between regions — filters, list, actions' },
+        { keys: ['Tab'], description: 'Next region — filters, tabs, list, actions' },
+        { keys: ['↑', '↓'], description: 'Move within the focused region' },
+        { keys: ['←', '→'], description: 'Move across a tab strip, or across environments in the matrix' },
+        { keys: ['Home', 'End'], description: 'First / last item in the region' },
+        { keys: ['Enter'], description: 'Open the focused item' },
       ],
     },
     {
-      title: 'On the focused row or work item',
+      title: 'On the focused item',
       items: [
-        { keys: ['o'], description: 'Open the tracker reference (Jira, Azure DevOps) or pull request' },
+        { keys: ['o'], description: 'Open its tracker reference or pull request in a new tab' },
         { keys: ['a'], description: 'Assign or reassign someone' },
-        { keys: ['A'], description: 'Approve' },
-        { keys: ['I'], description: 'Raise an issue' },
-        { keys: ['B'], description: 'Block' },
+      ],
+    },
+    {
+      title: 'Decisions',
+      items: [
+        { keys: ['A'], description: 'Approve — asks to confirm' },
+        { keys: ['R'], description: 'Reject — asks to confirm, comment required' },
+        { keys: ['I'], description: 'Raise an issue on a work item' },
+        { keys: ['B'], description: 'Block a work item' },
       ],
     },
   ];

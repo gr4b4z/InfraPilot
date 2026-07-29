@@ -39,6 +39,10 @@ import {
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
@@ -101,7 +105,6 @@ export function PromotionDetailPage() {
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionDone, setActionDone] = useState<string | null>(null);
 
@@ -127,17 +130,18 @@ export function PromotionDetailPage() {
 
   const handleAction = async (
     action: 'approve' | 'reject',
+    actionComment: string,
     target?: EligibleRequirement,
   ) => {
     setActionLoading(true);
+    setError(null);
     try {
       if (action === 'approve') {
-        await api.approvePromotion(id!, comment || undefined, target);
+        await api.approvePromotion(id!, actionComment || undefined, target);
       } else {
-        await api.rejectPromotion(id!, comment || undefined);
+        await api.rejectPromotion(id!, actionComment || undefined);
       }
       setActionDone(action === 'approve' ? 'Approved' : 'Rejected');
-      setComment('');
       fetchData();
       // This candidate just left (or is about to leave) the user's awaiting-me list.
       refreshMyTasks();
@@ -300,8 +304,6 @@ export function PromotionDetailPage() {
             candidate={candidate}
             progress={approvalProgress}
             actionDone={actionDone}
-            comment={comment}
-            setComment={setComment}
             actionLoading={actionLoading}
             onAction={handleAction}
             onBypass={handleBypass}
@@ -1173,8 +1175,6 @@ function PromotionApprovalCard({
   candidate,
   progress,
   actionDone,
-  comment,
-  setComment,
   actionLoading,
   onAction,
   onBypass,
@@ -1184,10 +1184,8 @@ function PromotionApprovalCard({
   candidate: PromotionCandidate;
   progress: PromotionApprovalProgress | null;
   actionDone: string | null;
-  comment: string;
-  setComment: (v: string) => void;
   actionLoading: boolean;
-  onAction: (action: 'approve' | 'reject', target?: EligibleRequirement) => void;
+  onAction: (action: 'approve' | 'reject', comment: string, target?: EligibleRequirement) => void;
   onBypass: (reason: string) => void;
   isAdmin: boolean;
   eligibleRequirements: EligibleRequirement[];
@@ -1197,7 +1195,6 @@ function PromotionApprovalCard({
   // Admin escape hatch: available on any Pending candidate regardless of whether this admin is an
   // eligible approver — that's the point of a bypass.
   const showBypass = isAdmin && candidate.status === 'Pending' && !actionDone;
-  const [showCommentBox, setShowCommentBox] = useState(false);
   const [showBypassBox, setShowBypassBox] = useState(false);
   const [bypassReason, setBypassReason] = useState('');
 
@@ -1205,6 +1202,10 @@ function PromotionApprovalCard({
   // they approve as. Key by `${stepName}\u0000${requirementName}` so step+requirement is unique.
   const reqKey = (r: EligibleRequirement) => `${r.stepName}\u0000${r.requirementName}`;
   const [selectedKey, setSelectedKey] = useState<string>('');
+  // Approving releases a deploy and rejecting refuses one; both are single keystrokes now (`A`, `R`),
+  // so both go through a confirmation that names what it is about to do. `pending` is which one is
+  // waiting on that confirmation. Declared with the other hooks, above the early return below.
+  const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
   // Always offer the "Approve as" radios. With exactly one eligible requirement, preselect it
   // (one pre-checked radio) so the UI is uniform; with more than one, the approver must pick.
   const selected =
@@ -1215,12 +1216,12 @@ function PromotionApprovalCard({
   // available to the current user, and no admin bypass on offer.
   if (!showActions && !showProgress && !showBypass) return null;
 
-  const handleAction = (action: 'approve' | 'reject') => {
+  const confirmAction = (actionComment: string) => {
+    if (!pending) return;
     // For approvals: pass the chosen requirement (preselected when only one is eligible).
-    const target = action === 'approve' ? selected ?? undefined : undefined;
-    onAction(action, target);
-    setShowCommentBox(false);
-    setComment('');
+    const target = pending === 'approve' ? selected ?? undefined : undefined;
+    onAction(pending, actionComment, target);
+    setPending(null);
   };
 
   // Block the Approve button until a requirement is selected (the single case is preselected).
@@ -1296,23 +1297,13 @@ function PromotionApprovalCard({
             </div>
           )}
 
-          {showCommentBox && (
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Optional comment..."
-              rows={3}
-              className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
-              style={{
-                borderColor: 'var(--border-color)',
-                backgroundColor: 'var(--bg-secondary)',
-                color: 'var(--text-primary)',
-              }}
-            />
-          )}
+          {/* The comment used to live here behind an "Add comment" toggle. It moved into the
+              confirmation, which now always asks — two comment fields for one decision reads as a
+              bug, and the one attached to the confirmation is the one that gets used. */}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => handleAction('approve')}
+              onClick={() => setPending('approve')}
+              {...{ [ROW_ACTION_ATTR]: 'approve' }}
               disabled={actionLoading || approveBlocked}
               title={
                 approveBlocked
@@ -1331,7 +1322,8 @@ function PromotionApprovalCard({
               Approve
             </button>
             <button
-              onClick={() => handleAction('reject')}
+              onClick={() => setPending('reject')}
+              {...{ [ROW_ACTION_ATTR]: 'reject' }}
               disabled={actionLoading}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
@@ -1344,19 +1336,36 @@ function PromotionApprovalCard({
               <XCircle size={14} />
               Reject
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowCommentBox((v) => !v);
-                if (showCommentBox) setComment('');
-              }}
-              className="text-[13px] transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              {showCommentBox ? 'Hide comment' : 'Add comment'}
-            </button>
+            <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              or press <kbd className="font-mono">A</kbd> / <kbd className="font-mono">R</kbd>
+            </span>
           </div>
         </>
+      )}
+
+      {pending && (
+        <ConfirmDialog
+          title={pending === 'approve' ? 'Approve this promotion?' : 'Reject this promotion?'}
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong>.
+              {pending === 'approve'
+                ? ' Approving records your sign-off; the promotion deploys once its gate is fully satisfied.'
+                : ' Rejecting turns this promotion down. It will not deploy.'}
+            </>
+          }
+          confirmLabel={pending === 'approve' ? 'Approve' : 'Reject'}
+          confirmTone={pending === 'approve' ? 'success' : 'danger'}
+          commentLabel={pending === 'approve' ? 'Comment (optional)' : 'Reason'}
+          // A refusal without a reason leaves the author nothing to act on, so rejection asks for one.
+          commentRequired={pending === 'reject'}
+          busy={actionLoading}
+          onConfirm={confirmAction}
+          onCancel={() => setPending(null)}
+        />
       )}
 
       {/* Admin-only bypass. Shown on any Pending candidate to admins, even when they aren't an
@@ -1626,16 +1635,25 @@ function WorkItemsCard({
           No work-items on this candidate.
         </div>
       ) : (
-        <div className="space-y-2">
+        // The work items are what a reviewer moves through on this page, so the arrow keys iterate
+        // them. Not auto-focused: the approval card above is the point of the page, and stealing the
+        // caret down here on arrival would bury it.
+        <KeyboardList
+          className="space-y-2"
+          count={workItems.length}
+          ariaLabel="Work items on this promotion"
+          autoFocus={false}
+        >
           {workItems.map((reference, i) => (
             <TicketRow
               key={reference.key ?? reference.url ?? `wi-${i}`}
+              index={i}
               candidate={candidate}
               reference={reference}
               onChanged={onChanged}
             />
           ))}
-        </div>
+        </KeyboardList>
       )}
     </div>
   );
@@ -1655,10 +1673,13 @@ function WorkItemsCard({
  * being clipped.
  */
 function TicketRow({
+  index,
   candidate,
   reference,
   onChanged,
 }: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
   candidate: PromotionCandidate;
   reference: PromotionSourceEventReference;
   onChanged: () => void;
@@ -1714,11 +1735,16 @@ function TicketRow({
     ? workItemDetailPath(key, candidate.product, candidate.targetEnv, candidate.id)
     : null;
 
+  const rowProps = useKeyboardListRow(index, () => detailPath && navigate(detailPath), {
+    disabled: !detailPath,
+    label: `${key || 'Work item'} — ${stateLabel}${detailPath ? '. Open work item.' : ''}`,
+  });
+
   return (
     <div
+      {...rowProps}
       className={`p-3 rounded-lg border ${detailPath ? 'card-hover cursor-pointer' : ''}`}
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-      onClick={detailPath ? () => navigate(detailPath) : undefined}
     >
       <div className="flex items-start gap-3">
         <Icon size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 2 }} />

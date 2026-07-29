@@ -1,45 +1,35 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Search, Ticket } from 'lucide-react';
-import { api } from '@/lib/api';
-import type { PromotionCandidate } from '@/lib/api';
-import { workItemDetailPath } from '@/lib/workItem';
+import { Loader2, Search } from 'lucide-react';
 import { Dialog } from '@/components/ui/Dialog';
-
-/**
- * "Find a work item" — the keyboard entry point to the work the app is about.
- *
- * There is no work-item search endpoint, so this rides the promotions list's `reference` filter,
- * which the server already matches against source-event references (work-item keys, PR numbers,
- * commits). Every candidate that comes back is expanded into its work-item references, which is what
- * the user was actually looking for and what carries the (key, product, targetEnv) triple a detail
- * page needs.
- *
- * The consequence worth knowing: results are work items that are attached to a promotion. An item
- * that has never been part of one isn't reachable here, and no client-side query would change that —
- * it would need a real search endpoint.
- */
-interface Hit {
-  key: string;
-  title: string | null;
-  product: string;
-  targetEnv: string;
-  candidateId: string;
-}
+import { useSearchScopeStore, type SearchHit } from '@/stores/searchScopeStore';
+import { workItemSearchScope } from './searchScopes';
 
 /** Long enough that typing "OBS-1" doesn't fire three requests, short enough to feel immediate. */
 const DEBOUNCE_MS = 250;
 
+/**
+ * `/` — search whatever the current page lists.
+ *
+ * The scope comes from the page (see `searchScopeStore`), so on the promotions list this searches
+ * promotions and on a product's deployments it searches that product's services. A page that
+ * registers nothing falls back to work items, which is the most common thing to go looking for and
+ * keeps `/` from being a dead key anywhere.
+ */
 export function QuickFind({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate();
+  const registered = useSearchScopeStore((s) => s.scope);
+  const scope = useMemo(() => registered ?? workItemSearchScope(), [registered]);
+
   const [query, setQuery] = useState('');
-  const [hits, setHits] = useState<Hit[]>([]);
+  const [hits, setHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Start clean on every open — a stale query from last time is never what you want.
+  // Start clean on every open — a stale query from last time is never what you want, and the scope
+  // may have changed since.
   useEffect(() => {
     if (open) {
       setQuery('');
@@ -55,9 +45,9 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
     setSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await api.listPromotions({ reference: q, limit: 25 });
+        const results = await scope.search(q);
         if (cancelled) return;
-        setHits(expandWorkItems(res.candidates ?? [], q));
+        setHits(results);
         setHighlighted(0);
       } catch {
         if (!cancelled) setHits([]);
@@ -66,11 +56,11 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
       }
     }, DEBOUNCE_MS);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [query, open]);
+  }, [query, open, scope]);
 
-  const openHit = (hit: Hit) => {
+  const openHit = (hit: SearchHit) => {
     onClose();
-    navigate(workItemDetailPath(hit.key, hit.product, hit.targetEnv, hit.candidateId));
+    navigate(hit.to);
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -95,7 +85,7 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
   if (!open) return null;
 
   return (
-    <Dialog onClose={onClose} ariaLabel="Find a work item" initialFocusRef={inputRef}>
+    <Dialog onClose={onClose} ariaLabel={`Search ${scope.label}`} initialFocusRef={inputRef}>
       <div
         className="flex items-center gap-2 px-3 py-2.5 border-b"
         style={{ borderColor: 'var(--border-color)' }}
@@ -106,7 +96,7 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Find a work item — key, PR number or commit…"
+          placeholder={scope.placeholder}
           className="flex-1 bg-transparent text-[14px] outline-none"
           style={{ color: 'var(--text-primary)' }}
           role="combobox"
@@ -114,14 +104,21 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
           aria-controls="quickfind-results"
           aria-activedescendant={hits.length > 0 ? `quickfind-hit-${highlighted}` : undefined}
         />
+        {/* Naming the scope is what stops `/` feeling unpredictable — you can see what it will search
+            before you type. */}
+        <span
+          className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
+          style={{ backgroundColor: 'var(--accent-bg)', color: 'var(--accent)' }}
+        >
+          {scope.label}
+        </span>
         {searching && <Loader2 size={14} className="animate-spin" style={{ color: 'var(--text-muted)' }} />}
       </div>
 
       <div ref={listRef} id="quickfind-results" role="listbox" className="max-h-80 overflow-y-auto">
         {query.trim().length < 2 ? (
           <p className="px-3 py-3 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-            Type at least two characters. Matches work items, pull requests and commits attached to a
-            promotion.
+            Type at least two characters.
           </p>
         ) : !searching && hits.length === 0 ? (
           <p className="px-3 py-3 text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -130,27 +127,26 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
         ) : (
           hits.map((hit, i) => (
             <button
-              key={`${hit.key}-${hit.product}-${hit.targetEnv}-${hit.candidateId}`}
+              key={hit.id}
               id={`quickfind-hit-${i}`}
               data-hit
               role="option"
               aria-selected={highlighted === i}
               type="button"
+              tabIndex={-1}
               onMouseEnter={() => setHighlighted(i)}
               onClick={() => openHit(hit)}
-              className="w-full flex items-start gap-2 px-3 py-2 text-left transition-colors"
+              className="w-full flex flex-col items-start px-3 py-2 text-left transition-colors"
               style={{ backgroundColor: highlighted === i ? 'var(--accent-muted)' : undefined }}
             >
-              <Ticket size={13} style={{ color: 'var(--text-muted)', marginTop: 2, flexShrink: 0 }} />
-              <span className="min-w-0">
-                <span className="block text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                  {hit.key}
-                  {hit.title ? ` — ${hit.title}` : ''}
-                </span>
-                <span className="block text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-                  {hit.product} · {hit.targetEnv}
-                </span>
+              <span className="text-[13px] font-medium truncate w-full" style={{ color: 'var(--text-primary)' }}>
+                {hit.title}
               </span>
+              {hit.subtitle && (
+                <span className="text-[11px] truncate w-full" style={{ color: 'var(--text-muted)' }}>
+                  {hit.subtitle}
+                </span>
+              )}
             </button>
           ))
         )}
@@ -166,40 +162,4 @@ export function QuickFind({ open, onClose }: { open: boolean; onClose: () => voi
       </div>
     </Dialog>
   );
-}
-
-/**
- * Flattens candidates into their work-item references, keeping only those whose key or title matches
- * the query. The server matched the *candidate* — a bundle can carry ten work items where one
- * matched — so without this the list would offer nine items the user didn't ask for.
- *
- * Deduplicated on (key, product, targetEnv): the same work item can ride several candidates, and
- * that triple is the identity a decision keys on.
- */
-function expandWorkItems(candidates: PromotionCandidate[], query: string): Hit[] {
-  const needle = query.toLowerCase();
-  const seen = new Set<string>();
-  const hits: Hit[] = [];
-  for (const candidate of candidates) {
-    for (const ref of candidate.sourceEventReferences ?? []) {
-      if (ref.type !== 'work-item') continue;
-      const key = (ref.key ?? '').trim();
-      if (!key) continue;
-      const title = ref.title ?? null;
-      const matches = key.toLowerCase().includes(needle)
-        || (title ?? '').toLowerCase().includes(needle);
-      if (!matches) continue;
-      const identity = `${key}|${candidate.product}|${candidate.targetEnv}`;
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      hits.push({
-        key,
-        title,
-        product: candidate.product,
-        targetEnv: candidate.targetEnv,
-        candidateId: candidate.id,
-      });
-    }
-  }
-  return hits;
 }

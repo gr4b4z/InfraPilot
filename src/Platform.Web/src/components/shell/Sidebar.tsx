@@ -22,6 +22,7 @@ import { useMyTasksStore } from '@/stores/myTasksStore';
 import { useUiStore } from '@/stores/uiStore';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { getAppName, getAppSubtitle, getEnvironmentLabel } from '@/lib/runtimeConfig';
+import { KeyboardHints } from './KeyboardHints';
 
 /**
  * Live "assigned to me" counters, resolved at render from the shared My-tasks rollup rather than
@@ -311,14 +312,24 @@ export function Sidebar() {
           >
             {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
+          {/* Hints only in the expanded sidebar — the 60px rail has no room for them, and they are a
+              desktop affordance anyway. */}
           {!collapsed && (
-            <p
-              className="text-[10px] text-center mt-1 font-mono"
-              style={{ color: 'var(--text-muted)' }}
-              title="Build version"
-            >
-              {__APP_VERSION__}
-            </p>
+            <>
+              <div
+                className="hidden lg:block mt-1 pt-2 border-t"
+                style={{ borderColor: 'var(--border-color)' }}
+              >
+                <KeyboardHints />
+              </div>
+              <p
+                className="text-[10px] text-center mt-1 font-mono"
+                style={{ color: 'var(--text-muted)' }}
+                title="Build version"
+              >
+                {__APP_VERSION__}
+              </p>
+            </>
           )}
         </div>
       </aside>
