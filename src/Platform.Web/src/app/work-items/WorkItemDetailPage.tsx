@@ -22,6 +22,7 @@ import {
   Ban,
   CheckCircle,
   ExternalLink,
+  FileText,
   GitCommitHorizontal,
   GitPullRequest,
   MessageSquare,
@@ -230,6 +231,11 @@ export function WorkItemDetailPage() {
              signed off elsewhere) but assigning someone isn't an action worth a whole card, so it's
              a compact chip row rather than the stacked per-role blocks used elsewhere. */}
           <PeopleCard detail={detail} onChanged={load} />
+          {/* The ticket/PR/commit body, when the producer sent one. Between People and Sign-off
+             because it's the substance of what's being signed off — read after "who owns this",
+             before deciding. Absent entirely when there's no content: an empty card would imply
+             the description is blank upstream when it more likely just wasn't ingested. */}
+          {detail.content && <ContentCard content={detail.content} />}
           <DecisionCard detail={detail} onChanged={load} onError={setError} />
           <DecisionTrail detail={detail} />
           <CommentsCard
@@ -290,6 +296,79 @@ function PeopleCard({ detail, onChanged }: { detail: WorkItemDetail; onChanged: 
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
           Assigning requires the QA or Admin role.
         </span>
+      )}
+    </div>
+  );
+}
+
+// A body past either of these collapses behind "Show more". Both matter: a wall of one long
+// paragraph and a fifty-line bullet list are each too tall to sit above the sign-off buttons.
+const CONTENT_COLLAPSE_CHARS = 800;
+const CONTENT_COLLAPSE_LINES = 12;
+
+/**
+ * The work item's body — the Jira description, PR description, or commit message body the producer
+ * copied onto the reference. Rendered as plain text with line breaks preserved, deliberately *not*
+ * as markdown: this string arrives from an ingest payload rather than from someone typing into this
+ * app, so interpreting it as markup would let a producer inject HTML into a reviewer's page. The
+ * release-note pages do run `marked`, but their input is authored in-product.
+ *
+ * Long bodies collapse, because the sign-off buttons below shouldn't be pushed off-screen by a
+ * ticket description.
+ */
+function ContentCard({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Decided from the text rather than by measuring the rendered box: it's plain text at a fixed
+  // type size, so length and line count predict height closely enough, and it avoids a measuring
+  // effect that would flash the expanded state on first paint.
+  const isLong = useMemo(
+    () =>
+      content.length > CONTENT_COLLAPSE_CHARS ||
+      content.split('\n').length > CONTENT_COLLAPSE_LINES,
+    [content],
+  );
+  const collapsed = isLong && !expanded;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <FileText size={12} /> Content
+      </h2>
+      <div className="relative">
+        <p
+          className="text-[13px] whitespace-pre-wrap break-words"
+          style={{
+            color: 'var(--text-secondary)',
+            maxHeight: collapsed ? '15rem' : undefined,
+            overflow: collapsed ? 'hidden' : undefined,
+          }}
+        >
+          {content}
+        </p>
+        {/* Fades the clipped last line so it reads as "continues below" rather than as text that
+           happens to end mid-sentence. */}
+        {collapsed && (
+          <div
+            className="absolute inset-x-0 bottom-0 h-10 pointer-events-none"
+            style={{ background: 'linear-gradient(to bottom, transparent, var(--bg-primary))' }}
+          />
+        )}
+      </div>
+      {isLong && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-3 text-[11px] font-medium transition-opacity hover:opacity-80"
+          style={{ color: 'var(--accent)' }}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
       )}
     </div>
   );

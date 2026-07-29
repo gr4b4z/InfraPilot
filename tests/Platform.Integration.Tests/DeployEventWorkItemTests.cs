@@ -58,6 +58,59 @@ public class DeployEventWorkItemTests
         Assert.All(rows, r => Assert.Equal("acme", r.Product));
     }
 
+    /// <summary>
+    /// The reference's body is persisted on the projection and re-synced in place, like title and
+    /// url — a producer that edits a ticket description and re-sends should see the new one.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_PersistsAndUpdatesWorkItemContent()
+    {
+        await using var factory = new TestFactory();
+
+        Guid eventId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var dto = NewDto(references: new List<ReferenceDto>
+            {
+                new("work-item", Key: "FOO-1", Title: "Fix retry",
+                    Content: "Checkout double-charges.\n\nRepro: submit, then retry."),
+            });
+
+            var ev = await service.IngestEvent(dto);
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+            eventId = ev.Id;
+
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+            Assert.Equal("Checkout double-charges.\n\nRepro: submit, then retry.", row.Content);
+        }
+
+        // Re-sync the same event with an edited body.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
+            ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
+                new List<ReferenceDto> { new("work-item", Key: "FOO-1", Content: "rewritten") },
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                });
+
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Equal("rewritten", row.Content);
+        }
+    }
+
     [Fact]
     public async Task Ingest_IsIdempotent_OnReingestOfSameEvent()
     {

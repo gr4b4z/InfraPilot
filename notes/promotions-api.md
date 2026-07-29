@@ -43,7 +43,8 @@ candidate; it does **not** recompute or infer the bundle.
   "toRevision":   "f9e8d7c",           // optional — SHA being promoted (display/traceability)
   "references": [                       // optional — the authoritative net change set
     { "type": "work-item",    "provider": "jira",   "key": "CHK-451",
-      "title": "Add express checkout", "url": "https://jira/CHK-451" },
+      "title": "Add express checkout", "url": "https://jira/CHK-451",
+      "content": "One-tap checkout for saved cards.\n\nOut of scope: guest checkout." },
     { "type": "pull-request", "provider": "github", "key": "2087", "url": "https://github.com/o/r/pull/2087" },
     { "type": "repository",   "provider": "github", "revision": "f9e8d7c", "url": "https://github.com/o/r" }
   ],
@@ -53,11 +54,15 @@ candidate; it does **not** recompute or infer the bundle.
 }
 ```
 
-- A `reference` is `{ type, url?, provider?, key?, revision?, title?, participants? }`. Only
+- A `reference` is `{ type, url?, provider?, key?, revision?, title?, content?, participants? }`. Only
   `type == "work-item"` references feed the approval gate (they become the candidate's work
   items); `pull-request` / `repository` etc. are stored for display and traceability.
 - Work-item references may carry their own `participants[]` (a ticket's QA, a PR's reviewer);
   these surface on the candidate.
+- `content` is the reference's body copied from the source system (Jira description, PR
+  description, commit message body) — `title` is the summary line, `content` is the prose under
+  it. On a work item it becomes the **Content** section of the detail page, between People and
+  Sign-off, and is omitted entirely when absent. Shown as plain text; markup is not interpreted.
 
 **Responses**
 

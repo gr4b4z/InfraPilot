@@ -96,6 +96,7 @@ Rate limiting is applied per key.
 | `key` | string | no | Unique identifier in that system (commit SHA, PR number, ticket key). |
 | `revision` | string | no | Git revision / commit SHA. Can be omitted if not available. |
 | `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. |
+| `content` | string | no | The reference's **body**, copied verbatim from the source system: a Jira ticket's description, a PR's description, a commit message body. Where `title` is the one-line summary, this is the prose under it. No length limit. On a `work-item` reference it surfaces as the **Content** section of the work-item detail page, between People and Sign-off; a work item with no `content` shows no such section. Rendered as plain text with line breaks preserved — **never** interpreted as markdown or HTML, so markup in the body appears literally. |
 | `participants` | array | no | Reference-scoped participants. Same shape as the top-level `participants[]` (see below) — a PR has its author/reviewer, a ticket has its QA/assignee, a commit has its author. Optional and may be omitted entirely on legacy senders. |
 
 #### `references[].participants[]` — reference-scoped participants
@@ -109,6 +110,7 @@ A reference may carry its own `participants[]` array. Same shape as the event-le
     "provider": "jira",
     "key": "PLT-1234",
     "title": "Add idempotency key to checkout endpoint",
+    "content": "Retried POSTs create duplicate orders.\n\nAccept an Idempotency-Key header and\nreturn the original response on replay.",
     "participants": [
       { "role": "qa",       "displayName": "Eve QA",     "email": "eve.qa@acmetrix.com" },
       { "role": "assignee", "displayName": "Dan Dev",    "email": "dan.dev@acmetrix.com" }

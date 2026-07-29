@@ -424,6 +424,7 @@ public class PromotionService
                 Provider = r.Provider,
                 Url = r.Url,
                 Title = r.Title,
+                Content = r.Content,
                 Revision = r.Revision,
                 CreatedAt = now,
             });

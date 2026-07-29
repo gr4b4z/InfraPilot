@@ -314,6 +314,9 @@ namespace Platform.Api.Migrations.Postgres
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Content")
+                        .HasColumnType("text");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -661,6 +664,9 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.Property<Guid>("CandidateId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("Content")
+                        .HasColumnType("text");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");

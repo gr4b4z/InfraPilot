@@ -215,6 +215,7 @@ public class DeployEventWorkItemBackfillService : BackgroundService
                 Provider = r.Provider,
                 Url = r.Url,
                 Title = title,
+                Content = r.Content,
                 Revision = r.Revision,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
