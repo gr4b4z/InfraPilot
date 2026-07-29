@@ -109,8 +109,13 @@ public class IngestIdempotencyAndSourcePolicyTests
 
     // ── sourceRequiresDeploy policy flag + 422 error codes ─────────────────
 
-    private async Task SeedPolicyAsync(
-        string product, string sourceEnv, string targetEnv, bool sourceRequiresDeploy)
+    /// <summary>
+    /// Creates a product-default policy for the edge and returns its id. <paramref name="steps"/>
+    /// defaults to an empty tree (auto-approve); pass a tree to make candidates park in Pending.
+    /// </summary>
+    private async Task<string> SeedPolicyAsync(
+        string product, string sourceEnv, string targetEnv, bool sourceRequiresDeploy,
+        object[]? steps = null)
     {
         await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
 
@@ -120,7 +125,7 @@ public class IngestIdempotencyAndSourcePolicyTests
             service = (string?)null,
             sourceEnv,
             targetEnv,
-            steps = Array.Empty<object>(),
+            steps = steps ?? Array.Empty<object>(),
             timeoutHours = 24,
             escalationGroup = (string?)null,
             sourceRequiresDeploy,
@@ -128,6 +133,7 @@ public class IngestIdempotencyAndSourcePolicyTests
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var body = await Deserialize(response);
         Assert.Equal(sourceRequiresDeploy, body.GetProperty("sourceRequiresDeploy").GetBoolean());
+        return body.GetProperty("id").GetString()!;
     }
 
     private async Task<HttpResponseMessage> PostPromotionAsync(
@@ -187,6 +193,64 @@ public class IngestIdempotencyAndSourcePolicyTests
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         var body = await Deserialize(response);
         Assert.Equal("target_already_at_version", body.GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// End-to-end proof that a policy edit reaches promotions that already exist: a candidate is
+    /// created under a policy that requires a human sign-off (so it parks in Pending), then the
+    /// operator removes that requirement. The waiting candidate must be re-gated under the new
+    /// settings and promoted — not left stuck on a rule that no longer exists. The PUT response
+    /// reports how many in-flight promotions it touched.
+    /// </summary>
+    [Fact]
+    public async Task RelaxingPolicy_ReappliesToPendingPromotionAndApprovesIt()
+    {
+        var gated = new object[]
+        {
+            new
+            {
+                name = "Approval",
+                requirements = new[]
+                {
+                    new
+                    {
+                        name = "Approvers",
+                        groups = new[] { new { id = "Release", name = "Release" } },
+                        users = Array.Empty<string>(),
+                        minApprovers = 1,
+                    },
+                },
+            },
+        };
+
+        var policyId = await SeedPolicyAsync(
+            "retro-acme", "stable", "staging", sourceRequiresDeploy: false, steps: gated);
+
+        // In flight: created under the gated policy, so it parks in Pending awaiting a sign-off.
+        var created = await PostPromotionAsync("retro-acme", "stable", "staging", "6.0.0");
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var createdBody = await Deserialize(created);
+        Assert.Equal("Pending", createdBody.GetProperty("status").GetString());
+        var candidateId = createdBody.GetProperty("id").GetString();
+
+        // The requirement is dropped — an empty step tree means auto-approve on this edge.
+        var updated = await _adminClient.PutAsJsonAsync($"/api/promotions/admin/policies/{policyId}", new
+        {
+            product = "retro-acme",
+            service = (string?)null,
+            sourceEnv = "stable",
+            targetEnv = "staging",
+            steps = Array.Empty<object>(),
+            timeoutHours = 24,
+            escalationGroup = (string?)null,
+            sourceRequiresDeploy = false,
+        });
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        Assert.Equal(1, (await Deserialize(updated)).GetProperty("reappliedCandidates").GetInt32());
+
+        // The promotion that was waiting on the removed requirement is through.
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>($"/api/promotions/{candidateId}");
+        Assert.Equal("Approved", detail.GetProperty("candidate").GetProperty("status").GetString());
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

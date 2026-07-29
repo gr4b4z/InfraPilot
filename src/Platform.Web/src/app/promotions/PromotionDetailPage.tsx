@@ -1711,7 +1711,10 @@ function TicketRow({
   const stateColor = decidedStyle?.color ?? 'var(--warning)';
   const stateBg = decidedStyle?.bg ?? 'var(--warning-bg)';
 
-  const detailPath = key ? workItemDetailPath(key, candidate.product, candidate.targetEnv) : null;
+  // Carry this candidate as the referrer so the work-item page can offer a way back here.
+  const detailPath = key
+    ? workItemDetailPath(key, candidate.product, candidate.targetEnv, candidate.id)
+    : null;
 
   return (
     <div

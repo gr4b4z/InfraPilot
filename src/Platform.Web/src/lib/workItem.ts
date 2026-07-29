@@ -5,10 +5,31 @@ import { roleDisplay } from '@/lib/roleLabel';
  * In-app route to a work item's detail page. A work item's identity for sign-off is the triple
  * (key, product, targetEnv) — the same grain the decisions and comments key on — so product and
  * target env travel as query params alongside the key.
+ *
+ * Pass `fromCandidateId` when linking out of a promotion: the detail page turns it into a "Back to
+ * promotion" breadcrumb so a reviewer who came in to sign something off lands back where they were
+ * instead of in the work-item queue. It rides in the URL rather than router state so a refresh or a
+ * shared link keeps the trail.
  */
-export function workItemDetailPath(key: string, product: string, targetEnv: string): string {
+export function workItemDetailPath(
+  key: string,
+  product: string,
+  targetEnv: string,
+  fromCandidateId?: string | null,
+): string {
   const params = new URLSearchParams({ product, targetEnv });
+  if (fromCandidateId) params.set('from', fromCandidateId);
   return `/work-items/${encodeURIComponent(key)}?${params.toString()}`;
+}
+
+/**
+ * Reads the `from` param written by {@link workItemDetailPath} back out. Returns null unless the
+ * value is a well-formed GUID — the param lands in an href, so a junk value should fall back to the
+ * default breadcrumb rather than render a link to nowhere.
+ */
+export function referringCandidateId(value: string | null | undefined): string | null {
+  const raw = (value ?? '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw) ? raw : null;
 }
 
 /**
