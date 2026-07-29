@@ -17,6 +17,7 @@ import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipan
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Ban,
@@ -35,13 +36,13 @@ import {
 
 /**
  * Work-item detail page — the one place a work item is managed end to end: sign it off (Approve /
- * Block / Reject), discuss it, and assign the people responsible for it.
+ * Issue / Block), discuss it, and assign the people responsible for it.
  *
  * Identity is the triple `(key, product, targetEnv)` — the grain decisions and comments key on —
  * with product and target env arriving as query params. Everything renders from a single
- * `GET /api/work-items/{key}/detail` call; every mutation refetches it, because a decision can
- * cascade (a rejection terminates the candidate, an approval can auto-promote it) and the page must
- * show the new truth rather than a guess at it.
+ * `GET /api/work-items/{key}/detail` call; every mutation refetches it, because an approval can
+ * cascade (it may satisfy a gate and auto-promote the candidate) and the page must show the new truth
+ * rather than a guess at it.
  */
 
 const CANDIDATE_STATUS_COLOR: Record<PromotionStatus, string> = {
@@ -603,14 +604,14 @@ function ChangeRow({
 
 function DecisionIcon({ decision, size }: { decision: WorkItemDecision; size: number }) {
   if (decision === 'Approved') return <CheckCircle size={size} />;
-  if (decision === 'Blocked') return <Ban size={size} />;
-  return <XCircle size={size} />;
+  if (decision === 'Issue') return <AlertTriangle size={size} />;
+  return <Ban size={size} />;
 }
 
 /**
- * Sign-off controls. Approve / Block / Reject each POST to their own endpoint; the option matching
- * the user's current decision is hidden (re-recording the same one is a no-op the API rejects), so
- * what's left are the states they can actually move to.
+ * Sign-off controls. Approve / Issue / Block each POST to their own endpoint; the option matching the
+ * user's current decision is hidden (re-recording the same one is a no-op the API refuses), so what's
+ * left are the states they can actually move to.
  */
 function DecisionCard({
   detail,
@@ -630,8 +631,8 @@ function DecisionCard({
     try {
       const args = [detail.workItemKey, detail.product, detail.targetEnv, comment || undefined] as const;
       if (decision === 'Approved') await api.approveWorkItem(...args);
-      else if (decision === 'Blocked') await api.blockWorkItem(...args);
-      else await api.rejectWorkItem(...args);
+      else if (decision === 'Issue') await api.raiseWorkItemIssue(...args);
+      else await api.blockWorkItem(...args);
       setComment('');
       await onChanged();
       // A signed-off item drops out of the pending queue the counters and bell badge count.
@@ -664,7 +665,7 @@ function DecisionCard({
           style={{ borderColor: mineStyle.color, backgroundColor: mineStyle.bg, color: mineStyle.color }}
         >
           <DecisionIcon decision={mine} size={13} />
-          <span className="font-medium">You {mineStyle.label.toLowerCase()} this work item.</span>
+          <span className="font-medium">You {mineStyle.youDid}.</span>
           {detail.canApprove && (
             <span style={{ color: 'var(--text-muted)' }}>You can still change it below.</span>
           )}
@@ -701,36 +702,36 @@ function DecisionCard({
                 {busy === 'Approved' ? 'Approving…' : 'Approve'}
               </button>
             )}
+            {mine !== 'Issue' && (
+              <button
+                onClick={() => decide('Issue')}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--warning-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                title="Flag a problem on this work item — the promotion stays pending"
+              >
+                <AlertTriangle size={12} />
+                {busy === 'Issue' ? 'Raising…' : 'Issue'}
+              </button>
+            )}
             {mine !== 'Blocked' && (
               <button
                 onClick={() => decide('Blocked')}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--warning-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-                title="Hold this work item back without rejecting the promotion"
+                style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                title="Hold this work item back — the promotion stays pending"
               >
                 <Ban size={12} />
                 {busy === 'Blocked' ? 'Blocking…' : 'Block'}
               </button>
             )}
-            {mine !== 'Rejected' && (
-              <button
-                onClick={() => decide('Rejected')}
-                disabled={busy !== null}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-                title="Reject this work item — the promotion stays pending"
-              >
-                <XCircle size={12} />
-                {busy === 'Rejected' ? 'Rejecting…' : 'Reject'}
-              </button>
-            )}
           </div>
           <p className="text-[11px] mt-2.5" style={{ color: 'var(--text-muted)' }}>
             Only <span className="font-medium">Approve</span> releases the promotion.{' '}
-            <span className="font-medium">Block</span> (&ldquo;not yet&rdquo;) and{' '}
-            <span className="font-medium">Reject</span> (&ldquo;no&rdquo;) both leave the item
-            unresolved, which holds the promotion pending without cancelling it — and both are
+            <span className="font-medium">Issue</span> (&ldquo;something&rsquo;s wrong&rdquo;) and{' '}
+            <span className="font-medium">Block</span> (&ldquo;not going out&rdquo;) both leave the
+            item unresolved, which holds the promotion pending without cancelling it — and both are
             reversible. A new version of the promotion clears them and asks again.
           </p>
         </>
@@ -809,7 +810,7 @@ function DecisionTrail({ detail }: { detail: WorkItemDetail }) {
 
 /**
  * The work item's thread: free-text discussion interleaved with the decision entries the API writes
- * on every Approve / Block / Reject (and the system entry when a new version resets one). Everything
+ * on every Approve / Issue / Block (and the system entry when a new version resets one). Everything
  * keys on (workItemKey, product, targetEnv), so the thread outlives the candidate that was live when
  * it started.
  *

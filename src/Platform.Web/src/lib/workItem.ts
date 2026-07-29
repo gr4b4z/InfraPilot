@@ -86,22 +86,49 @@ export function shortHash(hash: string): string {
 
 /**
  * Presentation for a work-item decision. One source of truth so the queue, the promotion row, and
- * the detail page can't drift on what "Blocked" looks like.
+ * the detail page can't drift on what a decision looks like or reads as.
  *
- * Blocked shares the warning palette with the undecided "Pending" state — the two never appear on
- * the same row, and the label plus the icon carry the distinction.
+ * Three text forms, because one string can't serve all three sentences: `label` is the badge
+ * ("Issue"), `attributed` prefixes an actor ("Issue raised by Ada"), and `youDid` completes a
+ * first-person sentence ("You raised an issue on this work item."). A single label forced
+ * constructions like "You issue this work item".
+ *
+ * Issue shares the warning palette with the undecided "Pending" state — the two never appear on the
+ * same row, and the label plus the icon carry the distinction.
  */
 export function decisionStyle(decision: WorkItemDecision): {
   label: string;
+  /** Reads as `${attributed} by <name>`. */
+  attributed: string;
+  /** Reads as `You ${youDid}.` */
+  youDid: string;
   color: string;
   bg: string;
 } {
   switch (decision) {
     case 'Approved':
-      return { label: 'Approved', color: 'var(--success)', bg: 'var(--success-bg)' };
-    case 'Rejected':
-      return { label: 'Rejected', color: 'var(--danger)', bg: 'var(--danger-bg)' };
+      return {
+        label: 'Approved',
+        attributed: 'Approved',
+        youDid: 'approved this work item',
+        color: 'var(--success)',
+        bg: 'var(--success-bg)',
+      };
+    case 'Issue':
+      return {
+        label: 'Issue',
+        attributed: 'Issue raised',
+        youDid: 'raised an issue on this work item',
+        color: 'var(--warning)',
+        bg: 'var(--warning-bg)',
+      };
     case 'Blocked':
-      return { label: 'Blocked', color: 'var(--warning)', bg: 'var(--warning-bg)' };
+      return {
+        label: 'Blocked',
+        attributed: 'Blocked',
+        youDid: 'blocked this work item',
+        color: 'var(--danger)',
+        bg: 'var(--danger-bg)',
+      };
   }
 }

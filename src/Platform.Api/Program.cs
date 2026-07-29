@@ -186,6 +186,9 @@ builder.Services.AddScoped<ReleaseNoteTemplateService>();
 
 // Shared UI settings (environments, roles, activity template)
 builder.Services.AddScoped<Platform.Api.Features.Settings.AppSettingsService>();
+// The configured participant-role vocabulary, read from the settings above. Gates manual
+// assignment and populates the work-item role pickers.
+builder.Services.AddScoped<Platform.Api.Features.Settings.ParticipantRoleCatalog>();
 
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();

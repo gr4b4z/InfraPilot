@@ -27,17 +27,14 @@ public class PromotionApproval
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
+/// <summary>
+/// A decision on a <i>promotion</i> (or a rollback request). Rejection here is a veto: it
+/// terminates the candidate. Work items have their own vocabulary — see
+/// <see cref="WorkItemDecision"/> — because nothing an approver does to a single ticket
+/// terminates anything.
+/// </summary>
 public enum PromotionDecision
 {
     Approved,
     Rejected,
-
-    /// <summary>
-    /// Work-item only: the item is held back without vetoing the promotion. Unlike
-    /// <see cref="Rejected"/> (a veto that terminates the candidate), a block leaves the
-    /// candidate Pending and is reversible — the same user can later switch to Approved.
-    /// The gate treats a blocked work item as unresolved. Never produced for a
-    /// <see cref="PromotionApproval"/> (promotion-level decisions are Approved / Rejected only).
-    /// </summary>
-    Blocked,
 }
