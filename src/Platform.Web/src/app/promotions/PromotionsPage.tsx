@@ -690,29 +690,46 @@ function CandidateCard({
         />
       )}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <h3 className="text-[14px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
+        {/* Wraps rather than compresses: on a phone the title and the badges cannot all fit on one
+           line, and a squashed "Awaiting your approval" pill reading over three lines inside its own
+           border is worse than the same pill sitting on the next row at full size. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1">
+          <h3
+            className="text-[14px] font-semibold truncate min-w-0"
+            style={{ color: 'var(--text-primary)' }}
+          >
             {candidate.product} / {candidate.service}
           </h3>
           {/* The status badge only carries information once status varies (the resolved list).
              In the all-pending list it's constant noise, so drop it there and surface the
              actionable "Awaiting your approval" cue instead. */}
           {candidate.status !== 'Pending' && (
-            <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
+            <span
+              className="badge shrink-0 whitespace-nowrap"
+              style={{ backgroundColor: cfg.bg, color: cfg.color }}
+            >
               <StatusIcon size={10} />
               {candidate.status}
             </span>
           )}
           {awaitingCue && candidate.canApprove && (
-            <span className="badge" style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}>
+            <span
+              className="badge shrink-0 whitespace-nowrap"
+              style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            >
               <Clock size={10} />
               Awaiting your approval
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+        {/* Source → target. Wraps on a narrow viewport so the target pill drops to its own line
+           instead of running off the edge of the screen. */}
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]"
+          style={{ color: 'var(--text-secondary)' }}
+        >
           <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
-          <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
+          <ArrowRight size={12} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
           <EnvBadge
             env={candidate.targetEnv}
             suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
@@ -920,9 +937,12 @@ function CandidateCard({
       </div>
       {/* Explicit per-row action. The whole card is the click target (navigates to detail);
          this is the visible CTA so the row reads as an action, not a static record. A right
-         chevron (not ↗) — it stays in-app. */}
+         chevron (not ↗) — it stays in-app.
+
+         Hidden below `sm`: on a phone it competes for the width the content actually needs, and
+         a tap anywhere on the card already does the same thing, so it buys nothing there. */}
       <span
-        className="shrink-0 self-center inline-flex items-center gap-1 text-[12px] font-medium"
+        className="hidden sm:inline-flex shrink-0 self-center items-center gap-1 text-[12px] font-medium"
         style={{ color: candidate.canApprove ? 'var(--accent)' : 'var(--text-muted)' }}
       >
         {candidate.canApprove ? 'Review' : 'View'}
