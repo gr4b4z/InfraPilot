@@ -5,8 +5,10 @@ namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
 /// A promotion candidate: "service X version V in source env should move forward to target env."
-/// Lifecycle is Pending → Approved → Deploying → Deployed, with Superseded / Rejected as terminal
-/// off-ramps.
+/// Lifecycle is Pending → Approved → Deploying → Deployed, with Superseded / Rejected as
+/// terminal off-ramps. <see cref="PromotionStatus.Deployed"/> is the one state reality can force:
+/// once the version lands in the target environment the change IS live, so ingestion closes the
+/// candidate there from any open state — including Rejected.
 ///
 /// <para>Candidates are created externally via <see cref="PromotionService.CreateExternalCandidateAsync"/>
 /// (an external system POSTs the authoritative net change set) and closed by either approval +

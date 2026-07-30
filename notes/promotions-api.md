@@ -7,7 +7,16 @@ authoritative set of changes (work items, PRs, commits) being promoted. Candidat
 the platform does not auto-generate them from deploy events.
 
 Lifecycle: `Pending → Approved → Deploying → Deployed`, with `Rejected` / `Superseded` as
-terminal off-ramps. The design rationale lives in
+terminal off-ramps. `Deployed` is the one state reality can force: when a succeeded deploy of the
+candidate's exact version lands on its target environment, ingestion closes the candidate as
+`Deployed` whatever state it was in — including `Pending` (nobody approved it; the version shipped
+out-of-band) and `Rejected` (somebody said no and it shipped anyway). `Superseded` is excluded:
+a newer candidate owns that edge and closes instead.
+
+Every action on a promotion leaves a system entry on its comment thread — created, change set
+refreshed, approved, rejected, bypassed, superseded, dispatched, deployed, participant assigned,
+policy re-applied. System entries are immutable (nobody edits or deletes them, admin included), so
+the thread is a reliable history of what happened to the promotion. The design rationale lives in
 [`docs/plans/external-promotion-creation.md`](../docs/plans/external-promotion-creation.md).
 
 ## Auth model
@@ -228,7 +237,6 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
       ]
     }
   ],
-  "timeoutHours": 48,
   "escalationGroup": "SRE-OnCall",      // optional
   "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed off
   "autoApproveOnAllWorkItemsApproved": false,  // auto-promote once all work items are signed off

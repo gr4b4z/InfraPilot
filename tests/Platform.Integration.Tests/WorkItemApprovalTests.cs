@@ -1432,7 +1432,6 @@ public class WorkItemApprovalTests
         // equivalent of the legacy single-group / Strategy.Any / MinApprovers=1 policy.
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: approverGroup is null ? null : Guid.NewGuid(),
-            TimeoutHours: 24,
             EscalationGroup: null)
         {
             ApprovalSteps = approverGroup is null

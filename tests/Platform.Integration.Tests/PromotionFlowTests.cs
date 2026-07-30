@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -66,7 +66,6 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             sourceEnv = "dev",
             targetEnv = "staging",
             steps = Array.Empty<object>(),
-            timeoutHours = 24,
             escalationGroup = (string?)null,
         });
 
@@ -94,7 +93,6 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
                     },
                 },
             },
-            timeoutHours = 48,
             escalationGroup = (string?)null,
         });
     }
@@ -559,6 +557,116 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         var detail = await Deserialize(detailResponse);
         var status = detail.GetProperty("candidate").GetProperty("status").GetString();
         Assert.Equal("Deployed", status);
+    }
+
+    /// <summary>
+    /// Same landing, but nobody approved the candidate first: the version got to prod out-of-band.
+    /// The change is live either way, so the candidate still closes as Deployed — with a system
+    /// comment saying it happened outside this promotion.
+    /// </summary>
+    [Fact]
+    public async Task Create_ThenDeployInTargetEnvWhilePending_ClosesPromotionAsDeployed()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"oob-svc-{Guid.NewGuid():N}"[..20];
+
+        // 1. Create a Pending candidate for prod (staging → prod is gated, so it stays Pending).
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.5.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.5.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        // 2. The same version lands in prod without this promotion ever being approved.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.5.0", service: service));
+
+        // 3. Assert: closed as Deployed, with the explanatory system comment.
+        var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await Deserialize(detailResponse);
+        Assert.Equal("Deployed", detail.GetProperty("candidate").GetProperty("status").GetString());
+
+        var bodies = detail.GetProperty("comments").EnumerateArray()
+            .Select(c => c.GetProperty("body").GetString()!).ToList();
+        Assert.Contains(bodies, b => b.Contains("outside this promotion"));
+    }
+
+    /// <summary>
+    /// A rejection says the version should not ship. If it ships anyway, the candidate has to record
+    /// that — it closes as Deployed, the rejection stays in the approval trail, and the thread
+    /// explains the contradiction rather than leaving someone to puzzle it out.
+    /// </summary>
+    [Fact]
+    public async Task Rejected_ThenDeployInTargetEnv_ClosesPromotionAsDeployed()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"rejdep-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.7.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.7.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var reject = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/reject", new { comment = "not ready" });
+        reject.EnsureSuccessStatusCode();
+
+        // It ships anyway.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.7.0", service: service));
+
+        var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await Deserialize(detailResponse);
+        Assert.Equal("Deployed", detail.GetProperty("candidate").GetProperty("status").GetString());
+
+        // The rejection is still on the record.
+        Assert.Contains(detail.GetProperty("approvals").EnumerateArray(),
+            a => a.GetProperty("decision").GetString() == "Rejected");
+
+        var bodies = detail.GetProperty("comments").EnumerateArray()
+            .Select(c => c.GetProperty("body").GetString()!).ToList();
+        Assert.Contains(bodies, b => b.Contains("rejected") && b.Contains("not ready"));
+        Assert.Contains(bodies, b => b.Contains("after it had been rejected"));
+    }
+
+    /// <summary>
+    /// A failed deploy of the candidate's version did not put it live, so nothing completes — the
+    /// promotion must stay Pending.
+    /// </summary>
+    [Fact]
+    public async Task Create_ThenFailedDeployInTargetEnv_LeavesPromotionPending()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"oobfail-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.6.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.6.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.6.0", status: "failed", service: service));
+
+        var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await Deserialize(detailResponse);
+        Assert.Equal("Pending", detail.GetProperty("candidate").GetProperty("status").GetString());
     }
 
     // ── Utility ─────────────────────────────────────────────────────────────

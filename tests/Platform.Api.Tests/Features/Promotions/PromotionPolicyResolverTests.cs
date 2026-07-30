@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -151,7 +151,6 @@ public class PromotionPolicyResolverTests : IDisposable
             SourceEnv = "staging",
             TargetEnv = "prod",
             ApprovalSteps = Steps("ops", minApprovers: 2),
-            TimeoutHours = 48,
             EscalationGroup = "leads",
         };
         _db.PromotionPolicies.Add(policy);
@@ -162,7 +161,6 @@ public class PromotionPolicyResolverTests : IDisposable
         var req = snap.AllRequirements.Single();
         Assert.Equal("ops", req.Groups.Single().Id);
         Assert.Equal(2, req.MinApprovers);
-        Assert.Equal(48, snap.TimeoutHours);
         Assert.Equal("leads", snap.EscalationGroup);
         Assert.False(snap.IsAutoApprove);
     }

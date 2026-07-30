@@ -418,7 +418,6 @@ public class WorkItemRoleVocabularyTests
                     },
                 },
             },
-            timeoutHours = 24,
             escalationGroup = (string?)null,
         });
     }

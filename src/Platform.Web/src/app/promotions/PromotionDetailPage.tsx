@@ -32,6 +32,7 @@ import {
   Users,
   Plus,
   X,
+  History,
   MessageSquare,
   Edit2,
   Trash2,
@@ -49,6 +50,9 @@ import { refreshMyTasks } from '@/stores/myTasksStore';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
+
+// Author email the API stamps on entries it writes itself (PromotionComment.SystemAuthor).
+const SYSTEM_COMMENT_AUTHOR = 'system';
 
 // Context that gates all interactive controls on the detail page.
 // Set to true when the candidate is in a terminal state.
@@ -1030,6 +1034,10 @@ function CommentsCard({
           const isMine =
             !!currentUserEmail &&
             c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
+          // Entries the platform wrote for an action taken on the promotion. Every action leaves
+          // one, so they outnumber human comments — muted and marked so the thread still reads as
+          // discussion with a history running through it, not one undifferentiated wall.
+          const isSystem = c.authorEmail.toLowerCase() === SYSTEM_COMMENT_AUTHOR;
           const isEditing = editingId === c.id;
           return (
             <div
@@ -1037,14 +1045,16 @@ function CommentsCard({
               className="p-3 rounded-lg border"
               style={{
                 borderColor: 'var(--border-color)',
-                backgroundColor: 'var(--bg-secondary)',
+                backgroundColor: isSystem ? 'transparent' : 'var(--bg-secondary)',
+                borderStyle: isSystem ? 'dashed' : 'solid',
               }}
             >
               <div className="flex items-center justify-between mb-1">
                 <span
-                  className="text-[13px] font-medium"
-                  style={{ color: 'var(--text-primary)' }}
+                  className="text-[13px] font-medium inline-flex items-center gap-1.5"
+                  style={{ color: isSystem ? 'var(--text-muted)' : 'var(--text-primary)' }}
                 >
+                  {isSystem && <History size={11} />}
                   {c.authorName || c.authorEmail}
                 </span>
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -1093,7 +1103,7 @@ function CommentsCard({
                 <>
                   <p
                     className="text-[13px] whitespace-pre-wrap"
-                    style={{ color: 'var(--text-secondary)' }}
+                    style={{ color: isSystem ? 'var(--text-muted)' : 'var(--text-secondary)' }}
                   >
                     {c.body}
                   </p>
