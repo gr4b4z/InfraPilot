@@ -21,6 +21,12 @@ export const KeyboardListContext = createContext<KeyboardListContextValue | null
 /** Marks a row element so the shortcut layer can find the focused row and its actions. */
 export const KEYBOARD_ROW_ATTR = 'data-kbd-row';
 
+/**
+ * Marks a list container, so a list that runs out of rows can hand off to the next one on the page.
+ * Matched in document order, which is the order the reader sees regardless of the React tree.
+ */
+export const KEYBOARD_LIST_ATTR = 'data-kbd-list';
+
 /** Selector for any keyboard-list row. */
 export const KEYBOARD_ROW_SELECTOR = `[${KEYBOARD_ROW_ATTR}]`;
 
@@ -42,6 +48,39 @@ export function activeKeyboardRow(): HTMLElement | null {
     if (focusedRow) return focusedRow;
   }
   return document.querySelector<HTMLElement>(`${KEYBOARD_ROW_SELECTOR}[tabindex="0"]`);
+}
+
+/**
+ * Puts focus on a list when nothing else has a claim on the arrow keys.
+ *
+ * The rule this serves: if there is no focus and nothing going on, the arrows should iterate *some*
+ * list. Auto-focus on mount covers arrival, but not every way of ending up idle — clicking a heading,
+ * dismissing something, or a list that populated after a slow fetch all leave the caret nowhere
+ * useful. Rather than enumerate those, this runs off the arrow key itself: press one with focus
+ * adrift, and it lands on the nearest list's entry row, which then handles the keystroke normally.
+ *
+ * Returns whether it moved focus, so the caller can decide whether the key was consumed.
+ */
+export function focusIdleKeyboardList(): boolean {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement) {
+    // Already somewhere with its own arrow behaviour, or somewhere we must not disturb.
+    if (active.closest(KEYBOARD_ROW_SELECTOR)) return false;
+    if (active.closest('[role="dialog"]')) return false;
+    if (active.closest('[role="group"]')) return false;
+    const tag = active.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active.isContentEditable) {
+      return false;
+    }
+  }
+  // The roving entry point of the first list on the page, falling back to its first row for a list
+  // that hasn't established one yet.
+  const target =
+    document.querySelector<HTMLElement>(`${KEYBOARD_ROW_SELECTOR}[tabindex="0"]`)
+    ?? document.querySelector<HTMLElement>(KEYBOARD_ROW_SELECTOR);
+  if (!target) return false;
+  target.focus();
+  return true;
 }
 
 /**

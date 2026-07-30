@@ -5,6 +5,7 @@ import { roleDisplay, useConfiguredRoles, useIsUnrecognisedRole } from '@/lib/ro
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
+import { RovingGroup } from '@/components/ui/RovingGroup';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { AlertTriangle, Plus, Users, X } from 'lucide-react';
 
@@ -181,7 +182,14 @@ export function WorkItemParticipants({
   }
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+    // One tab stop for the whole row of people, with the side arrows moving between them. Arrowing
+    // must not activate: each chip opens an assign popover, so focus-follows-selection would open and
+    // close a picker for every person you passed.
+    <RovingGroup
+      ariaLabel="Assigned people"
+      className="mt-1 flex flex-wrap items-center gap-1.5"
+      activateOnArrow={false}
+    >
       {participants.map((p) => (
         <ParticipantChip
           key={`${p.role}-${p.email ?? ''}`}
@@ -224,7 +232,7 @@ export function WorkItemParticipants({
           {error}
         </span>
       )}
-    </div>
+    </RovingGroup>
   );
 }
 

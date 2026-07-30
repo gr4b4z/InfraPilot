@@ -44,6 +44,7 @@ export function ConfirmDialog({
 }) {
   const [comment, setComment] = useState('');
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
 
   const trimmed = comment.trim();
@@ -110,10 +111,32 @@ export function ConfirmDialog({
         style={{ borderColor: 'var(--border-color)' }}
       >
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          Enter to confirm · Esc to cancel
+          ←→ to choose · Enter to confirm · Esc to cancel
         </span>
-        <div className="flex items-center gap-2">
+        {/* Arrows move between Cancel and Confirm without activating either — this is a decision, so
+            landing on a choice must not be the same as making it. That rules out RovingGroup, whose
+            focus-follows-selection is right for filters and wrong here. */}
+        <div
+          className="flex items-center gap-2"
+          onKeyDown={(event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+            const buttons = [cancelRef.current, confirmRef.current].filter(
+              (b): b is HTMLButtonElement => b !== null && !b.disabled,
+            );
+            const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            if (buttons.length === 0) return;
+            event.preventDefault();
+            const forward = event.key === 'ArrowRight' || event.key === 'ArrowDown';
+            // From outside the pair (focus still in the comment box) the first arrow lands on an end
+            // rather than jumping by an index nobody chose.
+            const next = current === -1
+              ? (forward ? 0 : buttons.length - 1)
+              : Math.max(0, Math.min(current + (forward ? 1 : -1), buttons.length - 1));
+            buttons[next].focus();
+          }}
+        >
           <button
+            ref={cancelRef}
             type="button"
             onClick={onCancel}
             disabled={busy}
