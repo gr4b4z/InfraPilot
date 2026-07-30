@@ -50,6 +50,30 @@ export function readEnumPref<T extends string>(
   return raw !== null && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
 }
 
+/**
+ * Reads a preference holding a set of opaque values, stored comma-separated.
+ *
+ * Blank entries are dropped, so an empty cookie, a trailing comma, or a hand-edited value all
+ * degrade to "nothing selected" rather than a set containing "". Values that the current build no
+ * longer recognises are kept rather than pruned — a product that disappears from the API for a
+ * release and comes back should come back hidden, the way the user left it.
+ */
+export function readSetPref(name: string): Set<string> {
+  const raw = readPref(name);
+  if (raw === null) return new Set();
+  return new Set(
+    raw
+      .split(',')
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0),
+  );
+}
+
+/** Companion to {@link readSetPref}. */
+export function writeSetPref(name: string, values: Iterable<string>): void {
+  writePref(name, Array.from(values).join(','));
+}
+
 // ── Keys ──────────────────────────────────────────────────────────────────────────────────
 // Namespaced so they can't collide with anything the API sets on the same host.
 
@@ -57,3 +81,11 @@ export function readEnumPref<T extends string>(
 export const WORK_ITEMS_VIEW_PREF = 'ip.workItems.view';
 /** Selected tab on the promotions list page. */
 export const PROMOTIONS_VIEW_PREF = 'ip.promotions.view';
+/**
+ * Products hidden from the deployments overview.
+ *
+ * Stores what is HIDDEN, not what is shown, so a product added after the user made their pick
+ * shows up rather than silently going missing — the failure mode of storing the visible set is
+ * that a new service never appears and nobody knows to look for it.
+ */
+export const DEPLOYMENTS_HIDDEN_PRODUCTS_PREF = 'ip.deployments.hiddenProducts';
