@@ -28,7 +28,6 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   sourceEnv: '',
   targetEnv: '',
   steps: [],
-  timeoutHours: 24,
   escalationGroup: null,
   requireAllWorkItemsApproved: false,
   autoApproveOnAllWorkItemsApproved: false,
@@ -429,7 +428,6 @@ export function PromotionSettings() {
           minApprovers: r.minApprovers,
         })),
       })),
-      timeoutHours: p.timeoutHours,
       escalationGroup: p.escalationGroup,
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
@@ -731,21 +729,6 @@ export function PromotionSettings() {
                       value={form.targetEnv}
                       onChange={(e) => setField('targetEnv', e.target.value)}
                       placeholder="e.g. production"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    />
-                  </div>
-
-                  {/* Timeout Hours */}
-                  <div className="space-y-1">
-                    <label className={labelClass} style={labelStyle}>
-                      Timeout Hours
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={form.timeoutHours}
-                      onChange={(e) => setField('timeoutHours', Number(e.target.value))}
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     />

@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -819,7 +819,6 @@ public class PromotionGateTests
         // human step is expressed by the two orthogonal work-item flags.
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: Guid.NewGuid(),
-            TimeoutHours: 24,
             EscalationGroup: null)
         {
             ApprovalSteps = new()

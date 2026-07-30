@@ -716,7 +716,6 @@ public class PromotionQueueAssigneeFilterTests
                     },
                 },
             },
-            timeoutHours = 24,
             escalationGroup = (string?)null,
         });
     }

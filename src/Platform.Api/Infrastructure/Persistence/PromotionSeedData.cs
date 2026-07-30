@@ -133,7 +133,6 @@ public static class PromotionSeedData
                 Product = product,
                 TargetEnv = "staging",
                 ApprovalSteps = new(), // empty ⇒ auto-approve
-                TimeoutHours = 24,
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-28),
             });
@@ -156,7 +155,6 @@ public static class PromotionSeedData
                             MinApprovers: 2),
                     }),
                 },
-                TimeoutHours = 48,
                 EscalationGroup = "SWO-PLT-TeamLeads",
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-14),
@@ -436,7 +434,6 @@ public static class PromotionSeedData
     private static ResolvedPolicySnapshot MakeSnapshot(PromotionPolicy policy) =>
         new(
             PolicyId: policy.Id,
-            TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup)
         {
             ApprovalSteps = policy.ApprovalSteps,

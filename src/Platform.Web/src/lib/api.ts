@@ -1279,7 +1279,6 @@ export interface PromotionPolicy {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
-  timeoutHours: number;
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
@@ -1298,7 +1297,6 @@ export interface UpsertPromotionPolicyPayload {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
-  timeoutHours: number;
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;

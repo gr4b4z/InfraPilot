@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -126,7 +126,6 @@ public class IngestIdempotencyAndSourcePolicyTests
             sourceEnv,
             targetEnv,
             steps = steps ?? Array.Empty<object>(),
-            timeoutHours = 24,
             escalationGroup = (string?)null,
             sourceRequiresDeploy,
         });
@@ -241,7 +240,6 @@ public class IngestIdempotencyAndSourcePolicyTests
             sourceEnv = "stable",
             targetEnv = "staging",
             steps = Array.Empty<object>(),
-            timeoutHours = 24,
             escalationGroup = (string?)null,
             sourceRequiresDeploy = false,
         });

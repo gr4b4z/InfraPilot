@@ -82,11 +82,10 @@ public class PromotionPolicyResolver
     private static ResolvedPolicySnapshot Project(PromotionPolicy? policy)
     {
         if (policy is null)
-            return new ResolvedPolicySnapshot(PolicyId: null, TimeoutHours: 0, EscalationGroup: null);
+            return new ResolvedPolicySnapshot(PolicyId: null, EscalationGroup: null);
 
         return new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
-            TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup)
         {
             ApprovalSteps = policy.ApprovalSteps,

@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -79,7 +79,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
                     },
                 },
             },
-            timeoutHours = 48,
             escalationGroup = (string?)null,
         };
 
@@ -91,7 +90,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         Assert.Equal("my-service", body.GetProperty("service").GetString());
         Assert.Equal("staging", body.GetProperty("sourceEnv").GetString());
         Assert.Equal("prod", body.GetProperty("targetEnv").GetString());
-        Assert.Equal(48, body.GetProperty("timeoutHours").GetInt32());
 
         // Step tree round-trips.
         var steps = body.GetProperty("steps");
