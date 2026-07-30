@@ -32,9 +32,20 @@ const GLOBAL_HINTS: Hint[] = [
 /**
  * Action shortcuts, in the order they should be offered. Each is shown only when the page renders a
  * control tagged for it — see `data-row-action` in `lib/keys`.
+ *
+ * `onlyOn` narrows a hint further, for the case where presence alone overstates it. `o` is bound
+ * wherever a tagged tracker link exists, including on the queue and My-tasks rows — but there the link
+ * belongs to whichever row happens to be focused, so a permanent line in the sidebar reads as a
+ * property of the page when it isn't. The two detail pages are the places where "open the tracker"
+ * describes the page itself, so that is where it is advertised. The binding is deliberately wider than
+ * the hint; `?` documents the general rule.
  */
-const ACTION_HINTS: Array<{ action: RowAction; hint: Hint }> = [
-  { action: 'open-external', hint: { keys: ['o'], label: 'Open in tracker' } },
+const ACTION_HINTS: Array<{ action: RowAction; hint: Hint; onlyOn?: (pathname: string) => boolean }> = [
+  {
+    action: 'open-external',
+    hint: { keys: ['o'], label: 'Open in tracker' },
+    onlyOn: (p) => p.startsWith('/work-items/') || p.startsWith('/deployments/events/'),
+  },
   { action: 'assign', hint: { keys: ['a'], label: 'Assign' } },
   { action: 'approve', hint: { keys: ['A'], label: 'Approve' } },
   { action: 'reject', hint: { keys: ['R'], label: 'Reject' } },
@@ -82,7 +93,9 @@ export function KeyboardHints() {
       // A grid announces itself by having cells in the same row — only the deployment matrix does.
       const hasGrid = document.querySelector(`tr > ${KEYBOARD_ROW_SELECTOR} ~ ${KEYBOARD_ROW_SELECTOR}`) !== null;
       const actions = ACTION_HINTS
-        .filter(({ action }) => document.querySelector(rowActionSelector(action)) !== null)
+        .filter(({ action, onlyOn }) =>
+          (!onlyOn || onlyOn(pathname))
+          && document.querySelector(rowActionSelector(action)) !== null)
         .map(({ hint }) => hint);
       setHints([...actions, ...navHints(pathname, hasRows, hasGrid), ...GLOBAL_HINTS]);
     };
