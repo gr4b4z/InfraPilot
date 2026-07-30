@@ -22,7 +22,6 @@ namespace Platform.Api.Features.Promotions.Models;
 /// </summary>
 public record ResolvedPolicySnapshot(
     Guid? PolicyId,
-    int TimeoutHours,
     string? EscalationGroup)
 {
     /// <summary>

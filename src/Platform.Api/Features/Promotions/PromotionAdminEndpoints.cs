@@ -79,7 +79,6 @@ public static class PromotionAdminEndpoints
                 SourceEnv = request.SourceEnv,
                 TargetEnv = request.TargetEnv,
                 ApprovalSteps = MapSteps(request.Steps),
-                TimeoutHours = Math.Max(0, request.TimeoutHours),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
                 RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved,
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
@@ -120,7 +119,6 @@ public static class PromotionAdminEndpoints
             policy.SourceEnv = request.SourceEnv;
             policy.TargetEnv = request.TargetEnv;
             policy.ApprovalSteps = MapSteps(request.Steps);
-            policy.TimeoutHours = Math.Max(0, request.TimeoutHours);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
             policy.RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved;
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
@@ -187,7 +185,6 @@ public static class PromotionAdminEndpoints
                 minApprovers = r.MinApprovers,
             }),
         }),
-        timeoutHours = p.TimeoutHours,
         escalationGroup = p.EscalationGroup,
         requireAllWorkItemsApproved = p.RequireAllWorkItemsApproved,
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
@@ -273,7 +270,6 @@ public record UpsertPolicyRequest(
     string SourceEnv,
     string TargetEnv,
     List<UpsertStepRequest>? Steps,
-    int TimeoutHours,
     string? EscalationGroup,
     bool RequireAllWorkItemsApproved = false,
     bool AutoApproveOnAllWorkItemsApproved = false,

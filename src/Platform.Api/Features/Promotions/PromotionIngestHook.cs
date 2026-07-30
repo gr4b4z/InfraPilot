@@ -31,10 +31,12 @@ public interface IPromotionIngestHook
 ///   longer feeds the promotion gate (that reads <see cref="PromotionWorkItem"/>), but the table
 ///   has other readers (backfill, history).</item>
 ///
-///   <item><b>Completion matching (D18):</b> when a deploy event lands on a target environment and
-///   matches an in-flight candidate by <c>(product, service, target_env, version)</c>, mark that
-///   candidate <see cref="PromotionStatus.Deployed"/>. Ingestion stops <i>creating</i> promotions
-///   but still <i>closes</i> them.</item>
+///   <item><b>Completion matching (D18):</b> when a succeeded deploy event lands on a target
+///   environment and matches a candidate by <c>(product, service, target_env, version)</c>, mark
+///   that candidate <see cref="PromotionStatus.Deployed"/> — whatever state it was in, including
+///   Pending and Rejected, since the version is live either way. Each transition leaves a comment
+///   on the candidate saying which deploy closed it. Ingestion stops <i>creating</i> promotions but
+///   still <i>closes</i> them.</item>
 /// </list>
 ///
 /// <para>All work is gated behind the <c>features.promotions</c> flag — the hook early-exits
@@ -105,15 +107,24 @@ public class PromotionIngestHook : IPromotionIngestHook
     private async Task MatchCompletionAsync(DeployEvent landing, CancellationToken ct)
     {
         // A candidate "completes" when a matching version lands in its target environment,
-        // regardless of whether it was deployed via our executor or out-of-band. We also accept
-        // the Approved state to be resilient: if the external CI skipped past "Deploying" (e.g.
-        // it never called back to us) we still want to close the loop on the deploy event.
+        // regardless of whether it was deployed via our executor or out-of-band — and regardless of
+        // what state the candidate was in. Approved/Deploying is the ordinary path (we accept
+        // Approved to be resilient: the external CI may have skipped past "Deploying" by never
+        // calling back). Pending and Rejected are the out-of-band ones: nobody here dispatched the
+        // deploy, but the version is live in the target env, so the candidate describing it has to
+        // say Deployed. Superseded is excluded — a newer candidate owns that edge and closes instead.
+        //
+        // Only a succeeded deploy counts. A failed attempt did not put the version live, so nothing
+        // completes and every matching candidate keeps waiting.
+        if (!string.Equals(landing.Status, "succeeded", StringComparison.OrdinalIgnoreCase)) return;
+
         var matches = await _db.PromotionCandidates
             .Where(c => c.Product == landing.Product
                      && c.Service == landing.Service
                      && c.TargetEnv == landing.Environment
                      && c.Version == landing.Version
-                     && (c.Status == PromotionStatus.Deploying || c.Status == PromotionStatus.Approved))
+                     && c.Status != PromotionStatus.Deployed
+                     && c.Status != PromotionStatus.Superseded)
             .ToListAsync(ct);
 
         if (matches.Count == 0) return;
@@ -122,15 +133,43 @@ public class PromotionIngestHook : IPromotionIngestHook
         {
             try
             {
-                await _promotions.MarkDeployedAsync(candidate.Id, ct);
+                await _promotions.MarkDeployedAsync(candidate.Id, CompletionNote(candidate, landing), ct);
             }
             catch (InvalidOperationException ex)
             {
                 // Race: candidate moved on between the read and the transition. Fine — log and
                 // continue so a stuck sibling doesn't block others.
                 _logger.LogWarning(ex,
-                    "Could not mark candidate {CandidateId} as Deployed", candidate.Id);
+                    "Could not close candidate {CandidateId} from deploy event {EventId}",
+                    candidate.Id, landing.Id);
             }
         }
+    }
+
+    /// <summary>
+    /// What to write on the candidate's comment thread when this deploy closes it. A candidate we
+    /// dispatched gets a plain statement; one that was still open — or that somebody had rejected —
+    /// gets the fuller story, because "why is a rejected promotion marked Deployed?" is the first
+    /// question whoever opens it will ask.
+    /// </summary>
+    private static string CompletionNote(PromotionCandidate candidate, DeployEvent landing)
+    {
+        var landed =
+            $"{candidate.Service} {candidate.Version} was deployed to {candidate.TargetEnv} "
+            + $"on {landing.DeployedAt:u}";
+
+        return candidate.Status switch
+        {
+            PromotionStatus.Rejected =>
+                $"Deployed anyway — {landed} outside this promotion, after it had been rejected. "
+                + "The rejection stands in the approval trail; this promotion is closed because the "
+                + "version is now live.",
+
+            PromotionStatus.Pending =>
+                $"Closed automatically — {landed} outside this promotion, so there is nothing left "
+                + "to approve.",
+
+            _ => $"Deployed to {candidate.TargetEnv} — {landed}.",
+        };
     }
 }

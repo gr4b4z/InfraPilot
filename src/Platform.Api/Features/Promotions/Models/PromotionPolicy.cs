@@ -78,8 +78,7 @@ public class PromotionPolicy
     /// </summary>
     public bool SourceRequiresDeploy { get; set; } = true;
 
-    // Timeouts / escalation
-    public int TimeoutHours { get; set; } = 24;
+    // Escalation
     public string? EscalationGroup { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

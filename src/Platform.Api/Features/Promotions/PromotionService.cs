@@ -187,9 +187,17 @@ public class PromotionService
         // Populate the candidate-scoped work-item index from the payload's work-item references.
         SyncWorkItems(candidate, payloadWorkItems);
 
+        StageSystemComment(candidate.Id,
+            $"Promotion created for {service} {version} ({sourceEnv} → {targetEnv}), "
+            + $"carrying {references.Count} reference(s).");
+
         // Auto-approve: record a synthetic approval row so the UI's approval trail renders it.
         if (effectiveAutoApprove)
         {
+            StageSystemComment(candidate.Id, autoApproveNoWorkItems
+                ? "Auto-approved on creation — the policy waives approval when the change set carries no work items."
+                : "Auto-approved on creation — no approval is configured for this edge.");
+
             _db.PromotionApprovals.Add(new PromotionApproval
             {
                 Id = Guid.NewGuid(),
@@ -281,6 +289,9 @@ public class PromotionService
         _db.PromotionWorkItems.RemoveRange(stale);
         SyncWorkItems(existing, ExtractWorkItemReferences(references));
 
+        StageSystemComment(existing.Id,
+            $"Change set refreshed by the source system — now carrying {references.Count} reference(s).");
+
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -324,6 +335,9 @@ public class PromotionService
         {
             old.Status = PromotionStatus.Superseded;
             old.SupersededById = fresh.Id;
+            StageSystemComment(old.Id,
+                $"Superseded — a newer promotion for {fresh.Service} {fresh.Version} took over this "
+                + $"{fresh.SourceEnv} → {fresh.TargetEnv} edge.");
         }
 
         if (stale.Count > 0)
@@ -552,6 +566,11 @@ public class PromotionService
         if (idx >= 0) list[idx] = entry; else list.Add(entry);
         candidate.Participants = list;
 
+        var who = entry.DisplayName ?? entry.Email ?? "(unnamed)";
+        StageSystemComment(candidate.Id, idx >= 0
+            ? $"{Actor} changed the {storedRole} to {who}."
+            : $"{Actor} added {who} as {storedRole}.");
+
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -582,6 +601,7 @@ public class PromotionService
         if (list.Count == before) return candidate;
 
         candidate.Participants = list;
+        StageSystemComment(candidate.Id, $"{Actor} removed the {role} participant.");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -634,6 +654,12 @@ public class PromotionService
 
         refs[idx] = refs[idx] with { Participants = participants };
         candidate.References = refs;
+
+        StageSystemComment(candidate.Id, assignee is null
+            ? $"{Actor} cleared the {storedRole} on work item {referenceKey}."
+            : $"{Actor} assigned {assignee.DisplayName ?? assignee.Email ?? "(unnamed)"} "
+              + $"as {storedRole} on work item {referenceKey}.");
+
         await _db.SaveChangesAsync(ct);
 
         var action = assignee is null
@@ -720,6 +746,36 @@ public class PromotionService
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// Stages a system entry on a candidate's comment thread. Every action that changes a promotion
+    /// leaves one, so the thread reads as the complete story of what happened to it — the audit log
+    /// answers "who did what" for compliance, this answers "why does this promotion look like this"
+    /// for whoever opens it next.
+    ///
+    /// <para>Staged, not saved: it joins the caller's own <c>SaveChangesAsync</c>, so a comment can
+    /// never survive a transition that failed to persist. Authored by
+    /// <see cref="PromotionComment.SystemAuthor"/> even when a person triggered the action — the
+    /// actor is named in the body, and system authorship is what makes the entry immutable
+    /// (see <see cref="EnsureNotSystemComment"/>).</para>
+    /// </summary>
+    private void StageSystemComment(Guid candidateId, string body)
+    {
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = candidateId,
+            AuthorEmail = PromotionComment.SystemAuthor,
+            AuthorName = "System",
+            Body = body,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+    }
+
+    /// <summary>How the current user is named in a system comment body.</summary>
+    private string Actor => string.IsNullOrWhiteSpace(_currentUser.Name)
+        ? (_currentUser.Email ?? "Someone")
+        : _currentUser.Name;
+
     public async Task<PromotionComment> AddCommentAsync(Guid candidateId, string body, CancellationToken ct = default)
     {
         var trimmed = (body ?? "").Trim();
@@ -762,6 +818,8 @@ public class PromotionService
         var comment = await _db.PromotionComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
             ?? throw new KeyNotFoundException($"Comment {commentId} not found");
 
+        EnsureNotSystemComment(comment, "edited");
+
         if (!string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)
             && !_currentUser.IsAdmin)
         {
@@ -784,6 +842,8 @@ public class PromotionService
     {
         var comment = await _db.PromotionComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
             ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+
+        EnsureNotSystemComment(comment, "deleted");
 
         if (!string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)
             && !_currentUser.IsAdmin)
@@ -898,6 +958,14 @@ public class PromotionService
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.PromotionApprovals.Add(decision);
+
+        var approvedAs = target is null || string.IsNullOrEmpty(target.RequirementName)
+            ? ""
+            : $" as '{target.RequirementName}'";
+        StageSystemComment(candidateId, string.IsNullOrWhiteSpace(comment)
+            ? $"{Actor} approved this promotion{approvedAs}."
+            : $"{Actor} approved this promotion{approvedAs} — {comment.Trim()}");
+
         await _db.SaveChangesAsync(ct);
 
         // Granular per-row event: "this user signed off on the candidate". Coarse candidate-level
@@ -946,6 +1014,8 @@ public class PromotionService
 
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
+        StageSystemComment(candidate.Id,
+            "Approval gate satisfied — the promotion is approved and cleared to deploy.");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -1009,6 +1079,9 @@ public class PromotionService
 
             candidate.PolicyId = snapshot.PolicyId;
             candidate.ResolvedPolicyJson = json;
+            StageSystemComment(candidate.Id,
+                $"{Actor} changed the promotion policy for this edge — the promotion has been "
+                + "re-gated under the new approval rules.");
             refreshed.Add(candidate);
         }
         if (refreshed.Count == 0) return 0;
@@ -1067,6 +1140,8 @@ public class PromotionService
 
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
+        StageSystemComment(candidate.Id,
+            $"{Actor} bypassed the approval gate (admin override) — {trimmedReason}");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -1532,6 +1607,9 @@ public class PromotionService
         _db.PromotionApprovals.Add(decision);
 
         candidate.Status = PromotionStatus.Rejected;
+        StageSystemComment(candidateId, string.IsNullOrWhiteSpace(comment)
+            ? $"{Actor} rejected this promotion."
+            : $"{Actor} rejected this promotion — {comment.Trim()}");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -1565,30 +1643,59 @@ public class PromotionService
 
         candidate.Status = PromotionStatus.Deploying;
         candidate.ExternalRunUrl = externalRunUrl;
+        StageSystemComment(candidate.Id, externalRunUrl is null
+            ? "Dispatched to the executor — deployment in progress."
+            : $"Dispatched to the executor — deployment in progress ({externalRunUrl}).");
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Candidate {Id} → Deploying (run={Run})", candidateId, externalRunUrl);
         return candidate;
     }
 
-    /// <summary>Deploying → Deployed. Called from the ingest completion hook once the target
-    /// environment reports a deploy event matching this candidate's (product, service, target_env, version).</summary>
-    public async Task<PromotionCandidate> MarkDeployedAsync(Guid candidateId, CancellationToken ct = default)
+    /// <summary>
+    /// → Deployed. Called from the ingest completion hook once the target environment reports a
+    /// succeeded deploy matching this candidate's (product, service, target_env, version).
+    ///
+    /// <para>Reachable from every non-terminal state <i>and</i> from <see cref="PromotionStatus.Rejected"/>.
+    /// The transition records a fact rather than granting permission: the version is running in the
+    /// target environment, so the candidate describing it has to say Deployed whatever we decided
+    /// beforehand. A rejection that reality overrode is exactly the case worth recording — the
+    /// <paramref name="note"/> left on the thread says the version shipped anyway, and the rejection
+    /// stays in the approval trail. <see cref="PromotionStatus.Superseded"/> is excluded: a newer
+    /// candidate owns that edge now and is the one that should close.</para>
+    /// </summary>
+    /// <param name="note">
+    /// What to write on the comment thread. Callers pass the circumstances — dispatched through us,
+    /// or landed out-of-band while the promotion was still open. Defaults to a plain statement of
+    /// the transition.
+    /// </param>
+    public async Task<PromotionCandidate> MarkDeployedAsync(
+        Guid candidateId, string? note = null, CancellationToken ct = default)
     {
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
 
-        if (candidate.Status is not (PromotionStatus.Deploying or PromotionStatus.Approved))
+        if (candidate.Status is PromotionStatus.Deployed or PromotionStatus.Superseded)
             throw new InvalidOperationException(
                 $"Cannot transition {candidate.Status} → Deployed (id={candidateId})");
 
+        var previous = candidate.Status;
         candidate.Status = PromotionStatus.Deployed;
         candidate.DeployedAt = DateTimeOffset.UtcNow;
+        StageSystemComment(candidate.Id, note
+            ?? $"Deployed to {candidate.TargetEnv} — {candidate.Service} {candidate.Version} is live.");
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogInformation("Candidate {Id} → Deployed", candidateId);
+        await _audit.Log(
+            "promotions", "promotion.deployed",
+            "system", "System", "system",
+            "PromotionCandidate", candidate.Id, null,
+            new { previousStatus = previous.ToString(), candidate.TargetEnv, candidate.Version });
 
-        await DispatchWebhookAsync(candidate, "promotion.deployed", ct);
+        _logger.LogInformation("Candidate {Id} → Deployed (from {Previous})", candidateId, previous);
+
+        await DispatchWebhookAsync(candidate, "promotion.deployed", ct,
+            new { previousStatus = previous.ToString() });
 
         return candidate;
     }
@@ -1775,6 +1882,16 @@ public class PromotionService
             throw new InvalidOperationException(
                 $"Candidate {id} is {candidate.Status}, no longer accepting decisions");
         return candidate;
+    }
+
+    /// <summary>
+    /// System entries record what the platform did, not discussion — so nobody rewrites them,
+    /// admin included. Mirrors the same rule on work-item comments.
+    /// </summary>
+    private static void EnsureNotSystemComment(PromotionComment comment, string verb)
+    {
+        if (string.Equals(comment.AuthorEmail, PromotionComment.SystemAuthor, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"This entry is a system record and cannot be {verb}");
     }
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)

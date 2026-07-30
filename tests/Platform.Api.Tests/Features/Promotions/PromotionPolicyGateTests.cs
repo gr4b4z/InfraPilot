@@ -60,7 +60,7 @@ public class PromotionPolicyGateTests : IDisposable
 
     private PromotionCandidate SeedCandidate(List<ApprovalStep> steps)
     {
-        var snapshot = new ResolvedPolicySnapshot(PolicyId: Guid.NewGuid(), TimeoutHours: 0, EscalationGroup: null)
+        var snapshot = new ResolvedPolicySnapshot(PolicyId: Guid.NewGuid(), EscalationGroup: null)
         {
             ApprovalSteps = steps,
         };
@@ -192,8 +192,8 @@ public class PromotionPolicyGateTests : IDisposable
     {
         // JSON shape written before the §8 refactor (single ApproverGroup/Strategy/MinApprovers,
         // no approvalSteps array) and before the gate enum was dropped (it carried a "gate" field).
-        // Both the legacy single-group fields and the removed "gate" field must be ignored as
-        // unknown members. Tolerant init defaults must apply.
+        // The legacy single-group fields and the removed "gate" / "timeoutHours" fields must all be
+        // ignored as unknown members. Tolerant init defaults must apply.
         const string legacy = """
             {"policyId":"3f1d4b6e-0000-0000-0000-000000000001","approverGroup":"ops",
              "strategy":1,"minApprovers":2,"excludeRole":"triggered-by",
@@ -205,7 +205,6 @@ public class PromotionPolicyGateTests : IDisposable
         Assert.NotNull(snap);
         Assert.Empty(snap!.ApprovalSteps);       // unknown legacy fields ignored, steps default empty
         Assert.True(snap.IsAutoApprove);          // no requirements ⇒ no human gate
-        Assert.Equal(48, snap.TimeoutHours);
         Assert.Equal("leads", snap.EscalationGroup);
     }
 
@@ -225,7 +224,7 @@ public class PromotionPolicyGateTests : IDisposable
         {
             new("Release", new() { new ApproverRequirement("R", new() { new GroupRef("ops", "ops") }, new() { "x@y" }, 2) }),
         };
-        var snap = new ResolvedPolicySnapshot(Guid.NewGuid(), 24, "leads") { ApprovalSteps = steps };
+        var snap = new ResolvedPolicySnapshot(Guid.NewGuid(), "leads") { ApprovalSteps = steps };
 
         var json = JsonSerializer.Serialize(snap, JsonOpts);
         var back = JsonSerializer.Deserialize<ResolvedPolicySnapshot>(json, JsonOpts)!;

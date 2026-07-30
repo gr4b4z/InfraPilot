@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -97,7 +97,6 @@ public class PromotionApproverGroupTests : IDisposable
 
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
-            TimeoutHours: 0,
             EscalationGroup: null)
         {
             ApprovalSteps = steps,

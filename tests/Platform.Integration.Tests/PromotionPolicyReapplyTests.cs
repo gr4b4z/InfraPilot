@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Platform.Api.Features.Deployments.Models;
@@ -283,7 +283,6 @@ public class PromotionPolicyReapplyTests
             SourceEnv = SourceEnv,
             TargetEnv = TargetEnv,
             ApprovalSteps = steps,
-            TimeoutHours = 24,
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -315,7 +314,7 @@ public class PromotionPolicyReapplyTests
             CreatedAt = DateTimeOffset.UtcNow,
         });
 
-        var snapshot = new ResolvedPolicySnapshot(policy.Id, policy.TimeoutHours, policy.EscalationGroup)
+        var snapshot = new ResolvedPolicySnapshot(policy.Id, policy.EscalationGroup)
         {
             ApprovalSteps = policy.ApprovalSteps,
             RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
