@@ -242,8 +242,33 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod()
             .AllowAnyHeader()
             .AllowCredentials();
+
+        // In development, also accept any loopback origin whatever its port.
+        //
+        // Nothing should normally need this: the web dev server proxies /api and /agent through its own
+        // origin, exactly as the production container's nginx does, so the browser makes no cross-origin
+        // request at all. This is for the cases that bypass the proxy — a second dev server on another
+        // port, a scratch page, curl with an Origin header — where the alternative is a bare CORS
+        // failure that looks like the API being down.
+        //
+        // Loopback only, and only in Development: a deployed API still answers to the configured list.
+        if (builder.Environment.IsDevelopment())
+        {
+            policy.SetIsOriginAllowed(origin =>
+                origins.Contains(origin, StringComparer.OrdinalIgnoreCase) || IsLoopbackOrigin(origin));
+        }
     });
 });
+
+// Local-only origin test for the development CORS relaxation above. Anything unparseable is refused
+// rather than guessed at.
+static bool IsLoopbackOrigin(string origin)
+{
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+    if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+    if (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+    return System.Net.IPAddress.TryParse(uri.Host, out var ip) && System.Net.IPAddress.IsLoopback(ip);
+}
 
 // JSON serialization — handle circular references from EF navigation properties
 builder.Services.ConfigureHttpJsonOptions(options =>

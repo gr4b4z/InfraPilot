@@ -35,7 +35,6 @@ catalog/*
 
 # Build
 *.nupkg
-.claude
 
 
 .got/
