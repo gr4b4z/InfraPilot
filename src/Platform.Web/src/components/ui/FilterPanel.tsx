@@ -45,11 +45,23 @@ export function FilterPanel({
   children,
   activeCount = 0,
   label = 'Filters',
+  badge,
 }: {
   children: ReactNode;
-  /** Number of filters currently narrowing the list. Shown on the toggle, and forces it open. */
+  /**
+   * Number of filters currently narrowing the list. Drives the toggle's accent treatment and
+   * whether the panel starts open, and is what the pill shows unless {@link badge} overrides it.
+   */
   activeCount?: number;
   label?: string;
+  /**
+   * Replaces the `activeCount` number in the toggle's pill. For pages where the count that matters
+   * to the reader isn't "how many filters are set" — the deployments overview reports how many
+   * products survived the filter, which is the set you actually want read back. Shown whenever
+   * provided, including at `activeCount === 0`; the accent and auto-open still follow
+   * `activeCount`, so the "something is hidden" signal is not lost.
+   */
+  badge?: ReactNode;
 }) {
   const contentId = useId();
   const [expanded, setExpanded] = useState(activeCount > 0);
@@ -70,12 +82,15 @@ export function FilterPanel({
       >
         <SlidersHorizontal size={14} />
         <span>{label}</span>
-        {activeCount > 0 && (
+        {(badge ?? (activeCount > 0 ? activeCount : null)) !== null && (
           <span
-            className="px-1.5 rounded-full text-[11px] font-semibold text-white"
-            style={{ backgroundColor: 'var(--accent)' }}
+            className="px-1.5 rounded-full text-[11px] font-semibold"
+            style={{
+              backgroundColor: activeCount > 0 ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: activeCount > 0 ? '#fff' : 'var(--text-muted)',
+            }}
           >
-            {activeCount}
+            {badge ?? activeCount}
           </span>
         )}
         <ChevronDown

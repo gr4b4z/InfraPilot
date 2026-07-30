@@ -76,10 +76,17 @@ export function EnvBadge({
       ? { fontSize: 10, padding: '1px 6px', gap: 4 }
       : { fontSize: 11, padding: '2px 8px', gap: 5 };
 
+  // A textual suffix joins the default tooltip, so the part most likely to be ellipsised on a
+  // narrow screen is still readable on hover/long-press. An explicit `title` always wins.
+  const fallbackTitle =
+    typeof suffix === 'string' || typeof suffix === 'number'
+      ? `${displayName} ${suffix}`
+      : displayName;
+
   return (
     <span
       className={`inline-flex items-center font-semibold rounded-full ${className}`}
-      title={title ?? displayName}
+      title={title ?? fallbackTitle}
       style={{
         color: fg,
         backgroundColor: bg,
@@ -87,6 +94,12 @@ export function EnvBadge({
         letterSpacing: '0.02em',
         lineHeight: '16px',
         whiteSpace: 'nowrap',
+        // The pill never grows past whatever is giving it width. It can't wrap (the label would
+        // break mid-word), so on a phone a long suffix would otherwise push the pill straight off
+        // the side of the screen. Clipped here, ellipsised on the suffix below; the full text is
+        // always in the title attribute.
+        maxWidth: '100%',
+        overflow: 'hidden',
         ...dims,
         ...style,
       }}
@@ -94,7 +107,13 @@ export function EnvBadge({
       {showDot && <EnvDot env={env} size={size === 'xs' ? 5 : 6} />}
       {displayName}
       {suffix !== undefined && suffix !== null && (
-        <span style={{ fontWeight: 500, opacity: 0.75 }}>{suffix}</span>
+        // The version, usually. `minWidth: 0` is what lets it shrink at all — a flex item defaults
+        // to its content's width, which is exactly the overflow we're trying to prevent.
+        <span
+          style={{ fontWeight: 500, opacity: 0.75, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {suffix}
+        </span>
       )}
     </span>
   );
