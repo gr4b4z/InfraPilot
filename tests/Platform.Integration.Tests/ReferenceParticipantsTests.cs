@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -299,7 +299,6 @@ public class ReferenceParticipantsTests
                     },
                 },
             },
-            timeoutHours = 24,
             escalationGroup = (string?)null,
         });
     }

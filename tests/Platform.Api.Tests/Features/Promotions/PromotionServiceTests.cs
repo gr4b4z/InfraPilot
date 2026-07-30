@@ -648,6 +648,102 @@ public class PromotionServiceTests : IDisposable
         Assert.NotNull(updated.DeployedAt);
     }
 
+    [Fact]
+    public async Task MarkDeployed_FromPending_Works_WithExplanatoryComment()
+    {
+        // Nobody approved it, but the version landed in prod anyway — the change is live, so the
+        // candidate has to say Deployed.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        var updated = await _sut.MarkDeployedAsync(c!.Id, "shipped out-of-band");
+
+        Assert.Equal(PromotionStatus.Deployed, updated.Status);
+        Assert.NotNull(updated.DeployedAt);
+        Assert.Contains(await _sut.GetCommentsAsync(c.Id), x => x.Body == "shipped out-of-band");
+    }
+
+    [Fact]
+    public async Task MarkDeployed_FromRejected_Works()
+    {
+        // A rejection is a decision about whether the version SHOULD ship. Once it has shipped, the
+        // candidate records that fact; the rejection stays in the approval trail.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+        await _sut.RejectAsync(c!.Id, "not ready");
+
+        var updated = await _sut.MarkDeployedAsync(c.Id, "shipped anyway");
+
+        Assert.Equal(PromotionStatus.Deployed, updated.Status);
+        var approvals = await _sut.GetApprovalsAsync(c.Id);
+        Assert.Contains(approvals, a => a.Decision == PromotionDecision.Rejected);
+    }
+
+    [Fact]
+    public async Task MarkDeployed_FromDeployed_Throws()
+    {
+        SeedPolicy(approverGroup: null);
+        var c = await CreateAsync();
+        await _sut.MarkDeployedAsync(c!.Id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.MarkDeployedAsync(c.Id));
+    }
+
+    // ---------------------------------------------------------------------
+    // Action comment trail
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task EveryAction_LeavesASystemComment()
+    {
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        // Creation alone already writes one.
+        var afterCreate = await _sut.GetCommentsAsync(c!.Id);
+        Assert.Single(afterCreate);
+        Assert.All(afterCreate, x => Assert.Equal(PromotionComment.SystemAuthor, x.AuthorEmail));
+
+        await _sut.UpsertParticipantAsync(c.Id, new PromotionParticipant("qa", "Quinn", "quinn@example.com"));
+        await _sut.ApproveAsync(c.Id, "looks good");   // satisfies the gate → also logs the approval
+        await _sut.MarkDeployingAsync(c.Id, "https://ci/run/9");
+        await _sut.MarkDeployedAsync(c.Id);
+
+        var bodies = (await _sut.GetCommentsAsync(c.Id)).Select(x => x.Body).ToList();
+        Assert.Contains(bodies, b => b.Contains("Promotion created"));
+        Assert.Contains(bodies, b => b.Contains("Quinn") && b.Contains("qa"));
+        Assert.Contains(bodies, b => b.Contains("Alice") && b.Contains("approved") && b.Contains("looks good"));
+        Assert.Contains(bodies, b => b.Contains("Approval gate satisfied"));
+        Assert.Contains(bodies, b => b.Contains("Dispatched to the executor"));
+        Assert.Contains(bodies, b => b.Contains("Deployed to prod"));
+    }
+
+    [Fact]
+    public async Task Reject_LeavesASystemComment()
+    {
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        await _sut.RejectAsync(c!.Id, "not ready");
+
+        var bodies = (await _sut.GetCommentsAsync(c.Id)).Select(x => x.Body).ToList();
+        Assert.Contains(bodies, b => b.Contains("Alice") && b.Contains("rejected") && b.Contains("not ready"));
+    }
+
+    [Fact]
+    public async Task SystemComment_CannotBeEditedOrDeleted_EvenByAdmin()
+    {
+        _currentUser.IsAdmin.Returns(true);
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+        var comment = Assert.Single(await _sut.GetCommentsAsync(c!.Id));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.UpdateCommentAsync(comment.Id, "rewritten"));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.DeleteCommentAsync(comment.Id));
+    }
+
     // ---------------------------------------------------------------------
     // Capability probes
     // ---------------------------------------------------------------------
