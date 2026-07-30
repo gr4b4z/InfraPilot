@@ -401,7 +401,19 @@ function ParticipantChip({
         {overridden && !unrecognised && <span style={{ color: 'var(--accent)' }}>•</span>}
       </button>
       {menuOpen && !editing && (
-        <AnchoredPopover anchorRef={chipRef} onClose={() => setMenuOpen(false)}>
+        <AnchoredPopover
+          anchorRef={chipRef}
+          onClose={() => setMenuOpen(false)}
+          ariaLabel={`Actions for ${participant.displayName ?? participant.email ?? participant.role}`}
+        >
+          {/* A menu, so the arrows move between the actions rather than only Tab. Arrowing must not
+              activate: "Clear" is destructive, and passing over a choice is not choosing it. */}
+          <RovingGroup
+            ariaLabel="Participant actions"
+            role="menu"
+            itemRole="menuitem"
+            activateOnArrow={false}
+          >
           {/* Reassigning an unconfigured role is refused server-side, so the menu says why instead
               of offering a control that can only fail. Clearing stays available — that's the fix. */}
           {unrecognised ? (
@@ -430,6 +442,7 @@ function ParticipantChip({
           >
             Clear (tombstone)
           </button>
+          </RovingGroup>
         </AnchoredPopover>
       )}
       {editing && (
