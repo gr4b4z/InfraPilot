@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ScrollText, Loader2 } from 'lucide-react';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 
@@ -28,22 +30,54 @@ export function ReleaseNotesIndexPage() {
           <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>No products with deployments yet</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-          {products.map((p) => (
-            <Link
+        // A grid, so left/right move across a row and up/down between rows — `columns` has to match
+        // the widest breakpoint's column count for the arithmetic to line up with what is on screen.
+        <KeyboardList
+          className="grid grid-cols-2 lg:grid-cols-3 gap-3"
+          count={products.length}
+          columns={3}
+          ariaLabel="Products with release notes"
+        >
+          {products.map((p, index) => (
+            <ProductCard
               key={p.product}
-              to={`/release-notes/${p.product}`}
+              index={index}
+              product={p.product}
+              environments={Object.keys(p.environments).length}
+            />
+          ))}
+        </KeyboardList>
+      )}
+    </div>
+  );
+}
+
+/** One product tile. Already a link, so it activates itself; this only adds the arrow navigation. */
+function ProductCard({
+  index,
+  product,
+  environments,
+}: {
+  index: number;
+  product: string;
+  environments: number;
+}) {
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    selfActivating: true,
+    label: `${product} — ${environments} environment(s)`,
+  });
+  return (
+            <Link
+              {...rowProps}
+              to={`/release-notes/${product}`}
               className="rounded-xl border p-4 transition-colors hover:opacity-80"
               style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
             >
-              <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{p.product}</div>
+              <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{product}</div>
               <div className="text-[12px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                {Object.keys(p.environments).length} environment(s)
+                {environments} environment(s)
               </div>
             </Link>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

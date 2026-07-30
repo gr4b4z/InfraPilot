@@ -101,10 +101,19 @@ export function useKeyboardListRow(
      * table structure away from a screen reader, which is the part that makes a matrix readable.
      */
     role?: 'button' | null;
+    /**
+     * Set for a row that is already a link or button and activates itself.
+     *
+     * A `<Link>` row navigates on click and on Enter without any help, so adding our own handlers
+     * would double-navigate and would also replace the anchor's real behaviour — losing
+     * middle-click and ctrl-click, which are the reasons to render an anchor in the first place.
+     * Such a row still wants the roving tabindex and the arrow keys, just not the activation.
+     */
+    selfActivating?: boolean;
   } = {},
 ) {
   const context = useContext(KeyboardListContext);
-  const { label, disabled = false, role = 'button' } = options;
+  const { label, disabled = false, role = 'button', selfActivating = false } = options;
   const isActive = context ? context.activeIndex === index : index === 0;
 
   const ref = useCallback(
@@ -120,17 +129,19 @@ export function useKeyboardListRow(
     tabIndex: disabled ? -1 : isActive ? 0 : -1,
     'aria-label': label,
     'aria-disabled': disabled || undefined,
-    onClick: disabled ? undefined : onActivate,
+    onClick: disabled || selfActivating ? undefined : onActivate,
     // Clicking or tabbing to a row makes it the arrow-key origin, so the two stay in step.
     onFocus: () => context?.setActiveIndex(index),
-    onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
-      if (disabled) return;
-      // Let a nested control answer for itself — Enter on the Jira link should follow the link.
-      if (event.target !== event.currentTarget) return;
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        onActivate();
-      }
-    },
+    onKeyDown: selfActivating
+      ? undefined
+      : (event: ReactKeyboardEvent<HTMLElement>) => {
+          if (disabled) return;
+          // Let a nested control answer for itself — Enter on the Jira link should follow the link.
+          if (event.target !== event.currentTarget) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onActivate();
+          }
+        },
   };
 }
