@@ -1,4 +1,33 @@
-# React + TypeScript + Vite
+# Platform.Web
+
+## Local development
+
+```bash
+npm run dev --prefix src/Platform.Web
+```
+
+The dev server proxies `/api` and `/agent` to the API (default `http://localhost:5259`), so the browser
+only ever talks to the dev server's own origin. **There is no cross-origin request in local
+development, and therefore no CORS to configure.** This mirrors production, where the container's nginx
+proxies the same two prefixes.
+
+Consequences worth knowing:
+
+- **The dev-server port doesn't matter.** If 5173 is taken, Vite picks another and everything still
+  works. It used to matter: `public/config.json` pointed the browser directly at `http://localhost:5259`,
+  which made every call cross-origin and left the app dependent on the API's `Cors:AllowedOrigins`
+  naming the exact port. On any other port the app loaded and showed nothing.
+- **Leave `backendBaseUrl` empty in `public/config.json`.** Empty means "same origin", which is what
+  makes the proxy work here and what nginx relies on in the container. Real deployments set it at
+  container start via `BACKEND_BASE_URL` (see `infra/start-single-container.sh`); it is only worth
+  setting for a deployment that serves the SPA and the API from different origins.
+- **API somewhere else?** `VITE_API_TARGET=http://localhost:5300 npm run dev`.
+
+The API additionally accepts any loopback origin when running in Development, so a scratch page or a
+second dev server that bypasses the proxy isn't blocked either. Deployed environments still answer only
+to the configured `Cors:AllowedOrigins`.
+
+## React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
