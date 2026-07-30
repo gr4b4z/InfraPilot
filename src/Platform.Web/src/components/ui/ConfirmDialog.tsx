@@ -115,7 +115,11 @@ export function ConfirmDialog({
         </span>
         {/* Arrows move between Cancel and Confirm without activating either — this is a decision, so
             landing on a choice must not be the same as making it. That rules out RovingGroup, whose
-            focus-follows-selection is right for filters and wrong here. */}
+            focus-follows-selection is right for filters and wrong here.
+
+            Scoped to this container on purpose, so arrows only rebind once focus is already on one of
+            the buttons. Inside the comment field they stay the caret's, which is what a textarea owes
+            the person typing in it; Tab is the way out of the field. */}
         <div
           className="flex items-center gap-2"
           onKeyDown={(event) => {
@@ -124,14 +128,11 @@ export function ConfirmDialog({
               (b): b is HTMLButtonElement => b !== null && !b.disabled,
             );
             const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
-            if (buttons.length === 0) return;
+            // Nothing to move between, or focus is on neither button — leave the key alone.
+            if (buttons.length === 0 || current === -1) return;
             event.preventDefault();
             const forward = event.key === 'ArrowRight' || event.key === 'ArrowDown';
-            // From outside the pair (focus still in the comment box) the first arrow lands on an end
-            // rather than jumping by an index nobody chose.
-            const next = current === -1
-              ? (forward ? 0 : buttons.length - 1)
-              : Math.max(0, Math.min(current + (forward ? 1 : -1), buttons.length - 1));
+            const next = Math.max(0, Math.min(current + (forward ? 1 : -1), buttons.length - 1));
             buttons[next].focus();
           }}
         >
