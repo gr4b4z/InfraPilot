@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
@@ -30,6 +30,9 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { providerLabel, workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { collectParticipants } from '@/lib/types';
@@ -323,6 +326,9 @@ function RunLink({ run }: { run: DeployRun | null | undefined }) {
       rel="noopener noreferrer"
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
       style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+      // `o` opens the run. The one unambiguous "go and look at the source" action on this page, which
+      // is what makes the page-level fallback in invokeRowAction safe to rely on here.
+      {...{ [ROW_ACTION_ATTR]: 'open-external' }}
       title={run?.jobUrl ? `Open this component's job in ${label}` : `Open the run in ${label}`}
     >
       <PlayCircle size={13} />
@@ -729,9 +735,25 @@ function PromotionGroup({ label, promotions }: { label: string; promotions: Rela
   return (
     <div className="space-y-1.5">
       <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</p>
-      {promotions.map((p) => (
+      <KeyboardList className="space-y-1.5" count={promotions.length} ariaLabel={label} autoFocus={false}>
+        {promotions.map((p, index) => (
+          <PromotionLink key={p.id} index={index} promotion={p} />
+        ))}
+      </KeyboardList>
+    </div>
+  );
+}
+
+/** One related promotion. Already a link, so it activates itself; this adds the arrow navigation. */
+function PromotionLink({ index, promotion: p }: { index: number; promotion: RelatedPromotion }) {
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    selfActivating: true,
+    label: `${p.sourceEnv} to ${p.targetEnv}, ${p.status}. Open promotion.`,
+  });
+  return (
         <Link
-          key={p.id}
+          {...rowProps}
           to={`/promotions/${p.id}`}
           className="flex items-center gap-2 px-2.5 py-2 rounded-lg border transition-colors hover:opacity-90"
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
@@ -748,7 +770,45 @@ function PromotionGroup({ label, promotions }: { label: string; promotions: Rela
           </span>
           <ExternalLink size={11} style={{ color: 'var(--text-muted)' }} />
         </Link>
-      ))}
+  );
+}
+
+/**
+ * One work item line in the deployment's list.
+ *
+ * A wrapper rather than props on the link itself, because the line's content varies: a gated item is a
+ * `<Link>` to its sign-off page, an ungated one is an external anchor or plain text. The row is the
+ * arrow-navigation unit either way, and `hasGate` is what decides whether Enter has anywhere to go.
+ */
+function WorkItemLine({
+  index,
+  hasGate,
+  children,
+}: {
+  index: number;
+  hasGate: boolean;
+  children: React.ReactNode;
+}) {
+  // The row is a wrapper, not the link, so `selfActivating` would leave Enter doing nothing: the sweep
+  // takes the nested anchor out of the tab order, and there would be no handler to replace it. Enter
+  // clicks that anchor instead, which keeps one implementation of "where does this line go".
+  const line = useRef<HTMLDivElement | null>(null);
+  const rowProps = useKeyboardListRow(index, () => line.current?.querySelector('a')?.click(), {
+    role: null,
+    // Ungated items have no sign-off page to open — navigable, but nothing to activate.
+    disabled: !hasGate,
+  });
+  const registerRow = rowProps.ref;
+  return (
+    <div
+      {...rowProps}
+      ref={(el) => {
+        line.current = el;
+        registerRow(el);
+      }}
+      className="min-w-0"
+    >
+      {children}
     </div>
   );
 }
@@ -773,11 +833,16 @@ function WorkItemsCard({ workItems, product, environment }: {
           No work items were attached to this deployment.
         </p>
       ) : (
-        <div className="space-y-1.5">
-          {workItems.map((wi) => {
+        <KeyboardList
+          className="space-y-1.5"
+          count={workItems.length}
+          ariaLabel="Work items on this deployment"
+          autoFocus={false}
+        >
+          {workItems.map((wi, index) => {
             const targetEnv = wi.signOffTargetEnvs[0];
             return (
-              <div key={wi.key} className="min-w-0">
+              <WorkItemLine key={wi.key} index={index} hasGate={!!targetEnv}>
                 {targetEnv ? (
                   <Link
                     to={workItemDetailPath(wi.key, product, targetEnv)}
@@ -817,7 +882,7 @@ function WorkItemsCard({ workItems, product, environment }: {
                     Also gated for {wi.signOffTargetEnvs.slice(1).map(getDisplayName).join(', ')}
                   </p>
                 )}
-              </div>
+              </WorkItemLine>
             );
           })}
           {workItems.some((wi) => wi.signOffTargetEnvs.length === 0) && (
@@ -826,7 +891,7 @@ function WorkItemsCard({ workItems, product, environment }: {
               system — there's no sign-off gate to open yet.
             </p>
           )}
-        </div>
+        </KeyboardList>
       )}
     </Card>
   );

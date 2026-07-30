@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { deploymentDetailPath } from '@/lib/deploymentPath';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
@@ -141,10 +143,15 @@ export function DeploymentHistoryPage() {
           No deployment history found
         </div>
       ) : (
-        <div className="space-y-1.5">
-          {visibleHistory.map((evt) => (
+        <KeyboardList
+          className="space-y-1.5"
+          count={visibleHistory.length}
+          ariaLabel={`${service ?? 'Service'} deployment history`}
+        >
+          {visibleHistory.map((evt, index) => (
             <HistoryRow
               key={evt.id}
+              index={index}
               event={evt}
               detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
@@ -164,7 +171,7 @@ export function DeploymentHistoryPage() {
               </span>
             </div>
           )}
-        </div>
+        </KeyboardList>
       )}
 
     </div>
@@ -176,15 +183,26 @@ export function DeploymentHistoryPage() {
  * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
  * a reader expects of a navigation.
  */
-function HistoryRow({ event: evt, detailHref }: {
+function HistoryRow({ index, event: evt, detailHref }: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
   event: DeployEvent;
   detailHref: string;
 }) {
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
 
+  // The row is already an anchor, so it activates itself — see `selfActivating`. All this adds is the
+  // roving tabindex and the arrow keys.
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    selfActivating: true,
+    label: `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}`,
+  });
+
   return (
     <Link
+      {...rowProps}
       to={detailHref}
       className="card-hover rounded-lg border px-3 py-2.5 flex items-center gap-3 transition-colors"
       style={{
