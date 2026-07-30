@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { isRendered } from '@/lib/focus';
 
 /** Controls a strip can contain. Disabled buttons are skipped — they aren't destinations. */
 const ITEM_SELECTOR = 'button:not([disabled]),a[href]';
@@ -38,11 +39,17 @@ export function RovingGroup({
   className,
   style,
   activateOnArrow = true,
+  role = 'group',
+  itemRole,
 }: {
   children: ReactNode;
   ariaLabel: string;
   className?: string;
   style?: React.CSSProperties;
+  /** Container role. `menu` for a popover of actions, so it is announced as one. */
+  role?: 'group' | 'menu';
+  /** Applied to each item when set — `menuitem` alongside `role="menu"`. */
+  itemRole?: 'menuitem';
   /**
    * Whether arrowing onto a control also activates it.
    *
@@ -60,7 +67,10 @@ export function RovingGroup({
     if (!root) return [];
     return [...root.querySelectorAll<HTMLElement>(ITEM_SELECTOR)]
       // Skip anything hidden — a strip can carry controls that only render at some breakpoints.
-      .filter((el) => el.offsetParent !== null);
+      // `isRendered` rather than `offsetParent`, which is null for everything inside a fixed-position
+      // ancestor: that filtered out every item when this group sits in a popover, so the arrows had
+      // nothing to move between and silently did nothing.
+      .filter(isRendered);
   }, []);
 
   // No dependency array: the caller re-renders this strip whenever the selection changes, which is
@@ -68,6 +78,7 @@ export function RovingGroup({
   useEffect(() => {
     const all = items();
     if (all.length === 0) return;
+    if (itemRole) for (const el of all) el.setAttribute('role', itemRole);
     // While focus is inside, the arrow handler owns the tab order; resetting it here would fight
     // the move that just happened.
     if (all.some((el) => el === document.activeElement)) return;
@@ -116,7 +127,7 @@ export function RovingGroup({
   return (
     <div
       ref={ref}
-      role="group"
+      role={role}
       aria-label={ariaLabel}
       className={className}
       style={style}

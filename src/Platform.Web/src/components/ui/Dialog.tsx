@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { firstFocusableWithin, trapTab } from '@/lib/focus';
 
 /**
  * A centred modal dialog with the focus behaviour a keyboard user needs.
@@ -17,14 +18,6 @@ import { createPortal } from 'react-dom';
  * Rendered through a portal for the same reason {@link AnchoredPopover} is: no ancestor transform or
  * `overflow: hidden` can clip or re-stack it.
  */
-const FOCUSABLE_SELECTOR = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 export function Dialog({
   children,
@@ -52,9 +45,10 @@ export function Dialog({
 
     // Timeout so the focus target exists even when it renders in the same commit.
     const timer = window.setTimeout(() => {
+      const panelNow = panelRef.current;
       const target = initialFocusRef?.current
-        ?? panelRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-        ?? panelRef.current;
+        ?? (panelNow ? firstFocusableWithin(panelNow) : null)
+        ?? panelNow;
       target?.focus();
     }, 0);
 
@@ -81,19 +75,7 @@ export function Dialog({
       if (event.key !== 'Tab') return;
 
       const panel = panelRef.current;
-      if (!panel) return;
-      const focusable = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
-        .filter((el) => el.offsetParent !== null || el === document.activeElement);
-      if (focusable.length === 0) { event.preventDefault(); return; }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) {
-        event.preventDefault();
-        last.focus();
-      }
+      if (panel) trapTab(panel, event);
     };
 
     // Capture phase so this runs before the app-level hotkey listener on `document`.

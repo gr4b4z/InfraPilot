@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { firstFocusableWithin, trapTab } from '@/lib/focus';
 
 /**
  * A popover that escapes its container.
@@ -32,19 +33,6 @@ import { createPortal } from 'react-dom';
  * Closes on outside click, on Escape, and on scroll of any ancestor (rather than trying to follow a
  * scrolling anchor, which invites the popover drifting away from what it belongs to).
  */
-
-/**
- * Everything that can hold focus inside a popover. `[tabindex="-1"]` is excluded — those are
- * programmatic focus targets, not tab stops.
- */
-const FOCUSABLE_SELECTOR = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 /** Gap between the anchor and the popover, in px. */
 const OFFSET = 4;
@@ -139,8 +127,7 @@ export function AnchoredPopover({
     if (!popover) return;
     // Skip if the content already claimed focus itself (several callers use autoFocus).
     if (popover.contains(document.activeElement)) return;
-    const first = popover.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
-    (first ?? popover).focus();
+    (firstFocusableWithin(popover) ?? popover).focus();
   }, []);
 
   useEffect(() => {
@@ -164,22 +151,7 @@ export function AnchoredPopover({
       // popover — the focus ring disappears behind the overlay and the popover stays open around
       // nothing.
       const popover = popoverRef.current;
-      if (!popover) return;
-      const focusable = [...popover.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
-        .filter((el) => el.offsetParent !== null || el === document.activeElement);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (event.shiftKey && (document.activeElement === first || document.activeElement === popover)) {
-        event.preventDefault();
-        last.focus();
-      }
+      if (popover) trapTab(popover, event);
     };
 
     // Closing on scroll keeps the popover from drifting away from its anchor, but a keyboard user
