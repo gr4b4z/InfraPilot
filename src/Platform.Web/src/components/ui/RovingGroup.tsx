@@ -37,11 +37,21 @@ export function RovingGroup({
   ariaLabel,
   className,
   style,
+  activateOnArrow = true,
 }: {
   children: ReactNode;
   ariaLabel: string;
   className?: string;
   style?: React.CSSProperties;
+  /**
+   * Whether arrowing onto a control also activates it.
+   *
+   * True for filter strips, where the two are the same gesture and anything else leaves the focused
+   * tab disagreeing with the content. False where activating has a consequence — the participant
+   * chips open an assign popover, so arrowing across a row of people would open and close pickers all
+   * the way along.
+   */
+  activateOnArrow?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -83,8 +93,8 @@ export function RovingGroup({
       const next = all[clamped];
       all.forEach((el) => { el.tabIndex = el === next ? 0 : -1; });
       next.focus();
-      // Focus follows selection — see the note above.
-      next.click();
+      // Focus follows selection — see `activateOnArrow`.
+      if (activateOnArrow) next.click();
     };
 
     switch (event.key) {

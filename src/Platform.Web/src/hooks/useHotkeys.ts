@@ -14,7 +14,7 @@ const CHORD_TIMEOUT_MS = 1200;
  * (`'g d'`). Matching is case-sensitive, which is what makes `a` (assign) and `A` (approve) distinct
  * bindings rather than the same one.
  */
-export type HotkeyMap = Record<string, (event: KeyboardEvent) => void>;
+export type HotkeyMap = Record<string, (event: KeyboardEvent) => void | boolean>;
 
 export interface UseHotkeysOptions {
   /** Set false to unbind without unmounting — e.g. while a modal owns the keyboard. */
@@ -33,6 +33,11 @@ export interface UseHotkeysOptions {
  * bindings are skipped while the user is typing, and skipped when Ctrl/Cmd/Alt is held so we never
  * shadow a browser or OS shortcut. Handlers that match get `preventDefault()` — `/` would otherwise
  * open Firefox's quick-find, and `?` would type a character into whatever gains focus next.
+ *
+ * A handler can return `false` to decline the keystroke, which leaves the default behaviour intact.
+ * That matters for keys that are only *conditionally* ours: the arrows are bound so they can rescue an
+ * idle page onto a list, but when something already has them — a list, a dialog, a tab strip — the
+ * binding has to get out of the way rather than swallow the key and break scrolling.
  *
  * Chords are matched with a short-lived prefix: pressing `g` arms it and swallows the keystroke,
  * and the next key either completes a binding or clears the prefix. Because the prefix is per-hook,
@@ -84,10 +89,7 @@ export function useHotkeys(map: HotkeyMap, options: UseHotkeysOptions = {}): voi
         const chord = `${prefix} ${event.key}`;
         clearPrefix();
         const chordHandler = bindings[chord];
-        if (chordHandler) {
-          event.preventDefault();
-          chordHandler(event);
-        }
+        if (chordHandler && chordHandler(event) !== false) event.preventDefault();
         return;
       }
 
@@ -101,10 +103,7 @@ export function useHotkeys(map: HotkeyMap, options: UseHotkeysOptions = {}): voi
       }
 
       const handler = bindings[event.key];
-      if (handler) {
-        event.preventDefault();
-        handler(event);
-      }
+      if (handler && handler(event) !== false) event.preventDefault();
     };
 
     document.addEventListener('keydown', onKeyDown);

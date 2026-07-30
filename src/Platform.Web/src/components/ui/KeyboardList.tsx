@@ -8,11 +8,13 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  KEYBOARD_LIST_ATTR,
   KEYBOARD_ROW_ATTR,
   KEYBOARD_ROW_SELECTOR,
   KeyboardListContext,
   type KeyboardListContextValue,
 } from '@/hooks/keyboardList';
+import { isTypingTarget } from '@/lib/keys';
 
 /** Anything inside a row that would otherwise become its own tab stop. */
 const NESTED_FOCUSABLE =
@@ -91,19 +93,27 @@ export function KeyboardList({
   }, [count]);
 
   // Land on the first row as soon as the list has one, so the arrow keys work on arrival instead of
-  // needing a Tab first. Guarded three ways, because auto-focus is the kind of thing that becomes
-  // hostile the moment it fires when it shouldn't:
-  //   - once per mount, so re-renders and refetches don't yank the caret back to the top;
-  //   - only when focus is unclaimed (still on <body> or the main region), so it never interrupts
-  //     someone typing in a filter or reading with the skip link focused;
-  //   - `preventScroll`, since jumping the viewport on page load reads as a glitch.
+  // needing a Tab first.
+  //
+  // The guard is a blocklist, not an allowlist. It used to only fire when focus was still on <body>
+  // or the main region, which missed the most ordinary way of arriving: clicking "Promotions" in the
+  // sidebar leaves focus on that nav link, so the list came up with the caret still in the nav and
+  // the arrow keys doing nothing. Now anything that isn't a place we must not interrupt is fair game.
+  //
+  // What we must not interrupt:
+  //   - a text field, or the shortcut would fight typing;
+  //   - an open dialog or popover, which owns the keyboard while it is up;
+  //   - another keyboard list, so two lists on one page don't fight over the caret.
+  // Plus: once per mount, so refetches and filter changes don't yank the caret back to the top, and
+  // `preventScroll`, since jumping the viewport on arrival reads as a glitch.
   useEffect(() => {
     if (!autoFocus || hasAutoFocused.current || count === 0) return;
     const active = document.activeElement;
-    const unclaimed = active === null
-      || active === document.body
-      || (active instanceof HTMLElement && active.id === 'main-content');
-    if (!unclaimed) return;
+    if (active instanceof HTMLElement) {
+      if (isTypingTarget(active)) return;
+      if (active.closest('[role="dialog"]')) return;
+      if (active.closest(KEYBOARD_ROW_SELECTOR)) return;
+    }
     const first = elements.current.get(0);
     if (!first) return;
     hasAutoFocused.current = true;
@@ -126,6 +136,36 @@ export function KeyboardList({
     }
   });
 
+  /**
+   * Hands off to the next (or previous) list on the page when this one runs out.
+   *
+   * A page can hold several lists — My tasks stacks promotions above work items — and stopping dead
+   * at the last row makes the second list look unreachable by keyboard. Arrowing past the end now
+   * continues into the next list's first row, and arrowing above the first row lands on the previous
+   * list's last row, so one continuous run of `↓` walks the whole page.
+   *
+   * Document order, not the React tree, because that is the order the reader sees. Lists with no rows
+   * are skipped rather than swallowing the keystroke. No wrap-around at the two extremes: rolling from
+   * the bottom of the page back to the top loses your place with no way to tell it happened.
+   */
+  const chainTo = (direction: 1 | -1): boolean => {
+    const root = container.current;
+    if (!root) return false;
+    const lists = [...document.querySelectorAll<HTMLElement>(`[${KEYBOARD_LIST_ATTR}]`)];
+    const here = lists.indexOf(root);
+    if (here === -1) return false;
+    const onwards = direction === 1 ? lists.slice(here + 1) : lists.slice(0, here).reverse();
+    for (const list of onwards) {
+      const rows = list.querySelectorAll<HTMLElement>(KEYBOARD_ROW_SELECTOR);
+      if (rows.length === 0) continue;
+      // Entering from above lands on the first row; entering from below, the last — so the cursor
+      // keeps travelling in the direction it was already going.
+      (direction === 1 ? rows[0] : rows[rows.length - 1]).focus();
+      return true;
+    }
+    return false;
+  };
+
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     // Only handle keys aimed at a row. A keystroke inside a row's own text input or link is that
     // control's business.
@@ -133,18 +173,26 @@ export function KeyboardList({
     if (!target.closest(KEYBOARD_ROW_SELECTOR)) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
 
-    const step = (delta: number) => {
+    /**
+     * `chain` says whether running off the end should continue into a neighbouring list. Only the
+     * vertical moves do: Left/Right cross environments inside the deployment matrix, and Home/End
+     * mean "the ends of *this* list", so neither should leave it.
+     */
+    const step = (delta: number, chain = false) => {
       event.preventDefault();
-      focusIndex(activeIndex + delta);
+      const next = activeIndex + delta;
+      if (chain && next < 0 && chainTo(-1)) return;
+      if (chain && next > count - 1 && chainTo(1)) return;
+      focusIndex(next);
     };
 
     switch (event.key) {
       case 'ArrowDown':
       case 'j':
-        return step(columns);
+        return step(columns, true);
       case 'ArrowUp':
       case 'k':
-        return step(-columns);
+        return step(-columns, true);
       case 'ArrowRight':
         // Only a grid navigates horizontally; in a plain list Left/Right belong to the caret.
         if (columns > 1) return step(1);
@@ -170,6 +218,7 @@ export function KeyboardList({
     <KeyboardListContext.Provider value={value}>
       <Tag
         ref={container as React.Ref<HTMLDivElement & HTMLTableSectionElement>}
+        {...{ [KEYBOARD_LIST_ATTR]: '' }}
         onKeyDown={onKeyDown}
         aria-label={ariaLabel}
         className={className}
