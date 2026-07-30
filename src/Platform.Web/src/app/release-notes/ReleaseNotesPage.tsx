@@ -3,6 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Loader2, ScrollText, Eye, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { marked } from 'marked';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { api, type ReleaseNoteFeedItem } from '@/lib/api';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 
@@ -180,13 +182,20 @@ export function ReleaseNotesPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {items.map((note) => (
-            <ReleaseNoteCard
-              key={note.id}
-              note={note}
-              onOpen={() => navigate(`/release-notes/${product}/${note.id}`)}
-            />
-          ))}
+          <KeyboardList
+            className="space-y-6"
+            count={items.length}
+            ariaLabel={`${product ?? 'Product'} release notes`}
+          >
+            {items.map((note, index) => (
+              <ReleaseNoteCard
+                key={note.id}
+                index={index}
+                note={note}
+                onOpen={() => navigate(`/release-notes/${product}/${note.id}`)}
+              />
+            ))}
+          </KeyboardList>
 
           <div className="flex items-center justify-between pt-2">
             <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -217,10 +226,23 @@ export function ReleaseNotesPage() {
   );
 }
 
-function ReleaseNoteCard({ note, onOpen }: { note: ReleaseNoteFeedItem; onOpen: () => void }) {
+function ReleaseNoteCard({
+  index,
+  note,
+  onOpen,
+}: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
+  note: ReleaseNoteFeedItem;
+  onOpen: () => void;
+}) {
   const html = useMemo(() => marked.parse(note.renderedContent) as string, [note.renderedContent]);
+  const rowProps = useKeyboardListRow(index, onOpen, {
+    label: `${note.environment} release notes, ${note.servicesCount} service(s). Open note.`,
+  });
   return (
     <div
+      {...rowProps}
       className="rounded-xl border overflow-hidden"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
     >
