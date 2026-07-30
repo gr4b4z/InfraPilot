@@ -57,6 +57,7 @@ export function KeyboardList({
   as: Tag = 'div',
   className,
   autoFocus = true,
+  sweepNestedTabStops = true,
 }: {
   children: ReactNode;
   /** Number of rows. Bounds navigation and keeps the cursor inside a list that shrank. */
@@ -70,6 +71,16 @@ export function KeyboardList({
    * its page — a secondary panel shouldn't grab the caret from the primary one.
    */
   autoFocus?: boolean;
+  /**
+   * Take the rows' own links and buttons out of the tab order. Right for a navigation list, where a
+   * row is a destination and its links are shortcuts into the same place — that is what keeps Tab
+   * meaning "next region".
+   *
+   * Set false where the rows *are* the content rather than links to it: the services view of a
+   * release note is a handful of blocks whose work-item and pull-request links are the point of the
+   * page, and sweeping those away would take the only keyboard route to them.
+   */
+  sweepNestedTabStops?: boolean;
 }) {
   const [storedIndex, setStoredIndex] = useState(0);
   const elements = useRef(new Map<number, HTMLElement>());
@@ -127,6 +138,7 @@ export function KeyboardList({
   // Done here rather than at each call site so no row component has to remember: the rule is a
   // property of being inside a keyboard list, not of any particular row's markup.
   useEffect(() => {
+    if (!sweepNestedTabStops) return;
     const root = container.current;
     if (!root) return;
     for (const el of root.querySelectorAll<HTMLElement>(NESTED_FOCUSABLE)) {
