@@ -801,8 +801,11 @@ function DecisionTrail({ detail }: { detail: WorkItemDetail }) {
                   </span>
                 </div>
                 {a.comment && (
-                  <p className="text-[12px] mt-1.5" style={{ color: 'var(--text-secondary)' }}>
-                    &ldquo;{a.comment}&rdquo;
+                  <p
+                    className="text-[12px] mt-1.5 whitespace-pre-wrap break-words"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    &ldquo;<Linkified text={a.comment} />&rdquo;
                   </p>
                 )}
               </div>
