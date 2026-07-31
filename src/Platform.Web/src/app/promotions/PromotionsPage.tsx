@@ -1,11 +1,20 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
-import { readEnumPref, writePref, PROMOTIONS_VIEW_PREF } from '@/lib/prefs';
+import {
+  readEnumPref,
+  readPref,
+  writePref,
+  PROMOTIONS_VIEW_PREF,
+  PROMOTIONS_PRODUCT_FILTER_PREF,
+  PROMOTIONS_SERVICE_FILTER_PREF,
+  PROMOTIONS_TARGET_ENV_FILTER_PREF,
+  PROMOTIONS_REFERENCE_FILTER_PREF,
+} from '@/lib/prefs';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
@@ -141,6 +150,24 @@ function EmptyState({ view }: { view: View }) {
   );
 }
 
+/**
+ * A filter value that survives leaving the page. Reads its initial value from the cookie once, and
+ * writes on every change — the same shape as `useState`, so call sites are unchanged.
+ */
+function usePersistedFilter(prefKey: string): [string, (next: string) => void] {
+  const [value, setValue] = useState(() => readPref(prefKey) ?? '');
+
+  const update = useCallback(
+    (next: string) => {
+      setValue(next);
+      writePref(prefKey, next);
+    },
+    [prefKey],
+  );
+
+  return [value, update];
+}
+
 export function PromotionsPage() {
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
   const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
@@ -149,10 +176,17 @@ export function PromotionsPage() {
   // until the user explicitly opens the resolved section (lazy-loaded below).
   const [candidates, setCandidates] = useState<PromotionCandidate[]>([]);
   const [loading, setLoading] = useState(true);
-  const [productFilter, setProductFilter] = useState('');
-  const [serviceFilter, setServiceFilter] = useState('');
-  const [targetEnvFilter, setTargetEnvFilter] = useState('');
-  const [referenceFilter, setReferenceFilter] = useState('');
+  // Cookie-persisted, like the tab above: list → detail → back is the main path through this page,
+  // and filters that don't survive it aren't worth setting. `usePersistedFilter` writes on change.
+  const [productFilter, setProductFilter] = usePersistedFilter(PROMOTIONS_PRODUCT_FILTER_PREF);
+  const [serviceFilter, setServiceFilter] = usePersistedFilter(PROMOTIONS_SERVICE_FILTER_PREF);
+  const [targetEnvFilter, setTargetEnvFilter] = usePersistedFilter(PROMOTIONS_TARGET_ENV_FILTER_PREF);
+  const [referenceFilter, setReferenceFilter] = usePersistedFilter(PROMOTIONS_REFERENCE_FILTER_PREF);
+  // Filter vocabulary. Fetched once and never re-fetched on a filter change — that is the whole
+  // point of it (see api.getPromotionFilterOptions).
+  const [filterOptions, setFilterOptions] = useState<{ products: string[]; targetEnvs: string[] }>(
+    { products: [], targetEnvs: [] },
+  );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
@@ -215,6 +249,23 @@ export function PromotionsPage() {
       .catch(() => setAwaitingDeploy([]))
       .finally(() => setAwaitingDeployLoading(false));
   };
+
+  // Filter vocabulary — fetched once on mount, deliberately outside the filter-change effect below.
+  // Refetching it with the filters applied is exactly the bug this replaced.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPromotionFilterOptions()
+      .then((o) => {
+        if (!cancelled) setFilterOptions(o);
+      })
+      .catch(() => {
+        // Leave the dropdowns with only their current selection; the rest of the page is unaffected.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     fetchData();
@@ -381,18 +432,18 @@ export function PromotionsPage() {
   // Configured order, not alphabetical: that's the deployment order (dev → staging → prod), the
   // sequence a reader is already thinking in when picking a target environment.
   const targetEnvOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const c of candidates) if (c.targetEnv) set.add(c.targetEnv);
+    const set = new Set(filterOptions.targetEnvs);
+    // Keep the current selection listed even if nothing carries it any more, or there is no way
+    // to clear a filter that has outlived its promotions.
     if (targetEnvFilter) set.add(targetEnvFilter);
     return getOrderedEnvironments(Array.from(set));
-  }, [candidates, targetEnvFilter, getOrderedEnvironments]);
+  }, [filterOptions.targetEnvs, targetEnvFilter, getOrderedEnvironments]);
 
   const productOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const c of candidates) if (c.product) set.add(c.product);
+    const set = new Set(filterOptions.products);
     if (productFilter) set.add(productFilter);
     return Array.from(set).sort();
-  }, [candidates, productFilter]);
+  }, [filterOptions.products, productFilter]);
 
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
