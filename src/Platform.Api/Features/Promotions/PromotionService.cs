@@ -536,6 +536,32 @@ public class PromotionService
             .ToList();
     }
 
+    /// <summary>
+    /// The distinct products and target environments that appear across <b>all</b> promotion
+    /// candidates — the vocabulary for the list page's filter dropdowns.
+    ///
+    /// <para>Separate from <see cref="GetAsync"/> on purpose. Building the dropdowns from a filtered
+    /// result set collapses them: pick an environment, the query narrows to it, and the only option
+    /// left to pick is the one already picked. The options have to come from a query that ignores
+    /// the selection.</para>
+    ///
+    /// <para>Hidden products are still excluded — this is a product-scoped list like any other, and
+    /// offering a filter for something the user has hidden would just produce an empty page.</para>
+    /// </summary>
+    public async Task<PromotionFilterOptions> GetFilterOptionsAsync(CancellationToken ct = default)
+    {
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var q = _db.PromotionCandidates.AsNoTracking().AsQueryable();
+        if (hidden.Count > 0) q = q.Where(c => !hidden.Contains(c.Product));
+
+        var products = await q.Select(c => c.Product).Distinct().OrderBy(p => p).ToListAsync(ct);
+        var targetEnvs = await q.Select(c => c.TargetEnv).Distinct().OrderBy(e => e).ToListAsync(ct);
+
+        return new PromotionFilterOptions(
+            products.Where(p => !string.IsNullOrWhiteSpace(p)).ToList(),
+            targetEnvs.Where(e => !string.IsNullOrWhiteSpace(e)).ToList());
+    }
+
     public async Task<PromotionCandidate?> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
         return await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -1952,6 +1978,12 @@ public class PromotionService
 /// Filter args for <see cref="PromotionService.GetAsync"/>. All fields are optional; omitted
 /// filters are treated as "don't narrow".
 /// </summary>
+/// <summary>
+/// Vocabulary for the promotions list filters. Ordering is alphabetical here; the client re-orders
+/// environments into the configured deployment order, which it knows and the API does not.
+/// </summary>
+public record PromotionFilterOptions(IReadOnlyList<string> Products, IReadOnlyList<string> TargetEnvs);
+
 public record PromotionQuery(
     PromotionStatus? Status = null,
     string? Product = null,
