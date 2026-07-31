@@ -767,6 +767,14 @@ class ApiClient {
 
   // ── The signed-in user's own preferences ───────────────────────────────────
 
+  /**
+   * Vocabulary for the promotions list filters. Unfiltered by design — dropdown options built from
+   * a filtered result set collapse to whatever is already selected.
+   */
+  getPromotionFilterOptions() {
+    return this.request<{ products: string[]; targetEnvs: string[] }>(`/promotions/filter-options`);
+  }
+
   getMyPreferences() {
     return this.request<UserPreferencesPayload>(`/me/preferences`);
   }

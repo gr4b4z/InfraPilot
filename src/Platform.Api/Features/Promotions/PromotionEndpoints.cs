@@ -20,6 +20,14 @@ public static class PromotionEndpoints
 {
     public static RouteGroupBuilder MapPromotionEndpoints(this RouteGroupBuilder group)
     {
+        // Vocabulary for the list page's filter dropdowns. Deliberately takes no filter arguments:
+        // options derived from a filtered list collapse to whatever is already selected.
+        group.MapGet("/filter-options", async (PromotionService svc, CancellationToken ct) =>
+        {
+            var options = await svc.GetFilterOptionsAsync(ct);
+            return Results.Ok(new { products = options.Products, targetEnvs = options.TargetEnvs });
+        });
+
         // List candidates with filters + capability flags.
         group.MapGet("/", async (
             PromotionService svc,

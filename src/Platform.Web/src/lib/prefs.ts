@@ -57,3 +57,14 @@ export function readEnumPref<T extends string>(
 export const WORK_ITEMS_VIEW_PREF = 'ip.workItems.view';
 /** Selected tab on the promotions list page. */
 export const PROMOTIONS_VIEW_PREF = 'ip.promotions.view';
+
+// Secondary filters on the promotions list. Persisted for the same reason the tab is: opening a
+// promotion and coming back is the single most common thing anybody does on that page, and losing
+// the narrowing every time makes the filters not worth setting.
+//
+// Safe to persist because FilterPanel counts what is set, shows the count on its toggle, and starts
+// open when anything is active — a filter can't quietly shrink the list with no explanation.
+export const PROMOTIONS_PRODUCT_FILTER_PREF = 'ip.promotions.filter.product';
+export const PROMOTIONS_SERVICE_FILTER_PREF = 'ip.promotions.filter.service';
+export const PROMOTIONS_TARGET_ENV_FILTER_PREF = 'ip.promotions.filter.targetEnv';
+export const PROMOTIONS_REFERENCE_FILTER_PREF = 'ip.promotions.filter.reference';

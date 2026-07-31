@@ -205,6 +205,52 @@ public class HiddenProductsTests : IClassFixture<HiddenProductsTests.HiddenFacto
         await HideAsync();
     }
 
+    /// <summary>
+    /// The promotions filter dropdowns are fed by their own endpoint. It takes no filter arguments —
+    /// that is the point of it — but it is still a product-scoped list, so a hidden product must not
+    /// be offered as something to filter by. Offering it would only produce an empty page.
+    /// </summary>
+    [Fact]
+    public async Task PromotionFilterOptions_ExcludeHiddenProducts()
+    {
+        var hide = $"opt-{Guid.NewGuid():N}"[..14];
+
+        await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
+        await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
+        {
+            product = hide,
+            service = (string?)null,
+            sourceEnv = "staging",
+            targetEnv = "prod",
+            steps = Array.Empty<object>(),
+            escalationGroup = (string?)null,
+        });
+        await IngestAsync(hide, env: "staging", version: "v8.0.0");
+        var created = await _apiKeyClient.PostAsJsonAsync("/api/promotions", new
+        {
+            product = hide,
+            service = "api",
+            sourceEnv = "staging",
+            targetEnv = "prod",
+            version = "v8.0.0",
+            references = Array.Empty<object>(),
+        });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        async Task<List<string>> OptionProductsAsync()
+        {
+            var body = await _adminClient.GetFromJsonAsync<JsonElement>("/api/promotions/filter-options");
+            return body.GetProperty("products").EnumerateArray().Select(p => p.GetString()!).ToList();
+        }
+
+        Assert.Contains(hide, await OptionProductsAsync());
+
+        await HideAsync(hide);
+        Assert.DoesNotContain(hide, await OptionProductsAsync());
+
+        await HideAsync();
+    }
+
     // ── Factory ─────────────────────────────────────────────────────────────
 
     public class HiddenFactory : TestFactory
