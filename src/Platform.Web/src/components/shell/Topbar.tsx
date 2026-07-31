@@ -1,9 +1,10 @@
-import { Bell, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
+import { Bell, EyeOff, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksCount } from '@/stores/myTasksStore';
+import { useHiddenProductCount } from '@/stores/userPrefsStore';
 import { useUiStore } from '@/stores/uiStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
@@ -31,6 +32,7 @@ export function Topbar() {
   // Promotions + work items awaiting this user. Drives the bell badge; the bell opens the
   // My Tasks page that lists exactly these items.
   const myTasksCount = useMyTasksCount();
+  const hiddenProductCount = useHiddenProductCount();
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
@@ -237,6 +239,24 @@ export function Topbar() {
             </span>
           )}
         </NavLink>
+
+        {/* A products filter that applies app-wide is invisible by construction: every list simply
+            comes back shorter. Without a persistent cue, "where did that promotion go?" is a very
+            long debugging session. This is the standing reminder, and the way back to the control. */}
+        {hiddenProductCount > 0 && (
+          <NavLink
+            to="/deployments"
+            className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold transition-colors"
+            style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            title={
+              `${hiddenProductCount} product(s) hidden from every list in the app. ` +
+              'Open the Deployments page to change it.'
+            }
+          >
+            <EyeOff size={12} />
+            {hiddenProductCount} hidden
+          </NavLink>
+        )}
 
         <div className="w-px h-6 mx-1.5" style={{ backgroundColor: 'var(--border-color)' }} />
 

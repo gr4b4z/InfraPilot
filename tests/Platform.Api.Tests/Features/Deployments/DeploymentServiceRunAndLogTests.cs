@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -29,7 +29,9 @@ public class DeploymentServiceRunAndLogTests : IDisposable
         _db = new PlatformDbContext(options);
         _sut = new DeploymentService(
             _db, Substitute.For<IWebhookDispatcher>(), Substitute.For<IPromotionIngestHook>(),
-            TestOptions.Normalization(), Substitute.For<ILogger<DeploymentService>>());
+            TestOptions.Normalization(),
+            TestUserPreferences.For(_db),
+            Substitute.For<ILogger<DeploymentService>>());
     }
 
     public void Dispose() => _db.Dispose();

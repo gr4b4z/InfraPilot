@@ -1,4 +1,5 @@
 using Platform.Api.Features.Rollbacks.Models;
+using Platform.Api.Features.Users;
 
 namespace Platform.Api.Features.Rollbacks;
 
@@ -27,8 +28,17 @@ public static class RollbackEndpoints
             return Results.Ok(new { requests = requests.Select(r => ToDto(r, caps.GetValueOrDefault(r.Id))) });
         });
 
-        group.MapGet("/enabled-products", async (RollbackService svc) =>
-            Results.Ok(new { products = await svc.GetEnabledProductsAsync() }));
+        // Feeds the create-rollback product picker, so the viewer's hidden products come out here.
+        // The filter is applied at the edge rather than inside GetEnabledProductsAsync because that
+        // method is also the enrolment check behind IsProductEnabledAsync — hiding a product from
+        // your own view must not stop anyone (including you) from rolling it back.
+        group.MapGet("/enabled-products", async (
+            RollbackService svc, UserPreferencesService prefs, CancellationToken ct) =>
+        {
+            var enabled = await svc.GetEnabledProductsAsync(ct);
+            var hidden = await prefs.GetHiddenProductsAsync(ct);
+            return Results.Ok(new { products = enabled.Where(p => !hidden.Contains(p)).ToList() });
+        });
 
         group.MapGet("/{id:guid}", async (RollbackService svc, Guid id) =>
         {

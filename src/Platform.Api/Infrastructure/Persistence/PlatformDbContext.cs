@@ -7,6 +7,7 @@ using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.Users.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
@@ -38,6 +39,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+    public DbSet<UserPreference> UserPreferences => Set<UserPreference>();
     public DbSet<PromotionPolicy> PromotionPolicies => Set<PromotionPolicy>();
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
@@ -359,6 +361,19 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Key).HasMaxLength(100);
             e.Property(x => x.Value).HasMaxLength(4000).IsRequired();
             e.Property(x => x.UpdatedBy).HasMaxLength(200).IsRequired();
+        });
+
+        // User Preferences — the per-person counterpart to platform_settings.
+        modelBuilder.Entity<UserPreference>(e =>
+        {
+            e.ToTable("user_preferences");
+            e.HasKey(x => x.Id);
+            // 300 to match every other email column in the schema (ApproverEmail, AuthorEmail, …).
+            e.Property(x => x.UserEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Key).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Value).HasMaxLength(4000).IsRequired();
+            // One row per (user, key) — the upsert relies on it, and it is also the read path.
+            e.HasIndex(x => new { x.UserEmail, x.Key }).IsUnique();
         });
 
         // Promotion Policies
