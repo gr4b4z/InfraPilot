@@ -9,7 +9,8 @@ import { FilterPanel } from '@/components/ui/FilterPanel';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSearchScope } from '@/stores/searchScopeStore';
-import { readSetPref, writeSetPref, DEPLOYMENTS_HIDDEN_PRODUCTS_PREF } from '@/lib/prefs';
+import { useUserPrefsStore } from '@/stores/userPrefsStore';
+import { api } from '@/lib/api';
 import type { ProductSummary } from '@/lib/types';
 
 export function DeploymentsPage() {
@@ -17,49 +18,72 @@ export function DeploymentsPage() {
   const { getOrderedEnvironments } = useSettingsStore();
   const navigate = useNavigate();
 
-  // Products the user has switched off. Cookie-persisted: a team that only cares about two of the
-  // nine products should not have to re-hide the other seven on every visit.
-  const [hiddenProducts, setHiddenProducts] = useState<Set<string>>(() =>
-    readSetPref(DEPLOYMENTS_HIDDEN_PRODUCTS_PREF),
-  );
+  // The hidden set is applied by the API, so `products` already excludes them and this page never
+  // filters anything itself. What it owns is the control — and the control is the one thing that
+  // has to see hidden products, otherwise there is no way to bring one back. Hence the separate
+  // fetch: /me/preferences/products is deliberately unfiltered.
+  const hiddenProducts = useUserPrefsStore((s) => s.hiddenProducts);
+  const saving = useUserPrefsStore((s) => s.saving);
+  const setHiddenProducts = useUserPrefsStore((s) => s.setHiddenProducts);
+  const [allProductNames, setAllProductNames] = useState<string[]>([]);
 
   useEffect(() => {
     fetchProducts();
   }, [fetchProducts]);
 
-  const toggleProduct = useCallback((product: string) => {
-    setHiddenProducts((prev) => {
-      const next = new Set(prev);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyProductVisibility()
+      .then((r) => {
+        if (!cancelled) setAllProductNames(r.products);
+      })
+      .catch(() => {
+        // Fall back to what the (filtered) matrix knows about. The user can still hide things;
+        // they just can't unhide from here until the call succeeds.
+        if (!cancelled) setAllProductNames([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hiddenProducts]);
+
+  const hiddenSet = useMemo(() => new Set(hiddenProducts), [hiddenProducts]);
+
+  // Union so the control still lists a product that is hidden AND absent from the current matrix
+  // (retired, renamed, or simply hidden — the matrix can't see it either).
+  const controlProducts = useMemo(() => {
+    const names = new Set<string>(allProductNames);
+    for (const p of products) names.add(p.product);
+    for (const h of hiddenProducts) names.add(h);
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [allProductNames, products, hiddenProducts]);
+
+  const toggleProduct = useCallback(
+    (product: string) => {
+      const next = new Set(hiddenProducts);
       if (!next.delete(product)) next.add(product);
-      writeSetPref(DEPLOYMENTS_HIDDEN_PRODUCTS_PREF, next);
-      return next;
-    });
-  }, []);
+      void setHiddenProducts(Array.from(next));
+    },
+    [hiddenProducts, setHiddenProducts],
+  );
 
   const showAllProducts = useCallback(() => {
-    setHiddenProducts(new Set());
-    writeSetPref(DEPLOYMENTS_HIDDEN_PRODUCTS_PREF, []);
-  }, []);
+    void setHiddenProducts([]);
+  }, [setHiddenProducts]);
 
-  const visibleProducts = useMemo(
-    () => products.filter((p) => !hiddenProducts.has(p.product)),
-    [products, hiddenProducts],
-  );
-
-  // Columns follow the visible rows: hiding a product also drops the environments only it deployed
-  // to, which is the point of hiding it — a matrix of mostly-empty columns is the thing being
-  // filtered away, not just the rows.
+  // Columns follow the rows the API returned: hiding a product also drops the environments only it
+  // deployed to, which is the point of hiding it — a matrix of mostly-empty columns is the thing
+  // being filtered away, not just the rows.
   const allEnvs = getOrderedEnvironments(
-    Array.from(new Set(visibleProducts.flatMap((p) => Object.keys(p.environments)))),
+    Array.from(new Set(products.flatMap((p) => Object.keys(p.environments)))),
   );
 
-  // Counted off the products actually on screen, so a stale cookie naming a product the API no
-  // longer returns doesn't show a filter count with nothing behind it.
-  const hiddenCount = products.length - visibleProducts.length;
+  const hiddenCount = hiddenProducts.length;
 
   // The pill on the filter control: how many products are showing. `activeCount` below carries the
   // hidden count instead, purely to drive the accent treatment and the auto-open.
-  const shownCount = visibleProducts.length;
+  const shownCount = products.length;
 
   // `/` searches products here — the only thing this page lists.
   useSearchScope(
@@ -104,19 +128,20 @@ export function DeploymentsPage() {
          It appears twice by breakpoint, never both at once: on the collapsed toggle below `lg`,
          and at the end of the chip row from `lg` up, where the toggle itself is hidden and there
          would otherwise be nowhere to read it. */}
-      {!loading && products.length > 0 && (
+      {!loading && controlProducts.length > 0 && (
         <FilterPanel label="Products" activeCount={hiddenCount} badge={shownCount}>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {products.map((p) => {
-              const shown = !hiddenProducts.has(p.product);
+          <div className="flex flex-wrap items-center gap-1.5" aria-busy={saving}>
+            {controlProducts.map((name) => {
+              const shown = !hiddenSet.has(name);
               return (
                 <button
-                  key={p.product}
+                  key={name}
                   type="button"
-                  onClick={() => toggleProduct(p.product)}
+                  disabled={saving}
+                  onClick={() => toggleProduct(name)}
                   aria-pressed={shown}
-                  title={shown ? `Hide ${p.product}` : `Show ${p.product}`}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[12px] font-medium transition-colors"
+                  title={shown ? `Hide ${name} everywhere` : `Show ${name} again`}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[12px] font-medium transition-colors disabled:opacity-60"
                   style={{
                     borderColor: shown ? 'var(--accent)' : 'var(--border-color)',
                     backgroundColor: shown ? 'var(--accent-bg)' : 'transparent',
@@ -124,7 +149,7 @@ export function DeploymentsPage() {
                   }}
                 >
                   {shown ? <Check size={12} /> : <EyeOff size={12} />}
-                  {p.product}
+                  {name}
                 </button>
               );
             })}
@@ -134,15 +159,16 @@ export function DeploymentsPage() {
                 backgroundColor: hiddenCount > 0 ? 'var(--accent)' : 'var(--bg-secondary)',
                 color: hiddenCount > 0 ? '#fff' : 'var(--text-muted)',
               }}
-              title={`${shownCount} of ${products.length} product(s) shown`}
+              title={`${shownCount} of ${controlProducts.length} product(s) shown`}
             >
               {shownCount}
             </span>
             {hiddenCount > 0 && (
               <button
                 type="button"
+                disabled={saving}
                 onClick={showAllProducts}
-                className="px-2 py-1 text-[12px] font-medium underline underline-offset-2 transition-opacity hover:opacity-80"
+                className="px-2 py-1 text-[12px] font-medium underline underline-offset-2 transition-opacity hover:opacity-80 disabled:opacity-60"
                 style={{ color: 'var(--text-muted)' }}
               >
                 Show all
@@ -156,12 +182,12 @@ export function DeploymentsPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="animate-spin" size={24} style={{ color: 'var(--text-muted)' }} />
         </div>
-      ) : products.length === 0 ? (
+      ) : products.length === 0 && hiddenCount === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <Rocket size={40} style={{ color: 'var(--text-muted)' }} />
           <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>No deployments recorded yet</p>
         </div>
-      ) : visibleProducts.length === 0 ? (
+      ) : products.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <EyeOff size={40} style={{ color: 'var(--text-muted)' }} />
           <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -190,8 +216,8 @@ export function DeploymentsPage() {
                 ))}
               </tr>
             </thead>
-            <KeyboardList as="tbody" count={visibleProducts.length} ariaLabel="Products">
-              {visibleProducts.map((product, index) => (
+            <KeyboardList as="tbody" count={products.length} ariaLabel="Products">
+              {products.map((product, index) => (
                   <ProductRow
                     key={product.product}
                     index={index}

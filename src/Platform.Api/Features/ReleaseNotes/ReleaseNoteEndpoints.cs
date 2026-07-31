@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.ReleaseNotes.Models;
+using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -214,10 +215,15 @@ public static class ReleaseNoteEndpoints
         });
 
         group.MapGet("/", async (
-            PlatformDbContext db, string? product, string? environment,
+            PlatformDbContext db, UserPreferencesService prefs, string? product, string? environment,
             int? page, int? pageSize, CancellationToken ct) =>
         {
             var query = db.ReleaseNotes.AsNoTracking().AsQueryable();
+
+            // Ahead of the Count below, so `total` and the page count agree with the rows returned.
+            var hidden = await prefs.GetHiddenProductsAsync(ct);
+            if (hidden.Count > 0) query = query.Where(r => !hidden.Contains(r.Product));
+
             if (!string.IsNullOrEmpty(product)) query = query.Where(r => r.Product == product);
             if (!string.IsNullOrEmpty(environment)) query = query.Where(r => r.Environment == environment);
 

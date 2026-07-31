@@ -1,9 +1,10 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
+using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
@@ -34,6 +35,7 @@ public class RollbackService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhooks;
     private readonly IFeatureFlags _flags;
+    private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<RollbackService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -50,6 +52,7 @@ public class RollbackService
         IAuditLogger audit,
         IWebhookDispatcher webhooks,
         IFeatureFlags flags,
+        UserPreferencesService userPrefs,
         ILogger<RollbackService> logger)
     {
         _db = db;
@@ -59,6 +62,7 @@ public class RollbackService
         _audit = audit;
         _webhooks = webhooks;
         _flags = flags;
+        _userPrefs = userPrefs;
         _logger = logger;
     }
 
@@ -458,6 +462,11 @@ public class RollbackService
     public async Task<List<RollbackRequest>> GetAsync(RollbackQuery query, CancellationToken ct = default)
     {
         var q = _db.RollbackRequests.AsNoTracking().Include(r => r.Items).AsQueryable();
+
+        // Before Take(limit) below, so a hidden product can't quietly shorten the page.
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        if (hidden.Count > 0) q = q.Where(r => !hidden.Contains(r.Product));
+
         if (query.Status is { } s) q = q.Where(r => r.Status == s);
         if (!string.IsNullOrEmpty(query.Product)) q = q.Where(r => r.Product == query.Product);
         if (!string.IsNullOrEmpty(query.TargetEnv)) q = q.Where(r => r.TargetEnv == query.TargetEnv);
