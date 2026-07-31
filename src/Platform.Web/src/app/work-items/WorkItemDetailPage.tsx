@@ -10,6 +10,7 @@ import type {
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { decisionStyle, providerLabel, referringCandidateId, shortHash } from '@/lib/workItem';
+import { Linkified } from '@/lib/linkify';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { EnvBadge } from '@/components/environments/EnvBadge';
@@ -353,7 +354,7 @@ function ContentCard({ content }: { content: string }) {
             overflow: collapsed ? 'hidden' : undefined,
           }}
         >
-          {content}
+          <Linkified text={content} />
         </p>
         {/* Fades the clipped last line so it reads as "continues below" rather than as text that
            happens to end mid-sentence. */}
@@ -982,10 +983,10 @@ function CommentsCard({
               ) : (
                 <>
                   <p
-                    className="text-[13px] whitespace-pre-wrap"
+                    className="text-[13px] whitespace-pre-wrap break-words"
                     style={{ color: 'var(--text-secondary)' }}
                   >
-                    {c.body}
+                    <Linkified text={c.body} />
                   </p>
                   {isMine && (
                     <div className="flex items-center gap-3 mt-2">
