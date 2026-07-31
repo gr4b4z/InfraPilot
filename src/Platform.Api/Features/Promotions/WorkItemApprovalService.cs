@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Users;
 using Platform.Api.Features.Settings;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
@@ -39,6 +40,7 @@ public class WorkItemApprovalService
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly PromotionService _promotion;
     private readonly ParticipantRoleCatalog _roleCatalog;
+    private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<WorkItemApprovalService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -65,6 +67,7 @@ public class WorkItemApprovalService
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
         ParticipantRoleCatalog roleCatalog,
+        UserPreferencesService userPrefs,
         ILogger<WorkItemApprovalService> logger)
     {
         _db = db;
@@ -74,6 +77,7 @@ public class WorkItemApprovalService
         _webhookDispatcher = webhookDispatcher;
         _promotion = promotion;
         _roleCatalog = roleCatalog;
+        _userPrefs = userPrefs;
         _logger = logger;
     }
 
@@ -478,8 +482,14 @@ public class WorkItemApprovalService
         string? assigneeFilter = null,
         string? roleFilter = null)
     {
+        // The viewer's hidden products drop out of the queue entirely — including the assignee
+        // rollup below, which is computed from these rows, so the "who has work" dropdown never
+        // offers a person whose only items are on a hidden product.
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+
         var pending = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Pending)
+            .Where(c => !hidden.Contains(c.Product))
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync(ct);
 
@@ -487,6 +497,7 @@ public class WorkItemApprovalService
         // a ticket still carried by a live promotion always renders from that promotion instead.
         var stranded = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Superseded || c.Status == PromotionStatus.Rejected)
+            .Where(c => !hidden.Contains(c.Product))
             .OrderByDescending(c => c.CreatedAt)
             .Take(OrphanScanLimit)
             .ToListAsync(ct);
@@ -759,6 +770,10 @@ public class WorkItemApprovalService
         CancellationToken ct = default)
     {
         var query = _db.WorkItemApprovals.AsNoTracking().AsQueryable();
+
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        if (hidden.Count > 0) query = query.Where(a => !hidden.Contains(a.Product));
+
         if (decision is { } d) query = query.Where(a => a.Decision == d);
         if (since is { } cutoff) query = query.Where(a => a.CreatedAt >= cutoff);
 

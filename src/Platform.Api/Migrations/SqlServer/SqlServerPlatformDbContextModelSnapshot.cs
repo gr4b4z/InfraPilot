@@ -1246,6 +1246,38 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("rollback_requests", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Users.Models.UserPreference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UserEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserEmail", "Key")
+                        .IsUnique();
+
+                    b.ToTable("user_preferences", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Webhooks.Models.WebhookDelivery", b =>
                 {
                     b.Property<Guid>("Id")

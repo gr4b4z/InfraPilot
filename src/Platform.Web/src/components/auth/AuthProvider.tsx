@@ -5,6 +5,7 @@ import { getMsalInstance, isMsalEnabled, getLoginRequest } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { getStoredToken, fetchCurrentUser } from '@/lib/localAuth';
 import { LoginPage } from '@/app/login/LoginPage';
@@ -29,6 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (isAuthenticated) {
       useFeatureFlagsStore.getState().load();
       useSettingsStore.getState().load();
+      useUserPrefsStore.getState().load();
     }
   }, [isAuthenticated]);
 

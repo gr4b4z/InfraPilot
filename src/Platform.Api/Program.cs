@@ -14,6 +14,7 @@ using Platform.Api.Features.Rollbacks;
 using Platform.Api.Features.Settings;
 using Platform.Api.Features.Executors;
 using Platform.Api.Features.Requests;
+using Platform.Api.Features.Users;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
@@ -125,6 +126,8 @@ builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
 builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
+// Scoped, and it memoises per request — the hidden-product set is read by most list queries.
+builder.Services.AddScoped<UserPreferencesService>();
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection(NotificationOptions.SectionName));
 builder.Services.AddHttpClient("notification-webhook");
 builder.Services.AddSingleton<INotificationChannel, EmailChannel>();
@@ -361,6 +364,8 @@ app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthoriz
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
+// The signed-in user's own preferences. Any authenticated user, no role gate — these are personal.
+app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization();
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)
