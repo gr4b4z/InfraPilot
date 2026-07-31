@@ -22,6 +22,9 @@ import {
   ChevronsUpDown,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import { api } from '@/lib/api';
+import type { PromotionCandidate } from '@/lib/api';
+import { useFeatureFlag, FeatureFlag } from '@/stores/featureFlagsStore';
 import { collectParticipants } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { KeyboardList } from '@/components/ui/KeyboardList';
@@ -92,6 +95,10 @@ export function ProductDeploymentsPage() {
   const { stateMatrix, recentActivity, loading, fetchState, fetchRecentByProduct } =
     useDeploymentStore();
   const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
+  const promotionsEnabled = useFeatureFlag(FeatureFlag.Promotions);
+  const [promotions, setPromotions] = useState<{ product: string; candidates: PromotionCandidate[] }>(
+    { product: '', candidates: [] },
+  );
   const navigate = useNavigate();
   // Clicking a deployment goes to its own page rather than opening a drawer: the drawer could only
   // ever show a summary, while the questions people arrive with — why did it fail, what did it print,
@@ -208,6 +215,29 @@ export function ProductDeploymentsPage() {
     if (product) fetchState(product);
   }, [product, fetchState]);
 
+  // Pending promotions for this product, for the matrix's per-cell cue. Skipped entirely when the
+  // feature is off — there is nothing to show and no reason to call the endpoint.
+  //
+  // The result carries the product it was fetched for so the consumer can ignore it while a
+  // navigation to a different product is still in flight, rather than briefly painting one
+  // product's promotions onto another's matrix.
+  useEffect(() => {
+    if (!product || !promotionsEnabled) return;
+    let cancelled = false;
+    api
+      .listPromotions({ product, status: 'Pending' })
+      .then((r) => {
+        if (!cancelled) setPromotions({ product, candidates: r.candidates });
+      })
+      .catch(() => {
+        // The matrix is still useful without the cue; degrade to showing none.
+        if (!cancelled) setPromotions({ product, candidates: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product, promotionsEnabled]);
+
   // Fetch recent activity when state tab has a time filter
   useEffect(() => {
     if (product && tab === 'state' && timeFilter !== 'all') {
@@ -310,12 +340,28 @@ export function ProductDeploymentsPage() {
     },
     [sortBy, sortDir, updateParams]
   );
-  const isBehind = (service: string, envIndex: number) => {
-    if (envIndex === 0) return false;
-    const current = getCell(service, environments[envIndex]);
-    const prev = getCell(service, environments[envIndex - 1]);
-    return current && prev && current.version !== prev.version;
-  };
+  /**
+   * Pending promotions for this product, keyed `service::targetEnv` — what the matrix shows instead
+   * of a "behind" warning.
+   *
+   * <p>The old cue compared a cell's version against the environment to its left and flagged any
+   * difference. That fires on every normal state of a pipeline: dev is nearly always ahead of prod,
+   * and nothing is wrong. A pending promotion is the opposite kind of signal — somebody has actually
+   * queued this change and it is waiting on a person, which is the only thing on this page you can
+   * act on.</p>
+   */
+  const pendingPromotions = useMemo(() => {
+    const map = new Map<string, PromotionCandidate>();
+    // Gate on the flag here rather than clearing state when it flips, and on the product so a
+    // response for the page we just navigated away from is never painted.
+    if (!promotionsEnabled || promotions.product !== product) return map;
+    for (const c of promotions.candidates) {
+      const key = `${c.service}::${c.targetEnv}`;
+      // Newest wins if several are somehow open on the same edge; the list arrives newest-first.
+      if (!map.has(key)) map.set(key, c);
+    }
+    return map;
+  }, [promotions, promotionsEnabled, product]);
 
   // ── Compare helpers ──
   // If the user hasn't picked envs, default to the last two ordered envs —
@@ -733,7 +779,7 @@ export function ProductDeploymentsPage() {
                       service={service}
                       envLabel={getDisplayName(env)}
                       cell={getCell(service, env)}
-                      behind={!!isBehind(service, envIdx)}
+                      pending={pendingPromotions.get(`${service}::${env}`)}
                       highlighted={
                         timeFilter !== 'all' && recentKeys.has(`${service}::${env}`)
                       }
@@ -806,7 +852,7 @@ function MatrixCell({
   service,
   envLabel,
   cell,
-  behind,
+  pending,
   highlighted,
   onOpen,
 }: {
@@ -814,7 +860,8 @@ function MatrixCell({
   service: string;
   envLabel: string;
   cell: DeploymentStateEntry | undefined;
-  behind: boolean;
+  /** A Pending promotion targeting this (service, environment), if there is one. */
+  pending?: PromotionCandidate;
   highlighted: boolean;
   onOpen: (entry: { id: string }) => void;
 }) {
@@ -823,10 +870,14 @@ function MatrixCell({
     role: null,
     disabled: !cell,
     label: cell
-      ? `${service} in ${envLabel}, version ${cell.version}${behind ? ', behind' : ''}. Open deployment.`
-      : `${service} in ${envLabel}, not deployed`,
+      ? `${service} in ${envLabel}, version ${cell.version}` +
+        `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}. Open deployment.`
+      : `${service} in ${envLabel}, not deployed` +
+        `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}`,
   });
 
+  // Nothing deployed here yet. A pending promotion still belongs on the cell — a first deploy into
+  // an environment is exactly the case where "something is queued for this slot" is worth knowing.
   if (!cell) {
     return (
       <td
@@ -834,7 +885,7 @@ function MatrixCell({
         className="text-center px-4 py-3"
         style={{ color: 'var(--text-muted)' }}
       >
-        —
+        {pending ? <PendingPromotionChip candidate={pending} /> : '—'}
       </td>
     );
   }
@@ -852,9 +903,9 @@ function MatrixCell({
         <span className="inline-flex items-center gap-1">
           <span
             className="font-mono text-[12px] font-medium"
-            style={{ color: behind ? 'var(--warning)' : statusColor(cell.status) }}
+            style={{ color: statusColor(cell.status) }}
           >
-            {behind && '⚠ '}v{cell.version}
+            v{cell.version}
           </span>
           <RollbackIndicator
             isRollback={cell.isRollback}
@@ -862,11 +913,43 @@ function MatrixCell({
           />
         </span>
         {cell.status && cell.status !== 'succeeded' && <StatusBadge status={cell.status} />}
+        {pending && <PendingPromotionChip candidate={pending} />}
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
           {formatDistanceToNow(new Date(cell.deployedAt), { addSuffix: true })}
         </span>
       </div>
     </td>
+  );
+}
+
+/**
+ * "A promotion into this slot is waiting on someone." Shown on the matrix cell for the
+ * (service, target environment) the promotion would land on.
+ *
+ * <p>Links straight to the promotion rather than the deployment the cell otherwise opens — the
+ * whole reason to surface it here is that it needs a decision, and making someone find it in the
+ * promotions queue afterwards defeats the point. Hence the click-stop: the cell's own handler goes
+ * to deployment history, which is not where this chip is pointing.</p>
+ */
+function PendingPromotionChip({ candidate }: { candidate: PromotionCandidate }) {
+  return (
+    <Link
+      to={`/promotions/${candidate.id}`}
+      onClick={(e) => e.stopPropagation()}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-opacity hover:opacity-80"
+      style={{
+        backgroundColor: 'var(--accent-bg)',
+        color: 'var(--accent)',
+        border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+      }}
+      title={
+        `Promotion awaiting approval: ${candidate.service} ${candidate.version} ` +
+        `from ${candidate.sourceEnv} → ${candidate.targetEnv}`
+      }
+    >
+      <ArrowUp size={10} />
+      v{candidate.version}
+    </Link>
   );
 }
 
