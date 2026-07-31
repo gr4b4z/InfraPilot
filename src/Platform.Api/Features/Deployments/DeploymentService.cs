@@ -1,8 +1,9 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Persistence;
@@ -15,6 +16,7 @@ public class DeploymentService
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IPromotionIngestHook _promotionHook;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
+    private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -38,12 +40,14 @@ public class DeploymentService
         IWebhookDispatcher webhookDispatcher,
         IPromotionIngestHook promotionHook,
         IOptionsMonitor<NormalizationOptions> normalization,
+        UserPreferencesService userPrefs,
         ILogger<DeploymentService> logger)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
         _promotionHook = promotionHook;
         _normalization = normalization;
+        _userPrefs = userPrefs;
         _logger = logger;
     }
 
@@ -550,9 +554,17 @@ public class DeploymentService
         return latest.Select(e => MapToStateDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
     }
 
+    /// <summary>
+    /// The product × environment matrix. Products the caller has hidden are dropped here rather
+    /// than in the UI — this is the canonical product list, so filtering it also empties the
+    /// release-notes index and every product dropdown built from it.
+    /// </summary>
     public async Task<List<ProductSummaryDto>> GetProductSummaries(CancellationToken ct = default)
     {
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+
         var latest = await _db.DeployEvents
+            .Where(e => !hidden.Contains(e.Product))
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
             .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
             .ToListAsync(ct);

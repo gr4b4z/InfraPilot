@@ -1,9 +1,10 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Users;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
@@ -32,6 +33,7 @@ public class PromotionService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
+    private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -48,7 +50,8 @@ public class PromotionService
         IAuditLogger audit,
         ILogger<PromotionService> logger,
         IWebhookDispatcher webhookDispatcher,
-        IOptionsMonitor<NormalizationOptions> normalization)
+        IOptionsMonitor<NormalizationOptions> normalization,
+        UserPreferencesService userPrefs)
     {
         _db = db;
         _resolver = resolver;
@@ -57,6 +60,7 @@ public class PromotionService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _normalization = normalization;
+        _userPrefs = userPrefs;
         _logger = logger;
     }
 
@@ -493,6 +497,13 @@ public class PromotionService
     public async Task<List<PromotionCandidate>> GetAsync(PromotionQuery query, CancellationToken ct = default)
     {
         var q = _db.PromotionCandidates.AsNoTracking().AsQueryable();
+
+        // Applied before the status split below, not after: that split takes the newest N non-Pending
+        // rows, so filtering afterwards would quietly return fewer than the cap and make the resolved
+        // tail look shorter than it is.
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        if (hidden.Count > 0) q = q.Where(c => !hidden.Contains(c.Product));
+
         if (query.Status is { } s) q = q.Where(c => c.Status == s);
         if (!string.IsNullOrEmpty(query.Product)) q = q.Where(c => c.Product == query.Product);
         if (!string.IsNullOrEmpty(query.TargetEnv)) q = q.Where(c => c.TargetEnv == query.TargetEnv);

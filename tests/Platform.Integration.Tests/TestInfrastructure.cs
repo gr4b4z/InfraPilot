@@ -78,10 +78,16 @@ public class TestFactory : WebApplicationFactory<Program>
     /// <summary>
     /// Creates an <see cref="HttpClient"/> authenticated as admin@localhost (InfraPortal.Admin role).
     /// </summary>
-    public HttpClient CreateAdminClient()
+    public HttpClient CreateAdminClient() => CreateAuthenticatedClient("admin@localhost", "admin123");
+
+    /// <summary>
+    /// Creates an <see cref="HttpClient"/> authenticated as one of the seeded local users. Needed
+    /// wherever a test has to prove that per-user state stays per-user.
+    /// </summary>
+    public HttpClient CreateAuthenticatedClient(string email, string password)
     {
         var client = CreateClient();
-        var loginResponse = client.PostAsJsonAsync("/api/auth/login", new { email = "admin@localhost", password = "admin123" })
+        var loginResponse = client.PostAsJsonAsync("/api/auth/login", new { email, password })
             .GetAwaiter().GetResult();
         loginResponse.EnsureSuccessStatusCode();
         var stream = loginResponse.Content.ReadAsStreamAsync().GetAwaiter().GetResult();

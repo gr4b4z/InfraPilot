@@ -764,6 +764,32 @@ class ApiClient {
       body: JSON.stringify(payload),
     });
   }
+
+  // ── The signed-in user's own preferences ───────────────────────────────────
+
+  getMyPreferences() {
+    return this.request<UserPreferencesPayload>(`/me/preferences`);
+  }
+
+  /**
+   * Everything the hidden-products control needs. `products` is deliberately the UNFILTERED list —
+   * every other product-bearing endpoint already has the hidden set applied, so this is the only
+   * call that can still see a hidden product and therefore the only one that can offer to unhide it.
+   */
+  getMyProductVisibility() {
+    return this.request<{ products: string[]; hiddenProducts: string[] }>(`/me/preferences/products`);
+  }
+
+  setMyHiddenProducts(products: string[]) {
+    return this.request<UserPreferencesPayload>(`/me/preferences/hidden-products`, {
+      method: 'PUT',
+      body: JSON.stringify({ products }),
+    });
+  }
+}
+
+export interface UserPreferencesPayload {
+  hiddenProducts: string[];
 }
 
 export interface AppSettingsPayload {
