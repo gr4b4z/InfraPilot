@@ -1524,7 +1524,12 @@ public class PromotionService
         }
 
         return new WorkItemGateProgress(
-            Required: true, Total: workItemKeys.Count, Approved: approved,
+            // The two flags mean different things and only one of them blocks. RequireAll holds a
+            // human approver back until every item is signed off; AutoApproveOnAll is an
+            // accelerator that never blocks anything. Reporting the real flag lets the UI disable
+            // the Approve button for the first case without disabling it for the second.
+            Required: snapshot.RequireAllWorkItemsApproved,
+            Total: workItemKeys.Count, Approved: approved,
             Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove,
             Issues: issues);
     }
@@ -2021,6 +2026,17 @@ public record ApprovalProgress(
 /// Progress of the "all work items resolved/approved" gate condition for a candidate:
 /// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off.
 /// </summary>
+/// <param name="Required">
+/// True when the policy holds human approval back until every work item is signed off
+/// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>). Combined with
+/// <paramref name="Satisfied"/> this is exactly the condition that makes
+/// <see cref="PromotionService.ApproveAsync"/> refuse, so the UI can disable its Approve button on
+/// the same terms rather than letting the approver find out from an error.
+/// </param>
+/// <param name="AutoApprove">
+/// True when resolving every work item promotes the candidate on its own. An accelerator, not a
+/// gate — it never blocks a human approval, so it must not be confused with <paramref name="Required"/>.
+/// </param>
 public record WorkItemGateProgress(
     bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false,
     // Work items carrying an Issue. Counted separately from Approved so the UI can say

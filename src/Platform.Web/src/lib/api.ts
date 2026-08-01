@@ -1263,6 +1263,11 @@ export interface PromotionApprovalProgress {
 }
 
 export interface PromotionWorkItemGate {
+  /**
+   * True when the policy holds human approval back until every work item is signed off. Together
+   * with `satisfied === false` this is exactly what makes the approve call fail, so it is what the
+   * detail page disables its Approve button on. Distinct from `autoApprove`, which never blocks.
+   */
   required: boolean;
   total: number;
   approved: number;
