@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, createContext, useContext } from 'react';
+import { useEffect, useId, useState, useMemo, createContext, useContext } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
@@ -18,6 +18,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Clock,
@@ -1216,6 +1217,9 @@ function PromotionApprovalCard({
   // so both go through a confirmation that names what it is about to do. `pending` is which one is
   // waiting on that confirmation. Declared with the other hooks, above the early return below.
   const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
+  // Ties the visible "why you can't approve" line to the Approve button. Up here with the other
+  // hooks — the early return below means anything called after it runs conditionally.
+  const approveBlockedId = useId();
   // Always offer the "Approve as" radios. With exactly one eligible requirement, preselect it
   // (one pre-checked radio) so the UI is uniform; with more than one, the approver must pick.
   const selected =
@@ -1234,8 +1238,28 @@ function PromotionApprovalCard({
     setPending(null);
   };
 
-  // Block the Approve button until a requirement is selected (the single case is preselected).
-  const approveBlocked = !selected;
+  // Why the Approve button is unavailable, or null when it isn't. Doubles as the tooltip, so the
+  // button can never be greyed out without saying why.
+  //
+  // The work-item gate is checked first because it outranks the other reason: when the policy holds
+  // approval back until every item is signed off, picking a requirement changes nothing. The
+  // condition mirrors the server's guard in ApproveAsync exactly — an approver should learn this
+  // from a disabled button, not from a failed request.
+  const gate = progress?.workItems;
+  const approveBlockedReason: string | null = (() => {
+    if (gate && gate.required && !gate.satisfied) {
+      const outstanding = gate.total - gate.approved;
+      const issues = (gate.issues ?? 0) > 0 ? `, ${gate.issues} flagged with issues` : '';
+      return (
+        `This promotion's policy requires every work item to be approved first. ` +
+        `${gate.approved} of ${gate.total} signed off${issues} — ` +
+        `${outstanding} still outstanding. Sign them off from the work items below or the queue.`
+      );
+    }
+    if (!selected) return 'Select which requirement you are approving as';
+    return null;
+  })();
+  const approveBlocked = approveBlockedReason !== null;
 
   return (
     <div
@@ -1310,27 +1334,32 @@ function PromotionApprovalCard({
           {/* The comment used to live here behind an "Add comment" toggle. It moved into the
               confirmation, which now always asks — two comment fields for one decision reads as a
               bug, and the one attached to the confirmation is the one that gets used. */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPending('approve')}
-              {...{ [ROW_ACTION_ATTR]: 'approve' }}
-              disabled={actionLoading || approveBlocked}
-              title={
-                approveBlocked
-                  ? 'Select which requirement you are approving as'
-                  : undefined
-              }
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
-              style={{
-                backgroundColor: 'var(--success-solid)',
-                color: '#fff',
-                opacity: actionLoading || approveBlocked ? 0.5 : 1,
-                cursor: approveBlocked ? 'not-allowed' : 'pointer',
-              }}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* The tooltip lives on a wrapper, not on the button. A disabled button receives no
+                pointer events, so a `title` on it never opens — the explanation for why a control
+                is unavailable would be invisible on exactly the control that needs it. */}
+            <span
+              title={approveBlockedReason ?? undefined}
+              style={{ cursor: approveBlocked ? 'not-allowed' : undefined }}
             >
-              <CheckCircle size={14} />
-              Approve
-            </button>
+              <button
+                onClick={() => setPending('approve')}
+                {...{ [ROW_ACTION_ATTR]: 'approve' }}
+                disabled={actionLoading || approveBlocked}
+                aria-describedby={approveBlocked ? approveBlockedId : undefined}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
+                style={{
+                  backgroundColor: 'var(--success-solid)',
+                  color: '#fff',
+                  opacity: actionLoading || approveBlocked ? 0.5 : 1,
+                  cursor: approveBlocked ? 'not-allowed' : 'pointer',
+                  pointerEvents: approveBlocked ? 'none' : undefined,
+                }}
+              >
+                <CheckCircle size={14} />
+                Approve
+              </button>
+            </span>
             <button
               onClick={() => setPending('reject')}
               {...{ [ROW_ACTION_ATTR]: 'reject' }}
@@ -1350,6 +1379,20 @@ function PromotionApprovalCard({
               or press <kbd className="font-mono">A</kbd> / <kbd className="font-mono">R</kbd>
             </span>
           </div>
+
+          {/* Also stated in the open, not only on hover. A greyed-out primary action is the thing
+              people report as broken, and a tooltip is unreachable on touch and to a screen reader
+              that never lands on the disabled button. `aria-describedby` ties it to the button. */}
+          {approveBlockedReason && (
+            <p
+              id={approveBlockedId}
+              className="text-[12px] mt-2 flex items-start gap-1.5"
+              style={{ color: 'var(--warning)' }}
+            >
+              <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+              <span>{approveBlockedReason}</span>
+            </p>
+          )}
         </>
       )}
 
