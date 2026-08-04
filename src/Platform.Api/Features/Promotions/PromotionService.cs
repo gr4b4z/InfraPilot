@@ -1909,15 +1909,37 @@ public class PromotionService
     }
 
     /// <summary>
-    /// Bulk capability probe — resolves the approver group once per distinct group, then tests
-    /// each candidate against the cached membership set. This avoids N+1 Graph calls when the
-    /// UI lists dozens of candidates.
+    /// Bulk capability probe — "can the current user approve this candidate <b>right now</b>?" for a
+    /// whole list. Resolves each distinct approver group once, then tests every candidate against the
+    /// cached membership set, so listing dozens of candidates costs a bounded number of Graph calls.
+    ///
+    /// <para>The answer is the same condition <see cref="ApproveAsync"/> will accept, because the UI
+    /// spends it on claims the user can act ("Awaiting your approval", the my-approvals tab, the bulk
+    /// selection, the my-tasks badge). Being a member of an approver group is <b>not</b> that
+    /// condition. A candidate is approvable only when all of the following hold:</para>
+    /// <list type="number">
+    ///   <item>It is Pending and not auto-approve.</item>
+    ///   <item>The user hasn't already decided on it.</item>
+    ///   <item>At least one requirement the user is authorized for is still <b>open</b>. A colleague
+    ///         satisfying the last slot of the only requirement you match leaves you nothing to
+    ///         approve — <see cref="ApproveAsync"/> answers that with
+    ///         <see cref="RequirementAlreadySatisfiedException"/>.</item>
+    ///   <item>The policy's work-item gate isn't holding it back
+    ///         (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> with items still
+    ///         outstanding). This is the one <see cref="ApproveAsync"/> refuses outright.</item>
+    /// </list>
+    ///
+    /// <para>Conditions 3 and 4 used to be missing here, so every group member saw every Pending
+    /// candidate as theirs to approve — including ones the server would have rejected. The detail view
+    /// got this right via <see cref="GetEligibleRequirementsAsync"/> and its progress panel; the list
+    /// had neither, so it could only report group membership.</para>
     /// </summary>
     public async Task<IReadOnlyDictionary<Guid, bool>> CanUserApproveManyAsync(
         IEnumerable<PromotionCandidate> candidates, CancellationToken ct = default)
     {
         var result = new Dictionary<Guid, bool>();
         var list = candidates.ToList();
+        if (list.Count == 0) return result;
 
         // Precompute "already decided" set for the current user across all candidates in one query.
         // Match the canonical stored form so casing can't cause a missed dedup.
@@ -1929,10 +1951,25 @@ public class PromotionService
             .ToListAsync(ct);
         var decidedSet = alreadyDecided.ToHashSet();
 
+        // Every Approved row across the whole list, in one query — the input the matcher needs to tell
+        // an open requirement from a satisfied one. Batched for the same reason group membership is.
+        var approvalsByCandidate = (await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.CandidateId) && a.Decision == PromotionDecision.Approved)
+                .Select(a => new { a.CandidateId, a.ApproverEmail, a.StepName, a.RequirementName })
+                .ToListAsync(ct))
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<RecordedApproval>)g
+                    .Select(a => new RecordedApproval(a.ApproverEmail, a.StepName, a.RequirementName))
+                    .ToList());
+
+        // Candidates whose work-item gate is currently holding approval back. Two queries for the
+        // whole list.
+        var gateBlocked = await GetWorkItemGateBlockedAsync(list, ct);
+
         // Cache group membership lookups: one Graph call per unique approver group across all
-        // candidates' requirement trees. The current user matches a requirement when they're in any
-        // of its groups OR listed in its users — so a candidate is approvable when ≥1 requirement
-        // matches.
+        // candidates' requirement trees.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var email = _currentUser.Email;
 
@@ -1942,15 +1979,23 @@ public class PromotionService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) { result[c.Id] = false; continue; }
             if (decidedSet.Contains(c.Id)) { result[c.Id] = false; continue; }
+            // The work-item gate outranks everything below: while it holds, no requirement is
+            // approvable, so which ones the user matches doesn't matter.
+            if (gateBlocked.Contains(c.Id)) { result[c.Id] = false; continue; }
 
-            var canApprove = false;
-            foreach (var req in snapshot.AllRequirements)
+            // Which requirements this user is authorized for. Collected by index rather than
+            // short-circuiting on the first hit, because the open-ness test below needs all of them:
+            // one matched requirement being satisfied says nothing about another.
+            var requirements = snapshot.AllRequirements;
+            var authorizedIndexes = new List<int>();
+            for (var ri = 0; ri < requirements.Count; ri++)
             {
+                var req = requirements[ri];
                 // User-list match is free; check it first.
                 if (req.Users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase)))
                 {
-                    canApprove = true;
-                    break;
+                    authorizedIndexes.Add(ri);
+                    continue;
                 }
                 foreach (var group in req.Groups)
                 {
@@ -1959,15 +2004,150 @@ public class PromotionService
                         member = await _auth.IsInApproverGroupAsync(group, ct);
                         groupMembership[group.Id] = member;
                     }
-                    if (member) { canApprove = true; break; }
+                    if (member) { authorizedIndexes.Add(ri); break; }
                 }
-                if (canApprove) break;
             }
-            result[c.Id] = canApprove;
+            if (authorizedIndexes.Count == 0) { result[c.Id] = false; continue; }
+
+            // Nobody has approved yet ⇒ nothing can be satisfied ⇒ every matched requirement is open.
+            // Skip the matcher for what is by far the common case on a pending list.
+            var recorded = approvalsByCandidate.GetValueOrDefault(c.Id);
+            if (recorded is null or { Count: 0 }) { result[c.Id] = true; continue; }
+
+            var match = MatchRecorded(snapshot, recorded);
+            result[c.Id] = authorizedIndexes.Any(i => !match.Requirements[i].Satisfied);
         }
 
         return result;
     }
+
+    /// <summary>
+    /// Of <paramref name="candidates"/>, those whose policy holds human approval back until every work
+    /// item is signed off and which still have one outstanding — exactly the condition
+    /// <see cref="ApproveAsync"/> refuses on. Two queries for the whole list, so the promotions list
+    /// can ask this per row without an N+1.
+    /// </summary>
+    private async Task<HashSet<Guid>> GetWorkItemGateBlockedAsync(
+        IReadOnlyList<PromotionCandidate> candidates, CancellationToken ct)
+    {
+        var blocked = new HashSet<Guid>();
+
+        // Only candidates whose own snapshot gates on work items can be blocked by one.
+        var gated = candidates
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Select(c => (Candidate: c, Snapshot: ReadSnapshot(c)))
+            .Where(t => t.Snapshot.RequireAllWorkItemsApproved && t.Snapshot.TracksWorkItems)
+            .ToList();
+        if (gated.Count == 0) return blocked;
+
+        var gatedIds = gated.Select(t => t.Candidate.Id).ToList();
+        var workItems = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => gatedIds.Contains(w.CandidateId))
+            .Select(w => new { w.CandidateId, w.WorkItemKey })
+            .ToListAsync(ct);
+        if (workItems.Count == 0) return blocked; // nothing to gate on
+
+        // Sign-offs key on (key, product, targetEnv), so fetch by the keys in play and re-match the
+        // triple in memory. Over-fetches rows for a key shared across products; cheap and bounded.
+        var keys = workItems.Select(w => w.WorkItemKey).Distinct().ToList();
+        var products = gated.Select(t => t.Candidate.Product).Distinct().ToList();
+        var envs = gated.Select(t => t.Candidate.TargetEnv).Distinct().ToList();
+        var decisions = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && products.Contains(a.Product)
+                     && envs.Contains(a.TargetEnv))
+            .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv, a.Decision })
+            .ToListAsync(ct);
+
+        var approvedTuples = decisions
+            .Where(d => d.Decision == WorkItemDecision.Approved)
+            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+            .ToHashSet();
+        // An Issue or a Block holds the item regardless of a sibling approval — same precedence
+        // AreAllWorkItemsApprovedAsync applies.
+        var heldTuples = decisions
+            .Where(d => d.Decision != WorkItemDecision.Approved)
+            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+            .ToHashSet();
+
+        var keysByCandidate = workItems
+            .GroupBy(w => w.CandidateId)
+            .ToDictionary(g => g.Key, g => g.Select(w => w.WorkItemKey).Distinct().ToList());
+
+        foreach (var (candidate, _) in gated)
+        {
+            var candidateKeys = keysByCandidate.GetValueOrDefault(candidate.Id);
+            if (candidateKeys is null or { Count: 0 }) continue; // no work items ⇒ nothing to wait for
+            var allResolved = candidateKeys.All(k =>
+                approvedTuples.Contains((k, candidate.Product, candidate.TargetEnv))
+                && !heldTuples.Contains((k, candidate.Product, candidate.TargetEnv)));
+            if (!allResolved) blocked.Add(candidate.Id);
+        }
+
+        return blocked;
+    }
+
+    /// <summary>
+    /// Runs <see cref="ApprovalMatcher"/> over already-loaded approval rows — the pure, no-IO half of
+    /// <see cref="EvaluateRequirementMatchAsync"/>, for callers that batched the query themselves.
+    ///
+    /// <para>Eligibility for a recorded approver uses the same approximation documented on
+    /// <see cref="EvaluateRequirementMatchAsync"/>: explicit user-list match, or "the requirement
+    /// carries groups, and membership can't be disproven". No live check for the current user is needed
+    /// here — a candidate they have already decided on never reaches the matcher.</para>
+    /// </summary>
+    private static MatchResult MatchRecorded(
+        ResolvedPolicySnapshot snapshot, IReadOnlyList<RecordedApproval> recorded)
+    {
+        var requirements = snapshot.AllRequirements;
+
+        // Map (StepName, RequirementName) → flattened index, to resolve pinned attributions.
+        var indexByName = new Dictionary<(string Step, string Req), int>();
+        var cursor = 0;
+        foreach (var step in snapshot.ApprovalSteps)
+        {
+            foreach (var req in step.Requirements)
+            {
+                indexByName[(step.Name ?? "", req.Name ?? "")] = cursor;
+                cursor++;
+            }
+        }
+
+        var decisionByEmail = new Dictionary<string, ApproverDecision>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in recorded)
+        {
+            if (string.IsNullOrEmpty(row.ApproverEmail)) continue;
+            int? pinned = null;
+            if (!string.IsNullOrEmpty(row.RequirementName)
+                && indexByName.TryGetValue((row.StepName ?? "", row.RequirementName), out var idx))
+            {
+                pinned = idx;
+            }
+            if (decisionByEmail.TryGetValue(row.ApproverEmail, out var existing)
+                && existing.PinnedRequirementIndex is not null)
+                continue;
+            decisionByEmail[row.ApproverEmail] = new ApproverDecision(row.ApproverEmail, pinned);
+        }
+
+        return ApprovalMatcher.Match(
+            requirements,
+            decisionByEmail.Values.ToList(),
+            (recordedEmail, req) => ApprovedRowMatchesRequirement(req, recordedEmail));
+    }
+
+    /// <summary>
+    /// Whether a <b>recorded</b> approval by <paramref name="approverEmail"/> can be attributed to
+    /// <paramref name="requirement"/>. Not an authorization check — the approval was authorized when it
+    /// was recorded; this only decides which requirement it counts towards. See
+    /// <see cref="EvaluateRequirementMatchAsync"/> for why group membership is assumed rather than
+    /// resolved for other users.
+    /// </summary>
+    private static bool ApprovedRowMatchesRequirement(ApproverRequirement requirement, string approverEmail)
+        => requirement.Users.Any(u => string.Equals(u, approverEmail, StringComparison.OrdinalIgnoreCase))
+           || requirement.Groups.Count > 0;
+
+    /// <summary>One recorded approval, flattened for the pure matcher.</summary>
+    private readonly record struct RecordedApproval(string ApproverEmail, string? StepName, string? RequirementName);
 
     // ---------------------------------------------------------------------
     // Private helpers
