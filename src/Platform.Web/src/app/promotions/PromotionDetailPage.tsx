@@ -1206,7 +1206,11 @@ function PromotionApprovalCard({
   isAdmin: boolean;
   eligibleRequirements: EligibleRequirement[];
 }) {
-  const showActions = candidate.canApprove && !actionDone;
+  // Driven by "am I an eligible approver", NOT by candidate.canApprove — that flag now also means
+  // "and nothing is blocking right now", which would hide this card exactly when the approver most
+  // needs it: the Approve button below renders disabled with `approveBlockedReason` explaining what
+  // to go and do. Same set the radios are built from, so the card and its controls can't disagree.
+  const showActions = eligibleRequirements.length > 0 && !actionDone;
   const showProgress = !!progress?.requiresApproval;
   // Admin escape hatch: available on any Pending candidate regardless of whether this admin is an
   // eligible approver — that's the point of a bypass.
