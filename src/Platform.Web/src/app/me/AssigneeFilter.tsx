@@ -119,20 +119,22 @@ export function AssigneeFilter({
     ? `No ${roleDisplay({ role: value.role })} assigned`
     : 'Nobody assigned';
 
-  // If the current person pick is no longer available (e.g. role narrowed and they don't
-  // appear in the new set), reset to "Anyone" rather than silently render an invalid value.
   const personValue = useMemo(() => {
-    if (value.mode === 'all') return ANYONE;
     if (value.mode === 'me') return ME;
     if (value.mode === 'unassigned') return UNASSIGNED;
-    if (value.mode === 'person') {
-      const stillVisible = people.some(
-        (p) => p.email.toLowerCase() === (value.email ?? '').toLowerCase(),
-      );
-      return stillVisible ? `email:${value.email}` : ANYONE;
-    }
+    if (value.mode === 'person' && value.email) return `email:${value.email}`;
     return ANYONE;
-  }, [value, people]);
+  }, [value]);
+
+  // The selected person may not be in `people` — the rollup is scoped to the rows the current tab
+  // loaded, so switching tab or narrowing the role can drop them out of it. This used to display
+  // "Anyone" in that case while `mode` stayed 'person' and the request kept sending their email: an
+  // active filter with no visible sign of itself. Like the unconfigured role above, they get an option
+  // so the control keeps saying what it is filtering by.
+  const personIsOffList =
+    value.mode === 'person'
+    && !!value.email
+    && !people.some((p) => p.email.toLowerCase() === value.email!.toLowerCase());
 
   const handleRoleChange = (next: string) => {
     const nextRole = next === ANY_ROLE ? null : next;
@@ -252,7 +254,21 @@ export function AssigneeFilter({
               ))}
             </optgroup>
           )}
+          {personIsOffList && (
+            <option value={`email:${value.email}`}>
+              {value.displayName || value.email}
+            </option>
+          )}
         </select>
+        {personIsOffList && (
+          <span
+            className="inline-flex items-center gap-1 text-[11px]"
+            style={{ color: 'var(--text-muted)' }}
+            title={`${value.displayName || value.email} holds no role on the work items in this view. The filter is still applied — switch to "Anyone" to clear it.`}
+          >
+            Not on this view
+          </span>
+        )}
       </label>
       )}
     </div>
