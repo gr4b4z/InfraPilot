@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 
 namespace Platform.Api.Infrastructure.Persistence;
@@ -82,13 +83,20 @@ public static class PromotionSeedData
     /// <summary>
     /// Copies a deploy event's references onto a candidate (the self-contained net change set) and
     /// stages <see cref="PromotionWorkItem"/> rows for its work-item references.
+    ///
+    /// <para><paramref name="tracksWorkItems"/> mirrors the runtime's create path: when the resolved
+    /// policy opts the edge out of work items, the references are still copied (they are what shipped)
+    /// but no index rows are staged, so the seeded data can't contradict the flag on its own policy.</para>
     /// </summary>
-    private static void PopulateChangeSet(PlatformDbContext db, PromotionCandidate candidate, DeployEvent source)
+    private static void PopulateChangeSet(
+        PlatformDbContext db, PromotionCandidate candidate, DeployEvent source, bool tracksWorkItems = true)
     {
         var refs = string.IsNullOrEmpty(source.ReferencesJson)
             ? new List<ReferenceDto>()
             : JsonSerializer.Deserialize<List<ReferenceDto>>(source.ReferencesJson, JsonOptions) ?? new();
         candidate.References = refs;
+
+        if (!tracksWorkItems) return;
 
         var workItems = refs
             .Where(r => string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase)
@@ -126,13 +134,17 @@ public static class PromotionSeedData
 
         foreach (var product in products)
         {
-            // dev → staging: auto-approve (no approval steps)
+            // development → staging: auto-approve (no approval steps), and no work items. Staging is
+            // where a change lands to be integrated, not where QA signs it off — putting every dev
+            // promotion's tickets in the work-items queue would bury the ones that are actually
+            // somebody's to review. They become work items on the edge into production, below.
             policies.Add(new PromotionPolicy
             {
                 Id = Guid.NewGuid(),
                 Product = product,
                 TargetEnv = "staging",
                 ApprovalSteps = new(), // empty ⇒ auto-approve
+                TracksWorkItems = false,
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-28),
             });
@@ -156,6 +168,10 @@ public static class PromotionSeedData
                     }),
                 },
                 EscalationGroup = "SWO-PLT-TeamLeads",
+                // Production promotions must name a QA owner per work item. Seeded candidates carry no
+                // participants, so this is what makes the "needs attention" / "Not assigned" surfaces
+                // show something in a fresh dev database instead of looking unimplemented.
+                RequiredWorkItemRoles = new() { "qa-owner" },
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-14),
             });
@@ -232,7 +248,7 @@ public static class PromotionSeedData
                 ApprovedAt = approvedAt,
                 DeployedAt = deployedAt,
             };
-            PopulateChangeSet(db, candidate, deploy);
+            PopulateChangeSet(db, candidate, deploy, policy.TracksWorkItems);
 
             candidates.Add(candidate);
 
@@ -331,7 +347,7 @@ public static class PromotionSeedData
                 ApprovedAt = approvedAt,
                 DeployedAt = deployedAt,
             };
-            PopulateChangeSet(db, devCandidate, deploy);
+            PopulateChangeSet(db, devCandidate, deploy, policy.TracksWorkItems);
             candidates.Add(devCandidate);
 
             // Auto-approve means no PromotionApproval rows — the system approved it.
@@ -410,7 +426,7 @@ public static class PromotionSeedData
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
                 CreatedAt = ev.DeployedAt.AddMinutes(5),
             };
-            PopulateChangeSet(db, pred, ev);
+            PopulateChangeSet(db, pred, ev, policy.TracksWorkItems);
             candidates.Add(pred);
         }
 
@@ -427,20 +443,17 @@ public static class PromotionSeedData
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
             CreatedAt = fresh.DeployedAt.AddMinutes(5),
         };
-        PopulateChangeSet(db, winner, fresh);
+        PopulateChangeSet(db, winner, fresh, policy.TracksWorkItems);
         candidates.Add(winner);
     }
 
+    /// <summary>
+    /// Snapshots a policy the same way the runtime does. Delegates to
+    /// <see cref="PromotionPolicyResolver.Project"/> rather than re-listing the fields: the local copy
+    /// this replaced had gone stale, so seeded candidates were missing settings their policy declared.
+    /// </summary>
     private static ResolvedPolicySnapshot MakeSnapshot(PromotionPolicy policy) =>
-        new(
-            PolicyId: policy.Id,
-            EscalationGroup: policy.EscalationGroup)
-        {
-            ApprovalSteps = policy.ApprovalSteps,
-            RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
-            AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
-            AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
-        };
+        PromotionPolicyResolver.Project(policy);
 
     /// <summary>
     /// Picks a random approver, excluding anyone already in <paramref name="exclude"/>

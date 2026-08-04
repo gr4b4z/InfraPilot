@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Platform.Api.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Api.Migrations.Postgres
 {
     [DbContext(typeof(PostgresPlatformDbContext))]
-    partial class PostgresPlatformDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260804120257_AddPromotionPolicyRequiredWorkItemRoles")]
+    partial class AddPromotionPolicyRequiredWorkItemRoles
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -700,11 +703,6 @@ namespace Platform.Api.Migrations.Postgres
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
-
-                    b.Property<bool>("TracksWorkItems")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true);
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");

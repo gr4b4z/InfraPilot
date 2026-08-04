@@ -49,6 +49,18 @@ export function formatReferenceParticipant(p: PromotionSourceEventParticipant): 
 }
 
 /**
+ * Reads a list of canonical role keys as a sentence fragment: "QA Owner", "QA Owner and Reviewer",
+ * "QA Owner, Reviewer and Author". Used for the "needs attention" wording wherever a work item is
+ * missing somebody in a role its promotion policy requires — see components/promotions/MissingRoles.
+ */
+export function missingRolesLabel(roles: string[]): string {
+  const labels = roles.map((r) => roleDisplay({ role: r }));
+  if (labels.length === 0) return '';
+  if (labels.length === 1) return labels[0];
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
+
+/**
  * Human name for a reference provider, for link labels like "View in Jira". Falls back to the raw
  * value (title-cased on separators) so an unrecognised provider still reads as a name rather than a
  * slug, and to a generic word when there's nothing to go on.

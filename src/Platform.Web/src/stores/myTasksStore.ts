@@ -10,9 +10,12 @@ import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
  * badge, and the My Tasks page. One fetch pair feeds all three so the numbers can't disagree
  * with each other or with the page they link to.
  *
- * Two sources, both scoped to the current user:
+ * Three sources, all scoped to what the current user can act on:
  *  - Promotions the user can approve right now (Pending × canApprove).
- *  - Work items assigned to the user and not yet signed off (the queue's `assignee=me` slice).
+ *  - Work items the user is answerable for and hasn't signed off — the queue's `assignee=me` slice
+ *    narrowed to the roles the promotion policy requires (`roleRequirement=assigned`).
+ *  - Work items with nobody in a policy-required role (`roleRequirement=missing`). Not scoped to the
+ *    user: the work they need is an assignment, and whoever can see the queue is who does that.
  *
  * Deliberately *not* "everything I'm authorised to touch": the work-item queue's unfiltered
  * pending list is the whole approver-group backlog, which for a group of any size is a number
@@ -21,8 +24,13 @@ import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 interface MyTasksState {
   /** Pending promotions the current user can approve. */
   promotions: PromotionCandidate[];
-  /** Pending work items where the current user holds a participant role. */
+  /** Pending work items where the current user holds a policy-required participant role. */
   workItems: PendingTicket[];
+  /**
+   * Pending work items missing somebody in a role their promotion policy requires. Empty for users
+   * without the QA/Admin role — the queue itself is empty for them.
+   */
+  unassignedWorkItems: PendingTicket[];
   loading: boolean;
   /** True once a fetch has settled — lets consumers hide a badge until the count is real. */
   loaded: boolean;
@@ -38,11 +46,12 @@ interface MyTasksState {
  */
 let inFlight: Promise<void> | null = null;
 
-const EMPTY_QUEUE = { tickets: [] as PendingTicket[], assignees: [], roles: [] };
+const EMPTY_QUEUE = { tickets: [] as PendingTicket[], assignees: [], roles: [], unknownRoles: [] };
 
 export const useMyTasksStore = create<MyTasksState>((set) => ({
   promotions: [],
   workItems: [],
+  unassignedWorkItems: [],
   loading: false,
   loaded: false,
   error: null,
@@ -50,20 +59,32 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const email = useAuthStore.getState().user?.email ?? '';
-      // Both sources live behind the Promotions flag. When it's off there's nothing to count,
-      // and hitting the endpoints would just be two 404s per poll.
+      // All three sources live behind the Promotions flag. When it's off there's nothing to count,
+      // and hitting the endpoints would just be 404s per poll.
       if (useFeatureFlagsStore.getState().flags[FeatureFlag.Promotions] === false) {
-        set({ promotions: [], workItems: [], loading: false, loaded: true, error: null });
+        set({
+          promotions: [],
+          workItems: [],
+          unassignedWorkItems: [],
+          loading: false,
+          loaded: true,
+          error: null,
+        });
         return;
       }
       set({ loading: true, error: null });
       // Settled, not all-or-nothing: a failure on one side shouldn't blank out the other side's
       // count, which would read as "you're all caught up" when it isn't.
-      const [promotionsResult, workItemsResult] = await Promise.allSettled([
+      const [promotionsResult, workItemsResult, unassignedResult] = await Promise.allSettled([
         api.listPromotions({ status: 'Pending' }),
         // Without an email there is no "me" to narrow to, and an empty `assignee` would widen
         // the query to the entire approver-group backlog. Skip rather than over-count.
-        email ? api.getMyPendingWorkItems({ assignee: email }) : Promise.resolve(EMPTY_QUEUE),
+        email
+          ? api.getMyPendingWorkItems({ assignee: email, roleRequirement: 'assigned' })
+          : Promise.resolve(EMPTY_QUEUE),
+        // Not narrowed by person — an item nobody has been put on has no "me" to match. The server
+        // already limits the queue to users who may manage work items.
+        api.getMyPendingWorkItems({ roleRequirement: 'missing' }),
       ]);
 
       const failures: string[] = [];
@@ -77,10 +98,15 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
         workItemsResult.status === 'fulfilled'
           ? (workItemsResult.value.tickets ?? [])
           : (failures.push('work items'), []);
+      const unassignedWorkItems =
+        unassignedResult.status === 'fulfilled'
+          ? (unassignedResult.value.tickets ?? [])
+          : (failures.push('unassigned work items'), []);
 
       set({
         promotions,
         workItems,
+        unassignedWorkItems,
         loading: false,
         loaded: true,
         error: failures.length > 0 ? `Couldn't load ${failures.join(' and ')}.` : null,
@@ -92,9 +118,14 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
   },
 }));
 
-/** Total items awaiting the current user — what the bell badge shows. */
+/**
+ * Total items awaiting the current user — what the bell badge shows. Unassigned work items count:
+ * putting somebody on a required role is an action, and one nobody else is going to be nudged about.
+ */
 export function useMyTasksCount(): number {
-  return useMyTasksStore((s) => s.promotions.length + s.workItems.length);
+  return useMyTasksStore(
+    (s) => s.promotions.length + s.workItems.length + s.unassignedWorkItems.length,
+  );
 }
 
 const POLL_INTERVAL_MS = 60_000;

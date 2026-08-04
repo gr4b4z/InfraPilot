@@ -36,9 +36,18 @@ public static class WorkItemEndpoints
         //
         // `role` accepts any role, configured or not. Combined with `assignee=unassigned` it answers
         // "which items have nobody in this role?", which is the point of a role that may be empty.
+        //
+        // `roleRequirement` narrows by the promotion policy's work-item role requirement instead of by
+        // a role the caller picked (see WorkItemRoleRequirements). Two values, one per queue tab:
+        //  - "assigned" → the person must hold a role the item's own policy REQUIRES. This is what
+        //                 "Assigned to me" means now: being named as, say, a ticket's reporter isn't
+        //                 being made answerable for it.
+        //  - "missing"  → items where at least one policy-required role has nobody in it ("Not
+        //                 assigned"). Independent of `assignee`.
+        // Anything else (including omitted) leaves the existing person/role behaviour untouched.
         group.MapGet("/me/pending", async (
             WorkItemApprovalService svc,
-            string? assignee, string? role, string? status, string? since,
+            string? assignee, string? role, string? status, string? since, string? roleRequirement,
             CancellationToken ct) =>
         {
             // status: "pending" (default) | "decided" (combined approved + rejected for the user).
@@ -63,7 +72,8 @@ public static class WorkItemEndpoints
                         ? null
                         : assignee,
                     ct),
-                _ => await svc.GetPendingForCurrentUserAsync(ct, assignee, role),
+                _ => await svc.GetPendingForCurrentUserAsync(
+                    ct, assignee, role, ParseRoleRequirement(roleRequirement)),
             };
             return Results.Ok(new
             {
@@ -214,6 +224,19 @@ public static class WorkItemEndpoints
         return group;
     }
 
+    /// <summary>
+    /// Maps the <c>roleRequirement</c> query value onto the filter. Unknown values fall back to
+    /// <see cref="WorkItemRoleRequirementFilter.Any"/> rather than 400: the parameter only narrows a
+    /// read, so a typo should return the unnarrowed queue, not fail the page.
+    /// </summary>
+    private static WorkItemRoleRequirementFilter ParseRoleRequirement(string? value)
+        => (value?.Trim().ToLowerInvariant()) switch
+        {
+            "assigned" => WorkItemRoleRequirementFilter.Assigned,
+            "missing" => WorkItemRoleRequirementFilter.Missing,
+            _ => WorkItemRoleRequirementFilter.Any,
+        };
+
     private static async Task<IResult> RunDecisionAsync(Func<Task<WorkItemApproval>> op)
     {
         try
@@ -300,6 +323,10 @@ public static class WorkItemEndpoints
         blockedReason = d.BlockedReason,
         myDecision = d.MyDecision,
         participants = d.Participants,
+        // Work-item completeness: the roles the carrying promotion's policy requires somebody in, and
+        // the ones still empty. A non-empty missingRoles is what makes the page ask for an assignment.
+        requiredRoles = d.RequiredRoles,
+        missingRoles = d.MissingRoles,
         approvals = d.Approvals.Select(ToApprovalDto),
         comments = d.Comments.Select(ToCommentDto),
         // The change behind the ticket: the commits whose messages referenced it, and the pull
