@@ -41,6 +41,27 @@ export const SCOPE_FILTER_DEFAULT: ScopeFilterValue = {
 
 const ANY = '__any__';
 
+/**
+ * The option list for a select, guaranteed to contain the value it is currently showing.
+ *
+ * Every dropdown here is populated from the rows that happen to be loaded, and the pick is persisted
+ * across tabs and sessions — so a saved value routinely isn't in the list any more (a different tab
+ * returns a different set of environments, the last item on a service gets signed off). A
+ * <c>&lt;select&gt;</c> whose value matches no option doesn't fail: the browser quietly displays the
+ * first one. That renders as "Any env" while the filter is still narrowing the list — and for the two
+ * environment selects it keeps the environment's colour too, so the control ends up green and reading
+ * "Any env" at the same time.
+ *
+ * Appending the value keeps the control honest. It is deliberately not <i>reset</i> instead: the rows
+ * are fetched per tab, so "not in the current options" is a normal transient state, and clearing the
+ * filter on every tab switch would throw away a pick the user still wants. When it genuinely matches
+ * nothing, the queue's empty state already says so.
+ */
+function withCurrentValue(options: string[], value: string | null): string[] {
+  if (!value || options.includes(value)) return options;
+  return [...options, value];
+}
+
 export function ScopeFilter({
   value,
   onChange,
@@ -68,15 +89,17 @@ export function ScopeFilter({
     const sortAlpha = (a: string, b: string) =>
       a.localeCompare(b, undefined, { sensitivity: 'base' });
     return {
-      products: [...p].sort(sortAlpha),
-      services: [...s].sort(sortAlpha),
+      // Each list also carries the currently-selected value, even when no loaded row has it — see
+      // withCurrentValue for why a select that can't render its own value is the bug being fixed.
+      products: withCurrentValue([...p].sort(sortAlpha), value.product),
+      services: withCurrentValue([...s].sort(sortAlpha), value.service),
       // Environments keep their configured order — that's the deployment order (dev → staging →
       // prod), which is the sequence a reader is thinking in. Alphabetising it would interleave the
       // pipeline stages meaninglessly.
-      targetEnvs: getOrderedEnvironments([...e]),
-      deployedEnvs: getOrderedEnvironments([...d]),
+      targetEnvs: getOrderedEnvironments(withCurrentValue([...e], value.targetEnv)),
+      deployedEnvs: getOrderedEnvironments(withCurrentValue([...d], value.deployedEnv)),
     };
-  }, [tickets, getOrderedEnvironments]);
+  }, [tickets, getOrderedEnvironments, value.product, value.service, value.targetEnv, value.deployedEnv]);
 
   const setField = <K extends keyof ScopeFilterValue>(key: K, raw: string) => {
     onChange({ ...value, [key]: raw === ANY ? null : raw });
@@ -153,8 +176,9 @@ export function ScopeFilter({
       </label>
 
       {/* Where the change is running, which is the environment a reviewer means when they say
-          "the staging items" — the rows label it "Testable in". Only offered when the queue has
-          deploy data to narrow by. */}
+          "the staging items" — the rows label it "Testable in". Only offered when there is something
+          to narrow by, which includes an active pick: without that, a saved value on a queue with no
+          deploy data hid the whole control while still filtering the list by it. */}
       {deployedEnvs.length > 0 && (
         <label
           className={filterLabelClass}
