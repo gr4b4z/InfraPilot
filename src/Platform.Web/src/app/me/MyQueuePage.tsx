@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PendingAssignee, PendingTicket, WorkItemDecision } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
@@ -21,13 +21,24 @@ import {
   Ticket,
   AlertTriangle,
   Ban,
+  Check,
   CheckCircle,
   XCircle,
   ExternalLink,
   ArrowRight,
   Inbox,
+  Link as LinkIcon,
   Unlink,
 } from 'lucide-react';
+import {
+  buildQueueParams,
+  hasQueueParams,
+  parseQueueParams,
+  type DeciderFilterValue,
+  type QueueParams,
+  type QueueView,
+  type TimeFrameValue,
+} from './queueFilterParams';
 import {
   AssigneeFilter,
   loadAssigneeFilter,
@@ -55,6 +66,26 @@ import {
  * a cookie so coming back lands you where you left off.
  */
 export function MyQueuePage() {
+  // The URL is the shareable form of this page's state; localStorage is the resumable one. A link
+  // carrying any queue parameter wins outright on arrival — see queueFilterParams for why a shared
+  // view must not blend with the recipient's saved filters. Read once, on mount: after that the state
+  // below owns the view and the effect at the bottom writes it back to the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initial = useMemo(
+    () => {
+      if (hasQueueParams(searchParams)) return parseQueueParams(searchParams, loadQueueView());
+      return {
+        view: loadQueueView(),
+        assignee: loadAssigneeFilter(),
+        scope: loadScopeFilter(),
+        timeFrame: loadTimeFrame(),
+        decider: loadDeciderFilter(),
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
   // Server-supplied (email, role) rollup feeding the person dropdown. Computed against the user's
   // authorized list pre-narrowing — the queue itself, not the org directory — so every person
@@ -66,18 +97,18 @@ export function MyQueuePage() {
   const [roles, setRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Hydrate the filter from localStorage so the user's pick survives reloads. Only happens
-  // on mount — subsequent updates flow through the onChange callback below.
-  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilterValue>(() => loadAssigneeFilter());
+  // Hydrated from the link or from localStorage (see `initial`). Only on mount — subsequent updates
+  // flow through the onChange callbacks below, which persist and re-write the URL.
+  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilterValue>(initial.assignee);
   // Product / service / targetEnv narrowing — applied client-side to the loaded queue.
-  const [scopeFilter, setScopeFilter] = useState<ScopeFilterValue>(() => loadScopeFilter());
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilterValue>(initial.scope);
   // Which slice of the queue is on screen. Cookie-persisted (see lib/prefs).
-  const [view, setView] = useState<QueueView>(() => loadQueueView());
+  const [view, setView] = useState<QueueView>(initial.view);
   // Time frame — only meaningful on the "decided" view; defaults to last day.
-  const [timeFrame, setTimeFrame] = useState<TimeFrameValue>(() => loadTimeFrame());
+  const [timeFrame, setTimeFrame] = useState<TimeFrameValue>(initial.timeFrame);
   // Decider narrowing — only meaningful on the "decided" view. Filters by who clicked
   // decision ("Me" = the current user's own decisions). Persisted via localStorage.
-  const [deciderFilter, setDeciderFilter] = useState<DeciderFilterValue>(() => loadDeciderFilter());
+  const [deciderFilter, setDeciderFilter] = useState<DeciderFilterValue>(initial.decider);
   // The auth store already carries the current user's email — same source PromotionDetailPage
   // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
   // server when the user picks "Assigned to me".
@@ -117,29 +148,62 @@ export function MyQueuePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail]);
 
+  /**
+   * Mirrors the view into the query string, so from the first filter change onwards the address bar is
+   * itself a link to what is on screen. Called from the change handlers rather than from an effect
+   * watching the state: a filter change is a user action with a known outcome, and deriving the URL in
+   * an effect would cost a render pass whose only job is to fix up the address bar. (Copy link doesn't
+   * depend on this having run — it builds the URL from the state directly.)
+   *
+   * `replace` rather than `push` — changing a dropdown is not a navigation, and pushing would make
+   * Back walk out of the page one dropdown at a time.
+   */
+  const currentParams = (next: Partial<QueueParams> = {}): URLSearchParams =>
+    buildQueueParams({
+      view,
+      assignee: assigneeFilter,
+      scope: scopeFilter,
+      timeFrame,
+      decider: deciderFilter,
+      ...next,
+    });
+
+  const syncUrl = (next: Partial<QueueParams>) => {
+    const params = currentParams(next);
+    if (params.toString() === searchParams.toString()) return;
+    setSearchParams(params, { replace: true });
+  };
+
+  // Each handler does the same three things: persist (so the view resumes), set state (so the page
+  // re-renders), and update the URL (so the view can be handed to someone).
   const handleFilterChange = (next: AssigneeFilterValue) => {
     saveAssigneeFilter(next);
     setAssigneeFilter(next);
+    syncUrl({ assignee: next });
   };
 
   const handleScopeChange = (next: ScopeFilterValue) => {
     saveScopeFilter(next);
     setScopeFilter(next);
+    syncUrl({ scope: next });
   };
 
   const handleViewChange = (next: QueueView) => {
     saveQueueView(next);
     setView(next);
+    syncUrl({ view: next });
   };
 
   const handleTimeFrameChange = (next: TimeFrameValue) => {
     saveTimeFrame(next);
     setTimeFrame(next);
+    syncUrl({ timeFrame: next });
   };
 
   const handleDeciderChange = (next: DeciderFilterValue) => {
     saveDeciderFilter(next);
     setDeciderFilter(next);
+    syncUrl({ decider: next });
   };
 
   // Server-narrowed list × scope filter → what the user actually sees.
@@ -196,16 +260,23 @@ export function MyQueuePage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1
-          className="text-xl font-semibold tracking-tight"
-          style={{ color: 'var(--text-primary)' }}
-        >
-          Work items queue
-        </h1>
-        <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          {VIEW_SUBTITLES[view]}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1
+            className="text-xl font-semibold tracking-tight"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            Work items queue
+          </h1>
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            {VIEW_SUBTITLES[view]}
+          </p>
+        </div>
+        {/* The point of putting the filters in the URL was so this view could be handed to someone,
+            and nobody thinks to look in the address bar for that. Built from the state rather than
+            read back off `location`, so it's exact even before the first filter change has written
+            the parameters there. */}
+        <CopyViewLinkButton params={currentParams()} />
       </div>
 
       {/* Tabs over the queue, matching the promotions list. Only the two personal-attention tabs
@@ -374,6 +445,48 @@ export function MyQueuePage() {
   );
 }
 
+/**
+ * Copies a link to the view on screen — the tab and every filter travel with it, so the recipient
+ * opens what the sender was looking at rather than their own saved queue.
+ *
+ * Takes the parameters rather than reading `window.location`: the address bar only catches up on the
+ * first filter change, and a share button that is right most of the time is worse than one that is
+ * always right.
+ */
+function CopyViewLinkButton({ params }: { params: URLSearchParams }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    const query = params.toString();
+    const href = `${window.location.origin}${window.location.pathname}${query ? `?${query}` : ''}`;
+    try {
+      await navigator.clipboard.writeText(href);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard denied (insecure context, or the user said no). The same link is in the address bar
+      // once any filter has been touched, so there's nothing worth an error banner here.
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
+      style={{
+        borderColor: copied ? 'var(--success)' : 'var(--border-color)',
+        backgroundColor: 'var(--bg-primary)',
+        color: copied ? 'var(--success)' : 'var(--text-secondary)',
+      }}
+      title="Copy a link to this view — the tab and every filter travel with it"
+    >
+      {copied ? <Check size={12} /> : <LinkIcon size={12} />}
+      {copied ? 'Link copied' : 'Copy link'}
+    </button>
+  );
+}
+
 function toApiArg(
   view: QueueView,
   filter: AssigneeFilterValue,
@@ -444,7 +557,9 @@ function toApiArg(
 //  - pending      → everything the user can sign off, however it's assigned.
 // `decided` is the team's decision history for the same authorised set.
 
-export type QueueView = 'mine' | 'not-assigned' | 'pending' | 'decided';
+// The type itself lives in queueFilterParams — it's part of the URL contract, and the parser has to
+// validate against the same list this renders.
+export type { QueueView };
 
 const QUEUE_VIEWS = ['mine', 'not-assigned', 'pending', 'decided'] as const;
 
@@ -477,7 +592,7 @@ function saveQueueView(value: QueueView): void {
 
 // ── Time-frame filter (only meaningful on "decided" view) ────────────────────────────────
 
-export type TimeFrameValue = '1d' | '7d' | '30d' | 'all';
+export type { TimeFrameValue };
 
 const TIME_FRAME_STORAGE_KEY = 'me.queue.timeFrame';
 
@@ -548,10 +663,7 @@ function TimeFrameFilter({
 // AssigneeFilter (which narrows by work-item participant/role) — a decider has no role and
 // "unassigned" is not a valid choice, so this is its own lightweight picker.
 
-export type DeciderFilterValue =
-  | { mode: 'all' }
-  | { mode: 'me' }
-  | { mode: 'person'; email: string; displayName: string };
+export type { DeciderFilterValue };
 
 const DECIDER_FILTER_STORAGE_KEY = 'me.queue.deciderFilter';
 
