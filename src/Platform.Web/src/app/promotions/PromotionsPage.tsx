@@ -3,8 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
-import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
-import { roleDisplay } from '@/lib/roleLabel';
+import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
+import { WorkItemsNeedingAttentionBadge } from '@/components/promotions/MissingRoles';
 import {
   readEnumPref,
   readPref,
@@ -27,6 +27,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { formatDistanceToNow } from 'date-fns';
 import {
+  AlertTriangle,
   ArrowRight,
   Clock,
   CheckCircle,
@@ -351,6 +352,9 @@ export function PromotionsPage() {
     let cancelled = false;
     (async () => {
       for (const c of progressTargets) {
+        // An edge that doesn't create work items has no sign-off state to fetch — its references are
+        // change-set history. Skipping it saves a request per reference that could only 404.
+        if (c.tracksWorkItems === false) continue;
         const tickets = (c.sourceEventReferences ?? []).filter(
           (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
         );
@@ -710,12 +714,20 @@ function CandidateCard({
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
-  // Inline "+N more" expansion for the chip rows — collapsed by default so a bundle
-  // with many work-items / participants doesn't turn the card into a wall of chips.
+  // Inline "+N more" expansion for the work-item chip row — collapsed by default so a large
+  // bundle doesn't turn the card into a wall of chips.
   const [showAllTickets, setShowAllTickets] = useState(false);
-  const [showAllPeople, setShowAllPeople] = useState(false);
   const MAX_TICKETS = 5;
-  const MAX_PEOPLE = 5;
+
+  // Work items on this promotion with nobody in a role the policy requires. Keyed for the per-chip
+  // flag below; the count and the distinct roles drive the card-level badge. Not memoised — a bundle
+  // is a handful of entries, and the list re-renders far less often than it would cost to track.
+  const roleGaps = candidate.workItemRoleGaps ?? [];
+  const missingRolesByKey = new Map(roleGaps.map((g) => [g.workItemKey, g.missingRoles]));
+  const distinctMissingRoles = Array.from(new Set(roleGaps.flatMap((g) => g.missingRoles)));
+  // Dev-only edge: the policy creates no work items, so the references are history and there is
+  // nothing to sign off. The server already returns no role gaps for these.
+  const untracked = candidate.tracksWorkItems === false;
 
   const rowProps = useKeyboardListRow(index, () => navigate(`/promotions/${candidate.id}`), {
     label: `${candidate.product} / ${candidate.service} to ${candidate.targetEnv} — ${candidate.status}. Open promotion.`,
@@ -772,6 +784,13 @@ function CandidateCard({
               Awaiting your approval
             </span>
           )}
+          {/* Work items with nobody in a policy-required role. Sits with the status badges rather
+             than down by the ticket chips: it's a property of the promotion's readiness, and it has
+             to be visible without expanding a truncated chip row. */}
+          <WorkItemsNeedingAttentionBadge
+            count={roleGaps.length}
+            roles={distinctMissingRoles}
+          />
         </div>
         {/* Source → target. Wraps on a narrow viewport so the target pill drops to its own line
            instead of running off the edge of the screen. */}
@@ -824,33 +843,70 @@ function CandidateCard({
                 // chip, so a tint always means somebody has actually decided something.
                 const decision = workItemProgress?.decisions[workItemKey] ?? null;
                 const decided = decision ? decisionStyle(decision) : null;
-                return (
-                  <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
-                    <Link
-                      to={workItemDetailPath(
-                        workItemKey,
-                        candidate.product,
-                        candidate.targetEnv,
-                        candidate.id,
-                      )}
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
-                      style={{
-                        backgroundColor: decided?.bg ?? 'var(--bg-secondary)',
-                        color: decided?.color ?? 'var(--text-secondary)',
-                        maxWidth: 200,
-                      }}
-                      title={[
-                        ref.title ? `${ref.key} — ${ref.title}` : workItemKey,
-                        decided ? decided.label : 'Not signed off yet',
-                      ].join(' · ')}
-                    >
+                // Unfilled policy-required roles win the chip's tint over the sign-off state: an item
+                // nobody owns is the thing to act on, and it can't have been signed off anyway.
+                const missingRoles = missingRolesByKey.get(workItemKey);
+                const needsPeople = (missingRoles?.length ?? 0) > 0;
+                // On an edge that doesn't create work items there is no detail page to open — the
+                // reference is change-set history. Rendered as plain text so the ticket is still
+                // visible rather than a link to a 404. The tracker icon beside it still works.
+                const chipStyle = {
+                  backgroundColor: needsPeople
+                    ? 'var(--warning-bg)'
+                    : decided?.bg ?? 'var(--bg-secondary)',
+                  color: needsPeople ? 'var(--warning)' : decided?.color ?? 'var(--text-secondary)',
+                  maxWidth: 200,
+                } as const;
+                const chipTitle = [
+                  ref.title ? `${ref.key} — ${ref.title}` : workItemKey,
+                  needsPeople ? `Needs ${missingRolesLabel(missingRoles!)}` : null,
+                  untracked
+                    ? "Work items aren't tracked on this edge"
+                    : decided
+                      ? decided.label
+                      : 'Not signed off yet',
+                ]
+                  .filter(Boolean)
+                  .join(' · ');
+                const chipBody = (
+                  <>
+                    {needsPeople ? (
+                      <AlertTriangle size={10} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                    ) : (
                       <Ticket
                         size={10}
                         style={{ color: decided?.color ?? 'var(--text-muted)', flexShrink: 0 }}
                       />
-                      <span className="font-medium truncate">{chipLabel}</span>
-                    </Link>
+                    )}
+                    <span className="font-medium truncate">{chipLabel}</span>
+                  </>
+                );
+                return (
+                  <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
+                    {untracked ? (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+                        style={chipStyle}
+                        title={chipTitle}
+                      >
+                        {chipBody}
+                      </span>
+                    ) : (
+                      <Link
+                        to={workItemDetailPath(
+                          workItemKey,
+                          candidate.product,
+                          candidate.targetEnv,
+                          candidate.id,
+                        )}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                        style={chipStyle}
+                        title={chipTitle}
+                      >
+                        {chipBody}
+                      </Link>
+                    )}
                     {href && (
                       <a
                         href={href}
@@ -879,107 +935,6 @@ function CandidateCard({
                   style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
                 >
                   +{hiddenTickets} more
-                </button>
-              )}
-            </div>
-          );
-        })()}
-        {/* People — reference-level (from work items) + promotion root */}
-        {(() => {
-          type Chip = {
-            role: string;
-            displayName?: string | null;
-            email?: string | null;
-            /** Set for reference-level participants; absent for promotion-root ones */
-            via?: string;
-            fromPromotion?: boolean;
-          };
-          const chips: Chip[] = [];
-
-          // Participants scoped to a work-item reference (QA on OBS-265, author of PR, etc.)
-          for (const ref of candidate.sourceEventReferences ?? []) {
-            if (ref.type !== 'work-item') continue;
-            const refLabel = ref.key ?? ref.type;
-            for (const p of ref.participants ?? []) {
-              chips.push({ role: p.role, displayName: p.displayName, email: p.email, via: refLabel });
-            }
-          }
-
-          // Promotion-root participants (assigned directly on the promotion candidate)
-          for (const p of candidate.participants ?? []) {
-            chips.push({ role: p.role, displayName: p.displayName, email: p.email, fromPromotion: true });
-          }
-
-          if (chips.length === 0) return null;
-
-          // Dedupe by person: the same person is often Assignee/Reporter across many
-          // tickets in a bundle, which otherwise repeats their chip a dozen times. Collapse
-          // to one chip per identity (email ?? display name) with their roles aggregated;
-          // the per-ticket "via" attribution moves into the tooltip (full breakdown lives
-          // on the detail page).
-          interface Person {
-            name: string;
-            email?: string | null;
-            roles: string[];
-            vias: string[];
-            fromPromotion: boolean;
-          }
-          const byPerson = new Map<string, Person>();
-          for (const c of chips) {
-            const name = c.displayName ?? c.email ?? '—';
-            const key = (c.email ?? c.displayName ?? name).toLowerCase();
-            const entry = byPerson.get(key) ?? {
-              name,
-              email: c.email,
-              roles: [],
-              vias: [],
-              fromPromotion: false,
-            };
-            const role = roleDisplay({ role: c.role });
-            if (!entry.roles.includes(role)) entry.roles.push(role);
-            if (c.via && !entry.vias.includes(c.via)) entry.vias.push(c.via);
-            if (c.fromPromotion) entry.fromPromotion = true;
-            byPerson.set(key, entry);
-          }
-          const people = Array.from(byPerson.values());
-          const visiblePeople = showAllPeople ? people : people.slice(0, MAX_PEOPLE);
-          const hiddenPeople = people.length - visiblePeople.length;
-
-          return (
-            <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
-              {visiblePeople.map((p, i) => {
-                const rolesLabel = p.roles.join(', ');
-                return (
-                  <span
-                    key={`p-${p.email ?? p.name}-${i}`}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
-                    style={{
-                      backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
-                      color: 'var(--text-secondary)',
-                      border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
-                    }}
-                    title={[
-                      `${rolesLabel}: ${p.name}`,
-                      p.vias.length > 0 ? `via ${p.vias.join(', ')}` : null,
-                      p.email ?? null,
-                    ].filter(Boolean).join(' · ')}
-                  >
-                    <span style={{ color: 'var(--text-muted)' }}>{rolesLabel}:</span>
-                    <span className="font-medium">{p.name}</span>
-                  </span>
-                );
-              })}
-              {hiddenPeople > 0 && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowAllPeople(true);
-                  }}
-                  className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
-                >
-                  +{hiddenPeople} more
                 </button>
               )}
             </div>
@@ -1018,6 +973,20 @@ function WorkItemsBadge({
   const bundleSize = (candidate.sourceEventReferences ?? []).filter(
     (r) => r.type === 'work-item',
   ).length;
+  // An edge that doesn't create work items has no sign-off state to report — and no progress was
+  // fetched for it. Say why rather than showing a bare count that looks like it's waiting on someone.
+  if (candidate.tracksWorkItems === false) {
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        style={{ color: 'var(--text-muted)' }}
+        title="This edge doesn't create work items — nothing here needs a sign-off."
+      >
+        <Ticket size={10} />
+        Work items not tracked
+      </span>
+    );
+  }
   if (bundleSize === 0) {
     return (
       <span

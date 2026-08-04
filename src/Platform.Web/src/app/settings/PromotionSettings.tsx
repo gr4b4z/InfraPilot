@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuthStore } from '@/stores/authStore';
+import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
+import { canonicaliseRoleKey } from '@/lib/roleKey';
 import {
   api,
   type PromotionPolicy,
@@ -8,7 +10,7 @@ import {
   type PromotionPolicyGroupRef,
   type UpsertPromotionPolicyPayload,
 } from '@/lib/api';
-import { Plus, Trash2, Check, Pencil, X } from 'lucide-react';
+import { AlertTriangle, Plus, Trash2, Check, Pencil, X } from 'lucide-react';
 
 const emptyRequirement = (): PromotionPolicyRequirement => ({
   name: '',
@@ -28,6 +30,8 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   sourceEnv: '',
   targetEnv: '',
   steps: [],
+  tracksWorkItems: true,
+  requiredWorkItemRoles: [],
   escalationGroup: null,
   requireAllWorkItemsApproved: false,
   autoApproveOnAllWorkItemsApproved: false,
@@ -370,6 +374,78 @@ function GroupPicker({
   );
 }
 
+/**
+ * Which participant roles every work item on this edge must have somebody in. Toggle buttons over the
+ * configured role vocabulary (Settings → Participant Roles) rather than a typeahead: the vocabulary is
+ * short, curated, and already on screen elsewhere on this page, so free text would only ever produce a
+ * requirement no work item can satisfy.
+ *
+ * A role that was picked before an admin removed it from the vocabulary is still rendered — as its raw
+ * canonical key — so an existing requirement can be seen and cleared instead of silently persisting
+ * through every save.
+ */
+function RequiredRolesPicker({
+  values,
+  onChange,
+  disabled = false,
+}: {
+  values: string[];
+  onChange: (next: string[]) => void;
+  /** Set while the edge creates no work items — the picks are kept, just not editable. */
+  disabled?: boolean;
+}) {
+  const configured = useConfiguredRoles();
+  const options = useMemo(() => {
+    const out = configured.map((r) => ({ key: r.key, label: r.displayName, known: true }));
+    for (const v of values) {
+      const key = canonicaliseRoleKey(v);
+      if (!key || out.some((o) => o.key === key)) continue;
+      out.push({ key, label: key, known: false });
+    }
+    return out;
+  }, [configured, values]);
+
+  const toggle = (key: string) => {
+    onChange(values.includes(key) ? values.filter((v) => v !== key) : [...values, key]);
+  };
+
+  if (options.length === 0) {
+    return (
+      <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        No participant roles are configured yet — add some under Settings → Participant Roles first.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((o) => {
+        const selected = values.includes(o.key);
+        return (
+          <button
+            key={o.key}
+            type="button"
+            onClick={() => toggle(o.key)}
+            aria-pressed={selected}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-full border transition-colors disabled:cursor-not-allowed"
+            style={{
+              borderColor: selected ? 'var(--accent)' : 'var(--border-color)',
+              backgroundColor: selected ? 'var(--accent-bg)' : 'var(--bg-primary)',
+              color: selected ? 'var(--accent)' : 'var(--text-secondary)',
+            }}
+            title={o.known ? o.key : `${o.key} — not a configured participant role`}
+          >
+            {selected && <Check size={11} />}
+            {o.label}
+            {!o.known && <AlertTriangle size={11} />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function PromotionSettings() {
   const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
 
@@ -428,6 +504,8 @@ export function PromotionSettings() {
           minApprovers: r.minApprovers,
         })),
       })),
+      tracksWorkItems: p.tracksWorkItems ?? true,
+      requiredWorkItemRoles: [...(p.requiredWorkItemRoles ?? [])],
       escalationGroup: p.escalationGroup,
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
@@ -583,6 +661,7 @@ export function PromotionSettings() {
                       <th className="pb-2 pr-3">Service</th>
                       <th className="pb-2 pr-3">Edge</th>
                       <th className="pb-2 pr-3">Approval Steps</th>
+                      <th className="pb-2 pr-3">Required Roles</th>
                       <th className="pb-2">Actions</th>
                     </tr>
                   </thead>
@@ -608,6 +687,23 @@ export function PromotionSettings() {
                           }}
                         >
                           {summarizeSteps(p.steps)}
+                        </td>
+                        {/* "No work items" wins over the role list: it's the reason the roles don't
+                           apply, and it's the row's most important property when set. */}
+                        <td
+                          className="py-2 pr-3"
+                          style={{
+                            color:
+                              p.tracksWorkItems === false || !p.requiredWorkItemRoles?.length
+                                ? 'var(--text-muted)'
+                                : undefined,
+                          }}
+                        >
+                          {p.tracksWorkItems === false
+                            ? 'no work items'
+                            : p.requiredWorkItemRoles?.length
+                              ? p.requiredWorkItemRoles.map((r) => roleDisplay({ role: r })).join(', ')
+                              : '—'}
                         </td>
                         <td className="py-2">
                           <div className="flex items-center gap-1.5">
@@ -922,7 +1018,10 @@ export function PromotionSettings() {
                   ))}
                 </div>
 
-                {/* ── Work-item-gate options ── */}
+                {/* ── Work-item tracking ──
+                    The switch everything else in this section hangs off: an edge that creates no work
+                    items has nothing to require people on and nothing to gate. Its own block, first,
+                    so the two blocks below read as consequences of it. */}
                 <div
                   className="rounded-lg border p-3 space-y-2"
                   style={{
@@ -934,14 +1033,98 @@ export function PromotionSettings() {
                     className="text-[11px] font-semibold uppercase tracking-wider"
                     style={{ color: 'var(--text-muted)' }}
                   >
+                    Work items
+                  </p>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.tracksWorkItems}
+                      onChange={(e) => setField('tracksWorkItems', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      Create work items for promotions on this edge
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Uncheck for edges whose target isn&rsquo;t ready for QA — a developer
+                        integration environment, a CI test ring (e.g. dev &rarr; test). No work items
+                        are created, so nothing reaches the work-items queue and nothing needs a
+                        sign-off. The promotion still records which work items it carries.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
+                {/* ── Required work-item roles ──
+                    Who has to be named on each work item. Its own block, above the gate options,
+                    because it isn't a gate: nothing here blocks an approval — it marks work items as
+                    incomplete and asks somebody to fill the role. */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                    // Dimmed rather than hidden when work items are off: the settings are still stored
+                    // and come back the moment tracking is re-enabled, so hiding them would make a
+                    // saved configuration look lost.
+                    opacity: form.tracksWorkItems ? 1 : 0.55,
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Required work-item roles
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    {form.tracksWorkItems ? (
+                      <>
+                        Every work item promoted over this edge must have somebody in each role picked
+                        here. Items missing one are flagged as needing attention across the promotions
+                        list, the promotion page and the work-items queue, and show up under its
+                        &ldquo;Not assigned&rdquo; tab. This does not block approval.
+                      </>
+                    ) : (
+                      <>Not applicable — this edge creates no work items.</>
+                    )}
+                  </p>
+                  <RequiredRolesPicker
+                    values={form.requiredWorkItemRoles}
+                    onChange={(next) => setField('requiredWorkItemRoles', next)}
+                    disabled={!form.tracksWorkItems}
+                  />
+                </div>
+
+                {/* ── Work-item-gate options ── */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                    opacity: form.tracksWorkItems ? 1 : 0.55,
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
                     Work-item-gate options
                   </p>
+                  {!form.tracksWorkItems && (
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      The first three don&rsquo;t apply — this edge creates no work items.
+                    </p>
+                  )}
 
                   <label className="flex items-start gap-2.5 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={form.requireAllWorkItemsApproved}
                       onChange={(e) => setField('requireAllWorkItemsApproved', e.target.checked)}
+                      disabled={!form.tracksWorkItems}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
@@ -962,6 +1145,7 @@ export function PromotionSettings() {
                       onChange={(e) =>
                         setField('autoApproveOnAllWorkItemsApproved', e.target.checked)
                       }
+                      disabled={!form.tracksWorkItems}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
@@ -981,6 +1165,7 @@ export function PromotionSettings() {
                       type="checkbox"
                       checked={form.autoApproveWhenNoWorkItems}
                       onChange={(e) => setField('autoApproveWhenNoWorkItems', e.target.checked)}
+                      disabled={!form.tracksWorkItems}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>

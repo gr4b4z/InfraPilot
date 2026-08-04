@@ -14,6 +14,7 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
+import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -48,9 +49,10 @@ import {
  * after applying authority filters server-side (approver group, excluded role,
  * already-decided), so client-side rendering is straight-through.
  *
- * Three tabs, mirroring the promotions list: the items assigned to you, the whole pending pool
- * you're authorised to sign off, and your team's decision history. The pick is remembered in a
- * cookie so coming back lands you where you left off.
+ * Four tabs: the items you're answerable for, the items nobody has been put on, the whole pending
+ * pool you're authorised to sign off, and your team's decision history. The first two are defined by
+ * the promotion policy's required work-item roles (see {@link QueueView}). The pick is remembered in
+ * a cookie so coming back lands you where you left off.
  */
 export function MyQueuePage() {
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
@@ -80,9 +82,10 @@ export function MyQueuePage() {
   // uses for `currentUserEmail`. No extra API call needed; we just send this email to the
   // server when the user picks "Assigned to me".
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
-  // Badge for the "Assigned to me" tab. Comes from the shared My-tasks rollup — the same query
-  // this tab runs — so the number is live on every tab, not just once you've opened this one.
+  // Badges for the two attention tabs. Both come from the shared My-tasks rollup — the same queries
+  // these tabs run — so the numbers are live on every tab, not just once you've opened one.
   const assignedToMeCount = useMyTasksStore((s) => s.workItems.length);
+  const notAssignedCount = useMyTasksStore((s) => s.unassignedWorkItems.length);
 
   // Defined as an async function so the initial fetch from `useEffect` can be a
   // microtask (avoids the eslint react-hooks/set-state-in-effect rule and the
@@ -181,7 +184,9 @@ export function MyQueuePage() {
       if (deciderFilter.mode !== 'all') n++;
     } else {
       if (assigneeFilter.role !== null) n++;
-      if (view !== 'mine' && assigneeFilter.mode !== 'all') n++;
+      // The person select is hidden on the two attention tabs, so a stale pick behind it isn't a
+      // filter the user can find — or one that's in effect. Mirrors the render condition above.
+      if (view !== 'mine' && view !== 'not-assigned' && assigneeFilter.mode !== 'all') n++;
     }
     for (const key of ['product', 'service', 'targetEnv', 'deployedEnv'] as const) {
       if (scopeFilter[key] !== null) n++;
@@ -203,9 +208,9 @@ export function MyQueuePage() {
         </p>
       </div>
 
-      {/* Tabs over the queue, matching the promotions list. Only "Assigned to me" carries a
-          badge: its count is fetched for the shell anyway, whereas a number on the other two
-          would need a second query per tab just to label a tab nobody has opened. */}
+      {/* Tabs over the queue, matching the promotions list. Only the two personal-attention tabs
+          carry a badge: their counts are fetched for the shell anyway, whereas a number on the
+          other two would need a second query per tab just to label a tab nobody has opened. */}
       {/* Scrolls sideways below `sm` rather than wrapping to three rows on a phone, matching the
           promotions list. One tab stop, arrows inside. */}
       <RovingGroup
@@ -214,7 +219,8 @@ export function MyQueuePage() {
       >
         {QUEUE_VIEWS.map((key) => {
           const active = view === key;
-          const count = key === 'mine' ? assignedToMeCount : 0;
+          const count =
+            key === 'mine' ? assignedToMeCount : key === 'not-assigned' ? notAssignedCount : 0;
           return (
             <button
               key={key}
@@ -259,14 +265,16 @@ export function MyQueuePage() {
           </>
         )}
         {/* Role/assignee narrowing only meaningful for the pending pool — hide for history views.
-            On the "Assigned to me" tab the person is the tab, so only the role select shows. */}
+            On "Assigned to me" the person is the tab; on "Not assigned" there is by definition
+            nobody in the role being asked about. Both keep the role select, which narrows to one
+            required role. */}
         {view !== 'decided' && (
           <AssigneeFilter
             value={assigneeFilter}
             onChange={handleFilterChange}
             assignees={assignees}
             roles={roles}
-            hidePerson={view === 'mine'}
+            hidePerson={view === 'mine' || view === 'not-assigned'}
           />
         )}
         <ScopeFilter
@@ -317,7 +325,9 @@ export function MyQueuePage() {
                 ? decidedEmptyTitle(deciderFilter)
                 : view === 'mine'
                   ? assignedToMeEmptyTitle(assigneeFilter)
-                  : emptyStateTitle(assigneeFilter)}
+                  : view === 'not-assigned'
+                    ? notAssignedEmptyTitle(assigneeFilter)
+                    : emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {tickets.length > 0 && hasActiveScope(scopeFilter)
@@ -326,7 +336,9 @@ export function MyQueuePage() {
                 ? 'Try a wider time frame, or switch the decider to "Anyone".'
                 : view === 'mine'
                   ? 'Switch to "Pending" to see everything you\'re authorised to sign off.'
-                  : emptyStateBody(assigneeFilter)}
+                  : view === 'not-assigned'
+                    ? 'Work items whose promotion policy asks for a role nobody is in will show up here.'
+                    : emptyStateBody(assigneeFilter)}
           </p>
         </div>
       ) : (
@@ -368,7 +380,15 @@ function toApiArg(
   currentUserEmail: string,
   timeFrame: TimeFrameValue,
   decider: DeciderFilterValue,
-): { role?: string; assignee?: string; status?: 'pending' | 'decided'; since?: string } | undefined {
+):
+  | {
+      role?: string;
+      assignee?: string;
+      status?: 'pending' | 'decided';
+      since?: string;
+      roleRequirement?: 'assigned' | 'missing';
+    }
+  | undefined {
   // Decision-history views ignore role/participant narrowing but DO honour the decider filter:
   // `assignee` here means "who decided" (a single email; "Me" → current user). The backend
   // maps this param to WorkItemApproval.ApproverEmail on the decided path.
@@ -381,10 +401,17 @@ function toApiArg(
   const role = filter.role ?? undefined;
   // On the "Assigned to me" tab the person is fixed by the tab and the assignee filter's own
   // person mode is ignored (its select is hidden there); only the role narrowing carries over.
+  // `roleRequirement=assigned` is what makes this "items I'm answerable for" rather than "items my
+  // name appears on" — the server matches the person against the policy's required roles only.
   if (view === 'mine') {
     const assignee = currentUserEmail || undefined;
-    if (!role && !assignee) return undefined;
-    return { role, assignee };
+    return { role, assignee, roleRequirement: 'assigned' };
+  }
+
+  // "Not assigned" asks about the items, not about a person: no assignee is sent, and a role pick
+  // narrows to items missing that particular required role.
+  if (view === 'not-assigned') {
+    return { role, roleRequirement: 'missing' };
   }
 
   let assignee: string | undefined;
@@ -407,21 +434,31 @@ function toApiArg(
 }
 
 // ── Queue view (tabs) ────────────────────────────────────────────────────────────────────
-// `mine` and `pending` are both the pending inbox — `mine` pins the assignee to the current
-// user. `decided` is the team's decision history for the same authorised set.
+// `mine`, `not-assigned` and `pending` are all the pending inbox, narrowed differently:
+//  - mine         → the current user holds a role the item's promotion policy REQUIRES. Being named
+//                   as, say, a ticket's reporter is not being made answerable for it, so this is a
+//                   narrower question than "am I on this item at all" (which `pending` + the person
+//                   filter still answers).
+//  - not-assigned → at least one policy-required role has nobody in it. The work these items need is
+//                   an assignment, not a sign-off, which is why they get their own tab.
+//  - pending      → everything the user can sign off, however it's assigned.
+// `decided` is the team's decision history for the same authorised set.
 
-export type QueueView = 'mine' | 'pending' | 'decided';
+export type QueueView = 'mine' | 'not-assigned' | 'pending' | 'decided';
 
-const QUEUE_VIEWS = ['mine', 'pending', 'decided'] as const;
+const QUEUE_VIEWS = ['mine', 'not-assigned', 'pending', 'decided'] as const;
 
 const VIEW_LABELS: Record<QueueView, string> = {
   mine: 'Assigned to me',
+  'not-assigned': 'Not assigned',
   pending: 'Pending',
   decided: 'Decided',
 };
 
 const VIEW_SUBTITLES: Record<QueueView, string> = {
-  mine: 'Work items assigned to you and awaiting sign-off, across all products and environments.',
+  mine: 'Work items where you hold a role the promotion policy requires, awaiting sign-off.',
+  'not-assigned':
+    'Work items with nobody in a role their promotion policy requires — they need someone assigned.',
   pending: 'Every work item you can sign off, whoever it is assigned to.',
   decided: 'Work items already signed off, by you or anyone else in your approver group.',
 };
@@ -654,6 +691,14 @@ function assignedToMeEmptyTitle(filter: AssigneeFilterValue): string {
     : 'Nothing assigned to you right now.';
 }
 
+/** Empty state for the "Not assigned" tab — which is the good outcome, so say so. */
+function notAssignedEmptyTitle(filter: AssigneeFilterValue): string {
+  const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
+  return roleLabel
+    ? `Every work item has a ${roleLabel}.`
+    : 'Every work item has the people its policy requires.';
+}
+
 function emptyStateTitle(filter: AssigneeFilterValue): string {
   const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
   switch (filter.mode) {
@@ -792,6 +837,9 @@ function TicketRow({
                 No live promotion
               </span>
             )}
+            {/* Nobody in a role the promotion policy requires — shown on every tab, not just "Not
+                assigned": an item can be mine as QA owner and still be missing its reviewer. */}
+            <MissingRolesBadge roles={ticket.missingRoles} />
           </div>
 
           {/* Context */}

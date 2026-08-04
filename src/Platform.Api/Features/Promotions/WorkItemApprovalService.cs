@@ -476,11 +476,20 @@ public class WorkItemApprovalService
     /// references (commits, pull requests): a commit author on an unrelated change in the same build
     /// is not an assignee of this ticket, and counting them made "assigned to &lt;person&gt;" return
     /// work items that person had nothing to do with.</para>
+    ///
+    /// <para><paramref name="roleRequirement"/> narrows by the promotion policy's work-item role
+    /// requirement (<see cref="WorkItemRoleRequirements"/>) rather than by a role anyone happened to
+    /// pick: <see cref="WorkItemRoleRequirementFilter.Assigned"/> answers "which items am I
+    /// <i>responsible</i> for" by matching the person only against the roles the policy requires, and
+    /// <see cref="WorkItemRoleRequirementFilter.Missing"/> answers "which items has nobody been put on"
+    /// — the two tabs the queue offers. Both are per-item: the required roles come from the candidate's
+    /// own policy snapshot, so two rows in the same list can be judged against different roles.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetPendingForCurrentUserAsync(
         CancellationToken ct = default,
         string? assigneeFilter = null,
-        string? roleFilter = null)
+        string? roleFilter = null,
+        WorkItemRoleRequirementFilter roleRequirement = WorkItemRoleRequirementFilter.Any)
     {
         // The viewer's hidden products drop out of the queue entirely — including the assignee
         // rollup below, which is computed from these rows, so the "who has work" dropdown never
@@ -626,6 +635,10 @@ public class WorkItemApprovalService
             var snapshot = ReadSnapshot(c);
             if (snapshot.IsAutoApprove) continue;
 
+            // Roles the policy says every work item on this candidate must have somebody in. Read from
+            // the snapshot we already deserialised, so the per-row completeness check costs nothing.
+            var requiredRoles = WorkItemRoleRequirements.RequiredRoles(snapshot);
+
             // Distinct work items on this candidate.
             var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
                 .GroupBy(w => w.WorkItemKey)
@@ -682,14 +695,36 @@ public class WorkItemApprovalService
                     assigneeAccumulator[key] = acc;
                 }
 
+                // Policy-required roles nobody holds on this item — what makes it "incomplete". Always
+                // computed (the row reports it), and the basis of the two roleRequirement narrowings.
+                var missingRoles = WorkItemRoleRequirements.MissingRoles(ticketParticipants, requiredRoles);
+
+                // "Not assigned": at least one role the policy requires has nobody in it.
+                if (roleRequirement == WorkItemRoleRequirementFilter.Missing && missingRoles.Count == 0)
+                    continue;
+
+                // Which roles the person filter is matched against. Normally the picked role (or any
+                // role); under roleRequirement=Assigned it's the policy-required roles instead — being
+                // named as, say, the reporter of a ticket is not being made answerable for it. An item
+                // whose policy requires nothing therefore matches nobody in that mode.
+                var matchRoleSet = effectiveRoleSet;
+                if (roleRequirement == WorkItemRoleRequirementFilter.Assigned)
+                {
+                    var scoped = effectiveRoleSet is null
+                        ? requiredRoles
+                        : requiredRoles.Where(effectiveRoleSet.Contains).ToList();
+                    if (scoped.Count == 0) continue;
+                    matchRoleSet = new HashSet<string>(scoped, StringComparer.OrdinalIgnoreCase);
+                }
+
                 // Apply role/person matrix narrowing. No participant in the effective role set =>
                 // "unassigned" by definition (legacy data, no participants, all tombstoned).
-                if (assigneeFilterActive || roleFilterActive)
+                if (assigneeFilterActive || matchRoleSet is not null)
                 {
-                    // With a role filter, narrow to that one role; without one, every named person
+                    // With a role set in play, narrow to those roles; without one, every named person
                     // counts (ticketAssignees is already the any-role set).
-                    var inEffectiveRole = roleFilterActive
-                        ? AssignableParticipants(ticketParticipants, effectiveRoleSet)
+                    var inEffectiveRole = matchRoleSet is not null
+                        ? AssignableParticipants(ticketParticipants, matchRoleSet)
                         : ticketAssignees;
 
                     bool keep;
@@ -729,7 +764,9 @@ public class WorkItemApprovalService
                     Participants: ticketParticipants,
                     // "Pending" for a live promotion; the dead candidate's status for an orphan, which
                     // is what tells the UI to render it as stranded rather than actionable-as-usual.
-                    CandidateStatus: c.Status.ToString()));
+                    CandidateStatus: c.Status.ToString(),
+                    RequiredRoles: requiredRoles,
+                    MissingRoles: missingRoles));
             }
         }
 
@@ -861,6 +898,12 @@ public class WorkItemApprovalService
                 ? Array.Empty<ParticipantDto>()
                 : GetWorkItemParticipants(c2, a.WorkItemKey);
 
+            // Role completeness, same as on the pending path. History rows report it too: a decided
+            // item can still be missing an owner, and the row is where a reader would notice.
+            var requiredRoles = c2 is null
+                ? Array.Empty<string>()
+                : WorkItemRoleRequirements.RequiredRoles(c2);
+
             result.Add(new PendingTicketView(
                 WorkItemKey: a.WorkItemKey,
                 Product: a.Product,
@@ -878,6 +921,8 @@ public class WorkItemApprovalService
                 BlockingPromotions: 0,
                 Participants: ticketParticipants,
                 CandidateStatus: c2?.Status.ToString() ?? "Unknown",
+                RequiredRoles: requiredRoles,
+                MissingRoles: WorkItemRoleRequirements.MissingRoles(ticketParticipants, requiredRoles),
                 Decision: a.Decision.ToString(),
                 DecidedAt: a.CreatedAt,
                 DecidedByEmail: a.ApproverEmail,
@@ -960,6 +1005,12 @@ public class WorkItemApprovalService
             .OrderByDescending(v => v.DeployedAt)
             .ToList();
 
+        // Role completeness is judged against the primary candidate — the same one whose reference
+        // supplies the display fields and receives participant writes, so what the page asks for is
+        // what the assign control can actually fill.
+        var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key);
+        var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary);
+
         return new WorkItemDetail(
             WorkItemKey: key,
             Product: prod,
@@ -976,7 +1027,9 @@ public class WorkItemApprovalService
             CanManage: _currentUser.IsQA || _currentUser.IsAdmin,
             BlockedReason: ctx.BlockedReason,
             MyDecision: ctx.MyDecision,
-            Participants: GetWorkItemParticipants(primary, key),
+            Participants: participants,
+            RequiredRoles: requiredRoles,
+            MissingRoles: WorkItemRoleRequirements.MissingRoles(participants, requiredRoles),
             Approvals: ctx.Approvals,
             Comments: comments,
             Commits: commits,
@@ -1266,47 +1319,13 @@ public class WorkItemApprovalService
     }
 
     /// <summary>
-    /// Returns the effective participant list for <paramref name="workItemKey"/> on the candidate.
-    /// The candidate is self-contained, so people come from its own data (no deploy-event join, no
-    /// operator overrides):
-    /// <list type="bullet">
-    ///   <item>Reference-level participants nested in the matching work-item entry of
-    ///         <see cref="PromotionCandidate.References"/>.</item>
-    ///   <item>Promotion-level participants (<see cref="PromotionCandidate.Participants"/>) — for
-    ///         any role not already resolved by the reference-level layer.</item>
-    /// </list>
-    /// Each canonical role appears at most once.
+    /// The effective participant list for <paramref name="workItemKey"/> on the candidate — see
+    /// <see cref="WorkItemRoleRequirements.ResolveParticipants"/>. Kept as a thin alias because it is
+    /// read on every row of the queue and the shared name reads less clearly at those call sites.
     /// </summary>
     private static IReadOnlyList<ParticipantDto> GetWorkItemParticipants(
         PromotionCandidate candidate, string workItemKey)
-    {
-        var merged = new List<ParticipantDto>();
-        var seenCanonical = new HashSet<string>(StringComparer.Ordinal);
-
-        // ── Layer 1: reference-level participants on the matching work-item reference ──
-        var matchedRef = candidate.References.FirstOrDefault(r =>
-            string.Equals(r.Key, workItemKey, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
-        if (matchedRef?.Participants is { Count: > 0 } refParticipants)
-        {
-            foreach (var p in refParticipants)
-            {
-                var canonical = RoleNormalizer.Normalize(p.Role);
-                if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
-                merged.Add(p);
-            }
-        }
-
-        // ── Layer 2: promotion-level participants for any role not yet covered ──
-        foreach (var p in candidate.Participants)
-        {
-            var canonical = RoleNormalizer.Normalize(p.Role);
-            if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
-            merged.Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
-        }
-
-        return merged;
-    }
+        => WorkItemRoleRequirements.ResolveParticipants(candidate, workItemKey);
 
     /// <summary>
     /// Narrows a work item's effective participants (see
@@ -1421,6 +1440,29 @@ public class WorkItemApprovalService
 }
 
 /// <summary>
+/// Narrowing of the work-item queue by the promotion policy's work-item role requirement — the two
+/// tabs that ask about responsibility rather than about sign-off state. See
+/// <see cref="WorkItemRoleRequirements"/> for what "required" means.
+/// </summary>
+public enum WorkItemRoleRequirementFilter
+{
+    /// <summary>No narrowing: the person/role filter behaves exactly as it always has.</summary>
+    Any,
+
+    /// <summary>
+    /// Only work items where the person filter matches somebody in a role the item's policy
+    /// <i>requires</i> — "assigned to me" in the sense of being answerable for it. Items whose policy
+    /// requires no role can never match.
+    /// </summary>
+    Assigned,
+
+    /// <summary>
+    /// Only work items missing somebody in at least one policy-required role — the "Not assigned" tab.
+    /// </summary>
+    Missing,
+}
+
+/// <summary>
 /// Authority + history snapshot for a single ticket × (product, targetEnv) pair.
 /// <para><c>BlockedReason</c> mirrors the failure modes of the throwing decision path so the
 /// UI can surface the same wording it would see on a failed POST.</para>
@@ -1470,6 +1512,16 @@ public record WorkItemDetail(
     string? BlockedReason,
     string? MyDecision,
     IReadOnlyList<ParticipantDto> Participants,
+    /// <summary>
+    /// Participant roles the primary candidate's policy requires somebody in on this work item
+    /// (<see cref="WorkItemRoleRequirements"/>). Empty when the policy asks for none.
+    /// </summary>
+    IReadOnlyList<string> RequiredRoles,
+    /// <summary>
+    /// The subset of <see cref="RequiredRoles"/> nobody holds — the work item is incomplete until they
+    /// are filled, and the page asks for someone to be put on each.
+    /// </summary>
+    IReadOnlyList<string> MissingRoles,
     List<WorkItemApproval> Approvals,
     List<WorkItemComment> Comments,
     /// <summary>The commits whose messages referenced this ticket, newest-declared-first.</summary>
@@ -1557,7 +1609,17 @@ public record PendingTicketView(
     DateTimeOffset? DecidedAt = null,
     string? DecidedByEmail = null,
     string? DecidedByName = null,
-    string? DecisionComment = null);
+    string? DecisionComment = null,
+    /// <summary>
+    /// Participant roles the carrying promotion's policy requires somebody in on this work item
+    /// (<see cref="WorkItemRoleRequirements"/>). Empty when the policy asks for none.
+    /// </summary>
+    IReadOnlyList<string>? RequiredRoles = null,
+    /// <summary>
+    /// The subset of <see cref="RequiredRoles"/> nobody holds. Non-empty ⇒ the work item is incomplete
+    /// and the UI asks for someone to be put on those roles.
+    /// </summary>
+    IReadOnlyList<string>? MissingRoles = null);
 
 /// <summary>
 /// One row of the assignee summary for the My-queue endpoint. Aggregated by (email, role)

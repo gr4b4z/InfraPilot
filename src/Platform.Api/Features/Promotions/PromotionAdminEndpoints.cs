@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -79,6 +80,8 @@ public static class PromotionAdminEndpoints
                 SourceEnv = request.SourceEnv,
                 TargetEnv = request.TargetEnv,
                 ApprovalSteps = MapSteps(request.Steps),
+                TracksWorkItems = request.TracksWorkItems,
+                RequiredWorkItemRoles = MapRequiredRoles(request.RequiredWorkItemRoles),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
                 RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved,
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
@@ -119,6 +122,8 @@ public static class PromotionAdminEndpoints
             policy.SourceEnv = request.SourceEnv;
             policy.TargetEnv = request.TargetEnv;
             policy.ApprovalSteps = MapSteps(request.Steps);
+            policy.TracksWorkItems = request.TracksWorkItems;
+            policy.RequiredWorkItemRoles = MapRequiredRoles(request.RequiredWorkItemRoles);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
             policy.RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved;
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
@@ -185,6 +190,12 @@ public static class PromotionAdminEndpoints
                 minApprovers = r.MinApprovers,
             }),
         }),
+        // False ⇒ promotions on this edge create no work items at all, which makes every other
+        // work-item setting below inert. See PromotionPolicy.TracksWorkItems.
+        tracksWorkItems = p.TracksWorkItems,
+        // Canonical role keys every work item on this edge must have somebody in. Empty ⇒ no
+        // requirement. Not a gate — see PromotionPolicy.RequiredWorkItemRoles.
+        requiredWorkItemRoles = p.RequiredWorkItemRoles,
         escalationGroup = p.EscalationGroup,
         requireAllWorkItemsApproved = p.RequireAllWorkItemsApproved,
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
@@ -215,6 +226,25 @@ public static class PromotionAdminEndpoints
                 Math.Max(1, r.MinApprovers)))
                 .ToList()))
             .ToList();
+    }
+
+    /// <summary>
+    /// Canonicalises the required work-item roles: normalises each entry, drops blanks, and dedupes
+    /// while keeping the order the admin arranged. Stored canonical so every comparison downstream is
+    /// a plain string match against an already-normalised participant role.
+    /// </summary>
+    private static List<string> MapRequiredRoles(IReadOnlyList<string>? roles)
+    {
+        if (roles is null) return new();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var role in roles)
+        {
+            var canonical = RoleNormalizer.Normalize(role);
+            if (canonical.Length == 0 || !seen.Add(canonical)) continue;
+            result.Add(canonical);
+        }
+        return result;
     }
 
     /// <summary>
@@ -271,6 +301,20 @@ public record UpsertPolicyRequest(
     string TargetEnv,
     List<UpsertStepRequest>? Steps,
     string? EscalationGroup,
+    /// <summary>
+    /// Whether promotions on this edge create work items at all. Defaults to <c>true</c> so a caller
+    /// that omits it (or predates the field) keeps tracking. See
+    /// <see cref="PromotionPolicy.TracksWorkItems"/>.
+    /// </summary>
+    bool TracksWorkItems = true,
+    /// <summary>
+    /// Participant roles every work item on this edge must have somebody in (canonicalised on save).
+    /// Omitted/empty ⇒ no requirement. Unlike manual assignment, an unconfigured role is accepted
+    /// here: a policy may name a role before an admin adds it to the vocabulary, and the effect of
+    /// getting it wrong is a work item flagged as incomplete, not a person put somewhere they
+    /// shouldn't be.
+    /// </summary>
+    List<string>? RequiredWorkItemRoles = null,
     bool RequireAllWorkItemsApproved = false,
     bool AutoApproveOnAllWorkItemsApproved = false,
     bool AutoApproveWhenNoWorkItems = false,
