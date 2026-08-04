@@ -103,8 +103,13 @@ public static class PromotionEndpoints
             if (c is null) return Results.NotFound();
             var approvals = await svc.GetApprovalsAsync(id);
             var eligibleRequirements = await svc.GetEligibleRequirementsAsync(c);
-            // canApprove stays a bool for back-compat: true iff the user can approve as ≥1 requirement.
-            var canApprove = eligibleRequirements.Count > 0;
+            var progress = await svc.GetApprovalProgressAsync(c);
+            // canApprove means "can approve right now", the same thing it means on the list (see
+            // CanUserApproveManyAsync): an open requirement the user is authorized for AND no work-item
+            // gate holding the promotion back. The approve card is rendered off eligibleRequirements
+            // instead, so a blocked approver still gets the button — disabled, with the reason.
+            var gateBlocking = progress.WorkItems is { Required: true, Satisfied: false };
+            var canApprove = eligibleRequirements.Count > 0 && !gateBlocking;
 
             var targetCurrent = await db.DeployEvents
                 .AsNoTracking()
@@ -114,7 +119,6 @@ public static class PromotionEndpoints
                 .FirstOrDefaultAsync();
 
             var comments = await svc.GetCommentsAsync(id);
-            var approvalProgress = await svc.GetApprovalProgressAsync(c);
 
             // Surface an admin bypass, if any. A bypass records NO approval row, so without this a
             // force-approved candidate would show an empty approval trail with no trace of who did it
@@ -175,7 +179,7 @@ public static class PromotionEndpoints
                     enrichment = (object?)null,
                 },
                 comments = comments.Select(ToCommentDto),
-                approvalProgress,
+                approvalProgress = progress,
                 bypass,
             });
         });
