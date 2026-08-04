@@ -364,9 +364,15 @@ public static class DeploymentSeedData
         // Work-item ~80% of the time — carries QA and optionally an assignee.
         if (rand.NextDouble() < 0.8)
         {
+            // Most tickets name a `qa-owner`, which is the role the seeded production promotion policy
+            // requires (see PromotionSeedData); the rest name a plain `qa`. That mix is deliberate: it
+            // gives a fresh database both the satisfied case and the one the work-items queue's "Not
+            // assigned" tab exists for — somebody is named on the ticket, but not in the role the
+            // policy asks for, so nobody is actually answerable for it.
+            var qaRole = rand.NextDouble() < 0.7 ? "qa-owner" : "qa";
             var wiParticipants = new List<ParticipantDto>
             {
-                new("qa", qa.Name, qa.Email),
+                new(qaRole, qa.Name, qa.Email),
             };
             if (rand.NextDouble() < 0.5)
             {

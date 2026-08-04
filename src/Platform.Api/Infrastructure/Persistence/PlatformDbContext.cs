@@ -390,6 +390,13 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             var approvalStepsJson = e.Property(x => x.ApprovalStepsJson).HasDefaultValue("[]");
             if (jsonType != null) approvalStepsJson.HasColumnType(jsonType);
             e.Ignore(x => x.ApprovalSteps);
+            // Default TRUE: pre-existing edges keep creating work items.
+            e.Property(x => x.TracksWorkItems).IsRequired().HasDefaultValue(true);
+            // Required work-item participant roles, same JSON-string-column treatment ("[]" ⇒ no
+            // requirement). The computed RequiredWorkItemRoles property is not mapped.
+            var requiredRolesJson = e.Property(x => x.RequiredWorkItemRolesJson).HasDefaultValue("[]");
+            if (jsonType != null) requiredRolesJson.HasColumnType(jsonType);
+            e.Ignore(x => x.RequiredWorkItemRoles);
             e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);

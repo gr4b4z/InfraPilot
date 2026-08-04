@@ -676,6 +676,12 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
 
+                    b.Property<string>("RequiredWorkItemRolesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
                     b.Property<string>("Service")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
@@ -694,6 +700,11 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("TracksWorkItems")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");

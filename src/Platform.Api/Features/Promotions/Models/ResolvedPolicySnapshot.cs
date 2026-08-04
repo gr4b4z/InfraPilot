@@ -34,6 +34,16 @@ public record ResolvedPolicySnapshot(
     /// <summary>True when no human approval is required for this edge (no requirements anywhere).</summary>
     public bool IsAutoApprove => ApprovalSteps.All(s => s.Requirements.Count == 0);
 
+    /// <inheritdoc cref="PromotionPolicy.TracksWorkItems"/>
+    /// <remarks>Defaults to <c>true</c> so snapshot JSON written before this field existed keeps the
+    /// original behaviour (work items tracked).</remarks>
+    public bool TracksWorkItems { get; init; } = true;
+
+    /// <inheritdoc cref="PromotionPolicy.RequiredWorkItemRoles"/>
+    /// <remarks>Defaults to empty so snapshot JSON written before this field existed reads as "no
+    /// role requirement" rather than flagging every historical work item as incomplete.</remarks>
+    public List<string> RequiredWorkItemRoles { get; init; } = new();
+
     // ── Work-item-gate options (default false so old snapshot JSON is backward-compatible) ──
 
     /// <inheritdoc cref="PromotionPolicy.RequireAllWorkItemsApproved"/>

@@ -568,6 +568,15 @@ class ApiClient {
     status?: 'pending' | 'decided';
     /** ISO timestamp lower bound on the decision time. Only used when status === 'decided'. */
     since?: string;
+    /**
+     * Narrows by the promotion policy's work-item role requirement rather than by a role the caller
+     * picked — the roles that make somebody answerable for a work item:
+     *   - `assigned` → `assignee` must hold a role the item's own policy REQUIRES. Items whose policy
+     *                  requires no role never match. This is what the "Assigned to me" tab means.
+     *   - `missing`  → items where at least one policy-required role has nobody in it ("Not assigned").
+     * Ignored on the "decided" view.
+     */
+    roleRequirement?: 'assigned' | 'missing';
   }) {
     const params = new URLSearchParams();
     const role = args?.role?.trim();
@@ -577,6 +586,7 @@ class ApiClient {
     if (assignee) params.set('assignee', assignee);
     if (status && status !== 'pending') params.set('status', status);
     if (args?.since) params.set('since', args.since);
+    if (args?.roleRequirement) params.set('roleRequirement', args.roleRequirement);
     const qs = params.toString();
     const suffix = qs.length > 0 ? `?${qs}` : '';
     return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
@@ -949,6 +959,32 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /**
+   * Whether this candidate's edge creates work items at all. False for dev-only edges (e.g. dev → test)
+   * whose policy opts out: the change set still lists its work-item references, but there is nothing to
+   * sign off, no queue entry, and no required roles. Absent on responses from an older API — treat
+   * `undefined` as true.
+   */
+  tracksWorkItems?: boolean;
+  /**
+   * Participant roles the resolved promotion policy requires somebody in on every work item of this
+   * candidate (canonical keys, e.g. `qa-owner`). Empty when the policy asks for none — the common case.
+   */
+  requiredWorkItemRoles?: string[];
+  /**
+   * The candidate's work items that are missing somebody in at least one required role. Derived
+   * server-side from the candidate's policy snapshot and its current participants, so it stays correct
+   * when a work item is attached later, someone is reassigned, or the policy changes.
+   */
+  workItemRoleGaps?: WorkItemRoleGap[];
+}
+
+/** One work item that has nobody in a role its promotion policy requires. */
+export interface WorkItemRoleGap {
+  workItemKey: string;
+  title: string | null;
+  /** Canonical role keys nobody holds on this work item. Always non-empty. */
+  missingRoles: string[];
 }
 
 /**
@@ -1061,6 +1097,10 @@ export interface WorkItemDetail {
   blockedReason: string | null;
   myDecision: WorkItemDecision | null;
   participants: PromotionSourceEventParticipant[];
+  /** Roles the carrying promotion's policy requires somebody in on this work item. */
+  requiredRoles?: string[];
+  /** The subset of `requiredRoles` nobody holds — non-empty means the work item is incomplete. */
+  missingRoles?: string[];
   approvals: WorkItemApproval[];
   comments: WorkItemComment[];
   /** Commits whose messages referenced this work item. Empty when the producer declared none. */
@@ -1111,6 +1151,10 @@ export interface PendingTicket {
   blockingPromotions: number;
   /** Participants on this specific work-item reference (overrides applied). */
   participants: PromotionSourceEventParticipant[];
+  /** Roles the carrying promotion's policy requires somebody in on this work item. */
+  requiredRoles?: string[];
+  /** The subset of `requiredRoles` nobody holds — non-empty means the work item needs attention. */
+  missingRoles?: string[];
   /**
    * Status of the candidate this row represents. "Pending" for a live promotion; anything else means
    * the row is either decision history or an orphan — a work item whose promotion died (Superseded /
@@ -1318,6 +1362,17 @@ export interface PromotionPolicy {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
+  /**
+   * Whether promotions on this edge create work items. False for edges whose target isn't ready for QA
+   * (a dev integration environment, a CI test ring): no work items are created, so every other
+   * work-item setting on the policy is inert.
+   */
+  tracksWorkItems: boolean;
+  /**
+   * Participant roles every work item on this edge must have somebody in (canonical keys). A work item
+   * missing one is flagged as incomplete wherever it renders. Not part of the approval gate.
+   */
+  requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
@@ -1336,6 +1391,10 @@ export interface UpsertPromotionPolicyPayload {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
+  /** Whether promotions on this edge create work items at all. */
+  tracksWorkItems: boolean;
+  /** Canonical participant roles every work item on this edge must have somebody in. */
+  requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;

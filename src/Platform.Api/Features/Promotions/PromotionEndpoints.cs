@@ -602,6 +602,19 @@ public static class PromotionEndpoints
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
+        // False ⇒ this edge creates no work items, so the UI drops the whole work-item affordance
+        // (sign-off links, counts, completeness) and shows the references as change-set history only.
+        tracksWorkItems = WorkItemRoleRequirements.TracksWorkItems(c),
+        // Work-item completeness, derived from the candidate's own policy snapshot and participants
+        // (see WorkItemRoleRequirements) — no extra query, and automatically correct after a late
+        // work-item attachment, a reassignment, or a policy edit.
+        requiredWorkItemRoles = WorkItemRoleRequirements.RequiredRoles(c),
+        workItemRoleGaps = WorkItemRoleRequirements.Evaluate(c).Select(g => new
+        {
+            workItemKey = g.WorkItemKey,
+            title = g.Title,
+            missingRoles = g.MissingRoles,
+        }),
     };
 
     // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)

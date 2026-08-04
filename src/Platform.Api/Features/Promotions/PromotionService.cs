@@ -188,8 +188,10 @@ public class PromotionService
 
         _db.PromotionCandidates.Add(candidate);
 
-        // Populate the candidate-scoped work-item index from the payload's work-item references.
-        SyncWorkItems(candidate, payloadWorkItems);
+        // Populate the candidate-scoped work-item index from the payload's work-item references —
+        // unless the policy opts the edge out of work items entirely, in which case the references
+        // stay on the candidate as change-set history and nothing enters the work-item world.
+        if (snapshot.TracksWorkItems) SyncWorkItems(candidate, payloadWorkItems);
 
         StageSystemComment(candidate.Id,
             $"Promotion created for {service} {version} ({sourceEnv} → {targetEnv}), "
@@ -288,10 +290,13 @@ public class PromotionService
         existing.ToRevision = dto.ToRevision;
         if (participants.Count > 0) existing.Participants = participants;
 
-        // Re-sync the candidate-scoped work-item index to match the new references.
+        // Re-sync the candidate-scoped work-item index to match the new references. Skipped wholesale
+        // on an edge that doesn't track work items — the removal still runs, so a candidate created
+        // before the policy opted out is cleaned up by the next push from the source system.
         var stale = await _db.PromotionWorkItems.Where(w => w.CandidateId == existing.Id).ToListAsync(ct);
         _db.PromotionWorkItems.RemoveRange(stale);
-        SyncWorkItems(existing, ExtractWorkItemReferences(references));
+        if (ReadSnapshot(existing).TracksWorkItems)
+            SyncWorkItems(existing, ExtractWorkItemReferences(references));
 
         StageSystemComment(existing.Id,
             $"Change set refreshed by the source system — now carrying {references.Count} reference(s).");
@@ -447,6 +452,47 @@ public class PromotionService
                 CreatedAt = now,
             });
         }
+    }
+
+    /// <summary>
+    /// Brings a candidate's <see cref="PromotionWorkItem"/> index in line with a policy that just
+    /// changed its <see cref="ResolvedPolicySnapshot.TracksWorkItems"/> setting: drops the rows when the
+    /// edge stopped tracking, rebuilds them from the candidate's own work-item references when it
+    /// started. Staged onto the caller's change tracker — the caller saves.
+    ///
+    /// <para>Sign-offs and comment threads are untouched: both key on
+    /// <c>(workItemKey, product, targetEnv)</c> rather than on the candidate, so a round trip through
+    /// "untracked" and back doesn't lose a reviewer's decision.</para>
+    /// </summary>
+    private async Task ResyncWorkItemIndexAsync(
+        PromotionCandidate candidate, bool tracks, CancellationToken ct)
+    {
+        var existingRows = await _db.PromotionWorkItems
+            .Where(w => w.CandidateId == candidate.Id)
+            .ToListAsync(ct);
+
+        if (!tracks)
+        {
+            if (existingRows.Count == 0) return;
+            _db.PromotionWorkItems.RemoveRange(existingRows);
+            StageSystemComment(candidate.Id,
+                $"Work items are no longer tracked on this edge — {existingRows.Count} work item(s) "
+                + "were removed from the work-items queue and no longer need a sign-off.");
+            return;
+        }
+
+        // Turning tracking on: only stage what isn't already there, so a partially-populated index
+        // (e.g. a policy toggled twice) can't produce duplicate rows for the same key.
+        var present = existingRows.Select(w => w.WorkItemKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = ExtractWorkItemReferences(candidate.References)
+            .Where(r => !present.Contains(r.Key!))
+            .ToList();
+        if (missing.Count == 0) return;
+
+        SyncWorkItems(candidate, missing);
+        StageSystemComment(candidate.Id,
+            $"Work items are now tracked on this edge — {missing.Count} work item(s) from this "
+            + "promotion's change set were added to the work-items queue for sign-off.");
     }
 
     /// <summary>Distinct <c>work-item</c> references (by key, case-insensitive) with a non-blank key.</summary>
@@ -1114,11 +1160,22 @@ public class PromotionService
             var json = JsonSerializer.Serialize(snapshot, JsonOptions);
             if (json == candidate.ResolvedPolicyJson) continue; // resolution unchanged — no-op
 
+            var wasTracking = ReadSnapshot(candidate).TracksWorkItems;
+
             candidate.PolicyId = snapshot.PolicyId;
             candidate.ResolvedPolicyJson = json;
             StageSystemComment(candidate.Id,
                 $"{Actor} changed the promotion policy for this edge — the promotion has been "
                 + "re-gated under the new approval rules.");
+
+            // The work-item index is derived from the policy, so a change to TracksWorkItems has to
+            // reach candidates that already exist — otherwise turning it off would leave their tickets
+            // sitting in the queue with no way to clear them, and turning it back on would leave the
+            // promotion permanently without any. Rebuilt from the candidate's own references, which are
+            // the authoritative change set either way.
+            if (wasTracking != snapshot.TracksWorkItems)
+                await ResyncWorkItemIndexAsync(candidate, snapshot.TracksWorkItems, ct);
+
             refreshed.Add(candidate);
         }
         if (refreshed.Count == 0) return 0;
