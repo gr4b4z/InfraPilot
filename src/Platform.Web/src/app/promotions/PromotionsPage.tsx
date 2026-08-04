@@ -78,17 +78,36 @@ const STATUS_CONFIG: Record<
 };
 
 /**
- * Which slice of the promotions set the page is showing. `mine` narrows `pending` client-side (no
- * refetch); `resolved` and `all` share one lazy fetch; `rejected` has its own so a long resolved
- * tail can't clip it.
+ * Which slice of the promotions set the page is showing. `mine` and `needs-attention` narrow `pending`
+ * client-side (no refetch); `resolved` and `all` share one lazy fetch; `rejected` has its own so a long
+ * resolved tail can't clip it.
+ *
+ * <p>The two narrowings answer different questions and can both be non-empty for the same promotion:
+ * `mine` is "can I approve this now", `needs-attention` is "is somebody missing from its work items".</p>
  */
-type View = 'pending' | 'mine' | 'awaiting-deploy' | 'resolved' | 'rejected' | 'all';
+type View =
+  | 'pending'
+  | 'mine'
+  | 'needs-attention'
+  | 'awaiting-deploy'
+  | 'resolved'
+  | 'rejected'
+  | 'all';
 
-const VIEWS = ['pending', 'mine', 'awaiting-deploy', 'resolved', 'rejected', 'all'] as const;
+const VIEWS = [
+  'pending',
+  'mine',
+  'needs-attention',
+  'awaiting-deploy',
+  'resolved',
+  'rejected',
+  'all',
+] as const;
 
 const VIEW_HEADINGS: Record<View, string> = {
   pending: 'All pending',
   mine: 'Awaiting my approval',
+  'needs-attention': 'Needs attention',
   'awaiting-deploy': 'Approved · awaiting deploy',
   resolved: 'Resolved',
   rejected: 'Rejected',
@@ -105,6 +124,11 @@ const EMPTY_STATES: Record<View, { icon: typeof Clock; title: string; body: stri
     icon: CheckCircle,
     title: 'Nothing awaiting your approval',
     body: 'Promotions you can approve will appear here.',
+  },
+  'needs-attention': {
+    icon: CheckCircle,
+    title: 'Nothing needs attention',
+    body: 'Every pending promotion has the people its policy requires on each of its work items.',
   },
   'awaiting-deploy': {
     icon: Rocket,
@@ -312,11 +336,22 @@ export function PromotionsPage() {
 
   const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
 
+  // Pending promotions carrying a work item with nobody in a role its policy requires. Filtered from
+  // the already-fetched pending set rather than queried, like `mine`: the gaps ride along on every
+  // candidate in the list response, so the tab and its badge cost nothing and stay live as people are
+  // assigned. Scoped to Pending because that's where an assignment still changes the outcome.
+  const needsAttention = useMemo(
+    () => pending.filter((c) => (c.workItemRoleGaps ?? []).length > 0),
+    [pending],
+  );
+
   // The rows the active tab shows, and whether we're still waiting on them.
   const displayed = useMemo((): PromotionCandidate[] => {
     switch (view) {
       case 'mine':
         return approvablePending;
+      case 'needs-attention':
+        return needsAttention;
       case 'awaiting-deploy':
         return awaitingDeploy;
       case 'resolved':
@@ -328,7 +363,7 @@ export function PromotionsPage() {
       default:
         return pending;
     }
-  }, [view, pending, approvablePending, awaitingDeploy, resolved, rejected, archive]);
+  }, [view, pending, approvablePending, needsAttention, awaitingDeploy, resolved, rejected, archive]);
 
   const displayedLoading =
     view === 'awaiting-deploy'
@@ -569,7 +604,7 @@ export function PromotionsPage() {
           the fold made looking something up feel like an archaeology exercise. Counts are only
           shown for the eagerly-fetched tabs — a badge on a lazy tab would either lie until you
           opened it or force the fetch the laziness exists to avoid. */}
-      {/* Six pills wrap to four rows on a phone and push the list off-screen, so below `sm` this
+      {/* Seven pills wrap to several rows on a phone and push the list off-screen, so below `sm` this
           scrolls sideways instead — the usual mobile tab strip. One tab stop, arrows inside. */}
       <RovingGroup
         ariaLabel="Promotion views"
@@ -578,6 +613,7 @@ export function PromotionsPage() {
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
+          { key: 'needs-attention', label: 'Needs attention', count: needsAttention.length, showBadge: true },
           { key: 'awaiting-deploy', label: 'Approved · awaiting deploy', count: awaitingDeploy.length, showBadge: true },
           { key: 'resolved', label: 'Resolved', count: 0, showBadge: false },
           { key: 'rejected', label: 'Rejected', count: 0, showBadge: false },
