@@ -41,6 +41,11 @@ import {
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import {
+  MissingRolesBadge,
+  MissingRolesNotice,
+  WorkItemsNeedingAttentionBadge,
+} from '@/components/promotions/MissingRoles';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
@@ -1666,19 +1671,67 @@ function WorkItemsCard({
   workItems: PromotionSourceEventReference[];
   onChanged: () => void;
 }) {
+  // Which work items have nobody in a role the policy requires, and which roles those are. Derived
+  // server-side onto the candidate, so it is already right for items attached after the promotion was
+  // created and after a policy edit re-gated it.
+  const roleGaps = candidate.workItemRoleGaps ?? [];
+  const missingRolesByKey = new Map(roleGaps.map((g) => [g.workItemKey, g.missingRoles]));
+  const distinctMissingRoles = Array.from(new Set(roleGaps.flatMap((g) => g.missingRoles)));
+
+  // A dev-only edge whose policy creates no work items. The rows below would be sign-off surfaces for
+  // records that don't exist — every one of them would fetch nothing and link to a 404 — so the card
+  // collapses to a one-liner. What shipped is still on the page: the References card lists the same
+  // work-item entries as change-set history, which is all they are here.
+  if (candidate.tracksWorkItems === false) {
+    return (
+      <div
+        className="rounded-xl border p-5"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+      >
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 mb-3"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Ticket size={12} /> Work items
+        </h2>
+        <div
+          className="p-3 rounded-lg text-[12px]"
+          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+        >
+          Work items aren&rsquo;t tracked on this edge — its promotion policy doesn&rsquo;t create
+          them, so nothing here needs a sign-off. The{' '}
+          {workItems.length === 1 ? 'work item' : `${workItems.length} work items`} this promotion
+          carries {workItems.length === 1 ? 'is' : 'are'} listed under References.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="rounded-xl border p-5"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between gap-3 mb-4">
         <h2
           className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5"
           style={{ color: 'var(--text-muted)' }}
         >
           <Ticket size={12} /> Work items ({workItems.length})
         </h2>
+        <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
       </div>
+
+      {/* Card-level notice: names the roles nobody is in, so the ask is legible without reading every
+         row. The per-row badges below say which items are affected. */}
+      {roleGaps.length > 0 && (
+        <div className="mb-3">
+          <MissingRolesNotice
+            roles={distinctMissingRoles}
+            action="Assign someone on the affected work items below."
+          />
+        </div>
+      )}
 
       {workItems.length === 0 ? (
         <div
@@ -1703,6 +1756,7 @@ function WorkItemsCard({
               index={i}
               candidate={candidate}
               reference={reference}
+              missingRoles={missingRolesByKey.get(reference.key ?? '')}
               onChanged={onChanged}
             />
           ))}
@@ -1729,12 +1783,15 @@ function TicketRow({
   index,
   candidate,
   reference,
+  missingRoles,
   onChanged,
 }: {
   /** Position in the list, for the roving tabindex. */
   index: number;
   candidate: PromotionCandidate;
   reference: PromotionSourceEventReference;
+  /** Policy-required roles nobody holds on this work item. Undefined/empty ⇒ nothing to flag. */
+  missingRoles?: string[];
   onChanged: () => void;
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
@@ -1842,6 +1899,9 @@ function TicketRow({
                 {reference.title}
               </span>
             )}
+            {/* Nobody in a role the policy requires. Sits on the title line, next to the state badge's
+                column, so a reviewer scanning the bundle sees which item is missing an owner. */}
+            <MissingRolesBadge roles={missingRoles} />
           </div>
 
           {/* Reference-level participants (e.g. QA on a ticket). Editable in place: writes go to

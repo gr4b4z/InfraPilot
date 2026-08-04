@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Ticket,
   Unlink,
+  UserPlus,
   XCircle,
 } from 'lucide-react';
 import type { PendingTicket, PromotionCandidate } from '@/lib/api';
@@ -17,6 +18,7 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
+import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { useAuthStore } from '@/stores/authStore';
@@ -36,11 +38,12 @@ import { useMyTasksStore } from '@/stores/myTasksStore';
 export function MyTasksPage() {
   const promotions = useMyTasksStore((s) => s.promotions);
   const workItems = useMyTasksStore((s) => s.workItems);
+  const unassignedWorkItems = useMyTasksStore((s) => s.unassignedWorkItems);
   const loading = useMyTasksStore((s) => s.loading);
   const loaded = useMyTasksStore((s) => s.loaded);
   const error = useMyTasksStore((s) => s.error);
   const refresh = useMyTasksStore((s) => s.refresh);
-  const total = promotions.length + workItems.length;
+  const total = promotions.length + workItems.length + unassignedWorkItems.length;
 
   return (
     <div className="space-y-6">
@@ -124,6 +127,25 @@ export function MyTasksPage() {
               />
             ))}
           </Section>
+
+          {/* Work items whose promotion policy asks for a role nobody is in. Last of the three: the
+             action is to find an owner rather than to decide something, so it shouldn't sit above the
+             items already waiting on this user. */}
+          <Section
+            icon={UserPlus}
+            title="Work items with nobody assigned"
+            count={unassignedWorkItems.length}
+            allLink={{ to: '/me/work-items', label: 'Open work items queue' }}
+          >
+            {unassignedWorkItems.map((t, index) => (
+              <WorkItemTaskRow
+                key={`${t.workItemKey}-${t.candidateId}`}
+                index={index}
+                ticket={t}
+                variant="unassigned"
+              />
+            ))}
+          </Section>
         </div>
       )}
     </div>
@@ -146,7 +168,8 @@ function AllCaughtUp() {
         You're all caught up.
       </p>
       <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-        Promotions you can approve and work items assigned to you will show up here.
+        Promotions you can approve, work items assigned to you, and work items still waiting for
+        someone will show up here.
       </p>
     </div>
   );
@@ -294,7 +317,20 @@ function PromotionTaskRow({ index, candidate }: { index: number; candidate: Prom
   );
 }
 
-function WorkItemTaskRow({ index, ticket }: { index: number; ticket: PendingTicket }) {
+function WorkItemTaskRow({
+  index,
+  ticket,
+  variant = 'assigned',
+}: {
+  index: number;
+  ticket: PendingTicket;
+  /**
+   * `assigned` — the user holds a policy-required role on this item, so the ask is a sign-off.
+   * `unassigned` — nobody holds one, so the ask is to put somebody on it. Only the accent and the
+   * call-to-action differ; the row's content is the same either way.
+   */
+  variant?: 'assigned' | 'unassigned';
+}) {
   const navigate = useNavigate();
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
   const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
@@ -304,9 +340,12 @@ function WorkItemTaskRow({ index, ticket }: { index: number; ticket: PendingTick
     .map((p) => roleDisplay(p));
   // The carrying promotion has moved on (superseded / rejected) but the item is still unsigned.
   const orphaned = !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
+  const unassigned = variant === 'unassigned';
 
   const rowProps = useKeyboardListRow(index, () => navigate(detailPath), {
-    label: `${ticket.workItemKey} — ${ticket.product} / ${ticket.service}, assigned to you. Open work item.`,
+    label: `${ticket.workItemKey} — ${ticket.product} / ${ticket.service}, ${
+      unassigned ? 'nobody assigned' : 'assigned to you'
+    }. Open work item.`,
   });
 
   return (
@@ -316,7 +355,7 @@ function WorkItemTaskRow({ index, ticket }: { index: number; ticket: PendingTick
       style={{
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
-        borderLeft: '3px solid var(--accent)',
+        borderLeft: `3px solid ${unassigned ? 'var(--warning)' : 'var(--accent)'}`,
       }}
     >
       <Ticket size={16} style={{ color: 'var(--text-muted)', marginTop: 2, flexShrink: 0 }} />
@@ -368,6 +407,7 @@ function WorkItemTaskRow({ index, ticket }: { index: number; ticket: PendingTick
               No live promotion
             </span>
           )}
+          <MissingRolesBadge roles={ticket.missingRoles} />
         </div>
         <div
           className="flex items-center gap-2 flex-wrap mt-1.5 text-[12px]"
@@ -396,7 +436,7 @@ function WorkItemTaskRow({ index, ticket }: { index: number; ticket: PendingTick
         className="shrink-0 self-center inline-flex items-center gap-1 text-[12px] font-medium transition-opacity hover:opacity-80"
         style={{ color: 'var(--accent)' }}
       >
-        Sign off
+        {unassigned ? 'Assign' : 'Sign off'}
         <ArrowRight size={14} />
       </Link>
     </div>

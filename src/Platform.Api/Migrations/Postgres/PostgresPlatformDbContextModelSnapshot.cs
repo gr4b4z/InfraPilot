@@ -676,6 +676,12 @@ namespace Platform.Api.Migrations.Postgres
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
 
+                    b.Property<string>("RequiredWorkItemRolesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
+
                     b.Property<string>("Service")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
@@ -694,6 +700,11 @@ namespace Platform.Api.Migrations.Postgres
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
+
+                    b.Property<bool>("TracksWorkItems")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");

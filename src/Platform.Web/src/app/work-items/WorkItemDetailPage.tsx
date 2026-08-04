@@ -16,6 +16,7 @@ import { refreshMyTasks } from '@/stores/myTasksStore';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { MissingRolesBadge, MissingRolesNotice } from '@/components/promotions/MissingRoles';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
@@ -208,15 +209,20 @@ export function WorkItemDetailPage() {
             <WorkItemEnvironments environments={detail.environments ?? []} />
           </div>
         </div>
-        {headline && headlineStyle && (
-          <span
-            className="badge shrink-0"
-            style={{ backgroundColor: headlineStyle.bg, color: headlineStyle.color }}
-          >
-            <DecisionIcon decision={headline.decision} size={10} />
-            {headlineStyle.label}
-          </span>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {/* Incompleteness reads alongside the sign-off state, not instead of it: an item can be
+             approved and still have nobody recorded as its owner. */}
+          <MissingRolesBadge roles={detail.missingRoles} />
+          {headline && headlineStyle && (
+            <span
+              className="badge shrink-0"
+              style={{ backgroundColor: headlineStyle.bg, color: headlineStyle.color }}
+            >
+              <DecisionIcon decision={headline.decision} size={10} />
+              {headlineStyle.label}
+            </span>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -272,35 +278,51 @@ export function WorkItemDetailPage() {
  * participants actually live.
  */
 function PeopleCard({ detail, onChanged }: { detail: WorkItemDetail; onChanged: () => void }) {
+  // Roles the carrying promotion's policy requires that nobody is in. The notice goes inside this card
+  // rather than at the top of the page: the thing it asks for is the Assign control right beside it.
+  const missingRoles = detail.missingRoles ?? [];
   return (
     <div
-      className="rounded-xl border px-5 py-3 flex flex-wrap items-center gap-x-3 gap-y-1.5"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+      className="rounded-xl border px-5 py-3 space-y-2"
+      style={{
+        borderColor: missingRoles.length > 0 ? 'var(--warning)' : 'var(--border-color)',
+        backgroundColor: 'var(--bg-primary)',
+      }}
     >
-      <h2
-        className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 shrink-0"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        <Users size={12} /> People
-      </h2>
-      <WorkItemParticipants
-        candidateId={detail.primaryCandidateId}
-        referenceKey={detail.workItemKey}
-        participants={detail.participants}
-        onChanged={onChanged}
-        readOnly={!detail.canManage}
-        layout="chips"
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Users size={12} /> People
+        </h2>
+        <WorkItemParticipants
+          candidateId={detail.primaryCandidateId}
+          referenceKey={detail.workItemKey}
+          participants={detail.participants}
+          onChanged={onChanged}
+          readOnly={!detail.canManage}
+          layout="chips"
+        />
+        {!detail.canManage && detail.participants.length === 0 && (
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Nobody assigned.
+          </span>
+        )}
+        {!detail.canManage && detail.participants.length > 0 && (
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Assigning requires the QA or Admin role.
+          </span>
+        )}
+      </div>
+      <MissingRolesNotice
+        roles={missingRoles}
+        action={
+          detail.canManage
+            ? 'Use Assign above to put someone on it.'
+            : 'Ask a QA or Admin user to assign someone.'
+        }
       />
-      {!detail.canManage && detail.participants.length === 0 && (
-        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          Nobody assigned.
-        </span>
-      )}
-      {!detail.canManage && detail.participants.length > 0 && (
-        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          Assigning requires the QA or Admin role.
-        </span>
-      )}
     </div>
   );
 }

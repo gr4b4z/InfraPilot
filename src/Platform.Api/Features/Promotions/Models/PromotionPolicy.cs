@@ -45,6 +45,49 @@ public class PromotionPolicy
         set => ApprovalStepsJson = JsonSerializer.Serialize(value, JsonOpts);
     }
 
+    // ── Work-item completeness ────────────────────────────────────────────────
+
+    /// <summary>
+    /// When <c>false</c>, promotions on this edge carry no work items at all: no
+    /// <see cref="PromotionWorkItem"/> rows are created, so the tickets never reach the work-items
+    /// queue, never need a sign-off, and are never flagged for a missing
+    /// <see cref="RequiredWorkItemRoles"/> entry. The change set itself is untouched — the candidate
+    /// still records its work-item references, so the promotion page and downstream integrations keep
+    /// showing what shipped.
+    ///
+    /// <para>For edges whose target isn't ready for QA — a developer integration environment, a CI
+    /// test ring — where a work item arriving in the queue is noise, not work. Defaults to <c>true</c>
+    /// so existing edges keep tracking.</para>
+    ///
+    /// <para>Every other work-item setting on this policy (the required roles and the three gate
+    /// flags) is inert while this is off: they all describe work items, and there are none.</para>
+    /// </summary>
+    public bool TracksWorkItems { get; set; } = true;
+
+    /// <summary>
+    /// JSON-serialised <see cref="RequiredWorkItemRoles"/>. Persisted as a plain string column,
+    /// mirroring <see cref="ApprovalStepsJson"/>. Empty array (<c>"[]"</c>) ⇒ no role requirement.
+    /// </summary>
+    public string RequiredWorkItemRolesJson { get; set; } = "[]";
+
+    /// <summary>
+    /// Participant roles every work item on a candidate gated by this policy must have somebody in —
+    /// e.g. <c>qa-owner</c>. A work item with no named person in one of these roles is
+    /// <b>incomplete</b>: the platform flags it everywhere it renders and asks for someone to be put
+    /// on the role. Stored canonicalised (<see cref="Infrastructure.RoleNormalizer"/>).
+    ///
+    /// <para>Deliberately not part of the approval gate: this records who is <i>answerable</i> for a
+    /// work item, which is a data-completeness question, not an authorisation one. The blocking
+    /// condition remains <see cref="RequireAllWorkItemsApproved"/>.</para>
+    /// </summary>
+    public List<string> RequiredWorkItemRoles
+    {
+        get => string.IsNullOrEmpty(RequiredWorkItemRolesJson)
+            ? new()
+            : JsonSerializer.Deserialize<List<string>>(RequiredWorkItemRolesJson, JsonOpts) ?? new();
+        set => RequiredWorkItemRolesJson = JsonSerializer.Serialize(value, JsonOpts);
+    }
+
     // ── Work-item-gate options ─────────────────────────────────────────────────
     // These three flags are independent and can be combined freely.
 

@@ -103,7 +103,13 @@ export function Sidebar() {
   const isAdmin = user?.isAdmin ?? false;
   const flags = useFeatureFlagsStore((s) => s.flags);
   const promotionsAwaitingMe = useMyTasksStore((s) => s.promotions.length);
-  const workItemsAssignedToMe = useMyTasksStore((s) => s.workItems.length);
+  // Both attention slices of the work-items queue: the items this user is answerable for, plus the
+  // ones nobody has been put on. Summed so the badge matches the bell, and because the queue page
+  // surfaces the two as sibling tabs — a badge counting only one of them would send people to the
+  // wrong tab.
+  const workItemsAssignedToMe = useMyTasksStore(
+    (s) => s.workItems.length + s.unassignedWorkItems.length,
+  );
   const counters: Record<CounterKey, number> = { promotionsAwaitingMe, workItemsAssignedToMe };
 
   const visibleGroups = navGroups
