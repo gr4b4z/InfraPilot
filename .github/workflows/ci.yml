@@ -45,6 +45,12 @@ jobs:
           context: .
           file: Dockerfile
           push: false
+          # Same cache scope the release workflow's amd64 build uses. A run on a pull request can read
+          # the default branch's caches, so this arrives warm from the last release and only rebuilds
+          # what the branch actually changed. Writes go to the branch's own scope and are discarded
+          # when it merges, so a pull request can't poison what main reads.
+          cache-from: type=gha,scope=image-amd64
+          cache-to: type=gha,mode=max,scope=image-amd64
 
   validate-site-build:
     runs-on: ubuntu-latest
