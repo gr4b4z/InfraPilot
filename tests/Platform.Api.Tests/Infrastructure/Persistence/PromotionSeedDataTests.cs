@@ -142,6 +142,80 @@ public class PromotionSeedDataTests : IDisposable
         Assert.True(withGap < evaluated, "Expected some seeded work items to already have a qa-owner.");
     }
 
+    [Fact]
+    public async Task Seed_NamesALocalAccountAsQaOwnerOnLiveWorkItems()
+    {
+        // The demo data has to be reachable from an account you can actually sign in as. With the
+        // fictional-people pool only, every seeded work item belongs to somebody who can never log in,
+        // and the work-items queue reads empty however you come at it.
+        await SeedAsync();
+
+        var pending = await _db.PromotionCandidates
+            .Where(c => c.Status == PromotionStatus.Pending && c.TargetEnv == "production")
+            .ToListAsync();
+        Assert.NotEmpty(pending);
+
+        var keysByCandidate = (await _db.PromotionWorkItems.ToListAsync())
+            .GroupBy(w => w.CandidateId)
+            .ToDictionary(g => g.Key, g => g.Select(w => w.WorkItemKey).Distinct().ToList());
+
+        var owned = 0;
+        foreach (var candidate in pending)
+        {
+            foreach (var key in keysByCandidate.GetValueOrDefault(candidate.Id) ?? new())
+            {
+                var participants = WorkItemRoleRequirements.ResolveParticipants(candidate, key);
+                if (participants.Any(p =>
+                        string.Equals(p.Role, "qa-owner", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(p.Email, "user@localhost", StringComparison.OrdinalIgnoreCase)))
+                {
+                    owned++;
+                }
+            }
+        }
+
+        Assert.True(owned > 0, "Expected some live work items to name user@localhost as qa-owner.");
+    }
+
+    [Fact]
+    public async Task Seed_SpreadsWorkItemSignoffAcrossStates()
+    {
+        // The point of the sign-off seeding: every decision the UI can render should be present, and
+        // most items should still be undecided so the pending queue isn't empty.
+        await SeedAsync();
+
+        var decisions = await _db.WorkItemApprovals.ToListAsync();
+        Assert.NotEmpty(decisions);
+        foreach (var decision in Enum.GetValues<WorkItemDecision>())
+        {
+            Assert.Contains(decisions, d => d.Decision == decision);
+        }
+
+        // The queue only shows work items nobody has decided yet, so some of the ones on live
+        // promotions have to be left open or the tab the demo data exists to fill reads empty.
+        var pendingIds = await _db.PromotionCandidates
+            .Where(c => c.Status == PromotionStatus.Pending && c.TargetEnv == "production")
+            .Select(c => c.Id)
+            .ToListAsync();
+        var liveKeys = (await _db.PromotionWorkItems
+                .Where(w => pendingIds.Contains(w.CandidateId))
+                .ToListAsync())
+            .Select(w => (w.WorkItemKey, w.Product, w.TargetEnv))
+            .Distinct()
+            .ToList();
+        Assert.NotEmpty(liveKeys);
+
+        var decidedKeys = decisions
+            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+            .ToHashSet();
+        var open = liveKeys.Count(k => !decidedKeys.Contains(k));
+        Assert.True(open > 0, "Expected some work items on live promotions to be awaiting a decision.");
+
+        // Every decision is mirrored into the thread, the way the runtime writes it.
+        var threadEntries = await _db.WorkItemComments.Where(c => c.Decision != null).ToListAsync();
+        Assert.Equal(decisions.Count, threadEntries.Count);
+    }
+
     private async Task SeedAsync()
     {
         // Promotion data is derived from deploy events, so the deployment seed has to run first. The

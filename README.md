@@ -36,6 +36,37 @@ If you also want to remove the local Postgres volume:
 docker compose down -v
 ```
 
+### Developing Against A Local Stack (Windows, PowerShell)
+
+`docker compose up` runs everything in containers, which is fine for a look around but slow to
+iterate on. For development there are three scripts that keep Postgres in Docker and run the API and
+the web dev server natively, so both reload on save:
+
+```bash
+./scripts/start.ps1
+```
+
+Starts Postgres, applies migrations, seeds demo data into an empty database, and prints the URLs and
+the dev sign-in accounts. Safe to re-run — anything already listening on its port is left alone.
+`-DbOnly` starts just the database, for when the servers are launched from an IDE.
+
+```bash
+./scripts/reseed.ps1
+```
+
+Drops the local database and rebuilds it: migrate, re-seed, then report the row counts. Seeding only
+happens on an empty database, so this is the way back to a clean demo dataset. Destructive — it
+prompts unless given `-Force`.
+
+```bash
+./scripts/stop.ps1
+```
+
+Stops the servers and the database, keeping the volume. `-KeepDb` leaves Postgres up; `-RemoveData`
+deletes the volume as well.
+
+Logs and pid files go to `.local/` (gitignored).
+
 ## What Runs Locally
 
 `docker compose` starts three services:

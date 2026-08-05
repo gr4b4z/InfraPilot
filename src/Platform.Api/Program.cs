@@ -292,8 +292,11 @@ var app = builder.Build();
     await db.Database.MigrateAsync();
 
     // Seed feature flags so admins can flip them from the UI without touching appsettings.
-    // Only inserts missing rows — never overwrites an operator's explicit value.
-    await FeatureFlagSeeder.SeedDefaults(db, builder.Configuration);
+    // Only inserts missing rows — never overwrites an operator's explicit value. In Development
+    // every flag defaults on, so a fresh database shows the whole product instead of hiding
+    // promotions, rollbacks and release notes behind a toggle.
+    await FeatureFlagSeeder.SeedDefaults(
+        db, builder.Configuration, enableAllByDefault: app.Environment.IsDevelopment());
 
     // One-time backfill of the built-in participant roles into an already-saved settings row, so an
     // install that predates a role its producers now send can still assign and filter on it.
