@@ -98,24 +98,33 @@ if ($SkipWeb) {
     Write-Step 'Starting the web dev server'
     $webOut = Join-Path $StateDir 'web.log'
     $webErr = Join-Path $StateDir 'web.err.log'
-    $web = Start-Process -FilePath 'npm.cmd' -ArgumentList @('run', 'dev') `
-        -WorkingDirectory $WebDir `
-        -RedirectStandardOutput $webOut -RedirectStandardError $webErr `
-        -WindowStyle Hidden -PassThru
+
+    # Ask for plain output. The log is read back to find the port (see Get-ViteUrl) and is also the
+    # thing you tail when something breaks; ANSI escapes make both worse. Set around Start-Process
+    # because the child inherits the parent's environment, then restored so the caller's shell keeps
+    # whatever it had.
+    $previousNoColor = $env:NO_COLOR
+    try {
+        $env:NO_COLOR = '1'
+        $web = Start-Process -FilePath 'npm.cmd' -ArgumentList @('run', 'dev') `
+            -WorkingDirectory $WebDir `
+            -RedirectStandardOutput $webOut -RedirectStandardError $webErr `
+            -WindowStyle Hidden -PassThru
+    } finally {
+        $env:NO_COLOR = $previousNoColor
+    }
     Save-ServicePid -Name 'web' -ProcessId $web.Id
     Write-Detail "pid $($web.Id), log $webOut"
 
-    # Vite treats 5173 as preferred, not required, and falls through to the next free port. Read the
-    # port back out of its own output rather than assuming, or the URL printed below can be wrong.
     $found = Wait-Until -TimeoutSec 120 -Message 'Waiting for Vite…' -Condition {
-        (Test-Path $webOut) -and ((Get-Content $webOut -Raw) -match 'Local:\s+(http://localhost:\d+)')
+        (Get-ViteUrl $webOut) -ne ''
     }
     if (-not $found) {
         Write-Note "The dev server didn't report a URL in time. Last lines of ${webOut}:"
         if (Test-Path $webOut) { Get-Content $webOut -Tail 20 | ForEach-Object { Write-Detail $_ } }
         throw "Web dev server didn't start. Full log: $webOut"
     }
-    if ((Get-Content $webOut -Raw) -match 'Local:\s+(http://localhost:\d+)') { $webUrl = $Matches[1] }
+    $webUrl = Get-ViteUrl $webOut
     Write-Ok "Web dev server on $webUrl"
 }
 
