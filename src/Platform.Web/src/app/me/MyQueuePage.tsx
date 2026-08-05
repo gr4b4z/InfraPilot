@@ -5,7 +5,6 @@ import type { PendingAssignee, PendingTicket, WorkItemDecision } from '@/lib/api
 import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
 import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
-import { roleDisplay } from '@/lib/roleLabel';
 import { FilterPanel, filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
 import { CopyViewLinkButton } from '@/components/ui/CopyViewLinkButton';
 import { KeyboardList } from '@/components/ui/KeyboardList';
@@ -86,14 +85,11 @@ export function MyQueuePage() {
   );
 
   const [tickets, setTickets] = useState<PendingTicket[]>([]);
-  // Server-supplied (email, role) rollup feeding the person dropdown. Computed against the user's
-  // authorized list pre-narrowing — the queue itself, not the org directory — so every person
-  // offered is one we can actually render results for.
+  // Server-supplied (email, required-role) rollup feeding the person dropdown. Computed against
+  // the user's authorized list pre-narrowing — the queue itself, not the org directory — and
+  // limited to people holding a policy-required role, so every person offered is one the filter
+  // can actually match.
   const [assignees, setAssignees] = useState<PendingAssignee[]>([]);
-  // The configured participant roles (the role dropdown's contents) and the roles the queue
-  // carries that nobody configured. The former is deliberately independent of what's on screen:
-  // "which items have no QA owner?" is a question about a role that may appear nowhere.
-  const [roles, setRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Hydrated from the link or from localStorage (see `initial`). Only on mount — subsequent updates
@@ -134,7 +130,6 @@ export function MyQueuePage() {
       const res = await api.getMyPendingWorkItems(apiArg);
       setTickets(res.tickets ?? []);
       setAssignees(res.assignees ?? []);
-      setRoles(res.roles ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load work items');
     } finally {
@@ -245,11 +240,11 @@ export function MyQueuePage() {
     if (view === 'decided') {
       if (timeFrame !== '1d') n++;
       if (deciderFilter.mode !== 'all') n++;
-    } else {
-      if (assigneeFilter.role !== null) n++;
-      // The person select is hidden on the two attention tabs, so a stale pick behind it isn't a
-      // filter the user can find — or one that's in effect. Mirrors the render condition above.
-      if (view !== 'mine' && view !== 'not-assigned' && assigneeFilter.mode !== 'all') n++;
+    } else if (view === 'pending' && assigneeFilter.mode !== 'all') {
+      // The person select only renders on the pending tab, so a stale pick behind it elsewhere
+      // isn't a filter the user can find — or one that's in effect. Mirrors the render condition
+      // below.
+      n++;
     }
     for (const key of ['product', 'service', 'targetEnv', 'deployedEnv'] as const) {
       if (scopeFilter[key] !== null) n++;
@@ -334,17 +329,15 @@ export function MyQueuePage() {
             />
           </>
         )}
-        {/* Role/assignee narrowing only meaningful for the pending pool — hide for history views.
-            On "Assigned to me" the person is the tab; on "Not assigned" there is by definition
-            nobody in the role being asked about. Both keep the role select, which narrows to one
-            required role. */}
-        {view !== 'decided' && (
+        {/* Person narrowing ("assigned to a required role") is only meaningful for the pending
+            pool. On "Assigned to me" the person is the tab; on "Not assigned" there is by
+            definition nobody in the roles being asked about; history views have their own
+            decider filter. */}
+        {view === 'pending' && (
           <AssigneeFilter
             value={assigneeFilter}
             onChange={handleFilterChange}
             assignees={assignees}
-            roles={roles}
-            hidePerson={view === 'mine' || view === 'not-assigned'}
           />
         )}
         <ScopeFilter
@@ -394,9 +387,9 @@ export function MyQueuePage() {
               : view === 'decided'
                 ? decidedEmptyTitle(deciderFilter)
                 : view === 'mine'
-                  ? assignedToMeEmptyTitle(assigneeFilter)
+                  ? 'Nothing assigned to you right now.'
                   : view === 'not-assigned'
-                    ? notAssignedEmptyTitle(assigneeFilter)
+                    ? 'Every work item has the people its policy requires.'
                     : emptyStateTitle(assigneeFilter)}
           </p>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
@@ -452,14 +445,13 @@ function toApiArg(
   decider: DeciderFilterValue,
 ):
   | {
-      role?: string;
       assignee?: string;
       status?: 'pending' | 'decided';
       since?: string;
       roleRequirement?: 'assigned' | 'missing';
     }
   | undefined {
-  // Decision-history views ignore role/participant narrowing but DO honour the decider filter:
+  // Decision-history views ignore participant narrowing but DO honour the decider filter:
   // `assignee` here means "who decided" (a single email; "Me" → current user). The backend
   // maps this param to WorkItemApproval.ApproverEmail on the decided path.
   if (view === 'decided') {
@@ -468,39 +460,36 @@ function toApiArg(
     return { status: 'decided', ...(since ? { since } : {}), ...(decidedBy ? { assignee: decidedBy } : {}) };
   }
 
-  const role = filter.role ?? undefined;
-  // On the "Assigned to me" tab the person is fixed by the tab and the assignee filter's own
-  // person mode is ignored (its select is hidden there); only the role narrowing carries over.
-  // `roleRequirement=assigned` is what makes this "items I'm answerable for" rather than "items my
-  // name appears on" — the server matches the person against the policy's required roles only.
+  // On the "Assigned to me" tab the person is fixed by the tab (the filter's select is hidden
+  // there). `roleRequirement=assigned` is what makes this "items I'm answerable for" rather than
+  // "items my name appears on" — the server matches the person against the policy's required
+  // roles only.
   if (view === 'mine') {
     const assignee = currentUserEmail || undefined;
-    return { role, assignee, roleRequirement: 'assigned' };
+    return { assignee, roleRequirement: 'assigned' };
   }
 
-  // "Not assigned" asks about the items, not about a person: no assignee is sent, and a role pick
-  // narrows to items missing that particular required role.
+  // "Not assigned" asks about the items, not about a person: items missing somebody in a
+  // policy-required role.
   if (view === 'not-assigned') {
-    return { role, roleRequirement: 'missing' };
+    return { roleRequirement: 'missing' };
   }
 
-  let assignee: string | undefined;
+  // Pending: the person filter narrows to items where the pick holds a policy-required role —
+  // the same "answerable for it" bar as the tabs, applied to any person. "Missing a required
+  // role" is the same question with nobody in the slot.
   switch (filter.mode) {
     case 'all':
-      assignee = undefined;
-      break;
+      return undefined;
     case 'me':
-      assignee = currentUserEmail || undefined;
-      break;
+      return currentUserEmail
+        ? { assignee: currentUserEmail, roleRequirement: 'assigned' }
+        : undefined;
     case 'unassigned':
-      assignee = 'unassigned';
-      break;
+      return { roleRequirement: 'missing' };
     case 'person':
-      assignee = filter.email;
-      break;
+      return filter.email ? { assignee: filter.email, roleRequirement: 'assigned' } : undefined;
   }
-  if (!role && !assignee) return undefined;
-  return { role, assignee };
 }
 
 // ── Queue view (tabs) ────────────────────────────────────────────────────────────────────
@@ -752,56 +741,27 @@ function decidedEmptyTitle(decider: DeciderFilterValue): string {
   }
 }
 
-/** Empty state for the "Assigned to me" tab — the person is fixed, so only the role varies. */
-function assignedToMeEmptyTitle(filter: AssigneeFilterValue): string {
-  const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
-  return roleLabel
-    ? `No work items where you're the ${roleLabel}.`
-    : 'Nothing assigned to you right now.';
-}
-
-/** Empty state for the "Not assigned" tab — which is the good outcome, so say so. */
-function notAssignedEmptyTitle(filter: AssigneeFilterValue): string {
-  const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
-  return roleLabel
-    ? `Every work item has a ${roleLabel}.`
-    : 'Every work item has the people its policy requires.';
-}
-
 function emptyStateTitle(filter: AssigneeFilterValue): string {
-  const roleLabel = filter.role ? roleDisplay({ role: filter.role }) : null;
   switch (filter.mode) {
     case 'all':
-      return roleLabel
-        ? `No work items where someone is ${roleLabel}.`
-        : 'No work items awaiting your signoff.';
+      return 'No work items awaiting your signoff.';
     case 'me':
-      return roleLabel
-        ? `No work items where you're the ${roleLabel}.`
-        : 'Nothing assigned to you right now.';
+      return 'Nothing assigned to you right now.';
     case 'unassigned':
-      return roleLabel
-        ? `No work items without a ${roleLabel} assigned.`
-        : 'No unassigned work items in your authorized list.';
+      return 'Every work item has the people its policy requires.';
     case 'person':
-      return roleLabel
-        ? `No work items with ${filter.displayName} as ${roleLabel}.`
-        : `No work items with ${filter.displayName} as any role.`;
+      return `No work items where ${filter.displayName} holds a required role.`;
   }
 }
 
 function emptyStateBody(filter: AssigneeFilterValue): string {
   switch (filter.mode) {
     case 'all':
-      return filter.role
-        ? 'Pick a different role or "Any role" to widen the queue.'
-        : 'New work items will appear here as promotions roll through your environments.';
+      return 'New work items will appear here as promotions roll through your environments.';
     case 'me':
-      return 'Switch the assignee to "Anyone" to see the full queue you can sign off on.';
+      return 'Switch "Assigned to" back to "Anyone" to see the full queue you can sign off on.';
     case 'unassigned':
-      return filter.role
-        ? 'Work items where this role is empty will show up here.'
-        : 'Work items without a named QA / reviewer / assignee will show up here.';
+      return 'Work items whose promotion policy asks for a role nobody is in will show up here.';
     case 'person':
       return 'Try a different person, or switch to "Anyone".';
   }

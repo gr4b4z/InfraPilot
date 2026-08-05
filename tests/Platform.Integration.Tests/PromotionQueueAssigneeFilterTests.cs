@@ -19,6 +19,11 @@ namespace Platform.Integration.Tests;
 /// a display-only narrowing — server-side authorisation (group membership, excluded role,
 /// not-yet-decided) is unchanged. Each test seeds its own service / candidate and asserts the
 /// filter returns the expected subset of the user's authorized queue.
+///
+/// <para>The <c>assignees</c> rollup these tests also cover feeds the queue page's person
+/// dropdown, which narrows with <c>roleRequirement=assigned</c> — so the rollup counts only
+/// people holding a <b>policy-required</b> role on an item, never mere mentions. Tests that
+/// assert rollup contents therefore seed a policy with <c>requiredWorkItemRoles</c>.</para>
 /// </summary>
 public class PromotionQueueAssigneeFilterTests
     : IClassFixture<PromotionQueueAssigneeFilterTests.AssigneeFilterFactory>, IDisposable
@@ -164,9 +169,10 @@ public class PromotionQueueAssigneeFilterTests
         var unassigned = await GetPendingAsync(assignee: "unassigned");
         Assert.DoesNotContain(unassigned, t => t.WorkItemKey == "REP-1");
 
-        // And the person is offered in the assignee rollup that backs the person dropdown.
-        var all = await GetPendingAsync(role: null, assignee: null);
-        Assert.Contains(all.Assignees, a => a.Email == "other@example.com" && a.Role == "reporter");
+        // The rollup is a different bar: it backs the person dropdown, whose picks narrow by
+        // policy-required roles — this policy requires none, so the reporter is not offered.
+        var all = await GetPendingResponseAsync(assignee: null);
+        Assert.DoesNotContain(all.Assignees, a => a.Email == "other@example.com");
     }
 
     // Deleted AssigneeFilter_TombstonedAssignee_IsTreatedAsUnassigned: the pending-queue assignee
@@ -199,140 +205,14 @@ public class PromotionQueueAssigneeFilterTests
         Assert.Contains(lower, t => t.WorkItemKey == "CASE-1");
     }
 
-    // ── 7. Role + person matrix ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task RolePersonMatrix_RoleOnly_ReturnsCandidatesWithSomeoneInRole()
-    {
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        // QA: someone in role.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-qa",
-            referenceKey: "RQA-1",
-            referenceParticipants: new[]
-            {
-                new { role = "qa", displayName = "Other", email = "other@example.com" },
-            });
-
-        // Reviewer-only — under role=qa narrowing this row should drop.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-rev",
-            referenceKey: "RREV-1",
-            referenceParticipants: new[]
-            {
-                new { role = "reviewer", displayName = "Other", email = "other@example.com" },
-            });
-
-        var result = await GetPendingAsync(role: "qa", assignee: null);
-        Assert.Contains(result.Tickets, t => t.WorkItemKey == "RQA-1");
-        Assert.DoesNotContain(result.Tickets, t => t.WorkItemKey == "RREV-1");
-    }
-
-    [Fact]
-    public async Task RolePersonMatrix_RoleAndMe_ReturnsOnlyWhereIAmInThatRole()
-    {
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        // I'm QA → match.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-iq",
-            referenceKey: "IQ-1",
-            referenceParticipants: new[]
-            {
-                new { role = "qa", displayName = "Admin", email = "admin@localhost" },
-            });
-
-        // I'm Reviewer (not QA) → drop under role=qa+me.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-ir",
-            referenceKey: "IR-1",
-            referenceParticipants: new[]
-            {
-                new { role = "reviewer", displayName = "Admin", email = "admin@localhost" },
-            });
-
-        var result = await GetPendingAsync(role: "qa", assignee: "admin@localhost");
-        Assert.Contains(result.Tickets, t => t.WorkItemKey == "IQ-1");
-        Assert.DoesNotContain(result.Tickets, t => t.WorkItemKey == "IR-1");
-    }
-
-    [Fact]
-    public async Task RolePersonMatrix_RoleAndOtherPerson_ReturnsOnlyWhereTheyAreInRole()
-    {
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        // Other is QA → match.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-oq",
-            referenceKey: "OQ-1",
-            referenceParticipants: new[]
-            {
-                new { role = "qa", displayName = "Other", email = "other@example.com" },
-            });
-
-        // Other is Reviewer (not QA) → drop under role=qa+other.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-or",
-            referenceKey: "OR-1",
-            referenceParticipants: new[]
-            {
-                new { role = "reviewer", displayName = "Other", email = "other@example.com" },
-            });
-
-        var result = await GetPendingAsync(role: "qa", assignee: "other@example.com");
-        Assert.Contains(result.Tickets, t => t.WorkItemKey == "OQ-1");
-        Assert.DoesNotContain(result.Tickets, t => t.WorkItemKey == "OR-1");
-    }
-
-    [Fact]
-    public async Task RolePersonMatrix_RoleAndUnassigned_ReturnsOnlyWhereThatRoleIsEmpty()
-    {
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        // Has QA → drop under role=qa+unassigned.
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-hasqa",
-            referenceKey: "HASQA-1",
-            referenceParticipants: new[]
-            {
-                new { role = "qa", displayName = "Other", email = "other@example.com" },
-            });
-
-        // No QA but has reviewer → keep under role=qa+unassigned (other roles don't matter
-        // when the role filter is set).
-        await CreatePromotionWithReferenceAsync(
-            product,
-            service: "svc-noqa",
-            referenceKey: "NOQA-1",
-            referenceParticipants: new[]
-            {
-                new { role = "reviewer", displayName = "Other", email = "other@example.com" },
-            });
-
-        var result = await GetPendingAsync(role: "qa", assignee: "unassigned");
-        Assert.Contains(result.Tickets, t => t.WorkItemKey == "NOQA-1");
-        Assert.DoesNotContain(result.Tickets, t => t.WorkItemKey == "HASQA-1");
-    }
-
-    // ── 8. Response shape — assignees rollup + roles set ─────────────────────
+    // ── 7. Response shape — assignees rollup ─────────────────────────────────
 
     [Fact]
     public async Task ResponseShape_AssigneesRollup_DedupedPerEmailRole_WithCorrectCounts()
     {
         var product = NewProduct();
-        await SeedPolicyAsync(product);
+        // The rollup counts only policy-required roles — qa here; reviewer stays a mere mention.
+        await SeedPolicyAsync(product, requiredRoles: new[] { "qa" });
 
         // Test-scoped emails so the shared factory's residue from earlier tests doesn't
         // bleed into the rollup counts. The rollup is global across the user's authorized
@@ -360,7 +240,8 @@ public class PromotionQueueAssigneeFilterTests
                 new { role = "qa", displayName = "Alice", email = aliceEmail },
             });
 
-        // Alice is Reviewer on one candidate → count=1, role=reviewer.
+        // Alice is Reviewer on one candidate — a role this policy does not require, so it must
+        // not produce a rollup row: the person dropdown's picks narrow by required roles only.
         await CreatePromotionWithReferenceAsync(
             product,
             service: "svc-a3",
@@ -380,7 +261,7 @@ public class PromotionQueueAssigneeFilterTests
                 new { role = "qa", displayName = "Bob", email = bobEmail },
             });
 
-        var unfiltered = await GetPendingAsync(role: null, assignee: null);
+        var unfiltered = await GetPendingResponseAsync(assignee: null);
 
         var aliceQa = unfiltered.Assignees
             .FirstOrDefault(a => a.Email == aliceEmail && a.Role == "qa");
@@ -388,10 +269,9 @@ public class PromotionQueueAssigneeFilterTests
         Assert.Equal(2, aliceQa!.Count);
         Assert.Equal("Alice", aliceQa.DisplayName);
 
-        var aliceReviewer = unfiltered.Assignees
-            .FirstOrDefault(a => a.Email == aliceEmail && a.Role == "reviewer");
-        Assert.NotNull(aliceReviewer);
-        Assert.Equal(1, aliceReviewer!.Count);
+        // Reviewer isn't required by the policy → no row, however often Alice appears in it.
+        Assert.DoesNotContain(unfiltered.Assignees,
+            a => a.Email == aliceEmail && a.Role == "reviewer");
 
         var bobQa = unfiltered.Assignees
             .FirstOrDefault(a => a.Email == bobEmail && a.Role == "qa");
@@ -410,7 +290,7 @@ public class PromotionQueueAssigneeFilterTests
     public async Task ResponseShape_RollupBuiltAgainstUnfilteredAuthorizedList()
     {
         var product = NewProduct();
-        await SeedPolicyAsync(product);
+        await SeedPolicyAsync(product, requiredRoles: new[] { "qa" });
 
         var scope = $"pre-{Guid.NewGuid():N}"[..12];
         var aliceEmail = $"alice-{scope}@example.com";
@@ -435,7 +315,7 @@ public class PromotionQueueAssigneeFilterTests
 
         // Filter by Alice — Bob should still appear in the rollup since the rollup is
         // computed pre-narrowing.
-        var filtered = await GetPendingAsync(role: null, assignee: aliceEmail);
+        var filtered = await GetPendingResponseAsync(assignee: aliceEmail);
         Assert.Contains(filtered.Assignees, a => a.Email == aliceEmail);
         Assert.Contains(filtered.Assignees, a => a.Email == bobEmail);
         // But the tickets list is narrowed.
@@ -451,9 +331,10 @@ public class PromotionQueueAssigneeFilterTests
         // Regression: the filter used to match against every participant on the promotion —
         // reference-level people from commits and pull requests included — so "assigned to
         // <committer>" returned work items that person had never been put on. Only the work item's
-        // own participants count.
+        // own participants count. The policy requires qa so the committer's qa role WOULD make a
+        // rollup row if commit participants leaked onto the item.
         var product = NewProduct();
-        await SeedPolicyAsync(product);
+        await SeedPolicyAsync(product, requiredRoles: new[] { "qa" });
 
         var scope = $"xref-{Guid.NewGuid():N}"[..13];
         var committerEmail = $"committer-{scope}@example.com";
@@ -485,7 +366,7 @@ public class PromotionQueueAssigneeFilterTests
         Assert.Contains(unassigned, t => t.WorkItemKey == "XREF-1");
 
         // And the rollup must not offer the committer as a narrowing choice that returns nothing.
-        var unfiltered = await GetPendingAsync(role: null, assignee: null);
+        var unfiltered = await GetPendingResponseAsync(assignee: null);
         Assert.Contains(unfiltered.Tickets, t => t.WorkItemKey == "XREF-1");
         Assert.DoesNotContain(unfiltered.Assignees, a => a.Email == committerEmail);
     }
@@ -496,7 +377,7 @@ public class PromotionQueueAssigneeFilterTests
         // One promotion, two work items, a different QA on each. Narrowing has to return only the
         // matching item — the whole promotion's worth of items used to come through together.
         var product = NewProduct();
-        await SeedPolicyAsync(product);
+        await SeedPolicyAsync(product, requiredRoles: new[] { "qa" });
 
         var scope = $"peritem-{Guid.NewGuid():N}"[..16];
         var aliceEmail = $"alice-{scope}@example.com";
@@ -537,26 +418,10 @@ public class PromotionQueueAssigneeFilterTests
         Assert.DoesNotContain(bobs, t => t.WorkItemKey == "PERITEM-A");
 
         // Both are on one promotion, so each person's rollup entry counts one work item, not two.
-        var unfiltered = await GetPendingAsync(role: null, assignee: null);
+        var unfiltered = await GetPendingResponseAsync(assignee: null);
         var aliceQa = unfiltered.Assignees.FirstOrDefault(a => a.Email == aliceEmail && a.Role == "qa");
         Assert.NotNull(aliceQa);
         Assert.Equal(1, aliceQa!.Count);
-    }
-
-    [Fact]
-    public async Task ResponseShape_RolesSet_IsTheConfiguredVocabulary()
-    {
-        // `roles` is the role dropdown's contents: the configured participant roles (Settings →
-        // Participant Roles), independent of which roles the queue's items happen to carry — the
-        // question "which items have nobody as QA owner?" is about a role that may appear nowhere.
-        // See WorkItemRoleVocabularyTests for the vocabulary's own coverage.
-        var result = await GetPendingAsync(role: null, assignee: null);
-        Assert.Contains("qa", result.Roles);
-        Assert.Contains("reviewer", result.Roles);
-        Assert.Contains("author", result.Roles);
-        Assert.Contains("qa-owner", result.Roles);
-        Assert.Contains("assignee", result.Roles);
-        Assert.Contains("reporter", result.Roles);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -565,18 +430,15 @@ public class PromotionQueueAssigneeFilterTests
 
     private async Task<List<PendingTicketDto>> GetPendingAsync(string? assignee)
     {
-        var result = await GetPendingAsync(role: null, assignee: assignee);
+        var result = await GetPendingResponseAsync(assignee);
         return result.Tickets;
     }
 
-    private async Task<PendingQueueResponse> GetPendingAsync(string? role, string? assignee)
+    private async Task<PendingQueueResponse> GetPendingResponseAsync(string? assignee)
     {
-        var query = new List<string>();
-        if (!string.IsNullOrEmpty(role)) query.Add($"role={Uri.EscapeDataString(role)}");
-        if (!string.IsNullOrEmpty(assignee)) query.Add($"assignee={Uri.EscapeDataString(assignee)}");
-        var url = query.Count == 0
+        var url = string.IsNullOrEmpty(assignee)
             ? "/api/work-items/me/pending"
-            : $"/api/work-items/me/pending?{string.Join("&", query)}";
+            : $"/api/work-items/me/pending?assignee={Uri.EscapeDataString(assignee)}";
         var resp = await _adminClient.GetAsync(url);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var body = await Deserialize(resp);
@@ -603,16 +465,7 @@ public class PromotionQueueAssigneeFilterTests
             }
         }
 
-        var roles = new List<string>();
-        if (body.TryGetProperty("roles", out var rolesEl))
-        {
-            foreach (var r in rolesEl.EnumerateArray())
-            {
-                roles.Add(r.GetString()!);
-            }
-        }
-
-        return new PendingQueueResponse(tickets, assignees, roles);
+        return new PendingQueueResponse(tickets, assignees);
     }
 
     // Create a Pending staging→prod promotion candidate carrying a single work-item reference.
@@ -689,8 +542,9 @@ public class PromotionQueueAssigneeFilterTests
 
     // Topology was removed (D19): policy resolution is the edge guard. Enable the flag and seed a
     // per-product gated step-tree policy (one InfraPortal.Admin approver) so created candidates are
-    // born Pending and land in the approval queue.
-    private async Task SeedPolicyAsync(string product)
+    // born Pending and land in the approval queue. `requiredRoles` populates the policy's
+    // requiredWorkItemRoles — the roles the assignee rollup counts.
+    private async Task SeedPolicyAsync(string product, string[]? requiredRoles = null)
     {
         await _adminClient.PutAsJsonAsync("/api/features/features.promotions", new { enabled = true });
         await _adminClient.PostAsJsonAsync("/api/promotions/admin/policies", new
@@ -716,6 +570,7 @@ public class PromotionQueueAssigneeFilterTests
                     },
                 },
             },
+            requiredWorkItemRoles = requiredRoles ?? Array.Empty<string>(),
             escalationGroup = (string?)null,
         });
     }
@@ -745,8 +600,7 @@ public class PromotionQueueAssigneeFilterTests
     private record PendingAssigneeDto(string Email, string DisplayName, string Role, int Count);
     private record PendingQueueResponse(
         List<PendingTicketDto> Tickets,
-        List<PendingAssigneeDto> Assignees,
-        List<string> Roles);
+        List<PendingAssigneeDto> Assignees);
 
     // ── Factory ─────────────────────────────────────────────────────────────
 
