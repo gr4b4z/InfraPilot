@@ -30,6 +30,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
@@ -109,6 +110,16 @@ export function DeploymentDetailPage() {
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Before the early returns below, so the hook order is the same on every render. A deploy event is
+  // the most-pasted link in the app ("this is the one that failed"), and until it loads the id is
+  // still a truthful — if unlovely — thing to show.
+  const titled = detail?.event;
+  useDocumentTitle([
+    titled ? `${titled.service} ${titled.version}` : id,
+    titled?.environment,
+    'Deployment',
+  ]);
 
   if (loading) {
     return (

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { StatusBadge } from '@/components/requests/StatusBadge';
 import type { ServiceRequest } from '@/lib/types';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { formatDistanceToNow } from 'date-fns';
 import { FileText, ArrowUpRight, Inbox, User, Users } from 'lucide-react';
 
@@ -13,6 +14,10 @@ export function RequestsPage() {
   const [loading, setLoading] = useState(true);
   const [scope, setScope] = useState<Scope>('mine');
   const navigate = useNavigate();
+
+  // The scope toggle isn't in the URL, so a link always opens on "mine" for whoever follows it. The
+  // title tracks the toggle anyway — it's what the tab is showing, which is the other half of the job.
+  useDocumentTitle([scope === 'mine' ? 'My requests' : 'All requests']);
 
   useEffect(() => {
     setLoading(true);

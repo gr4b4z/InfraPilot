@@ -31,6 +31,7 @@ import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 type ViewTab = 'state' | 'activity' | 'compare';
 type TimeFilter = 'all' | 'today' | '24h' | '7d' | 'custom';
@@ -87,6 +88,32 @@ function getSubtitle(filter: TimeFilter, customDate?: string): string {
     custom: 'Select a date and time',
   };
   return map[filter] ?? '';
+}
+
+/** Tab names for the document title — the same words the segmented control shows. */
+const TAB_TITLES: Record<ViewTab, string> = {
+  state: 'State',
+  activity: 'Activity',
+  compare: 'Compare',
+};
+
+/**
+ * The time filter as a title segment. Deliberately terser than {@link getSubtitle}: a browser tab has
+ * no room for "Deployed in the last 7 days", and the unfiltered case contributes nothing at all
+ * rather than the subtitle's "Service × Environment matrix".
+ */
+function getTimeTitle(filter: TimeFilter, customDate?: string): string | null {
+  if (filter === 'custom') {
+    // A custom filter with no date picked yet isn't filtering anything.
+    return customDate ? `since ${new Date(customDate).toLocaleDateString()}` : null;
+  }
+  const map: Record<string, string | null> = {
+    all: null,
+    today: 'today',
+    '24h': 'last 24h',
+    '7d': 'last 7 days',
+  };
+  return map[filter] ?? null;
 }
 
 export function ProductDeploymentsPage() {
@@ -530,6 +557,31 @@ export function ProductDeploymentsPage() {
       'application/json',
     );
   }, [compareRows, resolvedFrom, resolvedTo, product, downloadFile]);
+
+  // Every filter on this page is already in the query string, so a link to it is a link to one
+  // specific view — and the title has to say which one, or a compare of dev → prod and a week of
+  // activity are the same tab to a reader. The compare envs are the *resolved* pair rather than the
+  // raw params: the page defaults them when the link omits them, and the title reports what is on
+  // screen.
+  useDocumentTitle(
+    tab === 'compare'
+      ? [
+          product,
+          TAB_TITLES.compare,
+          resolvedFrom && resolvedTo ? `${resolvedFrom} → ${resolvedTo}` : null,
+          compareMode === 'all' ? 'all services' : null,
+          'Deployments',
+        ]
+      : tab === 'activity'
+        ? [
+            product,
+            TAB_TITLES.activity,
+            getTimeTitle(activityTimeFilter, activityCustomDate),
+            envFilter === 'all' ? null : envFilter,
+            'Deployments',
+          ]
+        : [product, TAB_TITLES.state, getTimeTitle(timeFilter, customDate), 'Deployments'],
+  );
 
   return (
     <div className="space-y-6">

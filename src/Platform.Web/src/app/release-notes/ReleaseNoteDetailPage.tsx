@@ -6,6 +6,7 @@ import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { api, type ReleaseNoteDetail } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 // Render markdown synchronously; content originates from our own server-side
 // template engine so we don't sanitize further here.
@@ -49,6 +50,10 @@ export function ReleaseNoteDetailPage() {
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
   }, [id]);
+
+  // Above the early returns below, so the hook order is stable. The product comes from the route, so
+  // it's there before the note loads; the environment arrives with it.
+  useDocumentTitle([note?.product ?? product, note?.environment, 'Release notes']);
 
   if (error) {
     return (

@@ -16,6 +16,7 @@ import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipan
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
+import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { formatDistanceToNow } from 'date-fns';
 import {
   Ticket,
@@ -231,6 +232,24 @@ export function MyQueuePage() {
     },
     [filteredTickets],
   );
+
+  // "Have a look at the items with no QA owner on checkout-api" is what this page gets sent as, and the
+  // title has to carry that much or every link to the queue reads identically. Mirrors what the URL
+  // carries (see buildQueueParams): filters only meaningful on one tab are reported only on that tab,
+  // so the title can't claim a narrowing the recipient cannot see.
+  useDocumentTitle([
+    VIEW_LABELS[view],
+    view === 'pending' ? assigneeTitle(assigneeFilter) : null,
+    scopeTitle({
+      product: scopeFilter.product,
+      service: scopeFilter.service,
+      targetEnv: scopeFilter.targetEnv,
+    }),
+    scopeFilter.deployedEnv && `testable in ${scopeFilter.deployedEnv}`,
+    view === 'decided' ? TIME_FRAME_TITLES[timeFrame] : null,
+    view === 'decided' ? deciderTitle(deciderFilter) : null,
+    'Work items',
+  ]);
 
   // Badge on the collapsed filter toggle. Counts only the controls actually on screen for the
   // current view — a stale time frame behind a collapsed panel on a tab that doesn't use it would
@@ -542,6 +561,14 @@ export type { TimeFrameValue };
 
 const TIME_FRAME_STORAGE_KEY = 'me.queue.timeFrame';
 
+/** The time frame as a document-title segment — terser than the select's own option labels. */
+const TIME_FRAME_TITLES: Record<TimeFrameValue, string> = {
+  '1d': 'last day',
+  '7d': 'last 7 days',
+  '30d': 'last 30 days',
+  all: 'all time',
+};
+
 function loadTimeFrame(): TimeFrameValue {
   try {
     const raw = window.localStorage.getItem(TIME_FRAME_STORAGE_KEY);
@@ -728,6 +755,36 @@ function DeciderFilter({
       </select>
     </label>
   );
+}
+
+/**
+ * The person filter as a document-title segment, or null when it isn't narrowing anything. Named
+ * people use the display name rather than the email — a title is read, not clicked, and a link that
+ * arrived carrying only an email will show that until the queue's rollup supplies the name.
+ */
+function assigneeTitle(filter: AssigneeFilterValue): string | null {
+  switch (filter.mode) {
+    case 'all':
+      return null;
+    case 'me':
+      return 'assigned to me';
+    case 'unassigned':
+      return 'unassigned';
+    case 'person':
+      return filter.displayName ? `assigned to ${filter.displayName}` : null;
+  }
+}
+
+/** The decider filter as a document-title segment, or null for "Anyone". */
+function deciderTitle(decider: DeciderFilterValue): string | null {
+  switch (decider.mode) {
+    case 'me':
+      return 'decided by me';
+    case 'person':
+      return `decided by ${decider.displayName}`;
+    default:
+      return null;
+  }
 }
 
 function decidedEmptyTitle(decider: DeciderFilterValue): string {

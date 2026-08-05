@@ -5,6 +5,7 @@ import type { ServiceRequest, AuditEntry, ExecutionResult } from '@/lib/types';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ArrowLeft, Clock, User, Cpu, AlertTriangle, Copy, CheckCircle, ExternalLink, Loader2, RotateCcw, XCircle } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 interface ExecutionOutput {
   // Azure DevOps fields
@@ -67,6 +68,10 @@ export function RequestDetailPage() {
 
     return () => clearInterval(interval);
   }, [request?.status, fetchData]);
+
+  // Before the early returns below, so the hook order holds. The status rides along: "is it done yet"
+  // is why anyone opens this page twice.
+  useDocumentTitle([request?.catalogItem?.name, request?.status, 'Request']);
 
   const copyId = () => {
     navigator.clipboard.writeText(id || '');

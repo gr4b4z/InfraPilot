@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { deploymentDetailPath } from '@/lib/deploymentPath';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -48,6 +49,10 @@ export function DeploymentHistoryPage() {
   const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
+
+  // The environment filter is in the URL, so "the prod history for checkout-api/api" is a link — and
+  // the title has to name the environment or every one of those links reads the same.
+  useDocumentTitle([`${product}/${service}`, environment, 'Deployment history']);
 
   useEffect(() => {
     if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);

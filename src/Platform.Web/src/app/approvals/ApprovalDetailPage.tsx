@@ -5,6 +5,7 @@ import { ApprovalActions } from '@/components/approvals/ApprovalActions';
 import { ApprovalProgress } from '@/components/approvals/ApprovalProgress';
 import { StatusBadge } from '@/components/requests/StatusBadge';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   ArrowLeft,
@@ -35,6 +36,9 @@ export function ApprovalDetailPage() {
   useEffect(() => {
     fetchApproval();
   }, [id]);
+
+  // Above the early returns below, so the hook order is stable across renders.
+  useDocumentTitle([approval?.serviceRequest?.catalogItem?.name, 'Approval']);
 
   const handleAction = async (action: 'approve' | 'reject' | 'request-changes', comment: string) => {
     setActionLoading(true);

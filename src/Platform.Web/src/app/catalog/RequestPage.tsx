@@ -5,6 +5,7 @@ import { Loader2, CheckCircle, ArrowLeft, FileText, Shield, Send } from 'lucide-
 import { useConversationStore } from '@/stores/conversationStore';
 import { api } from '@/lib/api';
 import { buildAgentUrl } from '@/lib/runtimeConfig';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import type { A2UIComponent, CatalogItem } from '@/lib/types';
 
 interface CatalogDetail {
@@ -72,6 +73,10 @@ export function RequestPage() {
 
   const values = context.formData || {};
   const currentStep = context.step || 'form';
+
+  // The slug stands in until the item's real name arrives — it's what the URL carries, so it's never
+  // wrong, just terser.
+  useDocumentTitle([detail?.item.name ?? slug, 'New request']);
 
   useEffect(() => {
     if (!slug) return;
