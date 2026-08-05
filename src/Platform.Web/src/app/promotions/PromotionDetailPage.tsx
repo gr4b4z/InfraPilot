@@ -15,6 +15,7 @@ import type {
   WorkItemContext,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
@@ -137,6 +138,15 @@ export function PromotionDetailPage() {
   useEffect(() => {
     fetchData();
   }, [id]);
+
+  // Above the early returns below, so the hook order holds on every render. The edge is in the title
+  // as well as the service: "which promotion" is a (service, source → target) question, and two
+  // pending candidates for the same service differ only by their edge.
+  useDocumentTitle([
+    candidate && `${candidate.product}/${candidate.service}`,
+    candidate && `${candidate.sourceEnv} → ${candidate.targetEnv}`,
+    'Promotion',
+  ]);
 
   const handleAction = async (
     action: 'approve' | 'reject',

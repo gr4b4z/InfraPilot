@@ -30,6 +30,7 @@ import {
   type PromotionView,
 } from './promotionFilterParams';
 import { promotionSearchScope } from '@/components/shell/searchScopes';
+import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -267,6 +268,16 @@ export function PromotionsPage() {
   // `/` searches promotions while this page is up. No dependencies — the scope hits the server, so
   // it doesn't close over anything on screen.
   useSearchScope(promotionSearchScope(), []);
+
+  // The tab and the filters are the whole point of the URL parameters above: this page is meant to be
+  // handed over as "the checkout-api promotions waiting on prod". The title says the same thing the
+  // link does, so it survives being pasted into a chat and read before anyone clicks it.
+  useDocumentTitle([
+    VIEW_HEADINGS[view],
+    scopeTitle({ product: productFilter, service: serviceFilter, targetEnv: targetEnvFilter }),
+    referenceFilter && `ref ${referenceFilter}`,
+    'Promotions',
+  ]);
 
   /**
    * Mirrors the view into the query string, so from the first filter change onwards the address bar is

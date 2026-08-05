@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import {
   Layers,
   Users,
@@ -76,6 +77,13 @@ const NAV: NavItem[] = [
 ];
 
 export function SettingsPage() {
+  // The section titles the whole page, from here rather than from each of the nine section
+  // components: the labels already live in NAV, and a settings section is a child route of this
+  // shell — so naming it here is one place instead of nine, and it can't drift from the nav.
+  const { pathname } = useLocation();
+  const section = NAV.find((item) => pathname.replace(/\/+$/, '').endsWith(`/${item.to}`));
+  useDocumentTitle([section?.label, 'Settings']);
+
   return (
     <div className="space-y-6">
       <div>

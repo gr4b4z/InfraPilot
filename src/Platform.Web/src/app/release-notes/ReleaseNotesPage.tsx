@@ -7,6 +7,7 @@ import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { api, type ReleaseNoteFeedItem } from '@/lib/api';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 // Content originates from our own server-side template engine, so we render the
 // stored markdown synchronously without further sanitisation (same as the detail page).
@@ -37,6 +38,8 @@ export function ReleaseNotesPage() {
   const [newestAt, setNewestAt] = useState<string | null>(null);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
+
+  useDocumentTitle([product, environment, 'Release notes']);
 
   async function load() {
     setLoading(true);

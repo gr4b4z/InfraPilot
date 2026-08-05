@@ -2,12 +2,15 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { ApprovalRequest } from '@/lib/types';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { formatDistanceToNow } from 'date-fns';
 import { Clock, CheckCircle, XCircle, AlertTriangle, Shield, ArrowUpRight } from 'lucide-react';
 
 export function ApprovalsPage() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(true);
+
+  useDocumentTitle(['Approvals']);
 
   useEffect(() => {
     api.getApprovals()

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import type { WebhookSubscription, WebhookDelivery } from '@/lib/types';
 import {
   ArrowLeft,
@@ -79,6 +80,8 @@ export function WebhookDetailPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useDocumentTitle([webhook?.name, 'Webhooks']);
 
   const startEditing = () => {
     if (!webhook) return;

@@ -22,6 +22,7 @@ import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { useAuthStore } from '@/stores/authStore';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { useMyTasksStore } from '@/stores/myTasksStore';
 
 /**
@@ -44,6 +45,10 @@ export function MyTasksPage() {
   const error = useMyTasksStore((s) => s.error);
   const refresh = useMyTasksStore((s) => s.refresh);
   const total = promotions.length + workItems.length + unassignedWorkItems.length;
+
+  // No count in the title: this page is per-viewer, so a number here would be the sender's inbox
+  // depth, not the recipient's. The bell badge is where a live count belongs.
+  useDocumentTitle(['My tasks']);
 
   return (
     <div className="space-y-6">
