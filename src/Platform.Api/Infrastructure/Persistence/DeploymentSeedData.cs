@@ -4,14 +4,18 @@ using Platform.Api.Features.Deployments.Models;
 namespace Platform.Api.Infrastructure.Persistence;
 
 /// <summary>
-/// Generates deterministic demo deployment data: 40 services spread across
-/// 4 products, each with 30 deployment events stretched over the last 90 days.
-/// Regenerating against a clean database always produces the same output
-/// (seeded Random), so dev screenshots stay consistent.
+/// Generates deterministic demo deployment data: three products of differing size, whose services
+/// each get somewhere between <see cref="MinEventsPerService"/> and <see cref="MaxEventsPerService"/>
+/// deployment events stretched over the last 90 days. Regenerating against a clean database always
+/// produces the same output (seeded Random), so dev screenshots stay consistent.
 /// </summary>
 public static class DeploymentSeedData
 {
-    private const int EventsPerService = 30;
+    // Per-service event count is rolled rather than fixed: a uniform 30-per-service made every
+    // service look equally busy, which flattens exactly the thing the deployment views are for —
+    // spotting the service that ships ten times a week next to the one that shipped twice.
+    private const int MinEventsPerService = 8;
+    private const int MaxEventsPerService = 42;
     private const int HistoryDays = 90;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -19,28 +23,24 @@ public static class DeploymentSeedData
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    // 40 services total, grouped by product.
+    // Three products of deliberately different size — a big one, a satellite, and a small
+    // odd-one-out — so the product filters and the per-product rollups have something to
+    // distinguish. Two are Azure DevOps-shaped and one GitHub-shaped, which is what decides how
+    // references are built further down.
     private static readonly ProductCatalog[] Catalog =
     [
-        new("ticketing-platform", "https://dev.azure.com/acmetrix-pc/MPT", SourceStyle.AzureDevOps,
+        new("mpt", "https://dev.azure.com/acmetrix-pc/MPT", SourceStyle.AzureDevOps,
             [
                 "orders", "schedule", "billing", "checkout", "inventory",
-                "pricing", "promotions", "reviews", "notifications", "search",
+                "pricing", "notifications", "search",
             ]),
-        new("marketplace", "https://github.com/acmetrix", SourceStyle.GitHub,
+        new("mpt-extentions", "https://dev.azure.com/acmetrix-pc/MPT-EXT", SourceStyle.AzureDevOps,
             [
-                "marketplace-api", "marketplace-ui", "vendor-portal", "catalog-sync", "payment-gateway",
-                "shipping", "tax-engine", "reports", "admin-console", "mobile-app",
+                "reviews", "loyalty", "gift-cards", "partner-api", "webhooks",
             ]),
-        new("identity-platform", "https://dev.azure.com/acmetrix-pc/IDP", SourceStyle.AzureDevOps,
+        new("extra", "https://github.com/acmetrix", SourceStyle.GitHub,
             [
-                "auth-api", "sso-bridge", "user-service", "token-issuer", "session-manager",
-                "mfa-service", "audit-log", "policy-engine", "role-admin", "profile-api",
-            ]),
-        new("observability", "https://github.com/acmetrix", SourceStyle.GitHub,
-            [
-                "metrics-collector", "log-aggregator", "trace-pipeline", "dashboard-api", "alert-engine",
-                "anomaly-detector", "synthetic-probe", "uptime-checker", "capacity-planner", "cost-tracker",
+                "reports", "admin-console", "cost-tracker",
             ]),
     ];
 
@@ -66,6 +66,19 @@ public static class DeploymentSeedData
         new("Michał Zieliński", "michal.zielinski@acmetrix.com"),
         new("Agnieszka Kamińska", "agnieszka.kaminska@acmetrix.com"),
         new("Paweł Szymański", "pawel.szymanski@acmetrix.com"),
+    ];
+
+    /// <summary>
+    /// The seeded local sign-in accounts (see <see cref="SeedData.SeedLocalUsers"/>). Work items name
+    /// one of these as their <c>qa-owner</c> a good part of the time, so signing in locally lands on a
+    /// work-items queue with rows in it — with a pool of fictional people only, every seeded item
+    /// belongs to somebody who can never log in, and every queue reads empty.
+    /// </summary>
+    private static readonly Person[] LocalTesters =
+    [
+        new("Regular User", "user@localhost"),
+        new("Admin User", "admin@localhost"),
+        new("QA Engineer", "qa@localhost"),
     ];
 
     private static readonly string[] WorkItemTitles =
@@ -107,7 +120,8 @@ public static class DeploymentSeedData
 
         var rand = new Random(20260415); // deterministic
         var now = DateTimeOffset.UtcNow;
-        var events = new List<DeployEvent>(capacity: 40 * EventsPerService);
+        var events = new List<DeployEvent>(
+            capacity: Catalog.Sum(p => p.Services.Length) * MaxEventsPerService);
 
         foreach (var product in Catalog)
         {
@@ -229,11 +243,15 @@ public static class DeploymentSeedData
     private static IEnumerable<DeployEvent> GenerateServiceHistory(
         ProductCatalog product, string service, DateTimeOffset now, Random rand)
     {
-        // 30 evenly-but-jittered timestamps across the last HistoryDays.
+        // How busy this particular service is. Rolled per service, so the history is lopsided the way
+        // a real estate of services is.
+        var eventCount = rand.Next(MinEventsPerService, MaxEventsPerService + 1);
+
+        // Evenly-but-jittered timestamps across the last HistoryDays.
         var totalHours = HistoryDays * 24;
-        var slot = totalHours / (double)EventsPerService;
-        var timestamps = new DateTimeOffset[EventsPerService];
-        for (var i = 0; i < EventsPerService; i++)
+        var slot = totalHours / (double)eventCount;
+        var timestamps = new DateTimeOffset[eventCount];
+        for (var i = 0; i < eventCount; i++)
         {
             // Place each event inside its slot with a little noise so it looks organic.
             var baseOffset = i * slot;
@@ -249,7 +267,7 @@ public static class DeploymentSeedData
         // Track last version per environment for realistic previousVersion + rollback.
         var lastPerEnv = new Dictionary<string, string>();
 
-        for (var i = 0; i < EventsPerService; i++)
+        for (var i = 0; i < eventCount; i++)
         {
             var environment = PickEnvironment(rand);
 
@@ -315,10 +333,8 @@ public static class DeploymentSeedData
         var buildRunId  = rand.Next(10000, 99999);
         var deployRunId = rand.Next(10000, 99999);
         var prNum       = rand.Next(50, 900);
-        var wiKey       = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
         // Realistic titles for tickets and PRs so release-notes / activity cards have
         // something to display instead of a bare key.
-        var wiTitle     = WorkItemTitles[rand.Next(WorkItemTitles.Length)];
         var prTitle     = PrTitles[rand.Next(PrTitles.Length)];
 
         // Build pipeline — triggered by the PR author merging or a scheduled run.
@@ -361,35 +377,66 @@ public static class DeploymentSeedData
                 ]));
         }
 
-        // Work-item ~80% of the time — carries QA and optionally an assignee.
+        // Work items — ~80% of deploys carry at least one, and a good share carry a bundle. The bundle
+        // is the case worth seeding: a promotion of several tickets is what the chip row's "+N more"
+        // collapse, the "3/5 approved" progress indicator and the per-chip decision colours all exist
+        // for, and an estate where every deploy carries exactly one ticket never shows any of them.
         if (rand.NextDouble() < 0.8)
         {
-            // Most tickets name a `qa-owner`, which is the role the seeded production promotion policy
-            // requires (see PromotionSeedData); the rest name a plain `qa`. That mix is deliberate: it
-            // gives a fresh database both the satisfied case and the one the work-items queue's "Not
-            // assigned" tab exists for — somebody is named on the ticket, but not in the role the
-            // policy asks for, so nobody is actually answerable for it.
-            var qaRole = rand.NextDouble() < 0.7 ? "qa-owner" : "qa";
-            var wiParticipants = new List<ParticipantDto>
+            var workItemCount = rand.NextDouble() switch
             {
-                new(qaRole, qa.Name, qa.Email),
+                < 0.45 => 1,
+                < 0.70 => 2,
+                < 0.88 => 3,
+                // 4–6. The list collapses the chip row past five, so the top of this range is what
+                // makes that button appear.
+                _ => 4 + rand.Next(3),
             };
-            if (rand.NextDouble() < 0.5)
+
+            var usedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var n = 0; n < workItemCount; n++)
             {
-                // Assignee is someone other than QA
-                var assignee = shuffled.First(p => p.Email != qa.Email);
-                wiParticipants.Add(new("assignee", assignee.Name, assignee.Email));
+                // Keys are rolled from a small space on purpose: a repeat across two promotions of the
+                // same product is a real situation (one ticket blocking several releases) and it's what
+                // puts the "×2" badge on a queue row.
+                var wiKey = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
+                if (!usedKeys.Add(wiKey)) continue;
+
+                var wiTitle = WorkItemTitles[rand.Next(WorkItemTitles.Length)];
+
+                // Most tickets name a `qa-owner`, which is the role the seeded production promotion
+                // policy requires (see PromotionSeedData); the rest name a plain `qa`. That mix is
+                // deliberate: it gives a fresh database both the satisfied case and the one the
+                // work-items queue's "Not assigned" tab exists for — somebody is named on the ticket,
+                // but not in the role the policy asks for, so nobody is actually answerable for it.
+                var qaRole = rand.NextDouble() < 0.7 ? "qa-owner" : "qa";
+                // Half of them land on a local sign-in account, weighted towards user@localhost — see
+                // LocalTesters. The rest stay with the fictional pool, which is what keeps the "someone
+                // else owns this" rows (and the assignee dropdown) worth looking at. Rolled per ticket,
+                // so one bundle can be split across several owners — which is the case the bundle-level
+                // "needs attention" badge reports on.
+                var qaOwner = PickQaOwner(rand, fallback: qa);
+                var wiParticipants = new List<ParticipantDto>
+                {
+                    new(qaRole, qaOwner.Name, qaOwner.Email),
+                };
+                if (rand.NextDouble() < 0.5)
+                {
+                    // Assignee is someone other than the QA owner
+                    var assignee = shuffled.First(p => p.Email != qaOwner.Email);
+                    wiParticipants.Add(new("assignee", assignee.Name, assignee.Email));
+                }
+
+                // Most seeded tickets carry a description, but not all — the detail page hides its
+                // Content section entirely when there's none, and that path should show up locally too.
+                var wiContent = rand.NextDouble() < 0.75 ? WorkItemBody(wiTitle, service, rand) : null;
+
+                refs.Add(new ReferenceDto("work-item",
+                    $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
+                    Title: wiTitle,
+                    Participants: wiParticipants,
+                    Content: wiContent));
             }
-
-            // Most seeded tickets carry a description, but not all — the detail page hides its
-            // Content section entirely when there's none, and that path should show up locally too.
-            var wiContent = rand.NextDouble() < 0.75 ? WorkItemBody(wiTitle, service, rand) : null;
-
-            refs.Add(new ReferenceDto("work-item",
-                $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
-                Title: wiTitle,
-                Participants: wiParticipants,
-                Content: wiContent));
         }
 
         // Build manifest — the release repository's record of exactly what this version is made of
@@ -419,6 +466,20 @@ public static class DeploymentSeedData
         }
 
         return refs;
+    }
+
+    /// <summary>
+    /// Picks who is answerable for a seeded work item. Weighted so <c>user@localhost</c> — the account
+    /// the queue is usually demoed from — owns a solid slice, the other two local accounts own a few,
+    /// and the rest stay with the fictional person the caller drew.
+    /// </summary>
+    private static Person PickQaOwner(Random rand, Person fallback)
+    {
+        var roll = rand.NextDouble();
+        if (roll < 0.30) return LocalTesters[0]; // user@localhost
+        if (roll < 0.42) return LocalTesters[1]; // admin@localhost
+        if (roll < 0.50) return LocalTesters[2]; // qa@localhost
+        return fallback;
     }
 
     /// <summary>
@@ -472,10 +533,9 @@ public static class DeploymentSeedData
 
     private static string ProductPrefix(string product) => product switch
     {
-        "ticketing-platform" => "PLAT",
-        "marketplace" => "MKT",
-        "identity-platform" => "IDP",
-        "observability" => "OBS",
+        "mpt" => "MPT",
+        "mpt-extentions" => "MPTX",
+        "extra" => "EXT",
         _ => "SVC",
     };
 

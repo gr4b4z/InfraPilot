@@ -115,6 +115,39 @@ public class FeatureFlagsTests : IDisposable
     }
 
     [Fact]
+    public async Task Seeder_SeedDefaults_EnableAllByDefault_TurnsOnFlagsThatShipOff()
+    {
+        // What Development passes. Promotions ships off, which on a fresh dev database hides the
+        // feature behind an admin toggle nobody knows to look for.
+        var config = new ConfigurationBuilder().Build();
+        await FeatureFlagSeeder.SeedDefaults(_db, config, enableAllByDefault: true);
+
+        var rows = await _db.PlatformSettings.ToListAsync();
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.Equal("true", r.Value));
+    }
+
+    [Fact]
+    public async Task Seeder_SeedDefaults_EnableAllByDefault_StillHonoursExplicitFalse()
+    {
+        // "Default everything on" must not outrank an operator who configured a flag off.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Features:Promotions:DefaultEnabled"] = "false",
+            })
+            .Build();
+
+        await FeatureFlagSeeder.SeedDefaults(_db, config, enableAllByDefault: true);
+
+        var row = await _db.PlatformSettings.SingleAsync(s => s.Key == FeatureFlagKeys.Promotions);
+        Assert.Equal("false", row.Value);
+        // Other flags are untouched by that override.
+        var rollbacks = await _db.PlatformSettings.SingleAsync(s => s.Key == FeatureFlagKeys.Rollbacks);
+        Assert.Equal("true", rollbacks.Value);
+    }
+
+    [Fact]
     public async Task Seeder_SeedDefaults_HonoursConfigOverride()
     {
         var config = new ConfigurationBuilder()
