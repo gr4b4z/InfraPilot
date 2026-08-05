@@ -289,9 +289,15 @@ export interface WebhookSubscription {
   id: string;
   name: string;
   url: string;
-  secret?: string; // only returned on create
+  secret?: string; // only returned on create, and only for generic targets
   events: string[];
   filters: { product: string | null; environment: string | null };
+  /** How the delivery is framed on the wire. Fixed at creation time. */
+  targetType: 'generic' | 'azure_devops' | 'github';
+  /** azure_devops only — the header carrying the HMAC-SHA1 checksum. */
+  signatureHeader?: string | null;
+  /** github only — overrides the repository_dispatch event_type. */
+  githubEventType?: string | null;
   active: boolean;
   createdAt: string;
   updatedAt?: string;
