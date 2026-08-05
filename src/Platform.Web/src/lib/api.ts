@@ -296,14 +296,19 @@ class ApiClient {
     return this.request<import('./types').WebhookSubscription>(`/webhooks/${id}`);
   }
 
-  createWebhook(data: { name: string; url: string; events: string[]; filters?: { product?: string; environment?: string } }) {
+  /**
+   * `secret` is required for the azure_devops and github targets — those reuse a credential the
+   * receiving system already holds. Generic targets ignore it and mint their own, returned once.
+   */
+  createWebhook(data: { name: string; url: string; events: string[]; filters?: { product?: string; environment?: string }; targetType?: string; secret?: string; signatureHeader?: string; gitHubEventType?: string }) {
     return this.request<import('./types').WebhookSubscription>('/webhooks', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
-  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: { product?: string; environment?: string }; active?: boolean }) {
+  /** `secret` rotates the stored credential; omit it to keep the current one. */
+  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: { product?: string; environment?: string }; active?: boolean; secret?: string; signatureHeader?: string; gitHubEventType?: string }) {
     return this.request<import('./types').WebhookSubscription>(`/webhooks/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
