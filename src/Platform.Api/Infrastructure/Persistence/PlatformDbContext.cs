@@ -317,6 +317,12 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             if (jsonType != null) eventsJson.HasColumnType(jsonType);
             e.Property(x => x.FilterProduct).HasMaxLength(200);
             e.Property(x => x.FilterEnvironment).HasMaxLength(100);
+            // Store default (not just a CLR default) so subscriptions created before target types
+            // existed read back as "generic" — that is what keeps their delivery shape unchanged.
+            e.Property(x => x.TargetType).HasMaxLength(30).IsRequired()
+                .HasDefaultValue(WebhookTargetTypes.Generic);
+            e.Property(x => x.SignatureHeader).HasMaxLength(100);
+            e.Property(x => x.GitHubEventType).HasMaxLength(100);
             e.HasIndex(x => x.Active);
         });
 

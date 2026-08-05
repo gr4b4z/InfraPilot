@@ -1,5 +1,3 @@
-using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -85,17 +83,15 @@ public class WebhookDeliveryWorker : BackgroundService
 
         try
         {
-            // Decrypt secret and compute HMAC-SHA256 signature
+            // The secret is the HMAC key for the generic and Azure DevOps targets, and the bearer
+            // token for GitHub — which of those it is, the builder decides from the target type.
             var secret = _protector.Unprotect(sub.EncryptedSecret);
-            var payloadBytes = Encoding.UTF8.GetBytes(delivery.PayloadJson);
-            var signature = ComputeSignature(payloadBytes, secret);
+            var framed = WebhookRequestBuilder.Build(sub, delivery, secret);
 
             using var request = new HttpRequestMessage(HttpMethod.Post, sub.Url);
-            request.Content = new StringContent(delivery.PayloadJson, Encoding.UTF8, "application/json");
-            request.Headers.Add("X-Hub-Signature-256", $"sha256={signature}");
-            request.Headers.Add("X-Webhook-Event", delivery.EventType);
-            request.Headers.Add("X-Webhook-Delivery", delivery.Id.ToString());
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Content = new StringContent(framed.Body, Encoding.UTF8, "application/json");
+            foreach (var (name, value) in framed.Headers)
+                request.Headers.TryAddWithoutValidation(name, value);
 
             using var response = await client.SendAsync(request, ct);
             var responseBody = await response.Content.ReadAsStringAsync(ct);
@@ -137,12 +133,5 @@ public class WebhookDeliveryWorker : BackgroundService
             var delaySeconds = RetryDelaysSeconds[delivery.Attempts - 1];
             delivery.NextRetryAt = DateTimeOffset.UtcNow.AddSeconds(delaySeconds);
         }
-    }
-
-    private static string ComputeSignature(byte[] payload, string secret)
-    {
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var hash = hmac.ComputeHash(payload);
-        return Convert.ToHexStringLower(hash);
     }
 }

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Webhooks.Models;
@@ -116,6 +117,90 @@ public static class WebhookEndpoints
         return stale.Count;
     }
 
+    // ── Target validation ───────────────────────────────────────────────────
+    // Static and endpoint-independent so the per-target rules are unit-testable without HTTP.
+
+    /// <summary>RFC 7230 token characters — the only thing legal in an HTTP header name.</summary>
+    private static readonly Regex HeaderNamePattern =
+        new(@"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Validates the target-specific half of a create/update request. Returns an error message, or
+    /// null when the combination is deliverable. <paramref name="requireSecret"/> is false on update,
+    /// where omitting the secret means "keep the stored one".
+    /// </summary>
+    public static string? ValidateTarget(
+        string targetType,
+        string url,
+        string? secret,
+        string? signatureHeader,
+        string? gitHubEventType,
+        bool requireSecret)
+    {
+        if (!WebhookTargetTypes.IsValid(targetType))
+            return $"targetType must be one of: {string.Join(", ", WebhookTargetTypes.All)}";
+
+        var hasSignatureHeader = !string.IsNullOrWhiteSpace(signatureHeader);
+        var hasGitHubEventType = !string.IsNullOrWhiteSpace(gitHubEventType);
+
+        // A secret reaching an Authorization header must not be able to smuggle in a second header.
+        if (secret is not null && secret.Any(char.IsControl))
+            return "secret must not contain control characters";
+
+        switch (targetType)
+        {
+            case WebhookTargetTypes.Generic:
+                if (hasSignatureHeader) return "signatureHeader applies only to azure_devops targets";
+                if (hasGitHubEventType) return "githubEventType applies only to github targets";
+                break;
+
+            case WebhookTargetTypes.AzureDevOps:
+                if (requireSecret && string.IsNullOrWhiteSpace(secret))
+                    return "secret is required for azure_devops targets — use the same value as the Incoming WebHook service connection";
+                if (hasGitHubEventType) return "githubEventType applies only to github targets";
+                if (hasSignatureHeader)
+                {
+                    var header = signatureHeader!.Trim();
+                    if (header.Length > 100) return "signatureHeader must be 100 characters or fewer";
+                    if (!HeaderNamePattern.IsMatch(header))
+                        return "signatureHeader is not a valid HTTP header name";
+                }
+                break;
+
+            case WebhookTargetTypes.GitHub:
+                if (requireSecret && string.IsNullOrWhiteSpace(secret))
+                    return "secret is required for github targets — supply a token with permission to dispatch repository events";
+                if (hasSignatureHeader) return "signatureHeader applies only to azure_devops targets";
+                if (hasGitHubEventType && gitHubEventType!.Trim().Length > 100)
+                    return "githubEventType must be 100 characters or fewer";
+                // The token travels in the clear over http, and repository_dispatch is the only
+                // endpoint this target knows how to talk to.
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+                    return "github targets require an absolute https URL";
+                if (!uri.AbsolutePath.EndsWith("/dispatches", StringComparison.Ordinal))
+                    return "github target URL must be a repository_dispatch endpoint, e.g. https://api.github.com/repos/{owner}/{repo}/dispatches";
+                break;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves the stored signature header: Azure DevOps targets persist the effective value (so
+    /// the API and UI show what will actually be sent), everything else stores null.
+    /// </summary>
+    private static string? NormalizeSignatureHeader(string targetType, string? signatureHeader)
+        => targetType != WebhookTargetTypes.AzureDevOps
+            ? null
+            : string.IsNullOrWhiteSpace(signatureHeader)
+                ? WebhookRequestBuilder.DefaultAzureDevOpsSignatureHeader
+                : signatureHeader.Trim();
+
+    private static string? NormalizeGitHubEventType(string targetType, string? gitHubEventType)
+        => targetType != WebhookTargetTypes.GitHub || string.IsNullOrWhiteSpace(gitHubEventType)
+            ? null
+            : gitHubEventType.Trim();
+
     private static async Task<IResult> CreateSubscription(
         PlatformDbContext db,
         IDataProtectionProvider dataProtection,
@@ -126,7 +211,19 @@ public static class WebhookEndpoints
         if (request.Events is null || request.Events.Length == 0)
             return Results.BadRequest(new { error = "At least one event type is required" });
 
-        var rawSecret = GenerateSecret();
+        var targetType = string.IsNullOrWhiteSpace(request.TargetType)
+            ? WebhookTargetTypes.Generic
+            : request.TargetType.Trim();
+
+        var error = ValidateTarget(
+            targetType, request.Url, request.Secret, request.SignatureHeader, request.GitHubEventType,
+            requireSecret: true);
+        if (error is not null) return Results.BadRequest(new { error });
+
+        // Generic keeps generating its own secret, as it always has. The other targets must reuse
+        // the credential the receiving system already holds, so it comes from the caller.
+        var isGeneric = targetType == WebhookTargetTypes.Generic;
+        var rawSecret = isGeneric ? GenerateSecret() : request.Secret!.Trim();
         var protector = dataProtection.CreateProtector("WebhookSecrets");
 
         var sub = new WebhookSubscription
@@ -138,6 +235,9 @@ public static class WebhookEndpoints
             EventsJson = JsonSerializer.Serialize(request.Events),
             FilterProduct = request.Filters?.Product,
             FilterEnvironment = request.Filters?.Environment,
+            TargetType = targetType,
+            SignatureHeader = NormalizeSignatureHeader(targetType, request.SignatureHeader),
+            GitHubEventType = NormalizeGitHubEventType(targetType, request.GitHubEventType),
             Active = true,
         };
 
@@ -149,9 +249,13 @@ public static class WebhookEndpoints
             sub.Id,
             sub.Name,
             sub.Url,
-            secret = rawSecret, // shown only once
+            // Shown only once, and only when we minted it — the caller already has the others.
+            secret = isGeneric ? rawSecret : null,
             events = request.Events,
             filters = new { product = sub.FilterProduct, environment = sub.FilterEnvironment },
+            targetType = sub.TargetType,
+            signatureHeader = sub.SignatureHeader,
+            githubEventType = sub.GitHubEventType,
             sub.Active,
             sub.CreatedAt,
         });
@@ -168,6 +272,9 @@ public static class WebhookEndpoints
                 s.Url,
                 events = s.EventsJson,
                 filters = new { product = s.FilterProduct, environment = s.FilterEnvironment },
+                targetType = s.TargetType,
+                signatureHeader = s.SignatureHeader,
+                githubEventType = s.GitHubEventType,
                 s.Active,
                 s.CreatedAt,
                 s.UpdatedAt,
@@ -198,6 +305,9 @@ public static class WebhookEndpoints
             s.Url,
             events = JsonSerializer.Deserialize<string[]>(s.events) ?? [],
             s.filters,
+            s.targetType,
+            s.signatureHeader,
+            s.githubEventType,
             s.Active,
             s.CreatedAt,
             s.UpdatedAt,
@@ -240,6 +350,9 @@ public static class WebhookEndpoints
             sub.Url,
             events = JsonSerializer.Deserialize<string[]>(sub.EventsJson) ?? [],
             filters = new { product = sub.FilterProduct, environment = sub.FilterEnvironment },
+            targetType = sub.TargetType,
+            signatureHeader = sub.SignatureHeader,
+            githubEventType = sub.GitHubEventType,
             sub.Active,
             sub.CreatedAt,
             sub.UpdatedAt,
@@ -248,10 +361,29 @@ public static class WebhookEndpoints
     }
 
     private static async Task<IResult> UpdateSubscription(
-        PlatformDbContext db, Guid id, UpdateWebhookRequest request)
+        PlatformDbContext db, IDataProtectionProvider dataProtection, Guid id, UpdateWebhookRequest request)
     {
         var sub = await db.WebhookSubscriptions.FindAsync(id);
         if (sub is null) return Results.NotFound();
+
+        // Switching target type would silently invalidate the stored credential — an auto-generated
+        // whsec_ is not a GitHub token — and nothing downstream could detect that. Recreate instead.
+        if (request.TargetType is not null && request.TargetType.Trim() != sub.TargetType)
+            return Results.BadRequest(new
+            {
+                error = "targetType cannot be changed after creation — delete the subscription and create a new one",
+            });
+
+        // Validate the merged state, not just what was sent: a URL change alone can invalidate a
+        // GitHub target. An omitted secret means "keep the stored one", so it is not required here.
+        var error = ValidateTarget(
+            sub.TargetType,
+            request.Url ?? sub.Url,
+            request.Secret,
+            request.SignatureHeader ?? sub.SignatureHeader,
+            request.GitHubEventType ?? sub.GitHubEventType,
+            requireSecret: false);
+        if (error is not null) return Results.BadRequest(new { error });
 
         if (request.Name is not null) sub.Name = request.Name;
         if (request.Url is not null) sub.Url = request.Url;
@@ -261,6 +393,14 @@ public static class WebhookEndpoints
             sub.FilterProduct = request.Filters.Product;
             sub.FilterEnvironment = request.Filters.Environment;
         }
+        if (request.SignatureHeader is not null)
+            sub.SignatureHeader = NormalizeSignatureHeader(sub.TargetType, request.SignatureHeader);
+        if (request.GitHubEventType is not null)
+            sub.GitHubEventType = NormalizeGitHubEventType(sub.TargetType, request.GitHubEventType);
+        // Rotation: GitHub tokens expire and an Azure DevOps connection secret can be re-rolled.
+        // A blank value is "leave it alone", never "wipe the credential".
+        if (!string.IsNullOrWhiteSpace(request.Secret))
+            sub.EncryptedSecret = dataProtection.CreateProtector("WebhookSecrets").Protect(request.Secret.Trim());
         if (request.Active.HasValue) sub.Active = request.Active.Value;
         sub.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -273,6 +413,9 @@ public static class WebhookEndpoints
             sub.Url,
             events = JsonSerializer.Deserialize<string[]>(sub.EventsJson) ?? [],
             filters = new { product = sub.FilterProduct, environment = sub.FilterEnvironment },
+            targetType = sub.TargetType,
+            signatureHeader = sub.SignatureHeader,
+            githubEventType = sub.GitHubEventType,
             sub.Active,
             sub.UpdatedAt,
         });
@@ -386,13 +529,27 @@ public record CreateWebhookRequest(
     string Name,
     string Url,
     string[] Events,
-    WebhookFilterDto? Filters = null);
+    WebhookFilterDto? Filters = null,
+    // generic (default) | azure_devops | github
+    string? TargetType = null,
+    // Required for azure_devops and github; ignored for generic, which mints its own.
+    string? Secret = null,
+    // azure_devops only — defaults to X-Hub-Signature.
+    string? SignatureHeader = null,
+    // github only — defaults to the InfraPilot event type.
+    string? GitHubEventType = null);
 
 public record UpdateWebhookRequest(
     string? Name = null,
     string? Url = null,
     string[]? Events = null,
     WebhookFilterDto? Filters = null,
-    bool? Active = null);
+    bool? Active = null,
+    // Rejected when it differs from the stored value — target type is immutable.
+    string? TargetType = null,
+    // Replaces the stored secret/token when non-blank; omit to keep the current one.
+    string? Secret = null,
+    string? SignatureHeader = null,
+    string? GitHubEventType = null);
 
 public record WebhookFilterDto(string? Product = null, string? Environment = null);
