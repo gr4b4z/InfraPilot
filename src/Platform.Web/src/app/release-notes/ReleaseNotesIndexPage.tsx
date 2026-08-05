@@ -4,10 +4,13 @@ import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ScrollText, Loader2 } from 'lucide-react';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 export function ReleaseNotesIndexPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
+
+  useDocumentTitle(['Release notes']);
 
   return (
     <div className="space-y-6">

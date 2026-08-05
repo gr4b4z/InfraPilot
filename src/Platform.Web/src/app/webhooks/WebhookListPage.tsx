@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import type { WebhookSubscription } from '@/lib/types';
 import {
   Plus,
@@ -48,6 +49,8 @@ export function WebhookListPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [secretCopied, setSecretCopied] = useState(false);
+
+  useDocumentTitle(['Webhooks']);
   const [error, setError] = useState<string | null>(null);
 
   // Create form state

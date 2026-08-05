@@ -3,6 +3,7 @@ import { Loader2, LogIn } from 'lucide-react';
 import { localLogin, setStoredToken } from '@/lib/localAuth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
 import { getAppName } from '@/lib/runtimeConfig';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
@@ -10,6 +11,10 @@ export function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const setUser = useAuthStore((s) => s.setUser);
+
+  // This screen replaces the whole app (it renders above the router), so it owns the title while it's
+  // up — and following a shared deep link while signed out lands here, not on the page in the URL.
+  useDocumentTitle(['Sign in']);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

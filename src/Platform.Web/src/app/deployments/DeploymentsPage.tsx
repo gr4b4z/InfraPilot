@@ -11,12 +11,17 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import type { ProductSummary } from '@/lib/types';
 
 export function DeploymentsPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
   const { getOrderedEnvironments } = useSettingsStore();
   const navigate = useNavigate();
+
+  // Which products are shown is a per-user preference rather than URL state, so there is nothing
+  // link-specific to report here — this page is the same page for everyone it's sent to.
+  useDocumentTitle(['Deployments']);
 
   // The hidden set is applied by the API, so `products` already excludes them and this page never
   // filters anything itself. What it owns is the control — and the control is the one thing that
