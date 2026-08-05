@@ -16,21 +16,14 @@ namespace Platform.Integration.Tests;
 
 /// <summary>
 /// Tests covering the participant-role vocabulary — the roles an admin has configured under
-/// Settings → Participant Roles (<c>ui.app-settings</c>) — and the three places it now governs:
+/// Settings → Participant Roles (<c>ui.app-settings</c>) — and the place it governs:
+/// <b>manual assignment</b>. Naming a person requires a configured role; ingest stays
+/// permissive, and clearing a slot works whatever its role, or an ingested typo would be
+/// unremovable.
 ///
-/// <list type="bullet">
-///   <item><b>The role filter.</b> <c>GET /api/work-items/me/pending?role=X&amp;assignee=unassigned</c>
-///         answers "which work items have nobody as X?" for <i>any</i> role, not only the ones in
-///         the assignee-role set. That combination is the whole point of the filter: the role you
-///         most want to chase is the one nobody has been put on.</item>
-///   <item><b>The queue's dropdown contents.</b> <c>roles</c> is the configured vocabulary (not
-///         derived from the data, or a role with nobody in it could never be picked), and
-///         <c>unknownRoles</c> reports the roles the queue's items actually carry that aren't
-///         configured.</item>
-///   <item><b>Manual assignment.</b> Naming a person requires a configured role; ingest stays
-///         permissive, and clearing a slot works whatever its role, or an ingested typo would be
-///         unremovable.</item>
-/// </list>
+/// <para>The queue's role filter and role dropdown that this vocabulary used to feed are gone —
+/// the queue narrows by the promotion policy's <i>required</i> work-item roles instead (see
+/// <c>WorkItemRequiredRolesTests</c>).</para>
 /// </summary>
 public class WorkItemRoleVocabularyTests
     : IClassFixture<WorkItemRoleVocabularyTests.RoleVocabularyFactory>, IDisposable
@@ -51,129 +44,6 @@ public class WorkItemRoleVocabularyTests
     {
         _apiKeyClient.Dispose();
         _adminClient.Dispose();
-    }
-
-    // ── The role dropdown's contents ────────────────────────────────────────
-
-    [Fact]
-    public async Task Queue_Roles_IsTheBuiltInVocabulary()
-    {
-        var queue = await GetPendingAsync();
-
-        // The built-in defaults cover every role the deploy-ingest and Jira paths actually emit, so a
-        // producer-sent role isn't flagged as unconfigured on a fresh install.
-        Assert.Equal(
-            new[] { "triggered-by", "author", "reviewer", "qa", "qa-owner", "assignee", "reporter" },
-            queue.Roles);
-    }
-
-    [Fact]
-    public async Task Queue_Roles_TracksTheConfiguredVocabulary()
-    {
-        // The dropdown follows the settings row, not the roles present in the data.
-        await SaveRoleVocabularyAsync(("qa-owner", "QA owner"), ("author", "Author"));
-        try
-        {
-            var queue = await GetPendingAsync();
-            Assert.Equal(new[] { "qa-owner", "author" }, queue.Roles);
-        }
-        finally
-        {
-            await ResetRoleVocabularyAsync();
-        }
-    }
-
-    [Fact]
-    public async Task Queue_UnknownRoles_ReportsRolesTheItemsCarryThatArentConfigured()
-    {
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        // Ingest takes the producer at its word, so a role nobody configured lands on the item.
-        // "release-captain" is deliberately not in the built-in vocabulary.
-        await CreateWorkItemPromotionAsync(product, "svc-unknown-role", "UNK-1", new[]
-        {
-            new { role = "release-captain", displayName = "Ola", email = "ola@example.com" },
-        });
-
-        var queue = await GetPendingAsync();
-        Assert.Contains("release-captain", queue.UnknownRoles);
-        // It is reported as unrecognised, not smuggled into the configured list.
-        Assert.DoesNotContain("release-captain", queue.Roles);
-        // Configured roles that happen to be in use are not "unknown".
-        Assert.DoesNotContain("qa", queue.UnknownRoles);
-    }
-
-    // ── The "nobody is in this role" filter ─────────────────────────────────
-
-    [Fact]
-    public async Task RoleFilter_AnyConfiguredRole_MatchesTheItemsOwnParticipants()
-    {
-        // Regression: the role filter used to match only participants whose role was in a privileged
-        // "assignee role" subset. Filtering on any other configured role — "author" here — therefore
-        // matched nothing, which made every item look like it was missing that role and the
-        // "role only" view come back empty.
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        await CreateWorkItemPromotionAsync(product, "svc-has-author", "AUTH-1", new[]
-        {
-            new { role = "author", displayName = "Ada", email = "ada@example.com" },
-        });
-        await CreateWorkItemPromotionAsync(product, "svc-no-author", "AUTH-2", new[]
-        {
-            new { role = "qa", displayName = "Quinn", email = "quinn@example.com" },
-        });
-
-        var withAuthor = await GetPendingAsync(role: "author");
-        Assert.Contains(withAuthor.Tickets, t => t == "AUTH-1");
-        Assert.DoesNotContain(withAuthor.Tickets, t => t == "AUTH-2");
-
-        var missingAuthor = await GetPendingAsync(role: "author", assignee: "unassigned");
-        Assert.Contains(missingAuthor.Tickets, t => t == "AUTH-2");
-        Assert.DoesNotContain(missingAuthor.Tickets, t => t == "AUTH-1");
-    }
-
-    [Fact]
-    public async Task RoleFilter_UnconfiguredRole_IsStillFilterable()
-    {
-        // The roles reported in `unknownRoles` are offered as filter choices, so they have to work.
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        await CreateWorkItemPromotionAsync(product, "svc-owner-set", "OWN-1", new[]
-        {
-            new { role = "release-captain", displayName = "Ola", email = "ola@example.com" },
-        });
-        await CreateWorkItemPromotionAsync(product, "svc-owner-unset", "OWN-2", new[]
-        {
-            new { role = "qa", displayName = "Quinn", email = "quinn@example.com" },
-        });
-
-        var withOwner = await GetPendingAsync(role: "release-captain");
-        Assert.Contains(withOwner.Tickets, t => t == "OWN-1");
-        Assert.DoesNotContain(withOwner.Tickets, t => t == "OWN-2");
-
-        var missingOwner = await GetPendingAsync(role: "release-captain", assignee: "unassigned");
-        Assert.Contains(missingOwner.Tickets, t => t == "OWN-2");
-        Assert.DoesNotContain(missingOwner.Tickets, t => t == "OWN-1");
-    }
-
-    [Fact]
-    public async Task RoleFilter_ParticipantWithoutEmail_CountsAsUnassigned()
-    {
-        // A role with a name but nobody behind it is an empty slot, not an assignment — otherwise
-        // "who has no QA?" would skip the items whose QA is a label with no address.
-        var product = NewProduct();
-        await SeedPolicyAsync(product);
-
-        await CreateWorkItemPromotionAsync(product, "svc-nameless-qa", "NOEMAIL-1", new[]
-        {
-            new { role = "qa", displayName = "Unknown QA", email = (string?)null },
-        });
-
-        var missingQa = await GetPendingAsync(role: "qa", assignee: "unassigned");
-        Assert.Contains(missingQa.Tickets, t => t == "NOEMAIL-1");
     }
 
     // ── Manual assignment is limited to the configured vocabulary ───────────
@@ -301,40 +171,23 @@ public class WorkItemRoleVocabularyTests
         });
 
         Assert.False(string.IsNullOrEmpty(candidateId));
-        var queue = await GetPendingAsync();
-        Assert.Contains("release-shepherd", queue.UnknownRoles);
+        // The item lands in the queue with the unconfigured role on record.
+        Assert.Contains("INGEST-1", await GetPendingAsync());
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static string NewProduct() => $"vocab-{Guid.NewGuid():N}"[..18];
 
-    private record QueueResponse(List<string> Tickets, List<string> Roles, List<string> UnknownRoles);
-
-    private async Task<QueueResponse> GetPendingAsync(string? role = null, string? assignee = null)
+    private async Task<List<string>> GetPendingAsync()
     {
-        var query = new List<string>();
-        if (!string.IsNullOrEmpty(role)) query.Add($"role={Uri.EscapeDataString(role)}");
-        if (!string.IsNullOrEmpty(assignee)) query.Add($"assignee={Uri.EscapeDataString(assignee)}");
-        var url = query.Count == 0
-            ? "/api/work-items/me/pending"
-            : $"/api/work-items/me/pending?{string.Join("&", query)}";
-
-        var resp = await _adminClient.GetAsync(url);
+        var resp = await _adminClient.GetAsync("/api/work-items/me/pending");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var body = await Deserialize(resp);
 
-        return new QueueResponse(
-            body.GetProperty("tickets").EnumerateArray()
-                .Select(t => t.GetProperty("workItemKey").GetString()!).ToList(),
-            ReadStringArray(body, "roles"),
-            ReadStringArray(body, "unknownRoles"));
+        return body.GetProperty("tickets").EnumerateArray()
+            .Select(t => t.GetProperty("workItemKey").GetString()!).ToList();
     }
-
-    private static List<string> ReadStringArray(JsonElement body, string property)
-        => body.TryGetProperty(property, out var el) && el.ValueKind == JsonValueKind.Array
-            ? el.EnumerateArray().Select(r => r.GetString()!).ToList()
-            : new List<string>();
 
     private Task<HttpResponseMessage> AssignReferenceParticipantAsync(
         string candidateId, string referenceKey, string role, object? assignee)
