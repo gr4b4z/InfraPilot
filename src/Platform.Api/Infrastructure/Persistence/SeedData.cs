@@ -252,11 +252,16 @@ public static class SeedData
 
         var hasher = new PasswordHasher<LocalUser>();
 
+        // user@localhost carries QA on purpose. Work-item management — queue, assignment, sign-off —
+        // is the QA role's jurisdiction (WorkItemApprovalService.GetPendingForCurrentUserAsync bails
+        // early without it), so a plain user has no work-items queue at all, and the demo data that
+        // names them as `qa-owner` would be invisible to the account it was assigned to.
+        // viewer@localhost stays role-less: that's the account for seeing the restricted view.
         var users = new (string Email, string Password, string Name, List<string> Roles)[]
         {
             ("admin@localhost", "admin123", "Admin User", ["InfraPortal.Admin", "InfraPortal.User"]),
             ("qa@localhost", "qa123", "QA Engineer", ["InfraPortal.QA", "InfraPortal.User"]),
-            ("user@localhost", "user123", "Regular User", ["InfraPortal.User"]),
+            ("user@localhost", "user123", "Regular User", ["InfraPortal.QA", "InfraPortal.User"]),
             ("viewer@localhost", "viewer123", "Viewer", []),
         };
 
