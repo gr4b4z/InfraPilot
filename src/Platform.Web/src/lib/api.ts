@@ -205,6 +205,47 @@ class ApiClient {
     });
   }
 
+  /**
+   * Deploy-event log retention: captured pipeline output for deploys older than the cutoff. The
+   * events themselves are never touched — only their stored log blocks.
+   */
+  getDeploymentLogRetentionPreview(olderThanDays: number) {
+    return this.request<{ logs: number; bytes: number }>(
+      `/deployments/admin/logs?olderThanDays=${olderThanDays}`,
+    );
+  }
+
+  removeOldDeploymentLogs(olderThanDays: number) {
+    return this.request<{ logs: number; bytes: number }>(
+      `/deployments/admin/logs?olderThanDays=${olderThanDays}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  /**
+   * Webhook delivery maintenance: `failed` is the whole failed set (bulk-retryable), `purgeable`
+   * counts settled rows (delivered or failed) older than the cutoff. Pending rows are never counted
+   * or purged — they are still owed to a receiver.
+   */
+  getWebhookDeliveryMaintenanceStats(olderThanDays: number) {
+    return this.request<{ failed: number; purgeable: number; oldestFailedAt: string | null }>(
+      `/webhooks/maintenance/deliveries?olderThanDays=${olderThanDays}`,
+    );
+  }
+
+  retryFailedWebhookDeliveries() {
+    return this.request<{ retried: number }>('/webhooks/maintenance/deliveries/retry-failed', {
+      method: 'POST',
+    });
+  }
+
+  purgeWebhookDeliveries(olderThanDays: number) {
+    return this.request<{ removed: number }>(
+      `/webhooks/maintenance/deliveries?olderThanDays=${olderThanDays}`,
+      { method: 'DELETE' },
+    );
+  }
+
   // Catalog Admin
   getCatalogAdmin() {
     return this.request<CatalogAdminResponse>('/catalog/admin');
@@ -448,6 +489,34 @@ class ApiClient {
       `/promotions/admin/candidates/${id}/bypass`,
       { method: 'POST', body: JSON.stringify({ reason }) },
     );
+  }
+
+  /**
+   * Settles open promotions that deploy history has already decided: closes the ones whose version
+   * shipped, supersedes the ones a newer version overtook, leaves everything ambiguous alone.
+   * Admin-only. `dryRun` reports what would happen without writing — the UI always runs it first so
+   * the admin applies a reviewed list, never a surprise.
+   */
+  reconcilePromotionCompletions(dryRun: boolean) {
+    return this.request<PromotionReconcileResult>(
+      `/promotions/admin/candidates/reconcile-completions`,
+      { method: 'POST', body: JSON.stringify({ dryRun }) },
+    );
+  }
+
+  /**
+   * Duplicate promotion candidates — residue of the pre-fix create path that minted a new row per
+   * external POST instead of reusing the natural key. Same scan/remove contract as the deploy-event
+   * duplicates pair; the backend excludes legitimate re-promote history from what it calls a duplicate.
+   */
+  getPromotionDuplicatesPreview() {
+    return this.request<{ groups: number; rows: number }>('/promotions/admin/duplicates');
+  }
+
+  removePromotionDuplicates() {
+    return this.request<{ groups: number; rows: number }>('/promotions/admin/duplicates', {
+      method: 'DELETE',
+    });
   }
 
   bulkApprovePromotions(ids: string[], comment?: string) {
@@ -1341,6 +1410,36 @@ export interface PromotionPolicyRequirement {
 export interface PromotionPolicyStep {
   name: string;
   requirements: PromotionPolicyRequirement[];
+}
+
+/**
+ * Result of the admin reconcile pass over open promotions. `examined − closed − superseded` is the
+ * count left open on purpose — promotions history says nothing about — and surfacing that gap is as
+ * much the point of the report as the repairs are.
+ */
+export interface PromotionReconcileResult {
+  examined: number;
+  closed: number;
+  superseded: number;
+  leftOpen: number;
+  dryRun: boolean;
+  candidates: PromotionReconcileCandidate[];
+}
+
+export interface PromotionReconcileCandidate {
+  id: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  previousStatus: string;
+  /** "closed" (its version shipped) or "superseded" (a newer version overtook it). */
+  action: 'closed' | 'superseded';
+  /** When the deciding deploy landed. */
+  at: string;
+  /** For a supersede, the newer version now in the target. Null for a close. */
+  landedVersion: string | null;
 }
 
 export interface PromotionPolicy {

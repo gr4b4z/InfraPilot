@@ -721,6 +721,46 @@ public class DeploymentService
         return (groupCount, stale.Count);
     }
 
+    // --- Log retention ---
+
+    /*
+     * Captured pipeline output is by far the largest thing stored per deploy — a Helm printout plus
+     * failure diagnostics per event — and it ages fast: the log matters while somebody is debugging
+     * that deploy, not months later. This pair purges log rows for deploy events older than a cutoff;
+     * the events themselves, and everything else on them, stay. Age is the EVENT's DeployedAt, not the
+     * log row's CreatedAt, so all of one deploy's blocks age together.
+     */
+
+    /// <summary>Logs (row count and stored bytes) that <see cref="RemoveOldLogs"/> would delete.</summary>
+    public async Task<(int Logs, long Bytes)> CountOldLogs(int olderThanDays, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-olderThanDays);
+        var rows = await OldLogsQuery(cutoff).Select(l => (long)l.ByteCount).ToListAsync(ct);
+        return (rows.Count, rows.Sum());
+    }
+
+    /// <summary>Deletes log rows for deploy events older than the cutoff. Returns what was removed.</summary>
+    public async Task<(int Logs, long Bytes)> RemoveOldLogs(int olderThanDays, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-olderThanDays);
+        var stale = await OldLogsQuery(cutoff).ToListAsync(ct);
+        if (stale.Count == 0) return (0, 0);
+
+        var bytes = stale.Sum(l => (long)l.ByteCount);
+        _db.DeployEventLogs.RemoveRange(stale);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Log retention removed {Logs} log block(s), {Bytes} bytes, for deploys older than {Days} days",
+            stale.Count, bytes, olderThanDays);
+
+        return (stale.Count, bytes);
+    }
+
+    private IQueryable<DeployEventLog> OldLogsQuery(DateTimeOffset cutoff) =>
+        _db.DeployEventLogs
+            .Where(l => _db.DeployEvents.Any(e => e.Id == l.DeployEventId && e.DeployedAt < cutoff));
+
     // --- Mapping helpers ---
 
     private static DeploymentStateDto MapToStateDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides)
