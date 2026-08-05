@@ -86,9 +86,13 @@ public class PromotionIngestHook : IPromotionIngestHook
 
                 // 2) Match any in-flight promotion candidate that this event completes (D18).
                 await MatchCompletionAsync(deployEvent, ct);
+
+                // 3) Supersede the ones it overtook: if this landing is newer than a promotion still
+                //    waiting to deploy, that promotion is never going out.
+                await SupersedeOvertakenAsync(deployEvent, ct);
             }
 
-            // 3) Match any in-flight rollback this event completes — even when the operator forgot
+            // 4) Match any in-flight rollback this event completes — even when the operator forgot
             //    to set IsRollback on the deploy.
             if (await _flags.IsEnabled(FeatureFlagKeys.Rollbacks, ct))
                 await _rollbacks.MatchCompletionAsync(deployEvent, ct);
@@ -133,7 +137,10 @@ public class PromotionIngestHook : IPromotionIngestHook
         {
             try
             {
-                await _promotions.MarkDeployedAsync(candidate.Id, CompletionNote(candidate, landing), ct);
+                // The deploy's own timestamp, not now: this event is the authority on when the version
+                // went live, and it may be describing something that happened well before ingest.
+                await _promotions.MarkDeployedAsync(
+                    candidate.Id, CompletionNote(candidate, landing), landing.DeployedAt, ct);
             }
             catch (InvalidOperationException ex)
             {
@@ -144,6 +151,25 @@ public class PromotionIngestHook : IPromotionIngestHook
                     candidate.Id, landing.Id);
             }
         }
+    }
+
+    /// <summary>
+    /// Supersedes promotions this landing overtook — the target environment has moved to a newer
+    /// version, so the one they are still waiting to deploy is never going out. See
+    /// <see cref="PromotionService.SupersedeOvertakenByDeployAsync"/> for the conservatism this relies
+    /// on; an unorderable version pair leaves the promotion alone.
+    /// </summary>
+    private async Task SupersedeOvertakenAsync(DeployEvent landing, CancellationToken ct)
+    {
+        // Only a succeeded landing moves an environment on. A failed attempt overtook nothing.
+        if (!string.Equals(landing.Status, "succeeded", StringComparison.OrdinalIgnoreCase)) return;
+
+        var count = await _promotions.SupersedeOvertakenByDeployAsync(
+            landing.Product, landing.Service, landing.Environment, landing.Version, landing.DeployedAt, ct);
+
+        if (count > 0)
+            _logger.LogInformation(
+                "Deploy event {EventId} superseded {Count} overtaken promotion(s)", landing.Id, count);
     }
 
     /// <summary>

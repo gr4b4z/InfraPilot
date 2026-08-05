@@ -311,6 +311,197 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_VersionAlreadyDeployedAndTargetMovedOn_ClosesAsDeployed()
+    {
+        // The stranded-promotion case, and the reason completion can't only live on the ingest path.
+        // v1.0.0 went to prod, prod later moved to v2.0.0, and only then is v1.0.0 promoted. No further
+        // deploy of v1.0.0 is ever going to arrive, so nothing would close this promotion — it sat in
+        // "approved, awaiting deploy" forever. 53 real promotions were in this state.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.0.0", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0.AddDays(2));
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.0.0", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.NotNull(c);
+        var reloaded = await _db.PromotionCandidates.FindAsync(c!.Id);
+        Assert.Equal(PromotionStatus.Deployed, reloaded!.Status);
+        // The date the version actually went live, not the moment we noticed.
+        Assert.Equal(t0, reloaded.DeployedAt);
+    }
+
+    [Fact]
+    public async Task Create_VersionOnlyFailedInTarget_StaysOpen()
+    {
+        // A failed attempt did not put the version live. The promotion is right to keep waiting, and
+        // this is the guard that keeps the repair pass honest — 2 real promotions look like the
+        // stranded ones but only ever had a failed deploy behind them.
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.0.0", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "failed");
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.0.0", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.NotNull(c);
+        Assert.NotEqual(PromotionStatus.Deployed, c!.Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_ClosesTheDeployedOnesAndLeavesTheRestAlone()
+    {
+        // The repair pass over promotions stranded before the create-time check existed. Three
+        // promotions, one of which shipped — only that one may move.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        SeedPolicy(approverGroup: null); // auto-approve, so candidates land in Approved like the real ones
+        SeedDeploy(env: "staging", version: "v1.0.0", service: "shipped", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "shipped", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v3.0.0", service: "shipped", status: "succeeded", deployedAt: t0.AddDays(1));
+
+        var shipped = SeedStrandedCandidate("shipped", "v1.0.0");
+        var neverDeployed = SeedStrandedCandidate("never", "v1.0.0");
+        var failedOnly = SeedStrandedCandidate("failed", "v1.0.0");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "failed", status: "failed");
+        await _db.SaveChangesAsync();
+
+        var dry = await _sut.ReconcileCompletionsAsync(dryRun: true);
+        Assert.Equal(3, dry.Examined);
+        Assert.Equal(1, dry.Closed);
+        Assert.Equal(0, dry.Superseded); // the other two have no newer version in prod to overtake them
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(shipped.Id))!.Status);
+
+        var run = await _sut.ReconcileCompletionsAsync();
+        Assert.Equal(1, run.Closed);
+        var settled = Assert.Single(run.Candidates);
+        Assert.Equal(shipped.Id, settled.Id);
+        Assert.Equal("closed", settled.Action);
+
+        Assert.Equal(PromotionStatus.Deployed, (await _db.PromotionCandidates.FindAsync(shipped.Id))!.Status);
+        Assert.Equal(t0, (await _db.PromotionCandidates.FindAsync(shipped.Id))!.DeployedAt);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(neverDeployed.Id))!.Status);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(failedOnly.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_SupersedesTheOnesTheEnvironmentOvertook()
+    {
+        // The other stranded group: approved, then never deployed because a later version went instead.
+        // 58 real promotions. Nothing retires them today, so they sit in "awaiting deploy" indefinitely.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var overtaken = SeedStrandedCandidate("api", "v1.0.0", createdAt: t0);
+        var rolledBackTarget = SeedStrandedCandidate("rolled", "v2.0.0", createdAt: t0);
+        await _db.SaveChangesAsync();
+
+        // prod moved past v1.0.0 without ever deploying it.
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0.AddDays(1));
+        // The rolled-back service is on an OLDER version than its promotion carries — a live intent.
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "rolled", status: "succeeded", deployedAt: t0.AddDays(1));
+        await _db.SaveChangesAsync();
+
+        var result = await _sut.ReconcileCompletionsAsync();
+
+        Assert.Equal(1, result.Superseded);
+        Assert.Equal(0, result.Closed);
+        var settled = Assert.Single(result.Candidates);
+        Assert.Equal("superseded", settled.Action);
+        Assert.Equal("v2.0.0", settled.LandedVersion);
+        Assert.Equal(PromotionStatus.Superseded, (await _db.PromotionCandidates.FindAsync(overtaken.Id))!.Status);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(rolledBackTarget.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_TargetAlreadyAheadWhenPromotionWasCreated_LeavesItAlone()
+    {
+        // Promoting an older version into an environment that is already ahead is a deliberate act, not
+        // a stranded promotion. Nothing here is ours to retire.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0);
+        var deliberate = SeedStrandedCandidate("api", "v1.0.0", createdAt: t0.AddDays(1));
+        await _db.SaveChangesAsync();
+
+        var result = await _sut.ReconcileCompletionsAsync();
+
+        Assert.Equal(0, result.Closed);
+        Assert.Equal(0, result.Superseded);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(deliberate.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task SupersedeOvertaken_ClosesApprovedPromotionsTheEnvironmentPassed()
+    {
+        // The 58 real promotions that were approved and then never went, because a later version went
+        // instead. Nothing used to move them: the existing supersede rule only touches Pending.
+        var landedAt = DateTimeOffset.UtcNow;
+        var overtaken = SeedStrandedCandidate("api", "v1.0.0", createdAt: landedAt.AddDays(-1));
+        var newerIntent = SeedStrandedCandidate("api", "v9.0.0", createdAt: landedAt.AddDays(-1));
+        var createdAfter = SeedStrandedCandidate("api", "v1.5.0", createdAt: landedAt.AddHours(1));
+        var unorderable = SeedStrandedCandidate("api", "release-candidate", createdAt: landedAt.AddDays(-1));
+        await _db.SaveChangesAsync();
+
+        var count = await _sut.SupersedeOvertakenByDeployAsync(
+            "acme", "api", "prod", "v2.0.0", landedAt);
+
+        Assert.Equal(1, count);
+        Assert.Equal(PromotionStatus.Superseded, (await _db.PromotionCandidates.FindAsync(overtaken.Id))!.Status);
+        // Newer than what landed — still a live intention.
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(newerIntent.Id))!.Status);
+        // Created after the deploy landed, so this deploy did not overtake it.
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(createdAfter.Id))!.Status);
+        // Unorderable version: leave it alone rather than guess.
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(unorderable.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task SupersedeOvertaken_PromotionThatDidShipIsDeployedNotSuperseded()
+    {
+        // Being replaced later is the normal end of a promotion's life, not a supersede: if its own
+        // version did land, the honest status is Deployed.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-2);
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0.AddDays(1));
+        var shipped = SeedStrandedCandidate("api", "v1.0.0", createdAt: t0.AddHours(-1));
+        await _db.SaveChangesAsync();
+
+        var count = await _sut.SupersedeOvertakenByDeployAsync(
+            "acme", "api", "prod", "v2.0.0", t0.AddDays(1));
+
+        Assert.Equal(0, count);
+        var reloaded = await _db.PromotionCandidates.FindAsync(shipped.Id);
+        Assert.Equal(PromotionStatus.Deployed, reloaded!.Status);
+    }
+
+    /// <summary>
+    /// An Approved candidate written straight to the database — the shape the stranded production rows
+    /// are in, without going through the create path that would now close or reject them.
+    /// </summary>
+    private PromotionCandidate SeedStrandedCandidate(
+        string service, string version, DateTimeOffset? createdAt = null)
+    {
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = service,
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = version,
+            Status = PromotionStatus.Approved,
+            CreatedAt = createdAt ?? DateTimeOffset.UtcNow.AddDays(-1),
+            ApprovedAt = createdAt ?? DateTimeOffset.UtcNow.AddDays(-1),
+        };
+        _db.PromotionCandidates.Add(candidate);
+        return candidate;
+    }
+
+    [Fact]
     public async Task Create_SecondCandidateSupersedesFirst()
     {
         SeedPolicy();
