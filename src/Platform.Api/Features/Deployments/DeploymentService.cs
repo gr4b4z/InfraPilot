@@ -150,6 +150,14 @@ public class DeploymentService
             _logger.LogInformation(
                 "Replayed deploy event {Id}: {Product}/{Service} → {Environment} v{Version} already ingested; returning existing row",
                 replayed.Id, replayed.Product, replayed.Service, replayed.Environment, replayed.Version);
+
+            // A replay still runs the promotion hook. The original POST could only match promotions
+            // that existed at the time; one created since — or one stranded by a hook failure the first
+            // time round — is closed by the retry rather than left open forever. The hook is idempotent
+            // (it skips candidates already Deployed/Superseded), so replaying costs nothing when there
+            // is nothing to close.
+            await _promotionHook.OnIngestedAsync(replayed, ct);
+
             return new IngestResult(replayed, true);
         }
 
