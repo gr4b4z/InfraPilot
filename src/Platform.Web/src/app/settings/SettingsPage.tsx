@@ -62,10 +62,10 @@ const NAV: NavItem[] = [
     description: 'Choose which products can use rollbacks',
   },
   {
-    to: 'deployment-maintenance',
-    label: 'Deployment Maintenance',
+    to: 'maintenance',
+    label: 'Maintenance',
     icon: Wrench,
-    description: 'Clean up duplicate deployment events',
+    description: 'Data repair: duplicates, stranded promotions, log retention, webhook deliveries',
   },
   {
     to: 'release-notes-template',

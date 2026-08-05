@@ -26,7 +26,94 @@ public static class WebhookEndpoints
         group.MapPost("/deliveries/{id:guid}/retry", RetryDelivery);
         group.MapPost("/{id:guid}/test", TestSubscription);
 
+        // ── Delivery maintenance (Settings → Maintenance) ────────────────────
+        // Bulk counterparts to the per-delivery retry above, plus retention. The per-row button is
+        // fine for one flaky call; after a receiver outage there are hundreds of exhausted rows and
+        // nothing else re-queues them — and delivered/failed rows otherwise accumulate forever.
+        group.MapGet("/maintenance/deliveries", async (
+            PlatformDbContext db, int? olderThanDays, CancellationToken ct) =>
+        {
+            if (olderThanDays is < 1 or > 3650)
+                return Results.BadRequest(new { error = "olderThanDays must be between 1 and 3650" });
+            var stats = await GetDeliveryMaintenanceStatsAsync(db, olderThanDays ?? 30, ct);
+            return Results.Ok(stats);
+        });
+
+        group.MapPost("/maintenance/deliveries/retry-failed", async (
+            PlatformDbContext db, CancellationToken ct) =>
+        {
+            var retried = await RetryAllFailedDeliveriesAsync(db, ct);
+            return Results.Ok(new { retried });
+        });
+
+        group.MapDelete("/maintenance/deliveries", async (
+            PlatformDbContext db, int? olderThanDays, CancellationToken ct) =>
+        {
+            if (olderThanDays is null or < 1 or > 3650)
+                return Results.BadRequest(new { error = "olderThanDays is required (1–3650)" });
+            var removed = await PurgeSettledDeliveriesAsync(db, olderThanDays.Value, ct);
+            return Results.Ok(new { removed });
+        });
+
         return group;
+    }
+
+    // ── Delivery maintenance internals ──────────────────────────────────────
+    // Static and endpoint-independent so the rules are unit-testable without HTTP plumbing.
+
+    public record DeliveryMaintenanceStats(int Failed, int Purgeable, DateTimeOffset? OldestFailedAt);
+
+    public static async Task<DeliveryMaintenanceStats> GetDeliveryMaintenanceStatsAsync(
+        PlatformDbContext db, int olderThanDays, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-olderThanDays);
+        var failed = await db.WebhookDeliveries.CountAsync(d => d.Status == "failed", ct);
+        var purgeable = await db.WebhookDeliveries
+            .CountAsync(d => d.Status != "pending" && d.CreatedAt < cutoff, ct);
+        var oldestFailed = await db.WebhookDeliveries
+            .Where(d => d.Status == "failed")
+            .OrderBy(d => d.CreatedAt)
+            .Select(d => (DateTimeOffset?)d.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+        return new DeliveryMaintenanceStats(failed, purgeable, oldestFailed);
+    }
+
+    /// <summary>
+    /// Re-queues every failed delivery, the same reset the per-delivery retry performs: back to
+    /// pending, attempts zeroed, eligible for the worker immediately. Payloads are kept verbatim —
+    /// a retry re-sends what the receiver was owed, it does not rebuild it.
+    /// </summary>
+    public static async Task<int> RetryAllFailedDeliveriesAsync(
+        PlatformDbContext db, CancellationToken ct = default)
+    {
+        var failed = await db.WebhookDeliveries.Where(d => d.Status == "failed").ToListAsync(ct);
+        foreach (var delivery in failed)
+        {
+            delivery.Status = "pending";
+            delivery.NextRetryAt = DateTimeOffset.UtcNow;
+            delivery.Attempts = 0;
+            delivery.ErrorMessage = null;
+        }
+        if (failed.Count > 0) await db.SaveChangesAsync(ct);
+        return failed.Count;
+    }
+
+    /// <summary>
+    /// Deletes settled (delivered or failed) delivery rows older than the cutoff. Pending rows are
+    /// never touched, whatever their age — they are still owed to a receiver, and deleting one
+    /// silently drops an event a subscriber asked for.
+    /// </summary>
+    public static async Task<int> PurgeSettledDeliveriesAsync(
+        PlatformDbContext db, int olderThanDays, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-olderThanDays);
+        var stale = await db.WebhookDeliveries
+            .Where(d => d.Status != "pending" && d.CreatedAt < cutoff)
+            .ToListAsync(ct);
+        if (stale.Count == 0) return 0;
+        db.WebhookDeliveries.RemoveRange(stale);
+        await db.SaveChangesAsync(ct);
+        return stale.Count;
     }
 
     private static async Task<IResult> CreateSubscription(
