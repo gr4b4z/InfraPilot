@@ -184,7 +184,169 @@ public class WebhookIntegrationTests : IClassFixture<WebhookIntegrationTests.Web
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    // ── Target types ────────────────────────────────────────────────────────
+    // Azure DevOps and GitHub reuse a credential the receiving system already holds, so unlike the
+    // generic target they take a caller-supplied secret and never hand one back.
+
+    [Fact]
+    public async Task CreateWebhook_DefaultsToTheGenericTarget()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "Untyped Hook",
+            url = "https://example.com/hook",
+            events = new[] { "deployment.created" },
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await Deserialize(response);
+        Assert.Equal("generic", body.GetProperty("targetType").GetString());
+    }
+
+    [Fact]
+    public async Task CreateAzureDevOpsWebhook_StoresTheDefaultSignatureHeader_AndWithholdsTheSecret()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "ADO Pipeline",
+            url = AzureDevOpsUrl,
+            events = new[] { "promotion.approved" },
+            targetType = "azure_devops",
+            secret = "ado-connection-secret",
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await Deserialize(response);
+        Assert.Equal("azure_devops", body.GetProperty("targetType").GetString());
+        Assert.Equal("X-Hub-Signature", body.GetProperty("signatureHeader").GetString());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("secret").ValueKind);
+    }
+
+    [Fact]
+    public async Task CreateAzureDevOpsWebhook_WithoutSecret_IsRejected()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "ADO No Secret",
+            url = AzureDevOpsUrl,
+            events = new[] { "promotion.approved" },
+            targetType = "azure_devops",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateGitHubWebhook_KeepsTheEventTypeOverride()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "GitHub Actions",
+            url = GitHubUrl,
+            events = new[] { "rollback.approved" },
+            targetType = "github",
+            secret = "ghp_token",
+            gitHubEventType = "infrapilot",
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await Deserialize(response);
+        Assert.Equal("github", body.GetProperty("targetType").GetString());
+        Assert.Equal("infrapilot", body.GetProperty("githubEventType").GetString());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("secret").ValueKind);
+    }
+
+    [Fact]
+    public async Task CreateGitHubWebhook_WithANonDispatchUrl_IsRejected()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "GitHub Wrong URL",
+            url = "https://api.github.com/repos/acme/infra",
+            events = new[] { "rollback.approved" },
+            targetType = "github",
+            secret = "ghp_token",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateWebhook_CannotChangeTargetType()
+    {
+        var created = await CreateAsync(new
+        {
+            name = "Locked Target",
+            url = "https://example.com/hook",
+            events = new[] { "deployment.created" },
+        });
+        var id = created.GetProperty("id").GetString();
+
+        var response = await _adminClient.PutAsJsonAsync($"/api/webhooks/{id}", new { targetType = "github" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateWebhook_RotatesTheSecretAndSignatureHeader()
+    {
+        var created = await CreateAsync(new
+        {
+            name = "ADO Rotatable",
+            url = AzureDevOpsUrl,
+            events = new[] { "promotion.approved" },
+            targetType = "azure_devops",
+            secret = "original-secret",
+        });
+        var id = created.GetProperty("id").GetString();
+
+        var response = await _adminClient.PutAsJsonAsync($"/api/webhooks/{id}", new
+        {
+            secret = "rotated-secret",
+            signatureHeader = "X-WH-Checksum",
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await Deserialize(response);
+        Assert.Equal("X-WH-Checksum", body.GetProperty("signatureHeader").GetString());
+        // The rotated secret is never echoed back, on this or any other read.
+        Assert.False(body.TryGetProperty("secret", out _));
+    }
+
+    [Fact]
+    public async Task UpdateWebhook_RejectsASignatureHeaderThatIsNotAnHttpToken()
+    {
+        var created = await CreateAsync(new
+        {
+            name = "ADO Header Guard",
+            url = AzureDevOpsUrl,
+            events = new[] { "promotion.approved" },
+            targetType = "azure_devops",
+            secret = "original-secret",
+        });
+        var id = created.GetProperty("id").GetString();
+
+        var response = await _adminClient.PutAsJsonAsync($"/api/webhooks/{id}", new
+        {
+            signatureHeader = "X-Bad\r\nInjected: 1",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private const string AzureDevOpsUrl =
+        "https://dev.azure.com/acme/_apis/public/distributedtask/webhooks/deploy?api-version=6.0-preview";
+
+    private const string GitHubUrl = "https://api.github.com/repos/acme/infra/dispatches";
+
+    private async Task<JsonElement> CreateAsync(object request)
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", request);
+        response.EnsureSuccessStatusCode();
+        return await Deserialize(response);
+    }
 
     private HttpClient CreateUserClient()
     {

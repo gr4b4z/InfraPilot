@@ -19,29 +19,15 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-
-const AVAILABLE_EVENTS = [
-  'deployment.created',
-  'request.status_changed',
-  'approval.created',
-  'approval.approved',
-  'approval.rejected',
-  'approval.changesrequested',
-  'promotion.approved',
-  'promotion.rejected',
-  'promotion.deployed',
-  'promotion.updated',
-  'promotion.ticket.approved',
-  'promotion.ticket.issue-raised',
-  'promotion.ticket.blocked',
-  'rollback.approved',
-  'rollback.rejected',
-  'rollback.deployed',
-  'rollback.cancelled',
-  'release_note.generated',
-  'release_note.generated.html',
-  'ping',
-];
+import {
+  AVAILABLE_EVENTS,
+  DEFAULT_ADO_SIGNATURE_HEADER,
+  TARGET_TYPES,
+  azureDevOpsUrl,
+  githubDispatchUrl,
+  targetLabel,
+  type WebhookTargetType,
+} from './webhookTargets';
 
 export function WebhookListPage() {
   const [webhooks, setWebhooks] = useState<WebhookSubscription[]>([]);
@@ -62,6 +48,53 @@ export function WebhookListPage() {
   const [creating, setCreating] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
 
+  // Target-specific create state. The composed URL still lands in `url`, so a target that needs a
+  // shape the builders don't cover can always be typed in raw.
+  const [targetType, setTargetType] = useState<WebhookTargetType>('generic');
+  const [secret, setSecret] = useState('');
+  const [signatureHeader, setSignatureHeader] = useState(DEFAULT_ADO_SIGNATURE_HEADER);
+  const [gitHubEventType, setGitHubEventType] = useState('');
+  const [adoOrg, setAdoOrg] = useState('');
+  const [adoWebhookName, setAdoWebhookName] = useState('');
+  const [ghOwner, setGhOwner] = useState('');
+  const [ghRepo, setGhRepo] = useState('');
+  const [rawUrlMode, setRawUrlMode] = useState(false);
+
+  const composedUrl =
+    rawUrlMode || targetType === 'generic'
+      ? url
+      : targetType === 'azure_devops'
+        ? adoOrg && adoWebhookName
+          ? azureDevOpsUrl(adoOrg, adoWebhookName)
+          : ''
+        : ghOwner && ghRepo
+          ? githubDispatchUrl(ghOwner, ghRepo)
+          : '';
+
+  const secretRequired = targetType !== 'generic';
+  const canCreate =
+    name.trim() !== '' &&
+    composedUrl.trim() !== '' &&
+    selectedEvents.length > 0 &&
+    (!secretRequired || secret.trim() !== '');
+
+  const resetCreateForm = () => {
+    setName('');
+    setUrl('');
+    setSelectedEvents([]);
+    setFilterProduct('');
+    setFilterEnv('');
+    setTargetType('generic');
+    setSecret('');
+    setSignatureHeader(DEFAULT_ADO_SIGNATURE_HEADER);
+    setGitHubEventType('');
+    setAdoOrg('');
+    setAdoWebhookName('');
+    setGhOwner('');
+    setGhRepo('');
+    setRawUrlMode(false);
+  };
+
   const fetchWebhooks = useCallback(async () => {
     try {
       const data = await api.getWebhooks();
@@ -78,7 +111,7 @@ export function WebhookListPage() {
   }, [fetchWebhooks]);
 
   const handleCreate = async () => {
-    if (!name.trim() || !url.trim() || selectedEvents.length === 0) return;
+    if (!canCreate) return;
     setCreating(true);
     setError(null);
     try {
@@ -86,15 +119,21 @@ export function WebhookListPage() {
         filterProduct || filterEnv
           ? { product: filterProduct || undefined, environment: filterEnv || undefined }
           : undefined;
-      const result = await api.createWebhook({ name, url, events: selectedEvents, filters });
+      const result = await api.createWebhook({
+        name,
+        url: composedUrl,
+        events: selectedEvents,
+        filters,
+        targetType,
+        // Only generic mints its own secret; the others reuse what the receiver already holds.
+        secret: secretRequired ? secret.trim() : undefined,
+        signatureHeader: targetType === 'azure_devops' ? signatureHeader.trim() || undefined : undefined,
+        gitHubEventType: targetType === 'github' ? gitHubEventType.trim() || undefined : undefined,
+      });
       setCreatedSecret(result.secret ?? null);
       if (result.secret) setShowGuide(true);
       setShowCreate(false);
-      setName('');
-      setUrl('');
-      setSelectedEvents([]);
-      setFilterProduct('');
-      setFilterEnv('');
+      resetCreateForm();
       await fetchWebhooks();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create webhook');
@@ -236,6 +275,39 @@ export function WebhookListPage() {
             </button>
           </div>
 
+          {/* Target — chosen first, because it decides which fields below apply */}
+          <div className="space-y-1.5">
+            <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Target
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {TARGET_TYPES.map((t) => (
+                <button
+                  key={t.value}
+                  onClick={() => setTargetType(t.value)}
+                  className="text-left px-3 py-2.5 rounded-lg transition-all"
+                  style={{
+                    backgroundColor: targetType === t.value ? 'var(--accent-muted)' : 'var(--bg-primary)',
+                    border:
+                      targetType === t.value
+                        ? '1px solid var(--accent)'
+                        : '1px solid var(--border-color)',
+                  }}
+                >
+                  <div
+                    className="text-[13px] font-medium"
+                    style={{ color: targetType === t.value ? 'var(--accent)' : 'var(--text-primary)' }}
+                  >
+                    {t.label}
+                  </div>
+                  <div className="text-[11px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+                    {t.description}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
@@ -254,24 +326,203 @@ export function WebhookListPage() {
                 }}
               />
             </div>
-            <div className="space-y-1.5">
-              <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                URL
-              </label>
-              <input
-                type="url"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com/webhook"
-                className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                }}
-              />
-            </div>
+
+            {(targetType === 'generic' || rawUrlMode) && (
+              <div className="space-y-1.5">
+                <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  URL
+                </label>
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://example.com/webhook"
+                  className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                  }}
+                />
+              </div>
+            )}
+
+            {targetType === 'azure_devops' && !rawUrlMode && (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Organization
+                  </label>
+                  <input
+                    type="text"
+                    value={adoOrg}
+                    onChange={(e) => setAdoOrg(e.target.value)}
+                    placeholder="e.g. contoso"
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Webhook name
+                  </label>
+                  <input
+                    type="text"
+                    value={adoWebhookName}
+                    onChange={(e) => setAdoWebhookName(e.target.value)}
+                    placeholder="matches the service connection"
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                </div>
+              </>
+            )}
+
+            {targetType === 'github' && !rawUrlMode && (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Owner
+                  </label>
+                  <input
+                    type="text"
+                    value={ghOwner}
+                    onChange={(e) => setGhOwner(e.target.value)}
+                    placeholder="e.g. contoso"
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Repository
+                  </label>
+                  <input
+                    type="text"
+                    value={ghRepo}
+                    onChange={(e) => setGhRepo(e.target.value)}
+                    placeholder="e.g. infrastructure"
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                </div>
+              </>
+            )}
           </div>
+
+          {/* Target-specific credential + tuning */}
+          {targetType !== 'generic' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  {targetType === 'github' ? 'Token' : 'Secret'}
+                </label>
+                <input
+                  type="password"
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder={
+                    targetType === 'github'
+                      ? 'token with repository dispatch permission'
+                      : 'the service connection secret'
+                  }
+                  className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                  }}
+                />
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {targetType === 'github'
+                    ? 'Sent as a bearer token. Stored encrypted and never shown again.'
+                    : 'Must match the Incoming WebHook service connection. Stored encrypted and never shown again.'}
+                </p>
+              </div>
+
+              {targetType === 'azure_devops' && (
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Signature header
+                  </label>
+                  <input
+                    type="text"
+                    value={signatureHeader}
+                    onChange={(e) => setSignatureHeader(e.target.value)}
+                    placeholder={DEFAULT_ADO_SIGNATURE_HEADER}
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Must match the "Http Header" field of the service connection. Carries{' '}
+                    <code>sha1=&lt;hex&gt;</code>.
+                  </p>
+                </div>
+              )}
+
+              {targetType === 'github' && (
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Event type <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={gitHubEventType}
+                    onChange={(e) => setGitHubEventType(e.target.value)}
+                    placeholder="defaults to the InfraPilot event name"
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    The <code>event_type</code> your workflow filters on under{' '}
+                    <code>repository_dispatch</code>.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {targetType !== 'generic' && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setRawUrlMode(!rawUrlMode)}
+                className="text-[12px] underline"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {rawUrlMode ? 'Compose the URL from fields' : 'Enter the URL manually instead'}
+              </button>
+              {!rawUrlMode && composedUrl && (
+                <code className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+                  {composedUrl}
+                </code>
+              )}
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
@@ -335,7 +586,7 @@ export function WebhookListPage() {
           <div className="flex items-center gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
             <button
               onClick={handleCreate}
-              disabled={creating || !name.trim() || !url.trim() || selectedEvents.length === 0}
+              disabled={creating || !canCreate}
               className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
               style={{ backgroundColor: 'var(--accent)' }}
             >
@@ -406,6 +657,14 @@ export function WebhookListPage() {
                       <ExternalLink size={11} />
                       <span className="truncate max-w-[250px]">{wh.url}</span>
                     </div>
+                    {wh.targetType && wh.targetType !== 'generic' && (
+                      <span
+                        className="inline-block text-[11px] px-1.5 py-0.5 rounded mt-1 font-medium"
+                        style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
+                      >
+                        {targetLabel(wh.targetType)}
+                      </span>
+                    )}
                     {(wh.filters.product || wh.filters.environment) && (
                       <div className="flex gap-1.5 mt-1">
                         {wh.filters.product && (
@@ -531,10 +790,48 @@ export function WebhookListPage() {
             className="px-5 pb-5 space-y-5 border-t"
             style={{ borderColor: 'var(--border-color)' }}
           >
-            {/* Headers */}
+            {/* Targets */}
             <div className="pt-4 space-y-2">
               <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                Request Headers
+                Targets
+              </h3>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                A subscription's target decides how the delivery is framed. Event filtering, retries
+                and delivery history work the same way for all three. The target is fixed at
+                creation — to change it, delete the subscription and create a new one.
+              </p>
+              <div
+                className="rounded-lg overflow-hidden text-[12px]"
+                style={{ backgroundColor: 'var(--bg-primary)' }}
+              >
+                <table className="w-full">
+                  <tbody>
+                    {[
+                      ['Generic', 'Signed JSON POST to any URL', 'HMAC-SHA256 in X-Hub-Signature-256'],
+                      ['Azure DevOps', 'Incoming WebHook service connection', 'HMAC-SHA1 in a header you choose'],
+                      ['GitHub', 'repository_dispatch REST call', 'Bearer token, no signature'],
+                    ].map(([label, what, auth]) => (
+                      <tr key={label} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                        <td className="px-3 py-2 font-semibold whitespace-nowrap" style={{ color: 'var(--accent)' }}>
+                          {label}
+                        </td>
+                        <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>
+                          {what}
+                        </td>
+                        <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }}>
+                          {auth}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Headers */}
+            <div className="space-y-2">
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                Generic target — request headers
               </h3>
               <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
                 Each webhook delivery includes these HTTP headers:
@@ -571,7 +868,7 @@ export function WebhookListPage() {
             {/* Verification steps */}
             <div className="space-y-2">
               <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                Verifying Signatures
+                Generic target — verifying signatures
               </h3>
               <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
                 To verify that a webhook delivery is authentic, compute an HMAC-SHA256 of the raw
@@ -703,6 +1000,107 @@ app.MapPost("/webhook", async (HttpContext ctx) =>
     return Results.Ok(new { ok = true });
 });`}
               </pre>
+            </div>
+
+            {/* Azure DevOps */}
+            <div className="space-y-2 pt-1 border-t" style={{ borderColor: 'var(--border-color)' }}>
+              <h3 className="text-[13px] font-semibold pt-4" style={{ color: 'var(--text-primary)' }}>
+                Azure DevOps target
+              </h3>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                Triggers a pipeline through an Incoming WebHook service connection. The body is the
+                same InfraPilot envelope as the generic target, but it is signed with{' '}
+                <strong>HMAC-SHA1</strong> and the digest goes in whichever header the service
+                connection is configured to read.
+              </p>
+              <ol className="text-[13px] space-y-1.5 list-decimal list-inside" style={{ color: 'var(--text-secondary)' }}>
+                <li>
+                  In Azure DevOps, go to <strong>Project Settings → Service connections</strong> and
+                  create an <strong>Incoming WebHook</strong> connection.
+                </li>
+                <li>
+                  Set <strong>WebHook Name</strong>, a <strong>Secret</strong>, and an{' '}
+                  <strong>Http Header</strong> (e.g.{' '}
+                  <code style={{ color: 'var(--accent)' }}>X-Hub-Signature</code>).
+                </li>
+                <li>
+                  Create the subscription here with the same webhook name, secret, and header.
+                </li>
+                <li>
+                  Add the webhook resource to the pipeline that should run, then use{' '}
+                  <strong>Send test ping</strong> to confirm it fires.
+                </li>
+              </ol>
+              <pre
+                className="rounded-lg p-4 text-[12px] leading-relaxed overflow-x-auto"
+                style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+              >
+{`# azure-pipelines.yml
+resources:
+  webhooks:
+    - webhook: infrapilot            # must match the service connection name
+      connection: infrapilot
+
+trigger: none
+
+steps:
+  - script: |
+      echo "event:   \${{ parameters.infrapilot.eventType }}"
+      echo "product: \${{ parameters.infrapilot.data.product }}"
+      echo "version: \${{ parameters.infrapilot.data.version }}"`}
+              </pre>
+              <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                The whole envelope is addressable as{' '}
+                <code style={{ color: 'var(--accent)' }}>{'${{ parameters.<webhook>.<path> }}'}</code>.
+                If deliveries come back 400 or 403, the header name is almost always the cause —
+                check it matches the service connection exactly.
+              </p>
+            </div>
+
+            {/* GitHub */}
+            <div className="space-y-2 pt-1 border-t" style={{ borderColor: 'var(--border-color)' }}>
+              <h3 className="text-[13px] font-semibold pt-4" style={{ color: 'var(--text-primary)' }}>
+                GitHub target
+              </h3>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                GitHub has no inbound webhook receiver, so this target calls the{' '}
+                <code style={{ color: 'var(--accent)' }}>repository_dispatch</code> API instead. It
+                authenticates with a token rather than a signature, and the envelope rides along as{' '}
+                <code style={{ color: 'var(--accent)' }}>client_payload</code>. A successful dispatch
+                answers <strong>204 No Content</strong>.
+              </p>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                The token needs permission to dispatch repository events: a fine-grained token with{' '}
+                <strong>Contents: read and write</strong> on the target repository, or a classic
+                token with the <strong>repo</strong> scope.
+              </p>
+              <pre
+                className="rounded-lg p-4 text-[12px] leading-relaxed overflow-x-auto"
+                style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+              >
+{`# .github/workflows/deploy.yml
+on:
+  repository_dispatch:
+    types: [deployment.created]     # or your Event type override
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "event:   \${{ github.event.client_payload.eventType }}"
+          echo "product: \${{ github.event.client_payload.data.product }}"
+
+# What InfraPilot sends:
+# POST https://api.github.com/repos/{owner}/{repo}/dispatches
+# Authorization: Bearer <token>
+# {"event_type":"deployment.created","client_payload":{ ...envelope... }}`}
+              </pre>
+              <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                Leave <strong>Event type</strong> blank to dispatch under the InfraPilot event name,
+                so one workflow can filter several events by <code>types:</code>. Set it to collapse
+                every event onto a single dispatch name instead.
+              </p>
             </div>
 
             {/* Retry behaviour */}

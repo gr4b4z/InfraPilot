@@ -17,29 +17,11 @@ import {
   Save,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
-
-const AVAILABLE_EVENTS = [
-  'deployment.created',
-  'request.status_changed',
-  'approval.created',
-  'approval.approved',
-  'approval.rejected',
-  'approval.changesrequested',
-  'promotion.approved',
-  'promotion.rejected',
-  'promotion.deployed',
-  'promotion.updated',
-  'promotion.ticket.approved',
-  'promotion.ticket.issue-raised',
-  'promotion.ticket.blocked',
-  'rollback.approved',
-  'rollback.rejected',
-  'rollback.deployed',
-  'rollback.cancelled',
-  'release_note.generated',
-  'release_note.generated.html',
-  'ping',
-];
+import {
+  AVAILABLE_EVENTS,
+  DEFAULT_ADO_SIGNATURE_HEADER,
+  targetLabel,
+} from './webhookTargets';
 
 export function WebhookDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -58,6 +40,10 @@ export function WebhookDetailPage() {
   const [editEvents, setEditEvents] = useState<string[]>([]);
   const [editFilterProduct, setEditFilterProduct] = useState('');
   const [editFilterEnv, setEditFilterEnv] = useState('');
+  const [editSignatureHeader, setEditSignatureHeader] = useState('');
+  const [editGitHubEventType, setEditGitHubEventType] = useState('');
+  // Never seeded from the webhook — the stored credential is write-only. Blank means "keep it".
+  const [editSecret, setEditSecret] = useState('');
   const [saving, setSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -90,11 +76,14 @@ export function WebhookDetailPage() {
     setEditEvents([...webhook.events]);
     setEditFilterProduct(webhook.filters.product ?? '');
     setEditFilterEnv(webhook.filters.environment ?? '');
+    setEditSignatureHeader(webhook.signatureHeader ?? '');
+    setEditGitHubEventType(webhook.githubEventType ?? '');
+    setEditSecret('');
     setEditing(true);
   };
 
   const handleSave = async () => {
-    if (!id) return;
+    if (!id || !webhook) return;
     setSaving(true);
     try {
       await api.updateWebhook(id, {
@@ -102,8 +91,13 @@ export function WebhookDetailPage() {
         url: editUrl,
         events: editEvents,
         filters: { product: editFilterProduct || undefined, environment: editFilterEnv || undefined },
+        signatureHeader: webhook.targetType === 'azure_devops' ? editSignatureHeader : undefined,
+        gitHubEventType: webhook.targetType === 'github' ? editGitHubEventType : undefined,
+        // Sent only when the operator typed a replacement — omitting it keeps the stored one.
+        secret: editSecret.trim() || undefined,
       });
       setEditing(false);
+      setEditSecret('');
       await fetchData();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save');
@@ -362,9 +356,77 @@ export function WebhookDetailPage() {
                 />
               </div>
             </div>
+
+            {/* Target-specific settings. The target itself is fixed at creation — changing it would
+                invalidate the stored credential with nothing able to detect that. */}
+            {webhook.targetType !== 'generic' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {webhook.targetType === 'azure_devops' && (
+                  <div className="space-y-1.5">
+                    <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                      Signature header
+                    </label>
+                    <input
+                      type="text"
+                      value={editSignatureHeader}
+                      onChange={(e) => setEditSignatureHeader(e.target.value)}
+                      placeholder={DEFAULT_ADO_SIGNATURE_HEADER}
+                      className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                    />
+                  </div>
+                )}
+                {webhook.targetType === 'github' && (
+                  <div className="space-y-1.5">
+                    <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                      Event type <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={editGitHubEventType}
+                      onChange={(e) => setEditGitHubEventType(e.target.value)}
+                      placeholder="defaults to the InfraPilot event name"
+                      className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                    />
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Replace {webhook.targetType === 'github' ? 'token' : 'secret'}{' '}
+                    <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={editSecret}
+                    onChange={(e) => setEditSecret(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="leave blank to keep the current one"
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-[13px]">
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Target</span>
+              <div className="mt-1" style={{ color: 'var(--text-primary)' }}>
+                {targetLabel(webhook.targetType)}
+                {webhook.targetType === 'azure_devops' && webhook.signatureHeader && (
+                  <span className="ml-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                    signed as {webhook.signatureHeader}
+                  </span>
+                )}
+                {webhook.targetType === 'github' && (
+                  <span className="ml-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                    event_type: {webhook.githubEventType || 'the InfraPilot event name'}
+                  </span>
+                )}
+              </div>
+            </div>
             <div>
               <span style={{ color: 'var(--text-muted)' }}>Events</span>
               <div className="flex flex-wrap gap-1 mt-1">
