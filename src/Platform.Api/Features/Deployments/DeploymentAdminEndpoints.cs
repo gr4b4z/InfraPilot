@@ -23,6 +23,26 @@ public static class DeploymentAdminEndpoints
             return Results.Ok(new { groups, rows });
         });
 
+        // ── Log retention (Settings → Maintenance) ───────────────────────────
+        // Captured pipeline output is the largest thing stored per deploy and ages fast. This purges
+        // log rows for deploy events older than the cutoff; the events themselves stay. Preview via
+        // GET, then DELETE — same contract as the duplicates pair above.
+        group.MapGet("/logs", async (DeploymentService service, int? olderThanDays, CancellationToken ct) =>
+        {
+            if (olderThanDays is null or < 1 or > 3650)
+                return Results.BadRequest(new { error = "olderThanDays is required (1–3650)" });
+            var (logs, bytes) = await service.CountOldLogs(olderThanDays.Value, ct);
+            return Results.Ok(new { logs, bytes });
+        });
+
+        group.MapDelete("/logs", async (DeploymentService service, int? olderThanDays, CancellationToken ct) =>
+        {
+            if (olderThanDays is null or < 1 or > 3650)
+                return Results.BadRequest(new { error = "olderThanDays is required (1–3650)" });
+            var (logs, bytes) = await service.RemoveOldLogs(olderThanDays.Value, ct);
+            return Results.Ok(new { logs, bytes });
+        });
+
         return group;
     }
 }

@@ -501,6 +501,130 @@ public class PromotionServiceTests : IDisposable
         return candidate;
     }
 
+    // ---------------------------------------------------------------------
+    // Duplicate-candidate maintenance
+    // ---------------------------------------------------------------------
+
+    private PromotionCandidate SeedCandidateRow(
+        string service, string version, PromotionStatus status,
+        DateTimeOffset createdAt, DateTimeOffset? deployedAt = null, Guid? supersededById = null)
+    {
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = service,
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = version,
+            Status = status,
+            CreatedAt = createdAt,
+            DeployedAt = deployedAt,
+            SupersededById = supersededById,
+        };
+        _db.PromotionCandidates.Add(candidate);
+        return candidate;
+    }
+
+    [Fact]
+    public async Task Dedup_RemovesCopiesKeepsEarliestAndItsChildren()
+    {
+        // The production residue: several same-key Approved rows minted by the pre-D15 create path.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+        var keeper = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Approved, t0);
+        var copy1 = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Approved, t0.AddMinutes(7));
+        var copy2 = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Approved, t0.AddDays(3));
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(), CandidateId = keeper.Id,
+            AuthorEmail = "system", AuthorName = "System", Body = "kept", CreatedAt = t0,
+        });
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(), CandidateId = copy1.Id,
+            AuthorEmail = "system", AuthorName = "System", Body = "removed with its row", CreatedAt = t0,
+        });
+        await _db.SaveChangesAsync();
+
+        var (previewGroups, previewRows) = await _sut.CountDuplicateCandidatesAsync();
+        Assert.Equal(1, previewGroups);
+        Assert.Equal(2, previewRows);
+
+        var (groups, rows) = await _sut.RemoveDuplicateCandidatesAsync();
+        Assert.Equal(1, groups);
+        Assert.Equal(2, rows);
+
+        var remaining = await _db.PromotionCandidates.Select(c => c.Id).ToListAsync();
+        Assert.Equal([keeper.Id], remaining);
+        Assert.Null(await _db.PromotionCandidates.FindAsync(copy2.Id));
+        // The keeper's thread survives; the copies' rows go with them.
+        var comments = await _db.PromotionComments.ToListAsync();
+        Assert.Equal("kept", Assert.Single(comments).Body);
+    }
+
+    [Fact]
+    public async Task Dedup_RepointsSupersededByToTheKeeper()
+    {
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+        var keeper = SeedCandidateRow("api", "v2.0.0", PromotionStatus.Pending, t0);
+        var copy = SeedCandidateRow("api", "v2.0.0", PromotionStatus.Pending, t0.AddMinutes(1));
+        // An older promotion that the COPY superseded — its pointer must not dangle.
+        var older = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Superseded, t0.AddDays(-1),
+            supersededById: copy.Id);
+        await _db.SaveChangesAsync();
+
+        await _sut.RemoveDuplicateCandidatesAsync();
+
+        var reloaded = await _db.PromotionCandidates.FindAsync(older.Id);
+        Assert.Equal(keeper.Id, reloaded!.SupersededById);
+    }
+
+    [Fact]
+    public async Task Dedup_LeavesLegitimateHistoryAlone()
+    {
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+
+        // Deployed, rolled back, re-promoted, deployed again: same key, two distinct landings.
+        SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0, deployedAt: t0.AddHours(1));
+        SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0.AddDays(10), deployedAt: t0.AddDays(10).AddHours(1));
+
+        // Superseded twice, each time by a different newer candidate.
+        var winnerA = SeedCandidateRow("web", "v2.0.0", PromotionStatus.Deployed, t0, deployedAt: t0.AddHours(1));
+        var winnerB = SeedCandidateRow("web", "v3.0.0", PromotionStatus.Pending, t0.AddDays(10));
+        SeedCandidateRow("web", "v1.0.0", PromotionStatus.Superseded, t0, supersededById: winnerA.Id);
+        SeedCandidateRow("web", "v1.0.0", PromotionStatus.Superseded, t0.AddDays(9), supersededById: winnerB.Id);
+
+        // Rejected twice — nothing on the row distinguishes the rejections, so Rejected is excluded.
+        SeedCandidateRow("job", "v1.0.0", PromotionStatus.Rejected, t0);
+        SeedCandidateRow("job", "v1.0.0", PromotionStatus.Rejected, t0.AddDays(5));
+        await _db.SaveChangesAsync();
+
+        var before = await _db.PromotionCandidates.CountAsync();
+        var (groups, rows) = await _sut.RemoveDuplicateCandidatesAsync();
+
+        Assert.Equal(0, groups);
+        Assert.Equal(0, rows);
+        Assert.Equal(before, await _db.PromotionCandidates.CountAsync());
+    }
+
+    [Fact]
+    public async Task Dedup_DeployedCopiesOfTheSameLanding_AreRemoved()
+    {
+        // The post-reconcile shape of the residue: every copy was closed against the same deploy
+        // event, so they share DeployedAt — unlike a genuine re-promote (previous test).
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+        var landing = t0.AddHours(2);
+        var keeper = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0, deployedAt: landing);
+        SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0.AddMinutes(9), deployedAt: landing);
+        await _db.SaveChangesAsync();
+
+        var (groups, rows) = await _sut.RemoveDuplicateCandidatesAsync();
+
+        Assert.Equal(1, groups);
+        Assert.Equal(1, rows);
+        Assert.Equal([keeper.Id], await _db.PromotionCandidates.Select(c => c.Id).ToListAsync());
+    }
+
     [Fact]
     public async Task Create_SecondCandidateSupersedesFirst()
     {
