@@ -85,6 +85,36 @@ function Test-Port {
     }
 }
 
+<#
+    Reads the Vite dev server's URL out of its own log, or '' when it hasn't reported one yet.
+
+    Vite treats its configured port as preferred, not required, and falls through to the next free one,
+    so the port has to be read back rather than assumed. The catch is colour: run from an interactive
+    terminal, Vite emits ANSI escapes *inside* the line —
+
+        ␛[1mLocal␛[22m:   ␛[36mhttp://localhost:␛[1m5173␛[22m/␛[39m
+
+    — which puts an escape sequence between "Local" and its colon, and another between "localhost:" and
+    the port. A pattern written against the plain text matches neither, and the script sat waiting for a
+    server that had been up for two minutes. So the escapes come off before anything is matched. The
+    child is also asked for uncoloured output (see NO_COLOR at the call site), and this strips them
+    anyway: two independent reasons the log might contain them, and only one of them is ours to control.
+#>
+function Get-ViteUrl {
+    param([Parameter(Mandatory)][string]$LogPath)
+
+    if (-not (Test-Path $LogPath)) { return '' }
+    $raw = Get-Content $LogPath -Raw -ErrorAction SilentlyContinue
+    if (-not $raw) { return '' }
+
+    # CSI sequences (colour, bold, cursor moves) — everything Vite's reporter emits.
+    $plain = $raw -replace "`e\[[0-9;?]*[a-zA-Z]", ''
+    if ($plain -match 'Local:\s*(https?://\S+)') {
+        return $Matches[1].TrimEnd('/')
+    }
+    return ''
+}
+
 function Test-ApiHealthy {
     try {
         $response = Invoke-WebRequest -Uri "http://localhost:$ApiPort/health" -TimeoutSec 3 -SkipHttpErrorCheck
