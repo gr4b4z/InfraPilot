@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
@@ -18,8 +18,17 @@ import {
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
+import { CopyViewLinkButton } from '@/components/ui/CopyViewLinkButton';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
+import {
+  buildPromotionParams,
+  hasPromotionParams,
+  parsePromotionParams,
+  PROMOTION_VIEWS,
+  type PromotionParams,
+  type PromotionView,
+} from './promotionFilterParams';
 import { promotionSearchScope } from '@/components/shell/searchScopes';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
@@ -84,27 +93,13 @@ const STATUS_CONFIG: Record<
  *
  * <p>The two narrowings answer different questions and can both be non-empty for the same promotion:
  * `mine` is "can I approve this now", `needs-attention` is "is somebody missing from its work items".</p>
+ *
+ * <p>The type and the list itself live in {@link promotionFilterParams} — they're part of the URL
+ * contract, and the parser has to validate a link's tab against the same list this renders.</p>
  */
-type View =
-  | 'pending'
-  | 'mine'
-  | 'needs-attention'
-  | 'awaiting-deploy'
-  | 'resolved'
-  | 'rejected'
-  | 'all';
+export type { PromotionView };
 
-const VIEWS = [
-  'pending',
-  'mine',
-  'needs-attention',
-  'awaiting-deploy',
-  'resolved',
-  'rejected',
-  'all',
-] as const;
-
-const VIEW_HEADINGS: Record<View, string> = {
+const VIEW_HEADINGS: Record<PromotionView, string> = {
   pending: 'All pending',
   mine: 'Awaiting my approval',
   'needs-attention': 'Needs attention',
@@ -114,7 +109,7 @@ const VIEW_HEADINGS: Record<View, string> = {
   all: 'All promotions',
 };
 
-const EMPTY_STATES: Record<View, { icon: typeof Clock; title: string; body: string }> = {
+const EMPTY_STATES: Record<PromotionView, { icon: typeof Clock; title: string; body: string }> = {
   pending: {
     icon: GitPullRequest,
     title: 'No pending promotions',
@@ -152,7 +147,7 @@ const EMPTY_STATES: Record<View, { icon: typeof Clock; title: string; body: stri
   },
 };
 
-function EmptyState({ view }: { view: View }) {
+function EmptyState({ view }: { view: PromotionView }) {
   const { icon: Icon, title, body } = EMPTY_STATES[view];
   return (
     <div
@@ -176,11 +171,16 @@ function EmptyState({ view }: { view: View }) {
 }
 
 /**
- * A filter value that survives leaving the page. Reads its initial value from the cookie once, and
- * writes on every change — the same shape as `useState`, so call sites are unchanged.
+ * A filter value that survives leaving the page. Writes the cookie on every change — the same shape
+ * as `useState`, so call sites are unchanged.
+ *
+ * The initial value comes from the caller rather than the cookie: on arrival a link's filters take
+ * precedence over the saved ones, and only the page can tell whether the URL is describing a view
+ * (see {@link parsePromotionParams}). The returned setter persists but does not touch the URL — the
+ * page's own handlers do that, since a shareable link is built from every filter at once.
  */
-function usePersistedFilter(prefKey: string): [string, (next: string) => void] {
-  const [value, setValue] = useState(() => readPref(prefKey) ?? '');
+function usePersistedFilter(prefKey: string, initial: string): [string, (next: string) => void] {
+  const [value, setValue] = useState(initial);
 
   const update = useCallback(
     (next: string) => {
@@ -196,17 +196,50 @@ function usePersistedFilter(prefKey: string): [string, (next: string) => void] {
 export function PromotionsPage() {
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
   const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
+  // The URL is the shareable form of this page's state; the cookies are the resumable one. A link
+  // carrying any promotion parameter wins outright on arrival — see promotionFilterParams for why a
+  // shared view must not blend with the recipient's saved filters. Read once, on mount: after that
+  // the state below owns the view and the change handlers write it back to the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initial = useMemo(
+    () => {
+      const savedView = readEnumPref(PROMOTIONS_VIEW_PREF, PROMOTION_VIEWS, 'pending');
+      if (hasPromotionParams(searchParams)) return parsePromotionParams(searchParams, savedView);
+      return {
+        view: savedView,
+        product: readPref(PROMOTIONS_PRODUCT_FILTER_PREF) ?? '',
+        service: readPref(PROMOTIONS_SERVICE_FILTER_PREF) ?? '',
+        targetEnv: readPref(PROMOTIONS_TARGET_ENV_FILTER_PREF) ?? '',
+        reference: readPref(PROMOTIONS_REFERENCE_FILTER_PREF) ?? '',
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
   // The page is pending-by-default: `candidates` holds only Pending promotions.
   // Resolved (Approved/Deploying/Deployed/Rejected) promotions are never fetched
   // until the user explicitly opens the resolved section (lazy-loaded below).
   const [candidates, setCandidates] = useState<PromotionCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   // Cookie-persisted, like the tab above: list → detail → back is the main path through this page,
-  // and filters that don't survive it aren't worth setting. `usePersistedFilter` writes on change.
-  const [productFilter, setProductFilter] = usePersistedFilter(PROMOTIONS_PRODUCT_FILTER_PREF);
-  const [serviceFilter, setServiceFilter] = usePersistedFilter(PROMOTIONS_SERVICE_FILTER_PREF);
-  const [targetEnvFilter, setTargetEnvFilter] = usePersistedFilter(PROMOTIONS_TARGET_ENV_FILTER_PREF);
-  const [referenceFilter, setReferenceFilter] = usePersistedFilter(PROMOTIONS_REFERENCE_FILTER_PREF);
+  // and filters that don't survive it aren't worth setting. `usePersistedFilter` writes on change;
+  // the initial values come from the link if there is one, otherwise from the cookies (see `initial`).
+  const [productFilter, persistProduct] = usePersistedFilter(
+    PROMOTIONS_PRODUCT_FILTER_PREF,
+    initial.product,
+  );
+  const [serviceFilter, persistService] = usePersistedFilter(
+    PROMOTIONS_SERVICE_FILTER_PREF,
+    initial.service,
+  );
+  const [targetEnvFilter, persistTargetEnv] = usePersistedFilter(
+    PROMOTIONS_TARGET_ENV_FILTER_PREF,
+    initial.targetEnv,
+  );
+  const [referenceFilter, persistReference] = usePersistedFilter(
+    PROMOTIONS_REFERENCE_FILTER_PREF,
+    initial.reference,
+  );
   // Filter vocabulary. Fetched once and never re-fetched on a filter change — that is the whole
   // point of it (see api.getPromotionFilterOptions).
   const [filterOptions, setFilterOptions] = useState<{ products: string[]; targetEnvs: string[] }>(
@@ -215,10 +248,8 @@ export function PromotionsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
-  // Cookie-persisted so the tab you work from is the tab you come back to.
-  const [view, setView] = useState<View>(() =>
-    readEnumPref(PROMOTIONS_VIEW_PREF, VIEWS, 'pending'),
-  );
+  // Cookie-persisted so the tab you work from is the tab you come back to — unless a link named one.
+  const [view, setView] = useState<PromotionView>(initial.view);
   // Approved-awaiting-deploy set. Fetched eagerly (alongside Pending) so the tab
   // badge shows a live count without the user having to open the tab first.
   const [awaitingDeploy, setAwaitingDeploy] = useState<PromotionCandidate[]>([]);
@@ -237,9 +268,58 @@ export function PromotionsPage() {
   // it doesn't close over anything on screen.
   useSearchScope(promotionSearchScope(), []);
 
-  const changeView = (next: View) => {
+  /**
+   * Mirrors the view into the query string, so from the first filter change onwards the address bar is
+   * itself a link to what is on screen. Called from the change handlers rather than from an effect
+   * watching the state: a filter change is a user action with a known outcome, and deriving the URL in
+   * an effect would cost a render pass whose only job is to fix up the address bar. (Copy link doesn't
+   * depend on this having run — it builds the URL from the state directly.)
+   *
+   * `replace` rather than `push` — changing a filter is not a navigation, and pushing would make Back
+   * walk out of the page one dropdown (or one keystroke of the service box) at a time.
+   */
+  const currentParams = (next: Partial<PromotionParams> = {}): URLSearchParams =>
+    buildPromotionParams({
+      view,
+      product: productFilter,
+      service: serviceFilter,
+      targetEnv: targetEnvFilter,
+      reference: referenceFilter,
+      ...next,
+    });
+
+  const syncUrl = (next: Partial<PromotionParams>) => {
+    const params = currentParams(next);
+    if (params.toString() === searchParams.toString()) return;
+    setSearchParams(params, { replace: true });
+  };
+
+  // Each handler does the same three things: persist (so the view resumes), set state (so the page
+  // re-renders), and update the URL (so the view can be handed to someone).
+  const changeView = (next: PromotionView) => {
     writePref(PROMOTIONS_VIEW_PREF, next);
     setView(next);
+    syncUrl({ view: next });
+  };
+
+  const handleProductChange = (next: string) => {
+    persistProduct(next);
+    syncUrl({ product: next });
+  };
+
+  const handleServiceChange = (next: string) => {
+    persistService(next);
+    syncUrl({ service: next });
+  };
+
+  const handleTargetEnvChange = (next: string) => {
+    persistTargetEnv(next);
+    syncUrl({ targetEnv: next });
+  };
+
+  const handleReferenceChange = (next: string) => {
+    persistReference(next);
+    syncUrl({ reference: next });
   };
 
   // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
@@ -528,13 +608,20 @@ export function PromotionsPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          Promotions
-        </h1>
-        <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          Review and approve version promotions across environments
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            Promotions
+          </h1>
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            Review and approve version promotions across environments
+          </p>
+        </div>
+        {/* The point of putting the filters in the URL was so this view could be handed to someone,
+            and nobody thinks to look in the address bar for that. Built from the state rather than
+            read back off `location`, so it's exact even before the first filter change has written
+            the parameters there. */}
+        <CopyViewLinkButton params={currentParams()} />
       </div>
 
       {/* Secondary filters */}
@@ -543,7 +630,7 @@ export function PromotionsPage() {
       >
         <select
           value={productFilter}
-          onChange={(e) => setProductFilter(e.target.value)}
+          onChange={(e) => handleProductChange(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px]"
           style={{
             borderColor: 'var(--border-color)',
@@ -562,7 +649,7 @@ export function PromotionsPage() {
           type="text"
           placeholder="Service search..."
           value={serviceFilter}
-          onChange={(e) => setServiceFilter(e.target.value)}
+          onChange={(e) => handleServiceChange(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px]"
           style={{
             borderColor: 'var(--border-color)',
@@ -574,7 +661,7 @@ export function PromotionsPage() {
             so an active env filter is visible without reading the dropdown. */}
         <select
           value={targetEnvFilter}
-          onChange={(e) => setTargetEnvFilter(e.target.value)}
+          onChange={(e) => handleTargetEnvChange(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px] font-medium"
           style={targetEnvSelectStyle}
         >
@@ -589,7 +676,7 @@ export function PromotionsPage() {
           type="text"
           placeholder="Reference (PR, work item, commit...)"
           value={referenceFilter}
-          onChange={(e) => setReferenceFilter(e.target.value)}
+          onChange={(e) => handleReferenceChange(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px] sm:min-w-[240px]"
           style={{
             borderColor: 'var(--border-color)',
