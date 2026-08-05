@@ -273,6 +273,11 @@ public class PromotionService
             await DispatchWebhookAsync(candidate, "promotion.approved", ct);
         }
 
+        // Last: the version may already be live in the target. Ingest can only close a promotion that
+        // exists when the deploy lands, so without this a promotion created after its own deploy has
+        // nothing left to close it. Runs after dispatch so the trail reads in the order it happened.
+        await TryCloseIfAlreadyDeployedAsync(candidate, ct);
+
         return candidate;
     }
 
@@ -1768,8 +1773,15 @@ public class PromotionService
     /// or landed out-of-band while the promotion was still open. Defaults to a plain statement of
     /// the transition.
     /// </param>
+    /// <param name="deployedAt">
+    /// When the version actually went live. Pass the deploy event's own timestamp whenever the caller
+    /// has it: a promotion closed late — by the reconcile pass, or by a deploy that landed before the
+    /// promotion existed — would otherwise be stamped with the moment we noticed rather than the moment
+    /// it shipped, and the list would report a deploy date weeks after the fact. Defaults to now for
+    /// callers with no better answer.
+    /// </param>
     public async Task<PromotionCandidate> MarkDeployedAsync(
-        Guid candidateId, string? note = null, CancellationToken ct = default)
+        Guid candidateId, string? note = null, DateTimeOffset? deployedAt = null, CancellationToken ct = default)
     {
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
@@ -1780,7 +1792,7 @@ public class PromotionService
 
         var previous = candidate.Status;
         candidate.Status = PromotionStatus.Deployed;
-        candidate.DeployedAt = DateTimeOffset.UtcNow;
+        candidate.DeployedAt = deployedAt ?? DateTimeOffset.UtcNow;
         StageSystemComment(candidate.Id, note
             ?? $"Deployed to {candidate.TargetEnv} — {candidate.Service} {candidate.Version} is live.");
         await _db.SaveChangesAsync(ct);
@@ -1797,6 +1809,271 @@ public class PromotionService
             new { previousStatus = previous.ToString() });
 
         return candidate;
+    }
+
+    // ---------------------------------------------------------------------
+    // Completion reconciliation (not ingest-driven)
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Closes a candidate whose version is <b>already</b> live in its target environment.
+    ///
+    /// <para>Completion used to be reachable only from deploy-event ingest
+    /// (<c>PromotionIngestHook.MatchCompletionAsync</c>), which answers "did this deploy close a
+    /// promotion?" — and can therefore only ever fire while the promotion already exists. A promotion
+    /// created <i>after</i> its version had landed had no future event left to match and stayed open
+    /// forever. This is the other direction of the same question, asked of a candidate rather than of
+    /// an event, so the two orderings converge on the same state.</para>
+    ///
+    /// <para>The create-time guard in <see cref="CreateExternalCandidateAsync"/> does not cover this:
+    /// it compares the target's <i>current</i> version only — deliberately, so that
+    /// rollback-then-re-promote still works — and so lets through a version that was deployed earlier
+    /// and has since been replaced.</para>
+    ///
+    /// <para>Returns true when the candidate was closed. Requires a <b>succeeded</b> event: a failed
+    /// attempt did not put the version live, and the promotion is right to keep waiting.</para>
+    ///
+    /// <para><b>The rollback case is why this is not simply "was it ever deployed".</b> Target ran v2,
+    /// was rolled back to v1, and v2 is being promoted again: v2 <i>is</i> in the target's history, but
+    /// it is not live and the promotion is a genuine intent to put it back. What separates that from a
+    /// promotion the environment has simply moved past is the direction of travel — a rolled-back target
+    /// is on an <i>older</i> version than the promotion carries, an advanced one on a <i>newer</i>. When
+    /// the two cannot be ordered confidently the candidate is left open, that being the direction which
+    /// cannot invent a deployment that did not happen.</para>
+    /// </summary>
+    public async Task<bool> TryCloseIfAlreadyDeployedAsync(
+        PromotionCandidate candidate, CancellationToken ct = default)
+    {
+        var assessment = await AssessAgainstDeployHistoryAsync(candidate, ct);
+        if (assessment.Verdict != CompletionVerdict.AlreadyDeployed) return false;
+
+        var landedAt = assessment.At!.Value;
+
+        // Say which way round it happened — "why is this closed with a deploy date before it was
+        // created?" is the first question whoever opens it will ask.
+        var note = landedAt < candidate.CreatedAt
+            ? $"Closed automatically — {candidate.Service} {candidate.Version} was already deployed to "
+              + $"{candidate.TargetEnv} on {landedAt:u}, before this promotion was created, so no "
+              + "further deploy was ever going to arrive to close it."
+            : $"Closed automatically — {candidate.Service} {candidate.Version} is live in "
+              + $"{candidate.TargetEnv} as of {landedAt:u}.";
+
+        await MarkDeployedAsync(candidate.Id, note, landedAt, ct);
+        return true;
+    }
+
+    private enum CompletionVerdict
+    {
+        /// <summary>Nothing in deploy history says anything about this candidate. Leave it open.</summary>
+        None,
+
+        /// <summary>Its version has a succeeded landing in the target and the target has not gone back.</summary>
+        AlreadyDeployed,
+
+        /// <summary>Its version never landed, and the target has since moved to a newer one.</summary>
+        Overtaken,
+    }
+
+    private record CompletionAssessment(CompletionVerdict Verdict, DateTimeOffset? At, string? OtherVersion);
+
+    /// <summary>
+    /// Reads a candidate's fate off the target environment's deploy history. The single place that
+    /// decision is made, so the create path, the ingest path and the reconcile pass cannot drift into
+    /// disagreeing about what a given history means.
+    /// </summary>
+    private async Task<CompletionAssessment> AssessAgainstDeployHistoryAsync(
+        PromotionCandidate candidate, CancellationToken ct)
+    {
+        var none = new CompletionAssessment(CompletionVerdict.None, null, null);
+        if (candidate.Status is PromotionStatus.Deployed or PromotionStatus.Superseded) return none;
+
+        // Earliest succeeded landing of this exact version, so a recorded deploy date is when the
+        // version first went live rather than whichever redeploy happens to be most recent.
+        var landed = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == candidate.Product
+                     && e.Service == candidate.Service
+                     && e.Environment == candidate.TargetEnv
+                     && e.Version == candidate.Version
+                     && e.Status == "succeeded")
+            .OrderBy(e => e.DeployedAt)
+            .Select(e => new { e.DeployedAt })
+            .FirstOrDefaultAsync(ct);
+
+        // What the target is running now, and since when.
+        var current = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == candidate.Product
+                     && e.Service == candidate.Service
+                     && e.Environment == candidate.TargetEnv
+                     && e.Status == "succeeded")
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new { e.Version, e.DeployedAt })
+            .FirstOrDefaultAsync(ct);
+
+        if (landed is not null)
+        {
+            var stillLive = current?.Version == candidate.Version;
+            // Moved forward ⇒ the version shipped and was later replaced, which is the ordinary end of a
+            // promotion. Moved back ⇒ a rollback, and this promotion is a live intent to redeploy.
+            var movedForward = !stillLive
+                && PromotionVersionOrder.IsNewerThan(current?.Version, candidate.Version);
+            return stillLive || movedForward
+                ? new CompletionAssessment(CompletionVerdict.AlreadyDeployed, landed.DeployedAt, null)
+                : none;
+        }
+
+        // Never landed. If the target has since moved to a newer version, this promotion was overtaken —
+        // whatever it was waiting for is not going to happen.
+        //
+        // The landing must postdate the candidate: when the target was already ahead at creation time,
+        // somebody asked for an older version deliberately, and that is not ours to retire.
+        if (current is not null
+            && current.DeployedAt >= candidate.CreatedAt
+            && PromotionVersionOrder.IsNewerThan(current.Version, candidate.Version))
+        {
+            return new CompletionAssessment(CompletionVerdict.Overtaken, current.DeployedAt, current.Version);
+        }
+
+        return none;
+    }
+
+    /// <summary>
+    /// Supersedes still-open promotions that a later deploy has overtaken: the target environment has
+    /// moved on to a <b>newer</b> version, so the one they describe is never going out.
+    ///
+    /// <para>Distinct from <see cref="SupersedeStalePendingAsync"/>, which fires when a newer
+    /// <i>candidate</i> is created and only touches Pending ones. Approved candidates were left
+    /// untouched by that rule, which is why they accumulate in "awaiting deploy" indefinitely once the
+    /// environment has passed them by.</para>
+    ///
+    /// <para>Two deliberate limits. Only versions that <see cref="PromotionVersionOrder"/> can order
+    /// confidently are considered, so an unrecognised versioning scheme leaves promotions alone rather
+    /// than closing them on a guess. And <c>Deploying</c> is excluded: a dispatch is in flight for
+    /// those, and the deploy that lands is the one entitled to decide their outcome.</para>
+    ///
+    /// <para><c>SupersededById</c> stays null — no candidate won here, an out-of-band deploy did — so
+    /// the comment carries the explanation instead.</para>
+    /// </summary>
+    public async Task<int> SupersedeOvertakenByDeployAsync(
+        string product, string service, string environment, string landedVersion,
+        DateTimeOffset landedAt, CancellationToken ct = default)
+    {
+        var open = await _db.PromotionCandidates
+            .Where(c => c.Product == product
+                     && c.Service == service
+                     && c.TargetEnv == environment
+                     && c.Version != landedVersion
+                     && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved))
+            .ToListAsync(ct);
+
+        var superseded = 0;
+        foreach (var candidate in open)
+        {
+            // Only supersede what this deploy actually overtook. A promotion created after the deploy
+            // landed is describing a later intention, whatever its version number says.
+            if (candidate.CreatedAt > landedAt) continue;
+            if (!PromotionVersionOrder.IsNewerThan(landedVersion, candidate.Version)) continue;
+
+            // Overtaken is not the same as never shipped. If this candidate's own version did land in
+            // the target at some point, it is Deployed — being replaced afterwards is the normal end of
+            // a promotion's life, not a supersede. Ordinarily ingest closed it at the time; this covers
+            // the case where that never happened.
+            if (await TryCloseIfAlreadyDeployedAsync(candidate, ct)) continue;
+
+            candidate.Status = PromotionStatus.Superseded;
+            StageSystemComment(candidate.Id,
+                $"Superseded — {service} {landedVersion} was deployed to {environment} on "
+                + $"{landedAt:u}, a newer version than the {candidate.Version} this promotion carries. "
+                + "It is no longer going out.");
+            superseded++;
+
+            _logger.LogInformation(
+                "Candidate {Id} → Superseded: {Environment} moved on to {LandedVersion} (was carrying {Version})",
+                candidate.Id, environment, landedVersion, candidate.Version);
+        }
+
+        if (superseded > 0) await _db.SaveChangesAsync(ct);
+        return superseded;
+    }
+
+    /// <summary>
+    /// Sweeps every open candidate against the target environment's deploy history and settles the ones
+    /// history has already decided: closes those whose version shipped, supersedes those a newer version
+    /// overtook. The repair pass for promotions stranded while completion lived only on the ingest path.
+    ///
+    /// <para>Evidence-driven by construction — see <see cref="AssessAgainstDeployHistoryAsync"/>. A
+    /// promotion whose version never reached the target, or only failed there, is left exactly as it is;
+    /// so is one whose target rolled back, and one carrying a version this codebase cannot order.</para>
+    ///
+    /// <para><paramref name="dryRun"/> reports what it would do without writing anything, which is how
+    /// this should be run the first time.</para>
+    /// </summary>
+    public async Task<ReconcileCompletionsResult> ReconcileCompletionsAsync(
+        string? product = null, string? targetEnv = null, bool dryRun = false, CancellationToken ct = default)
+    {
+        var query = _db.PromotionCandidates
+            .Where(c => c.Status == PromotionStatus.Pending
+                     || c.Status == PromotionStatus.Approved
+                     || c.Status == PromotionStatus.Deploying);
+
+        if (!string.IsNullOrWhiteSpace(product)) query = query.Where(c => c.Product == product.Trim());
+        if (!string.IsNullOrWhiteSpace(targetEnv)) query = query.Where(c => c.TargetEnv == targetEnv.Trim());
+
+        var open = await query.OrderBy(c => c.CreatedAt).ToListAsync(ct);
+        var settled = new List<ReconciledCandidate>();
+        var closed = 0;
+        var superseded = 0;
+
+        foreach (var candidate in open)
+        {
+            var assessment = await AssessAgainstDeployHistoryAsync(candidate, ct);
+            if (assessment.Verdict == CompletionVerdict.None) continue;
+
+            var previous = candidate.Status;
+            var action = assessment.Verdict == CompletionVerdict.AlreadyDeployed ? "closed" : "superseded";
+
+            if (!dryRun)
+            {
+                try
+                {
+                    if (assessment.Verdict == CompletionVerdict.AlreadyDeployed)
+                    {
+                        await TryCloseIfAlreadyDeployedAsync(candidate, ct);
+                    }
+                    else
+                    {
+                        candidate.Status = PromotionStatus.Superseded;
+                        StageSystemComment(candidate.Id,
+                            $"Superseded — {candidate.TargetEnv} moved on to {candidate.Service} "
+                            + $"{assessment.OtherVersion} on {assessment.At:u} without this promotion's "
+                            + $"{candidate.Version} ever being deployed there. It is not going out.");
+                        await _db.SaveChangesAsync(ct);
+
+                        _logger.LogInformation(
+                            "Candidate {Id} → Superseded by reconcile: {TargetEnv} is on {Other}, not {Version}",
+                            candidate.Id, candidate.TargetEnv, assessment.OtherVersion, candidate.Version);
+                    }
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Raced with an ingest that settled it first. Nothing left to repair.
+                    _logger.LogWarning(ex, "Reconcile skipped candidate {Id}", candidate.Id);
+                    continue;
+                }
+            }
+
+            if (assessment.Verdict == CompletionVerdict.AlreadyDeployed) closed++; else superseded++;
+            settled.Add(new ReconciledCandidate(
+                candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                candidate.TargetEnv, candidate.Version, previous.ToString(), action,
+                assessment.At!.Value, assessment.OtherVersion));
+        }
+
+        _logger.LogInformation(
+            "Reconcile examined {Examined} open candidate(s): {Closed} already deployed, "
+            + "{Superseded} overtaken, {Untouched} left open (dryRun={DryRun})",
+            open.Count, closed, superseded, open.Count - closed - superseded, dryRun);
+
+        return new ReconcileCompletionsResult(open.Count, closed, superseded, dryRun, settled);
     }
 
     // ---------------------------------------------------------------------
@@ -2296,6 +2573,34 @@ public record RequirementProgress(
 /// recorded on a <see cref="PromotionApproval"/> and the choice an approver can pin when approving.
 /// </summary>
 public record RequirementRef(string StepName, string RequirementName);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ReconcileCompletionsAsync"/>. <c>Examined</c> counts every
+/// open candidate looked at; the ones left untouched — examined minus closed minus superseded — are
+/// promotions that are correctly still waiting, and that gap is as much the point of the report as the
+/// repairs are.
+/// </summary>
+public record ReconcileCompletionsResult(
+    int Examined,
+    int Closed,
+    int Superseded,
+    bool DryRun,
+    IReadOnlyList<ReconciledCandidate> Candidates);
+
+/// <param name="Action">"closed" (its version shipped) or "superseded" (a newer version overtook it).</param>
+/// <param name="At">When the deciding deploy landed.</param>
+/// <param name="LandedVersion">For a supersede, the newer version now in the target. Null for a close.</param>
+public record ReconciledCandidate(
+    Guid Id,
+    string Product,
+    string Service,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    string PreviousStatus,
+    string Action,
+    DateTimeOffset At,
+    string? LandedVersion);
 
 /// <summary>
 /// Thrown by <see cref="PromotionService.ApproveAsync"/> when the caller did not specify which

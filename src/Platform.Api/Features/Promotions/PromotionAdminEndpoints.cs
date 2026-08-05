@@ -37,6 +37,47 @@ public static class PromotionAdminEndpoints
             }
         });
 
+        // ── Completion reconciliation ───────────────────────────────────────
+        // Settles open promotions that the target environment's deploy history has already decided:
+        // closes the ones whose version shipped, supersedes the ones a newer version overtook.
+        //
+        // The repair pass for promotions stranded while completion lived only on the deploy-ingest path.
+        // A promotion created after its own version had landed had no future event left to match it, and
+        // an approved one the environment then passed by had nothing to retire it — both sat in
+        // "approved, awaiting deploy" permanently.
+        //
+        // Evidence-driven throughout (see PromotionService.AssessAgainstDeployHistoryAsync): promotions
+        // whose version never reached the target, or only failed there, or whose target rolled back, are
+        // left exactly as they are. `dryRun=true` reports without writing — run it that way first.
+        group.MapPost("/candidates/reconcile-completions", async (
+            PromotionService service, ReconcileCompletionsRequest? request, CancellationToken ct) =>
+        {
+            var result = await service.ReconcileCompletionsAsync(
+                request?.Product, request?.TargetEnv, request?.DryRun ?? false, ct);
+
+            return Results.Ok(new
+            {
+                examined = result.Examined,
+                closed = result.Closed,
+                superseded = result.Superseded,
+                leftOpen = result.Examined - result.Closed - result.Superseded,
+                dryRun = result.DryRun,
+                candidates = result.Candidates.Select(c => new
+                {
+                    c.Id,
+                    c.Product,
+                    c.Service,
+                    c.SourceEnv,
+                    c.TargetEnv,
+                    c.Version,
+                    c.PreviousStatus,
+                    c.Action,
+                    c.At,
+                    c.LandedVersion,
+                }),
+            });
+        });
+
         // ── Policies ────────────────────────────────────────────────────────
 
         group.MapGet("/policies", async (PlatformDbContext db) =>
@@ -332,3 +373,9 @@ public record UpsertRequirementRequest(
 
 /// <summary>Body for the admin bypass endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
 public record BypassPromotionRequest(string? Reason);
+
+/// <summary>
+/// Body for the reconcile endpoint. All optional: omit <c>Product</c> / <c>TargetEnv</c> to sweep
+/// everything, and pass <c>DryRun</c> to see what would close without writing.
+/// </summary>
+public record ReconcileCompletionsRequest(string? Product, string? TargetEnv, bool? DryRun);
