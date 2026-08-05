@@ -544,45 +544,40 @@ class ApiClient {
   // The current user's pending work items across all (product, targetEnv) pairs.
   // Powers the /me/work-items queue page.
   //
-  // Optional `role` and `assignee` narrow the list (display only — server-side authorisation
-  // is unchanged). The matrix:
-  //   - both null            → full authorized list (no narrowing).
-  //   - role only            → at least one participant in that role.
-  //   - assignee=email       → that email holds a role in the assignee set (or the role-filter
-  //                            when set).
-  //   - assignee=unassigned  → nobody in the effective role set. With `role` set this is the
-  //                            "which items are missing a <role>?" query.
-  // `role` accepts any role — configured or not — and is matched against the work item's own
-  // participants, so it isn't limited to the roles that count as an assignment by default.
-  // Response also carries the (email, role) → count rollup, the configured role vocabulary, and
-  // the unrecognised roles seen on the queue, so the page can populate its dropdowns in one call.
+  // Optional `assignee` narrows the list (display only — server-side authorisation is
+  // unchanged):
+  //   - null                 → full authorized list (no narrowing).
+  //   - assignee=email       → that email holds a role on the work item (any role, or the
+  //                            policy-required roles when roleRequirement=assigned — the queue's
+  //                            person filter).
+  //   - assignee=unassigned  → nobody in any role that counts as an assignment.
+  // Response also carries the (email, required-role) → count rollup, so the page can populate
+  // its person dropdown in the same call.
   getMyPendingWorkItems(args?: {
-    role?: string;
     assignee?: string;
     /**
      * Status mode — "pending" (default, the inbox awaiting decision) or "decided"
-     * (combined approved + rejected history). On "decided" the `role` filter is ignored and
-     * `assignee` narrows by the decider (WorkItemApproval.ApproverEmail) rather than by
-     * work-item participant; pass `since` to narrow the time window (omit for all time).
+     * (combined approved + rejected history). On "decided" `assignee` narrows by the decider
+     * (WorkItemApproval.ApproverEmail) rather than by work-item participant; pass `since` to
+     * narrow the time window (omit for all time).
      */
     status?: 'pending' | 'decided';
     /** ISO timestamp lower bound on the decision time. Only used when status === 'decided'. */
     since?: string;
     /**
-     * Narrows by the promotion policy's work-item role requirement rather than by a role the caller
-     * picked — the roles that make somebody answerable for a work item:
+     * Narrows by the promotion policy's work-item role requirement — the roles that make somebody
+     * answerable for a work item:
      *   - `assigned` → `assignee` must hold a role the item's own policy REQUIRES. Items whose policy
-     *                  requires no role never match. This is what the "Assigned to me" tab means.
+     *                  requires no role never match. This is what the "Assigned to me" tab and the
+     *                  queue's person filter mean.
      *   - `missing`  → items where at least one policy-required role has nobody in it ("Not assigned").
      * Ignored on the "decided" view.
      */
     roleRequirement?: 'assigned' | 'missing';
   }) {
     const params = new URLSearchParams();
-    const role = args?.role?.trim();
     const assignee = args?.assignee?.trim();
     const status = args?.status;
-    if (role) params.set('role', role);
     if (assignee) params.set('assignee', assignee);
     if (status && status !== 'pending') params.set('status', status);
     if (args?.since) params.set('since', args.since);
@@ -1175,9 +1170,10 @@ export interface PendingTicket {
 
 /**
  * One row of the (email, role) assignee summary returned alongside the queue. Counts come from
- * the user's authorized list <i>before</i> the role/person filter is applied, so the queue page
- * can render every choice the user could narrow to. Aggregated server-side per (email, role)
- * pair — a single person on multiple roles produces multiple rows.
+ * the user's authorized list <i>before</i> the person filter is applied, so the queue page can
+ * render every choice the user could narrow to. On the pending path the role is always one the
+ * item's policy requires — the only assignments the person filter matches. Aggregated
+ * server-side per (email, role) pair — a single person on multiple roles produces multiple rows.
  */
 export interface PendingAssignee {
   email: string;
@@ -1189,20 +1185,12 @@ export interface PendingAssignee {
 /** Full response shape for `GET /api/work-items/me/pending`. */
 export interface MyPendingWorkItemsResponse {
   tickets: PendingTicket[];
-  /** (email, role) rollup of the unfiltered authorized list. Sorted by count desc, displayName asc. */
+  /**
+   * (email, required-role) rollup of the unfiltered authorized list — the person dropdown's
+   * contents. Sorted by count desc, displayName asc. On the "decided" view this is the decider
+   * rollup instead (role is empty there).
+   */
   assignees: PendingAssignee[];
-  /**
-   * The configured participant roles (Settings → Participant Roles), in configured order — the
-   * role dropdown's contents. Not derived from the queue: a role nobody is in is exactly the one
-   * you filter on to find the work items missing it.
-   */
-  roles: string[];
-  /**
-   * Canonical roles present on the queue's work items that aren't configured. Ingest accepts
-   * whatever a producer sends, so these exist; the queue offers them as filter choices and flags
-   * them as unrecognised. Empty on the "decided" view.
-   */
-  unknownRoles: string[];
 }
 
 export interface PromotionParticipant {

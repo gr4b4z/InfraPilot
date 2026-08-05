@@ -46,7 +46,7 @@ interface MyTasksState {
  */
 let inFlight: Promise<void> | null = null;
 
-const EMPTY_QUEUE = { tickets: [] as PendingTicket[], assignees: [], roles: [], unknownRoles: [] };
+const EMPTY_QUEUE = { tickets: [] as PendingTicket[], assignees: [] };
 
 export const useMyTasksStore = create<MyTasksState>((set) => ({
   promotions: [],

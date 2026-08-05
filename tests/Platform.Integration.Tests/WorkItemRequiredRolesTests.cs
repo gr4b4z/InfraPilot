@@ -171,10 +171,57 @@ public class WorkItemRequiredRolesTests
         Assert.Contains("AOWNER-1", mine);
         Assert.DoesNotContain("AREVIEWER-1", mine);
 
-        // Without the narrowing, being named at all is enough — the pre-existing behaviour the
-        // "Pending" tab still relies on.
+        // Without the narrowing, being named at all is enough — the plain `assignee` behaviour,
+        // still part of the API even though the queue page always couples a person pick with
+        // roleRequirement=assigned now.
         var anyRole = await GetPendingAsync(assignee: "admin@localhost", roleRequirement: null);
         Assert.Contains("AREVIEWER-1", anyRole);
+    }
+
+    [Fact]
+    public async Task RoleRequirementMissing_ParticipantWithoutEmail_DoesNotFillTheRole()
+    {
+        // A required role with a name but nobody behind it is an empty slot, not an assignment —
+        // otherwise "which items need someone?" would skip the items whose owner is a label with
+        // no address. Same bar the assignee filter applies.
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+
+        await CreatePromotionAsync(product, "svc-nameless", "NOEMAIL-1",
+            new[] { new { role = QaOwnerRole, displayName = "Unknown Owner", email = (string?)null } });
+
+        Assert.Contains("NOEMAIL-1", await GetPendingAsync(roleRequirement: "missing"));
+    }
+
+    [Fact]
+    public async Task AssigneeRollup_OffersOnlyRequiredRoleHolders()
+    {
+        // The rollup backs the queue's person dropdown, whose picks narrow with
+        // roleRequirement=assigned — so a person named only in a non-required role would be a
+        // choice that filters to nothing, and must not be offered.
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+
+        var scope = $"rollup-{Guid.NewGuid():N}"[..14];
+        var ownerEmail = $"owner-{scope}@example.com";
+        var reviewerEmail = $"reviewer-{scope}@example.com";
+
+        await CreatePromotionAsync(product, "svc-rollup", "ROLLUP-1", new object[]
+        {
+            new { role = QaOwnerRole, displayName = "Ola", email = ownerEmail },
+            new { role = "reviewer", displayName = "Rita", email = reviewerEmail },
+        });
+
+        var resp = await _adminClient.GetAsync("/api/work-items/me/pending");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var assignees = (await Deserialize(resp)).GetProperty("assignees").EnumerateArray()
+            .Select(a => (
+                Email: a.GetProperty("email").GetString()!,
+                Role: a.GetProperty("role").GetString()!))
+            .ToList();
+
+        Assert.Contains(assignees, a => a.Email == ownerEmail && a.Role == QaOwnerRole);
+        Assert.DoesNotContain(assignees, a => a.Email == reviewerEmail);
     }
 
     [Fact]
