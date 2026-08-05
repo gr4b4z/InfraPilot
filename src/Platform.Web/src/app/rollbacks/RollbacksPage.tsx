@@ -20,6 +20,7 @@ import {
   Ban,
 } from 'lucide-react';
 import { CreateRollbackPanel } from './CreateRollbackPanel';
+import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
@@ -74,6 +75,28 @@ export function RollbacksPage() {
       service: searchParams.get('service') ?? '',
     }),
     [searchParams],
+  );
+
+  // `?new=1` is the one piece of state here that's genuinely in the URL — it's how a deploy event
+  // deep-links into the create panel, and a link that opens a form should say so. The list's own
+  // filters are local state, reported because they're what the tab is showing.
+  useDocumentTitle(
+    showCreate
+      ? [
+          'New rollback',
+          scopeTitle({
+            product: prefill.product,
+            service: prefill.service,
+            targetEnv: prefill.targetEnv,
+          }),
+          'Rollbacks',
+        ]
+      : [
+          // The empty status is the "All" option — nothing to report.
+          statusFilter ? STATUS_OPTIONS.find((o) => o.value === statusFilter)?.label : null,
+          scopeTitle({ product: productFilter, targetEnv: targetEnvFilter }),
+          'Rollbacks',
+        ],
   );
 
   const fetchData = () => {

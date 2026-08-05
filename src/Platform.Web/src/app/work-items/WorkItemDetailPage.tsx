@@ -10,6 +10,7 @@ import type {
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { decisionStyle, providerLabel, referringCandidateId, shortHash } from '@/lib/workItem';
+import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { Linkified } from '@/lib/linkify';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { refreshMyTasks } from '@/stores/myTasksStore';
@@ -91,6 +92,16 @@ export function WorkItemDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Above the early returns, so the hook order is stable. The (product, targetEnv) pair is in the
+  // title for the same reason it's in the URL: it's part of this page's identity, and the same work
+  // item key is a different page for a different promotion edge. The key alone is enough while the
+  // detail loads — it's the one thing a link always carries.
+  useDocumentTitle([
+    detail?.title ? `${workItemKey} — ${detail.title}` : workItemKey,
+    scopeTitle({ product, targetEnv }),
+    'Work item',
+  ]);
 
   if (loading) {
     return (

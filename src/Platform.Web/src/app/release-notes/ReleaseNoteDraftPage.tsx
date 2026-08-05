@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Loader2, RotateCcw, Send } from 'lucide-react';
 import { marked } from 'marked';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -22,6 +23,10 @@ export function ReleaseNoteDraftPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+
+  // The window is in the URL, so this draft is bookmarkable and re-openable — the environment names
+  // which draft it is. Above the loading early-return, so the hook order holds.
+  useDocumentTitle(['New release note', product, environment]);
 
   useEffect(() => {
     let cancelled = false;
