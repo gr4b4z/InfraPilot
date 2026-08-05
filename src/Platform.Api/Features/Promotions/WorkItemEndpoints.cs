@@ -21,33 +21,29 @@ public static class WorkItemEndpoints
         // Inbox: tickets the current user could sign off right now. Mounted under the work-items
         // group at /me/pending — see class summary for the route choice.
         //
-        // Optional `assignee` and `role` query parameters narrow the list (display only —
-        // authorisation is unchanged). The matrix:
-        //  - both null            → full authorized list (no narrowing).
-        //  - role only            → candidates with at least one participant in that role.
-        //  - assignee=email       → candidates where that email holds a role in the assignee
-        //                           set (or the role-filter when set).
-        //  - assignee=unassigned  → candidates with no participant in the effective role set
-        //                           ("unassigned" is case-insensitive).
+        // Optional `assignee` narrows the list (display only — authorisation is unchanged):
+        //  - null                 → full authorized list (no narrowing).
+        //  - assignee=email       → candidates where that email holds a role on the work item
+        //                           (any role, or the policy-required roles when
+        //                           roleRequirement=assigned — the queue's person filter).
+        //  - assignee=unassigned  → candidates with no participant in any role that counts as an
+        //                           assignment ("unassigned" is case-insensitive).
         // Response carries the rendered tickets plus an `assignees` rollup of (email, role) →
-        // count built from the authorized list <i>before</i> role/person narrowing, the configured
-        // `roles` vocabulary, and `unknownRoles` (roles seen on these items that aren't configured)
-        // — all three feed the front-end's dropdowns without a second call.
+        // count built from the authorized list <i>before</i> person narrowing — the person
+        // dropdown's contents, limited to people holding a policy-required role (the only picks
+        // the queue's person filter can match).
         //
-        // `role` accepts any role, configured or not. Combined with `assignee=unassigned` it answers
-        // "which items have nobody in this role?", which is the point of a role that may be empty.
-        //
-        // `roleRequirement` narrows by the promotion policy's work-item role requirement instead of by
-        // a role the caller picked (see WorkItemRoleRequirements). Two values, one per queue tab:
+        // `roleRequirement` narrows by the promotion policy's work-item role requirement — the roles
+        // that make somebody answerable for an item (see WorkItemRoleRequirements). Two values:
         //  - "assigned" → the person must hold a role the item's own policy REQUIRES. This is what
-        //                 "Assigned to me" means now: being named as, say, a ticket's reporter isn't
-        //                 being made answerable for it.
+        //                 the "Assigned to me" tab and the queue's person filter mean: being named
+        //                 as, say, a ticket's reporter isn't being made answerable for it.
         //  - "missing"  → items where at least one policy-required role has nobody in it ("Not
         //                 assigned"). Independent of `assignee`.
-        // Anything else (including omitted) leaves the existing person/role behaviour untouched.
+        // Anything else (including omitted) leaves the person behaviour untouched.
         group.MapGet("/me/pending", async (
             WorkItemApprovalService svc,
-            string? assignee, string? role, string? status, string? since, string? roleRequirement,
+            string? assignee, string? status, string? since, string? roleRequirement,
             CancellationToken ct) =>
         {
             // status: "pending" (default) | "decided" (combined approved + rejected for the user).
@@ -73,14 +69,12 @@ public static class WorkItemEndpoints
                         : assignee,
                     ct),
                 _ => await svc.GetPendingForCurrentUserAsync(
-                    ct, assignee, role, ParseRoleRequirement(roleRequirement)),
+                    ct, assignee, ParseRoleRequirement(roleRequirement)),
             };
             return Results.Ok(new
             {
                 tickets = queue.Tickets,
                 assignees = queue.Assignees,
-                roles = queue.Roles,
-                unknownRoles = queue.UnknownRoles,
             });
         });
 

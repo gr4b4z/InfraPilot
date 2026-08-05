@@ -39,7 +39,6 @@ public class WorkItemApprovalService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly PromotionService _promotion;
-    private readonly ParticipantRoleCatalog _roleCatalog;
     private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<WorkItemApprovalService> _logger;
 
@@ -66,7 +65,6 @@ public class WorkItemApprovalService
         IAuditLogger audit,
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
-        ParticipantRoleCatalog roleCatalog,
         UserPreferencesService userPrefs,
         ILogger<WorkItemApprovalService> logger)
     {
@@ -76,7 +74,6 @@ public class WorkItemApprovalService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _promotion = promotion;
-        _roleCatalog = roleCatalog;
         _userPrefs = userPrefs;
         _logger = logger;
     }
@@ -458,19 +455,15 @@ public class WorkItemApprovalService
     /// row for a given ticket, because Pending is iterated first and rows dedupe on the triple.</para>
     ///
     /// <para>Returns the rendered ticket list along with the (email, role) → count assignee
-    /// summary built from the authorized list <i>before</i> the role/person filter is applied.
+    /// summary built from the authorized list <i>before</i> the person filter is applied.
     /// The summary feeds the front-end's person dropdown so the picker only ever surfaces choices
     /// the user can actually narrow to. Filtering first then collecting would hide every
-    /// alternative — pre-filter is the correct anchor.</para>
+    /// alternative — pre-filter is the correct anchor. It counts only people holding a
+    /// <b>policy-required</b> role on the item: the queue's person filter matches against those
+    /// roles (<c>roleRequirement=assigned</c>), so anyone else would be a pick that returns
+    /// nothing.</para>
     ///
-    /// <para>The role dropdown is not built from the queue: it lists the configured participant
-    /// roles (<see cref="ParticipantRoleCatalog"/>) so an operator can always ask "which items have
-    /// no <c>qa-owner</c>?" — a question whose answer is precisely the items where that role never
-    /// appears. Alongside it, <see cref="PendingQueueResult.UnknownRoles"/> reports the roles
-    /// actually present on the queue's work items that <i>aren't</i> configured (producers may send
-    /// anything), so those slots stay reachable rather than becoming invisible.</para>
-    ///
-    /// <para>Person/role narrowing reads <b>the work item's own participants</b> — the people on its
+    /// <para>Person narrowing reads <b>the work item's own participants</b> — the people on its
     /// work-item reference, plus the promotion-level fallback — which is exactly the set the row
     /// displays. It deliberately does not consider the participants of the promotion's other
     /// references (commits, pull requests): a commit author on an unrelated change in the same build
@@ -478,17 +471,17 @@ public class WorkItemApprovalService
     /// work items that person had nothing to do with.</para>
     ///
     /// <para><paramref name="roleRequirement"/> narrows by the promotion policy's work-item role
-    /// requirement (<see cref="WorkItemRoleRequirements"/>) rather than by a role anyone happened to
-    /// pick: <see cref="WorkItemRoleRequirementFilter.Assigned"/> answers "which items am I
-    /// <i>responsible</i> for" by matching the person only against the roles the policy requires, and
+    /// requirement (<see cref="WorkItemRoleRequirements"/>) — the roles that make somebody answerable
+    /// for an item: <see cref="WorkItemRoleRequirementFilter.Assigned"/> answers "which items is this
+    /// person <i>responsible</i> for" by matching the person only against the roles the policy
+    /// requires (the queue's person filter and the "Assigned to me" tab), and
     /// <see cref="WorkItemRoleRequirementFilter.Missing"/> answers "which items has nobody been put on"
-    /// — the two tabs the queue offers. Both are per-item: the required roles come from the candidate's
+    /// — the "Not assigned" tab. Both are per-item: the required roles come from the candidate's
     /// own policy snapshot, so two rows in the same list can be judged against different roles.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetPendingForCurrentUserAsync(
         CancellationToken ct = default,
         string? assigneeFilter = null,
-        string? roleFilter = null,
         WorkItemRoleRequirementFilter roleRequirement = WorkItemRoleRequirementFilter.Any)
     {
         // The viewer's hidden products drop out of the queue entirely — including the assignee
@@ -513,18 +506,12 @@ public class WorkItemApprovalService
 
         var queueCandidates = pending.Concat(stranded).ToList();
 
-        // The configured participant-role vocabulary — always resolved, since the response surfaces
-        // it as the role dropdown's contents whether or not the caller passed a filter.
-        var configuredRoles = await _roleCatalog.GetCanonicalKeysAsync(ct);
-        var configuredRoleSet = new HashSet<string>(configuredRoles, StringComparer.OrdinalIgnoreCase);
-
         if (queueCandidates.Count == 0)
         {
-            return new PendingQueueResult(new(), new(), configuredRoles, Array.Empty<string>());
+            return new PendingQueueResult(new(), new());
         }
 
-        // Filter inputs. `roleFilter` narrows to a single canonicalised role; `assigneeFilter`
-        // narrows to a specific email or to "unassigned". Both are optional and combine per the
+        // Filter input. `assigneeFilter` narrows to a specific email or to "unassigned" — see the
         // matrix documented on WorkItemEndpoints.
         var trimmedAssignee = assigneeFilter?.Trim();
         var assigneeFilterActive = !string.IsNullOrEmpty(trimmedAssignee);
@@ -532,20 +519,6 @@ public class WorkItemApprovalService
             && string.Equals(trimmedAssignee, "unassigned", StringComparison.OrdinalIgnoreCase);
         var assigneeEmail = (assigneeFilterActive && !assigneeIsUnassigned)
             ? trimmedAssignee!.ToLowerInvariant()
-            : null;
-
-        var canonicalRoleFilter = string.IsNullOrWhiteSpace(roleFilter)
-            ? null
-            : RoleNormalizer.Normalize(roleFilter);
-        var roleFilterActive = !string.IsNullOrEmpty(canonicalRoleFilter);
-
-        // Effective role set used for matching: the single picked role, or null for "any role".
-        //
-        // A role filter is honoured for ANY role, configured or not — the question "which items have
-        // nobody as qa-owner?" has to be answerable for every role the queue can report, otherwise
-        // picking one would silently match nothing and report every item as unassigned.
-        HashSet<string>? effectiveRoleSet = roleFilterActive
-            ? new HashSet<string>(new[] { canonicalRoleFilter! }, StringComparer.OrdinalIgnoreCase)
             : null;
 
         // Candidate-scoped work-item index — the candidate is self-contained, so its tickets come
@@ -556,7 +529,7 @@ public class WorkItemApprovalService
             .ToListAsync(ct);
         if (workItems.Count == 0)
         {
-            return new PendingQueueResult(new(), new(), configuredRoles, Array.Empty<string>());
+            return new PendingQueueResult(new(), new());
         }
 
         // Group user's existing decisions: (key, product, env) tuples to skip.
@@ -583,7 +556,7 @@ public class WorkItemApprovalService
         // work-item queue at all, so bail before the remaining lookups.
         if (!(_currentUser.IsQA || _currentUser.IsAdmin))
         {
-            return new PendingQueueResult(new(), new(), configuredRoles, Array.Empty<string>());
+            return new PendingQueueResult(new(), new());
         }
 
         // Where each candidate's version actually landed. Resolved once for the whole queue so the
@@ -620,11 +593,6 @@ public class WorkItemApprovalService
         // displayName is taken from the first non-empty value seen.
         var assigneeAccumulator = new Dictionary<(string Email, string Role), AssigneeAccumulator>();
 
-        // Roles present on the queue's work items that aren't in the configured vocabulary. Ingest
-        // accepts whatever a producer sends, so these exist; collecting them keeps the affected
-        // slots filterable (and tells the UI which chips to flag).
-        var unknownRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         // Pending candidates first, each set newest-first, so the most recent live candidate "owns"
         // the inbox row when the same ticket appears in several — keeps the list deterministic and
         // surfaces the freshest version/promotion to the approver. Dead candidates trail behind and
@@ -638,6 +606,9 @@ public class WorkItemApprovalService
             // Roles the policy says every work item on this candidate must have somebody in. Read from
             // the snapshot we already deserialised, so the per-row completeness check costs nothing.
             var requiredRoles = WorkItemRoleRequirements.RequiredRoles(snapshot);
+            var requiredRoleSet = requiredRoles.Count == 0
+                ? null
+                : new HashSet<string>(requiredRoles, StringComparer.OrdinalIgnoreCase);
 
             // Distinct work items on this candidate.
             var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
@@ -665,20 +636,16 @@ public class WorkItemApprovalService
                 // Any role counts as an assignment — see AssignableParticipants.
                 var ticketAssignees = AssignableParticipants(ticketParticipants, roleSet: null);
 
-                // Unrecognised roles are collected BEFORE narrowing too, for the same reason the
-                // assignee rollup is: the dropdown has to keep offering a choice even while the
-                // filter that would hide it is applied.
-                foreach (var p in ticketParticipants)
-                {
-                    var canon = RoleNormalizer.Normalize(p.Role);
-                    if (canon.Length == 0 || configuredRoleSet.Contains(canon)) continue;
-                    unknownRoles.Add(canon);
-                }
-
                 // Update the assignee summary BEFORE narrowing — computed against the unfiltered
-                // authorized list. Dedupe per (email, role) within the work item.
+                // authorized list. Only people in a role this item's policy REQUIRES count: the
+                // person dropdown this feeds narrows with roleRequirement=assigned, so a name in
+                // any other role would be a choice that filters to nothing. An item whose policy
+                // requires no roles contributes nobody. Dedupe per (email, role) within the item.
+                var rollupAssignees = requiredRoleSet is null
+                    ? new List<MergedParticipant>()
+                    : AssignableParticipants(ticketParticipants, requiredRoleSet);
                 var seenOnItem = new HashSet<(string Email, string Role)>();
-                foreach (var p in ticketAssignees)
+                foreach (var p in rollupAssignees)
                 {
                     var key = (p.Email, p.Role);
                     if (!seenOnItem.Add(key)) continue;
@@ -703,47 +670,44 @@ public class WorkItemApprovalService
                 if (roleRequirement == WorkItemRoleRequirementFilter.Missing && missingRoles.Count == 0)
                     continue;
 
-                // Which roles the person filter is matched against. Normally the picked role (or any
-                // role); under roleRequirement=Assigned it's the policy-required roles instead — being
-                // named as, say, the reporter of a ticket is not being made answerable for it. An item
-                // whose policy requires nothing therefore matches nobody in that mode.
-                var matchRoleSet = effectiveRoleSet;
+                // Which roles the person filter is matched against. Any role normally; under
+                // roleRequirement=Assigned it's the policy-required roles instead — being named as,
+                // say, the reporter of a ticket is not being made answerable for it. An item whose
+                // policy requires nothing therefore matches nobody in that mode.
+                HashSet<string>? matchRoleSet = null;
                 if (roleRequirement == WorkItemRoleRequirementFilter.Assigned)
                 {
-                    var scoped = effectiveRoleSet is null
-                        ? requiredRoles
-                        : requiredRoles.Where(effectiveRoleSet.Contains).ToList();
-                    if (scoped.Count == 0) continue;
-                    matchRoleSet = new HashSet<string>(scoped, StringComparer.OrdinalIgnoreCase);
+                    if (requiredRoleSet is null) continue;
+                    matchRoleSet = requiredRoleSet;
                 }
 
-                // Apply role/person matrix narrowing. No participant in the effective role set =>
+                // Apply person narrowing. No participant in the match role set =>
                 // "unassigned" by definition (legacy data, no participants, all tombstoned).
                 if (assigneeFilterActive || matchRoleSet is not null)
                 {
-                    // With a role set in play, narrow to those roles; without one, every named person
-                    // counts (ticketAssignees is already the any-role set).
-                    var inEffectiveRole = matchRoleSet is not null
+                    // Under roleRequirement=Assigned, narrow to the policy-required roles; otherwise
+                    // every named person counts (ticketAssignees is already the any-role set).
+                    var inMatchRoles = matchRoleSet is not null
                         ? AssignableParticipants(ticketParticipants, matchRoleSet)
                         : ticketAssignees;
 
                     bool keep;
                     if (assigneeIsUnassigned)
                     {
-                        // No participant whose role ∈ effectiveRoleSet exists.
-                        keep = inEffectiveRole.Count == 0;
+                        // No participant whose role ∈ matchRoleSet exists.
+                        keep = inMatchRoles.Count == 0;
                     }
                     else if (assigneeFilterActive)
                     {
-                        // Specific email + role narrows.
-                        keep = inEffectiveRole.Any(p =>
+                        // Specific email narrows.
+                        keep = inMatchRoles.Any(p =>
                             string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
                     }
                     else
                     {
-                        // role only (no person filter) — keep work items with at least one
-                        // participant in the role.
-                        keep = inEffectiveRole.Count > 0;
+                        // roleRequirement=assigned with no person — keep work items with at least
+                        // one participant in a required role.
+                        keep = inMatchRoles.Count > 0;
                     }
 
                     if (!keep) continue;
@@ -782,11 +746,7 @@ public class WorkItemApprovalService
             .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return new PendingQueueResult(
-            result,
-            assigneeRows,
-            configuredRoles,
-            unknownRoles.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList());
+        return new PendingQueueResult(result, assigneeRows);
     }
 
     /// <summary>
@@ -797,8 +757,8 @@ public class WorkItemApprovalService
     ///
     /// <para>For each <see cref="WorkItemApproval"/>, picks the most recent candidate that carries
     /// the ticket (any candidate status — including Approved, Deployed, Rejected, Superseded). The
-    /// returned <see cref="PendingQueueResult.Assignees"/> and <see cref="PendingQueueResult.Roles"/>
-    /// are empty — those dropdowns only narrow the pending inbox.</para>
+    /// returned <see cref="PendingQueueResult.Assignees"/> carries the decider rollup rather than
+    /// work-item participants — the decided view's "who decided" dropdown.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetDecidedAsync(
         WorkItemDecision? decision,
@@ -818,7 +778,7 @@ public class WorkItemApprovalService
             .OrderByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
         if (approvals.Count == 0)
-            return new PendingQueueResult(new(), new(), Array.Empty<string>(), Array.Empty<string>());
+            return new PendingQueueResult(new(), new());
 
         // Decider rollup — computed BEFORE the decidedBy narrowing (mirrors the pending path's
         // pre-narrow assignee summary) so the front-end "who decided" dropdown never offers a
@@ -853,7 +813,7 @@ public class WorkItemApprovalService
                 .Where(a => string.Equals(a.ApproverEmail, trimmedDecider, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (approvals.Count == 0)
-                return new PendingQueueResult(new(), deciderRows, Array.Empty<string>(), Array.Empty<string>());
+                return new PendingQueueResult(new(), deciderRows);
         }
 
         // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
@@ -930,7 +890,7 @@ public class WorkItemApprovalService
                 DecisionComment: a.Comment));
         }
 
-        return new PendingQueueResult(result, deciderRows, Array.Empty<string>(), Array.Empty<string>());
+        return new PendingQueueResult(result, deciderRows);
     }
 
     /// <summary>
@@ -1331,16 +1291,17 @@ public class WorkItemApprovalService
     /// Narrows a work item's effective participants (see
     /// <see cref="GetWorkItemParticipants"/>) to the ones that can be treated as an assignment:
     /// a non-empty email and, when <paramref name="roleSet"/> is supplied, a role that canonicalises
-    /// into it. This — not the candidate's full participant graph — is what the person/role filter
+    /// into it. This — not the candidate's full participant graph — is what the person filter
     /// matches against, so filtering and display can't disagree about who a work item is assigned to.
     ///
     /// <para>Pass <c>null</c> for <paramref name="roleSet"/> to accept <b>any</b> role. That is what
-    /// "assigned to me" means: being named on a work item at all puts it in your queue, whether you
+    /// a plain <c>assignee</c> filter means: being named on a work item at all matches, whether you
     /// are its assignee, its QA owner, or its reporter. Restricting that to a privileged subset of
     /// roles hid items from the very people recorded against them.</para>
     ///
     /// <para>"Any role" excludes <see cref="PipelineMetadataRoles"/> — see there for why. An explicit
-    /// role filter still honours them, so "which items did I trigger?" remains answerable.</para>
+    /// role set (the policy-required roles, under <c>roleRequirement=assigned</c>) still honours
+    /// them: a policy that requires a role is asking for somebody in it, whatever it is called.</para>
     /// </summary>
     private static List<MergedParticipant> AssignableParticipants(
         IReadOnlyList<ParticipantDto> participants, HashSet<string>? roleSet)
@@ -1446,7 +1407,7 @@ public class WorkItemApprovalService
 /// </summary>
 public enum WorkItemRoleRequirementFilter
 {
-    /// <summary>No narrowing: the person/role filter behaves exactly as it always has.</summary>
+    /// <summary>No narrowing: the person filter behaves exactly as it always has.</summary>
     Any,
 
     /// <summary>
@@ -1623,9 +1584,11 @@ public record PendingTicketView(
 
 /// <summary>
 /// One row of the assignee summary for the My-queue endpoint. Aggregated by (email, role)
-/// across the user's authorized list <i>before</i> the role/person filter is applied, so the
-/// front-end always knows the full set of choices the user can narrow to. <see cref="Count"/>
-/// is the number of distinct candidates the (email, role) pair appears on.
+/// across the user's authorized list <i>before</i> the person filter is applied, so the
+/// front-end always knows the full set of choices the user can narrow to. On the pending path
+/// the role is always one the item's policy requires — the only assignments the queue's person
+/// filter matches. <see cref="Count"/> is the number of distinct candidates the (email, role)
+/// pair appears on.
 /// </summary>
 public record PendingAssigneeView(
     string Email,
@@ -1635,23 +1598,10 @@ public record PendingAssigneeView(
 
 /// <summary>
 /// Composite return for <c>GET /api/work-items/me/pending</c>. Carries the rendered ticket
-/// list plus everything the front-end's dropdowns need, so they can be populated without a
-/// second call.
+/// list plus the person dropdown's contents, so it can be populated without a second call.
 /// </summary>
 public record PendingQueueResult(
     List<PendingTicketView> Tickets,
-    /// <summary>Unfiltered (email, role) rollup — the person dropdown's contents.</summary>
-    List<PendingAssigneeView> Assignees,
-    /// <summary>
-    /// The configured participant roles (<see cref="ParticipantRoleCatalog"/>) — the role
-    /// dropdown's contents. Deliberately not derived from the queue: a role with nobody in it
-    /// anywhere is exactly the one an operator wants to filter on.
-    /// </summary>
-    IReadOnlyList<string> Roles,
-    /// <summary>
-    /// Canonical roles found on the queue's work items that are <i>not</i> configured — ingest
-    /// takes producers at their word, so these turn up. Listed separately so the UI can offer them
-    /// as filter choices while flagging them as unrecognised. Empty on the decided view, which has
-    /// no role narrowing.
-    /// </summary>
-    IReadOnlyList<string> UnknownRoles);
+    /// <summary>Unfiltered (email, required-role) rollup — the person dropdown's contents. On the
+    /// decided path this is the decider rollup instead (role is empty there).</summary>
+    List<PendingAssigneeView> Assignees);

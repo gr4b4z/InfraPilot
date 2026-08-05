@@ -15,9 +15,9 @@ namespace Platform.Api.Features.Settings;
 ///         Enforced at the API surface (see <c>PromotionEndpoints</c>); the ingest path is
 ///         deliberately exempt, since a producer's payload is a fact to record, not a request to
 ///         validate. Roles that arrive that way get surfaced as unrecognised instead.</item>
-///   <item><b>Populate the pickers.</b> The work-items queue's role filter and the assign
-///         popover both list this set, so the choices on offer are always the current
-///         configuration rather than whatever happens to be present in the data.</item>
+///   <item><b>Populate the pickers.</b> The assign popover lists this set, so the choices on
+///         offer are always the current configuration rather than whatever happens to be
+///         present in the data.</item>
 /// </list>
 ///
 /// <para>An empty configured list means an empty vocabulary — nothing can be manually assigned

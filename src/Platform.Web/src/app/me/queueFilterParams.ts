@@ -38,7 +38,6 @@ export interface QueueParams {
 
 // Parameter names. Short and readable — these end up in links people paste to each other.
 const P_TAB = 'tab';
-const P_ROLE = 'role';
 const P_ASSIGNEE = 'assignee';
 const P_PRODUCT = 'product';
 const P_SERVICE = 'service';
@@ -49,7 +48,6 @@ const P_DECIDED_BY = 'decidedBy';
 
 const ALL_PARAMS = [
   P_TAB,
-  P_ROLE,
   P_ASSIGNEE,
   P_PRODUCT,
   P_SERVICE,
@@ -91,7 +89,7 @@ export function parseQueueParams(params: URLSearchParams, fallbackView: QueueVie
 
   return {
     view,
-    assignee: parseAssignee(str(P_ROLE), str(P_ASSIGNEE)),
+    assignee: parseAssignee(str(P_ASSIGNEE)),
     scope: {
       product: str(P_PRODUCT),
       service: str(P_SERVICE),
@@ -103,13 +101,13 @@ export function parseQueueParams(params: URLSearchParams, fallbackView: QueueVie
   };
 }
 
-function parseAssignee(role: string | null, assignee: string | null): AssigneeFilterValue {
-  if (assignee === null) return { role, mode: 'all' };
-  if (assignee.toLowerCase() === ME) return { role, mode: 'me' };
-  if (assignee.toLowerCase() === UNASSIGNED) return { role, mode: 'unassigned' };
+function parseAssignee(assignee: string | null): AssigneeFilterValue {
+  if (assignee === null) return { mode: 'all' };
+  if (assignee.toLowerCase() === ME) return { mode: 'me' };
+  if (assignee.toLowerCase() === UNASSIGNED) return { mode: 'unassigned' };
   // A link carries the email but not the display name — the queue's own rollup supplies the name once
   // it loads, and until then the email is a truthful label.
-  return { role, mode: 'person', email: assignee, displayName: assignee };
+  return { mode: 'person', email: assignee, displayName: assignee };
 }
 
 function parseDecider(decidedBy: string | null): DeciderFilterValue {
@@ -127,8 +125,6 @@ function parseDecider(decidedBy: string | null): DeciderFilterValue {
 export function buildQueueParams(state: QueueParams): URLSearchParams {
   const params = new URLSearchParams();
   params.set(P_TAB, state.view);
-
-  if (state.assignee.role) params.set(P_ROLE, state.assignee.role);
 
   // The person is fixed by the tab on `mine`, and meaningless on `not-assigned` (nobody holds the
   // role) — matching where MyQueuePage hides the person select.
