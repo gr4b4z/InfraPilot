@@ -78,6 +78,24 @@ public static class PromotionAdminEndpoints
             });
         });
 
+        // ── Duplicate candidates (Settings → Maintenance) ────────────────────
+        // Residue of a pre-D15 create path that minted a new row per external POST instead of
+        // reusing the natural key — production carries groups of up to six copies of one promotion.
+        // See PromotionService for what qualifies as a duplicate (deliberately narrower than
+        // "same natural key": legitimate re-promote history is excluded). Preview via GET, then
+        // DELETE — same contract as the deploy-event duplicates pair.
+        group.MapGet("/duplicates", async (PromotionService service, CancellationToken ct) =>
+        {
+            var (groups, rows) = await service.CountDuplicateCandidatesAsync(ct);
+            return Results.Ok(new { groups, rows });
+        });
+
+        group.MapDelete("/duplicates", async (PromotionService service, CancellationToken ct) =>
+        {
+            var (groups, rows) = await service.RemoveDuplicateCandidatesAsync(ct);
+            return Results.Ok(new { groups, rows });
+        });
+
         // ── Policies ────────────────────────────────────────────────────────
 
         group.MapGet("/policies", async (PlatformDbContext db) =>

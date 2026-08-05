@@ -2077,6 +2077,123 @@ public class PromotionService
     }
 
     // ---------------------------------------------------------------------
+    // Duplicate-candidate maintenance
+    // ---------------------------------------------------------------------
+
+    /*
+     * The natural key (product, service, sourceEnv, targetEnv, version) is supposed to hold at most
+     * one non-terminal candidate (D15's reuse-and-update), but a pre-fix create path minted a fresh
+     * row per external POST — production carries groups of up to six copies of one promotion, all
+     * telling the same story. This pair of methods is the cleanup.
+     *
+     * What counts as a duplicate is deliberately narrower than "same natural key", because same-key
+     * rows in a terminal state can be legitimate history:
+     *
+     *   - deployed, rolled back, promoted and deployed again → two Deployed rows, both real. They
+     *     differ in DeployedAt (two separate landings), so DeployedAt is part of the group key.
+     *   - superseded, re-promoted, superseded again → two Superseded rows, both real. Each was
+     *     retired by its own newer candidate, so SupersededById is part of the group key. (Two rows
+     *     superseded by the SAME winner can only mean both were open at once — which is exactly the
+     *     bug whose residue this removes.)
+     *   - rejected, re-promoted, rejected again → two Rejected rows, both real, and nothing on the
+     *     row distinguishes the rejections. Rejected is excluded outright rather than guessed at.
+     *
+     * Within a group the earliest CreatedAt survives — it carries the fullest comment thread — and
+     * the rest go, along with their candidate-scoped children (approvals, comments, work-item index
+     * rows; work-item DECISIONS are keyed on the ticket, not the candidate, and are untouched).
+     * Anything pointing at a removed row via SupersededById is re-pointed at the keeper.
+     */
+
+    private record CandidateDuplicateKey(
+        string Product, string Service, string SourceEnv, string TargetEnv, string Version,
+        PromotionStatus Status, DateTimeOffset? DeployedAt, Guid? SupersededById);
+
+    private async Task<List<List<(Guid Id, DateTimeOffset CreatedAt)>>> DuplicateCandidateGroupsAsync(
+        CancellationToken ct)
+    {
+        var rows = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status != PromotionStatus.Rejected)
+            .Select(c => new
+            {
+                c.Id, c.Product, c.Service, c.SourceEnv, c.TargetEnv, c.Version,
+                c.Status, c.DeployedAt, c.SupersededById, c.CreatedAt,
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => new CandidateDuplicateKey(
+                r.Product, r.Service, r.SourceEnv, r.TargetEnv, r.Version,
+                r.Status, r.DeployedAt, r.SupersededById))
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Select(r => (r.Id, r.CreatedAt)).ToList())
+            .ToList();
+    }
+
+    /// <summary>Count of duplicate groups and rows <see cref="RemoveDuplicateCandidatesAsync"/> would remove.</summary>
+    public async Task<(int Groups, int Rows)> CountDuplicateCandidatesAsync(CancellationToken ct = default)
+    {
+        var groups = await DuplicateCandidateGroupsAsync(ct);
+        return (groups.Count, groups.Sum(g => g.Count - 1));
+    }
+
+    /// <summary>
+    /// Deletes duplicate candidates (see the criteria above), keeping the earliest per group.
+    /// Returns the number of groups touched and rows removed.
+    /// </summary>
+    public async Task<(int Groups, int Rows)> RemoveDuplicateCandidatesAsync(CancellationToken ct = default)
+    {
+        var groups = await DuplicateCandidateGroupsAsync(ct);
+        if (groups.Count == 0) return (0, 0);
+
+        var toDelete = new HashSet<Guid>();
+        // Removed id → the group's keeper, for re-pointing SupersededById references.
+        var keeperFor = new Dictionary<Guid, Guid>();
+        foreach (var group in groups)
+        {
+            var ordered = group.OrderBy(r => r.CreatedAt).ToList();
+            foreach (var (id, _) in ordered.Skip(1))
+            {
+                toDelete.Add(id);
+                keeperFor[id] = ordered[0].Id;
+            }
+        }
+
+        // Candidate-scoped children, removed explicitly rather than left to the database cascade so
+        // the behaviour is identical across providers (and visible in this method, not the mapping).
+        var approvals = await _db.PromotionApprovals
+            .Where(a => toDelete.Contains(a.CandidateId)).ToListAsync(ct);
+        var comments = await _db.PromotionComments
+            .Where(c => toDelete.Contains(c.CandidateId)).ToListAsync(ct);
+        var workItems = await _db.PromotionWorkItems
+            .Where(w => toDelete.Contains(w.CandidateId)).ToListAsync(ct);
+        _db.PromotionApprovals.RemoveRange(approvals);
+        _db.PromotionComments.RemoveRange(comments);
+        _db.PromotionWorkItems.RemoveRange(workItems);
+
+        // A candidate superseded BY a removed duplicate re-points to the group's keeper — the two
+        // described the same promotion, so the keeper is the honest answer to "what replaced this?".
+        var pointingAtRemoved = await _db.PromotionCandidates
+            .Where(c => c.SupersededById != null && toDelete.Contains(c.SupersededById.Value))
+            .ToListAsync(ct);
+        foreach (var c in pointingAtRemoved)
+            c.SupersededById = keeperFor[c.SupersededById!.Value];
+
+        var stale = await _db.PromotionCandidates
+            .Where(c => toDelete.Contains(c.Id)).ToListAsync(ct);
+        _db.PromotionCandidates.RemoveRange(stale);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Promotion-candidate dedup removed {Rows} rows across {Groups} groups "
+            + "({Approvals} approvals, {Comments} comments, {WorkItems} work-item rows; "
+            + "{Repointed} supersede pointers re-pointed)",
+            stale.Count, groups.Count, approvals.Count, comments.Count, workItems.Count,
+            pointingAtRemoved.Count);
+
+        return (groups.Count, stale.Count);
+    }
+
+    // ---------------------------------------------------------------------
     // Webhook dispatch (called after state transitions)
     // ---------------------------------------------------------------------
 
