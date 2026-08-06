@@ -1298,6 +1298,10 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<int>("Attempts")
                         .HasColumnType("int");
 
+                    b.Property<string>("CancelKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -1338,6 +1342,8 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CancelKey");
 
                     b.HasIndex("SubscriptionId");
 

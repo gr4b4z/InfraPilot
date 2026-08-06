@@ -337,12 +337,15 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Status).HasMaxLength(20).IsRequired();
             e.Property(x => x.ResponseBody).HasMaxLength(4000);
             e.Property(x => x.ErrorMessage).HasMaxLength(2000);
+            e.Property(x => x.CancelKey).HasMaxLength(200);
             e.HasOne(x => x.Subscription)
                 .WithMany(x => x.Deliveries)
                 .HasForeignKey(x => x.SubscriptionId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.Status, x.NextRetryAt });
             e.HasIndex(x => x.SubscriptionId);
+            // Cancellation looks up by key alone; the vast majority of rows carry no key at all.
+            e.HasIndex(x => x.CancelKey);
         });
 
         // Local Users (dev/test authentication)

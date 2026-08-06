@@ -1297,6 +1297,10 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<int>("Attempts")
                         .HasColumnType("integer");
 
+                    b.Property<string>("CancelKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1337,6 +1341,8 @@ namespace Platform.Api.Migrations.Postgres
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CancelKey");
 
                     b.HasIndex("SubscriptionId");
 

@@ -38,6 +38,7 @@ import {
   MessageSquare,
   Edit2,
   Trash2,
+  Undo2,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { EnvBadge } from '@/components/environments/EnvBadge';
@@ -61,6 +62,11 @@ const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Supersede
 
 // Author email the API stamps on entries it writes itself (PromotionComment.SystemAuthor).
 const SYSTEM_COMMENT_AUTHOR = 'system';
+
+// How long the API holds a promotion.approved webhook before sending it — the window in which
+// cancelling the approval also stops the delivery. Display only; the authority is
+// PromotionService.ApprovedWebhookDelay, so keep the two in step.
+const APPROVED_WEBHOOK_DELAY_MS = 10_000;
 
 // Context that gates all interactive controls on the detail page.
 // Set to true when the candidate is in a terminal state.
@@ -115,10 +121,15 @@ export function PromotionDetailPage() {
   const [approvalProgress, setApprovalProgress] = useState<PromotionApprovalProgress | null>(null);
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
+  const [canCancelApproval, setCanCancelApproval] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionDone, setActionDone] = useState<string | null>(null);
+  // Set once an approval is cancelled on this page. `webhookStopped` says whether the
+  // promotion.approved delivery was still in its hold window — two rather different pieces of news,
+  // so the banner reports which one happened.
+  const [cancelled, setCancelled] = useState<{ webhookStopped: boolean } | null>(null);
 
   const fetchData = () => {
     api
@@ -131,6 +142,7 @@ export function PromotionDetailPage() {
         setApprovalProgress(data.approvalProgress ?? null);
         setEligibleRequirements(data.eligibleRequirements || []);
         setBypass(data.bypass ?? null);
+        setCanCancelApproval(data.canCancelApproval ?? false);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -175,6 +187,25 @@ export function PromotionDetailPage() {
       refreshMyTasks();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Undo an approval made by mistake: Approved back to Pending, sign-offs cleared. `actionDone` is
+  // deliberately NOT set — unlike approve/reject this leaves the promotion open and actionable, and
+  // latching the card into a "done" state would hide the approve controls the user now needs.
+  const handleCancelApproval = async (cancelComment: string) => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      const result = await api.cancelPromotionApproval(id!, cancelComment || undefined);
+      setCancelled({ webhookStopped: result.approvedWebhookStopped });
+      fetchData();
+      // Back in the pending queue — it may be awaiting this user again.
+      refreshMyTasks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cancelling the approval failed');
     } finally {
       setActionLoading(false);
     }
@@ -287,6 +318,33 @@ export function PromotionDetailPage() {
         );
       })()}
 
+      {/* Cancelled-approval banner. Not folded into `actionDone` above: this outcome leaves the
+         promotion open, and the one thing the user needs to know is whether the downstream webhook
+         got out before they took the approval back. */}
+      {cancelled && (
+        <div
+          className="flex items-start gap-3 p-4 rounded-xl border"
+          style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderColor: 'var(--border-color)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <Undo2 size={18} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 1 }} />
+          <span className="text-[13px]">
+            Approval cancelled — this promotion is back to <strong>Pending</strong> and awaits sign-off again.
+            {cancelled.webhookStopped ? (
+              <> The <code>promotion.approved</code> webhook was stopped before it went out.</>
+            ) : (
+              <>
+                {' '}The <code>promotion.approved</code> webhook had already been sent, so anything
+                downstream may have acted on it.
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
       {/* Error banner */}
       {error && candidate && (
         <div
@@ -335,6 +393,8 @@ export function PromotionDetailPage() {
             actionLoading={actionLoading}
             onAction={handleAction}
             onBypass={handleBypass}
+            onCancelApproval={handleCancelApproval}
+            canCancelApproval={canCancelApproval}
             isAdmin={isAdmin}
             eligibleRequirements={eligibleRequirements}
           />
@@ -1212,6 +1272,8 @@ function PromotionApprovalCard({
   actionLoading,
   onAction,
   onBypass,
+  onCancelApproval,
+  canCancelApproval,
   isAdmin,
   eligibleRequirements,
 }: {
@@ -1221,6 +1283,8 @@ function PromotionApprovalCard({
   actionLoading: boolean;
   onAction: (action: 'approve' | 'reject', comment: string, target?: EligibleRequirement) => void;
   onBypass: (reason: string) => void;
+  onCancelApproval: (comment: string) => void;
+  canCancelApproval: boolean;
   isAdmin: boolean;
   eligibleRequirements: EligibleRequirement[];
 }) {
@@ -1235,6 +1299,10 @@ function PromotionApprovalCard({
   const showBypass = isAdmin && candidate.status === 'Pending' && !actionDone;
   const [showBypassBox, setShowBypassBox] = useState(false);
   const [bypassReason, setBypassReason] = useState('');
+  // Undo, for the wrong row approved by mistake. The server decides who may do it and until when
+  // (Approved, not yet dispatched) — this only asks whether it said yes.
+  const showCancelApproval = canCancelApproval && !actionDone;
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   // When the approver is eligible for more than one open requirement they must choose which one
   // they approve as. Key by `${stepName}\u0000${requirementName}` so step+requirement is unique.
@@ -1254,8 +1322,8 @@ function PromotionApprovalCard({
     ?? (eligibleRequirements.length === 1 ? eligibleRequirements[0] : null);
 
   // Hide the card entirely when there's nothing to show: no progress to surface, no action
-  // available to the current user, and no admin bypass on offer.
-  if (!showActions && !showProgress && !showBypass) return null;
+  // available to the current user, and neither escape hatch on offer.
+  if (!showActions && !showProgress && !showBypass && !showCancelApproval) return null;
 
   const confirmAction = (actionComment: string) => {
     if (!pending) return;
@@ -1445,6 +1513,62 @@ function PromotionApprovalCard({
           busy={actionLoading}
           onConfirm={confirmAction}
           onCancel={() => setPending(null)}
+        />
+      )}
+
+      {/* Undo. Only ever on an Approved candidate the executor hasn't taken yet — the moment it is
+         Deploying the answer is a rollback, and the server stops offering this. */}
+      {showCancelApproval && (
+        <div
+          className={showProgress ? 'mt-4 pt-4 border-t' : ''}
+          style={showProgress ? { borderColor: 'var(--border-color)' } : undefined}
+        >
+          <p className="text-[12px] mb-2" style={{ color: 'var(--text-muted)' }}>
+            Approved by mistake? Cancelling puts this promotion back to <b>Pending</b> and clears the
+            recorded sign-offs, so it has to be approved again. The <code>promotion.approved</code>{' '}
+            webhook is held for {Math.round(APPROVED_WEBHOOK_DELAY_MS / 1000)} seconds — cancel within
+            that window and it never goes out.
+          </p>
+          <button
+            type="button"
+            onClick={() => setConfirmingCancel(true)}
+            disabled={actionLoading}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+            style={{
+              borderColor: 'var(--border-color)',
+              color: 'var(--text-secondary)',
+              opacity: actionLoading ? 0.5 : 1,
+            }}
+          >
+            <Undo2 size={14} />
+            Cancel approval
+          </button>
+        </div>
+      )}
+
+      {confirmingCancel && (
+        <ConfirmDialog
+          title="Cancel this approval?"
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong> goes back to Pending and
+              every recorded sign-off is cleared — the approval has to be given again. If the{' '}
+              <code>promotion.approved</code> webhook has already gone out, downstream may have acted
+              on it.
+            </>
+          }
+          confirmLabel="Cancel approval"
+          confirmTone="danger"
+          commentLabel="Reason (optional)"
+          busy={actionLoading}
+          onConfirm={(cancelComment) => {
+            onCancelApproval(cancelComment);
+            setConfirmingCancel(false);
+          }}
+          onCancel={() => setConfirmingCancel(false)}
         />
       )}
 

@@ -158,10 +158,13 @@ export function WebhookDetailPage() {
     );
   };
 
+  // `cancelled` is neither success nor failure — the event was retracted before this ever went out,
+  // so it reads as a settled non-event rather than something to chase.
   const statusColor = (status: string) => {
     switch (status) {
       case 'delivered': return 'var(--success)';
       case 'failed': return 'var(--error)';
+      case 'cancelled': return 'var(--text-muted)';
       default: return 'var(--warning)';
     }
   };
@@ -170,6 +173,7 @@ export function WebhookDetailPage() {
     switch (status) {
       case 'delivered': return 'var(--success-bg)';
       case 'failed': return 'var(--error-bg)';
+      case 'cancelled': return 'var(--bg-secondary)';
       default: return 'var(--warning-bg)';
     }
   };
