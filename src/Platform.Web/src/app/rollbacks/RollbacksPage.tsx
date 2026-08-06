@@ -18,6 +18,7 @@ import {
   User,
   Plus,
   Ban,
+  ShieldAlert,
 } from 'lucide-react';
 import { CreateRollbackPanel } from './CreateRollbackPanel';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
@@ -65,6 +66,9 @@ export function RollbacksPage() {
   const [productFilter, setProductFilter] = useState('');
   const [targetEnvFilter, setTargetEnvFilter] = useState('');
   const [actioningId, setActioningId] = useState<string | null>(null);
+  // Which card has its override reason prompt open, and the last override failure.
+  const [overridingId, setOverridingId] = useState<string | null>(null);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
 
   // The create panel opens when ?new=1 is present (deep-linked from a deploy
   // event detail), or via the "New rollback" button.
@@ -171,6 +175,23 @@ export function RollbacksPage() {
       await api.cancelRollback(id);
     } catch {
       /* backend authorises; refetch reflects the outcome */
+    } finally {
+      setActioningId(null);
+      fetchData();
+    }
+  };
+
+  // Admin gate override. The reason is mandatory server-side and is recorded on the approval row, so
+  // it is prompted for here rather than sent blank — and the error is surfaced instead of swallowed,
+  // because unlike approve/reject a refetch alone would leave the operator guessing why nothing moved.
+  const handleOverride = async (id: string, reason: string) => {
+    setActioningId(id);
+    setOverrideError(null);
+    try {
+      await api.overrideRollbackApproval(id, reason);
+      setOverridingId(null);
+    } catch (e) {
+      setOverrideError(e instanceof Error ? e.message : 'Failed to override the approval gate');
     } finally {
       setActioningId(null);
       fetchData();
@@ -323,6 +344,17 @@ export function RollbacksPage() {
                     onApprove={() => handleApprove(r.id)}
                     onReject={() => handleReject(r.id)}
                     onCancel={() => handleCancel(r.id)}
+                    overriding={overridingId === r.id}
+                    overrideError={overridingId === r.id ? overrideError : null}
+                    onStartOverride={() => {
+                      setOverridingId(r.id);
+                      setOverrideError(null);
+                    }}
+                    onCancelOverride={() => {
+                      setOverridingId(null);
+                      setOverrideError(null);
+                    }}
+                    onOverride={(reason) => handleOverride(r.id, reason)}
                   />
                 ))}
               </div>
@@ -366,17 +398,30 @@ function RollbackCard({
   onApprove,
   onReject,
   onCancel,
+  overriding,
+  overrideError,
+  onStartOverride,
+  onCancelOverride,
+  onOverride,
 }: {
   request: RollbackRequest;
   busy?: boolean;
   onApprove?: () => void;
   onReject?: () => void;
   onCancel?: () => void;
+  overriding?: boolean;
+  overrideError?: string | null;
+  onStartOverride?: () => void;
+  onCancelOverride?: () => void;
+  onOverride?: (reason: string) => void;
 }) {
   const { getDisplayName } = useSettingsStore();
+  const [reason, setReason] = useState('');
   const cfg = STATUS_CONFIG[request.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
   const canApprove = request.canApprove && request.status === 'Pending';
+  // Admin-only, and only where the server says the call would succeed.
+  const canOverride = request.canOverride && request.status === 'Pending';
   // Only Pending requests can be cancelled — once Approved, the webhook has fired and the
   // executor is acting, so there's nothing we can meaningfully recall.
   const cancellable = request.status === 'Pending';
@@ -418,6 +463,17 @@ function RollbackCard({
                 request.mode
               )}
             </span>
+            {/* An approval that bypassed the gate must not read like a normal one. */}
+            {request.approvalOverridden && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+                title="An admin overrode the approval gate for this rollback"
+              >
+                <ShieldAlert size={10} />
+                Gate overridden
+              </span>
+            )}
           </div>
 
           {/* Items */}
@@ -446,7 +502,7 @@ function RollbackCard({
         </div>
 
         {/* Actions */}
-        {(canApprove || cancellable) && (
+        {(canApprove || cancellable || canOverride) && (
           <div className="flex flex-col gap-1.5 shrink-0">
             {canApprove && onApprove && (
               <button
@@ -470,6 +526,23 @@ function RollbackCard({
                 Reject
               </button>
             )}
+            {/* Last in the stack: a bypass should be the least reachable action on the card. */}
+            {canOverride && onStartOverride && !overriding && (
+              <button
+                onClick={onStartOverride}
+                disabled={busy}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{
+                  border: '1px solid var(--warning)',
+                  color: 'var(--warning)',
+                  opacity: busy ? 0.6 : 1,
+                }}
+                title="Approve without satisfying the gate (admin only, reason required)"
+              >
+                <ShieldAlert size={12} />
+                Override gate
+              </button>
+            )}
             {cancellable && onCancel && (
               <button
                 onClick={onCancel}
@@ -488,6 +561,63 @@ function RollbackCard({
           </div>
         )}
       </div>
+
+      {/* Override reason prompt. Inline rather than a modal so the request it applies to stays on
+          screen, and the reason is recorded verbatim on the approval row. */}
+      {overriding && (
+        <div
+          className="mt-3 pt-3 border-t space-y-2"
+          style={{ borderColor: 'var(--border-color)' }}
+        >
+          <label className="block text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
+            Why is this rollback bypassing its approval gate? (required)
+          </label>
+          <input
+            type="text"
+            value={reason}
+            autoFocus
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && reason.trim()) onOverride?.(reason.trim());
+              if (e.key === 'Escape') onCancelOverride?.();
+            }}
+            placeholder="e.g. SEV1 INC-4213, approvers unreachable"
+            className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Recorded against your name in the audit log and shown on this request as
+            &ldquo;gate overridden&rdquo;.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onOverride?.(reason.trim())}
+              disabled={busy || reason.trim().length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity disabled:opacity-50"
+              style={{ backgroundColor: 'var(--warning)', color: '#fff' }}
+            >
+              <ShieldAlert size={12} />
+              {busy ? 'Overriding…' : 'Confirm override'}
+            </button>
+            <button
+              onClick={onCancelOverride}
+              className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Cancel
+            </button>
+          </div>
+          {overrideError && (
+            <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+              {overrideError}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

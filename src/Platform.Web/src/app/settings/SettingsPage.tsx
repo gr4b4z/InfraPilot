@@ -60,7 +60,7 @@ const NAV: NavItem[] = [
     to: 'rollbacks',
     label: 'Rollbacks',
     icon: Undo2,
-    description: 'Choose which products can use rollbacks',
+    description: 'Who can create and who must approve rollbacks, per product',
   },
   {
     to: 'maintenance',
