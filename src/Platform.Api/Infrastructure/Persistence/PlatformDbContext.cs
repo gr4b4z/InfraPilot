@@ -50,6 +50,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
     public DbSet<RollbackItem> RollbackItems => Set<RollbackItem>();
     public DbSet<RollbackApproval> RollbackApprovals => Set<RollbackApproval>();
+    public DbSet<RollbackPolicy> RollbackPolicies => Set<RollbackPolicy>();
     public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
@@ -564,6 +565,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Reason).HasMaxLength(1000);
             e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
             e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.ApprovalOverridden).HasDefaultValue(false);
             var exclusionsJson = e.Property(x => x.ExclusionsJson).HasDefaultValue("[]");
             var rbResolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
             if (jsonType != null)
@@ -602,11 +604,37 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Comment).HasMaxLength(2000);
             e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.IsOverride).HasDefaultValue(false);
             e.HasIndex(x => new { x.RequestId, x.ApproverEmail }).IsUnique();
             e.HasOne<RollbackRequest>()
                 .WithMany()
                 .HasForeignKey(x => x.RequestId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Per-product rollback policy: who may create, who must approve. One row per
+        // (product, target env); TargetEnv NULL is the product default.
+        modelBuilder.Entity<RollbackPolicy>(e =>
+        {
+            e.ToTable("rollback_policies");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100);
+            e.Property(x => x.EscalationGroup).HasMaxLength(300);
+            e.Property(x => x.UpdatedBy).HasMaxLength(300);
+            var creatorsJson = e.Property(x => x.CreatorsJson).HasDefaultValue("{}").IsRequired();
+            var rbStepsJson = e.Property(x => x.ApprovalStepsJson).HasDefaultValue("[]").IsRequired();
+            if (jsonType != null)
+            {
+                creatorsJson.HasColumnType(jsonType);
+                rbStepsJson.HasColumnType(jsonType);
+            }
+            e.Ignore(x => x.Creators);
+            e.Ignore(x => x.ApprovalSteps);
+            // One policy per scope. NULL TargetEnv rows are not covered by a unique index on either
+            // provider (NULLs compare distinct), so the product-default row is de-duplicated by the
+            // pre-check in the admin endpoints rather than by the DB.
+            e.HasIndex(x => new { x.Product, x.TargetEnv }).IsUnique();
         });
 
         // Promotion Comments

@@ -1,18 +1,21 @@
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.Users;
 
 namespace Platform.Api.Features.Rollbacks;
 
 /// <summary>
-/// User-facing rollback endpoints (mounted at <c>/api/rollbacks</c>, gated by CanApprove). The
-/// queue/detail/approve surface mirrors promotions — a rollback request is just another gated
-/// change. Per-product enrollment management lives in <see cref="RollbackAdminEndpoints"/>.
+/// User-facing rollback endpoints (mounted at <c>/api/rollbacks</c>). The group-level policy is only
+/// "authenticated"; the real authorization is per-product and lives in <see cref="RollbackService"/>
+/// — creating requires membership of the resolved <c>RollbackPolicy</c>'s creator set, approving
+/// requires membership of one of its requirements, and overriding requires admin. Policy
+/// administration lives in <see cref="RollbackAdminEndpoints"/>.
 /// </summary>
 public static class RollbackEndpoints
 {
     public static RouteGroupBuilder MapRollbackEndpoints(this RouteGroupBuilder group)
     {
-        // List requests with filters + per-request canApprove capability.
+        // List requests with filters + per-request approve/override capabilities.
         group.MapGet("/", async (RollbackService svc, string? status, string? product, string? targetEnv, int? limit) =>
         {
             RollbackStatus? parsed = null;
@@ -23,21 +26,40 @@ public static class RollbackEndpoints
                 parsed = s;
             }
             var requests = await svc.GetAsync(new RollbackQuery(parsed, product, targetEnv, limit ?? 200));
-            var caps = new Dictionary<Guid, bool>();
-            foreach (var r in requests) caps[r.Id] = await svc.CanUserApproveAsync(r);
-            return Results.Ok(new { requests = requests.Select(r => ToDto(r, caps.GetValueOrDefault(r.Id))) });
+            var caps = new Dictionary<Guid, (bool Approve, bool Override)>();
+            foreach (var r in requests)
+                caps[r.Id] = (await svc.CanUserApproveAsync(r), await svc.CanUserOverrideAsync(r));
+            return Results.Ok(new
+            {
+                requests = requests.Select(r =>
+                {
+                    var c = caps.GetValueOrDefault(r.Id);
+                    return ToDto(r, c.Approve, c.Override);
+                }),
+            });
         });
 
-        // Feeds the create-rollback product picker, so the viewer's hidden products come out here.
-        // The filter is applied at the edge rather than inside GetEnabledProductsAsync because that
-        // method is also the enrolment check behind IsProductEnabledAsync — hiding a product from
-        // your own view must not stop anyone (including you) from rolling it back.
+        // Feeds the create-rollback product picker: products the caller may actually raise a rollback
+        // for, minus their hidden ones. The hidden-product filter is applied here at the edge, not in
+        // the service, because hiding a product from your own view is a display preference and must
+        // never function as a permission — GetCreatableProductsAsync is the permission.
         group.MapGet("/enabled-products", async (
             RollbackService svc, UserPreferencesService prefs, CancellationToken ct) =>
         {
-            var enabled = await svc.GetEnabledProductsAsync(ct);
+            var creatable = await svc.GetCreatableProductsAsync(ct);
             var hidden = await prefs.GetHiddenProductsAsync(ct);
-            return Results.Ok(new { products = enabled.Where(p => !hidden.Contains(p)).ToList() });
+            return Results.Ok(new { products = creatable.Where(p => !hidden.Contains(p)).ToList() });
+        });
+
+        // Probe behind the create form's disabled state and its inline explanation. Returns the
+        // service's own refusal message so the UI never has to reconstruct the rule.
+        group.MapGet("/can-create", async (
+            RollbackService svc, string product, string targetEnv, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(targetEnv))
+                return Results.BadRequest(new { error = "'product' and 'targetEnv' are required" });
+            var (allowed, reason) = await svc.CanCreateAsync(product, targetEnv, ct);
+            return Results.Ok(new { allowed, reason });
         });
 
         group.MapGet("/{id:guid}", async (RollbackService svc, Guid id) =>
@@ -46,13 +68,16 @@ public static class RollbackEndpoints
             if (r is null) return Results.NotFound();
             var approvals = await svc.GetApprovalsAsync(id);
             var canApprove = await svc.CanUserApproveAsync(r);
-            return Results.Ok(ToDetailDto(r, canApprove, approvals));
+            var canOverride = await svc.CanUserOverrideAsync(r);
+            var (unconfigured, requirements) = await svc.GetGateAsync(r);
+            return Results.Ok(ToDetailDto(r, canApprove, canOverride, unconfigured, requirements, approvals));
         });
 
         // Dry-run: resolve the items (with skip reasons) without persisting — powers the UI preview.
         group.MapPost("/preview", async (RollbackService svc, CreateRollbackRequestDto body) =>
         {
             try { return Results.Ok(await svc.PreviewAsync(body)); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
@@ -61,8 +86,9 @@ public static class RollbackEndpoints
             try
             {
                 var r = await svc.CreateAsync(body);
-                return Results.Created($"/api/rollbacks/{r.Id}", ToDto(r, canApprove: false));
+                return Results.Created($"/api/rollbacks/{r.Id}", ToDto(r, canApprove: false, canOverride: false));
             }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
@@ -72,6 +98,12 @@ public static class RollbackEndpoints
         group.MapPost("/{id:guid}/reject", (RollbackService svc, Guid id, DecisionBody? body) =>
             Decide(() => svc.RejectAsync(id, body?.Comment)));
 
+        // Admin-only bypass of the approval gate. Not in RollbackAdminEndpoints because it acts on a
+        // request in the operator's own queue rather than on configuration, and the 403 for a
+        // non-admin caller is more useful here than a 404 from a group they cannot reach.
+        group.MapPost("/{id:guid}/override-approval", (RollbackService svc, Guid id, OverrideBody? body) =>
+            Decide(() => svc.OverrideApprovalAsync(id, body?.Reason ?? "")));
+
         group.MapPost("/{id:guid}/cancel", (RollbackService svc, Guid id) =>
             Decide(() => svc.CancelAsync(id)));
 
@@ -80,13 +112,14 @@ public static class RollbackEndpoints
 
     private static async Task<IResult> Decide(Func<Task<RollbackRequest>> action)
     {
-        try { return Results.Ok(ToDto(await action(), canApprove: false)); }
+        try { return Results.Ok(ToDto(await action(), canApprove: false, canOverride: false)); }
         catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
         catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+        catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
         catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
     }
 
-    private static object ToDto(RollbackRequest r, bool canApprove) => new
+    private static object ToDto(RollbackRequest r, bool canApprove, bool canOverride) => new
     {
         id = r.Id,
         r.Product,
@@ -102,10 +135,18 @@ public static class RollbackEndpoints
         r.ApprovedAt,
         r.CompletedAt,
         canApprove,
+        canOverride,
+        r.ApprovalOverridden,
         items = r.Items.Select(ToItemDto),
     };
 
-    private static object ToDetailDto(RollbackRequest r, bool canApprove, IEnumerable<RollbackApproval> approvals) => new
+    private static object ToDetailDto(
+        RollbackRequest r,
+        bool canApprove,
+        bool canOverride,
+        bool unconfigured,
+        IReadOnlyList<RequirementOutcome> requirements,
+        IEnumerable<RollbackApproval> approvals) => new
     {
         id = r.Id,
         r.Product,
@@ -121,10 +162,25 @@ public static class RollbackEndpoints
         r.ApprovedAt,
         r.CompletedAt,
         canApprove,
+        canOverride,
+        r.ApprovalOverridden,
+        // True when no rollback policy governed this environment: the request is Pending with nobody
+        // authorized to approve it, so only an admin override can move it.
+        unconfigured,
+        gate = requirements.Select(o => new
+        {
+            name = o.Requirement.Name,
+            groups = o.Requirement.Groups,
+            users = o.Requirement.Users,
+            o.Matched,
+            o.Required,
+            o.Satisfied,
+        }),
         items = r.Items.Select(ToItemDto),
         approvals = approvals.Select(a => new
         {
             a.ApproverEmail, a.ApproverName, decision = a.Decision.ToString(), a.Comment, a.CreatedAt,
+            a.IsOverride,
         }),
     };
 
@@ -135,4 +191,7 @@ public static class RollbackEndpoints
     };
 
     public record DecisionBody(string? Comment);
+
+    /// <summary>Body for the admin override. <c>Reason</c> is required (blank ⇒ 400).</summary>
+    public record OverrideBody(string? Reason);
 }
