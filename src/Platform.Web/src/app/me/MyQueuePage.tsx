@@ -11,6 +11,7 @@ import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
@@ -138,10 +139,13 @@ export function MyQueuePage() {
     }
   };
 
+  // The queue is a projection over work items and their promotions — refresh on either stream.
+  const realtimeTick = useEntityRefresh(['work-item', 'promotion']);
+
   useEffect(() => {
     void fetchData(view, assigneeFilter, timeFrame, deciderFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail]);
+  }, [view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail, realtimeTick]);
 
   /**
    * Mirrors the view into the query string, so from the first filter change onwards the address bar is

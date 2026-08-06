@@ -18,6 +18,7 @@ import {
   ChevronRight,
   BookOpen,
 } from 'lucide-react';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import {
   AVAILABLE_EVENTS,
@@ -106,9 +107,13 @@ export function WebhookListPage() {
     }
   }, []);
 
+  // The delivery worker announces processed deliveries, so test sends and retries show their
+  // outcome when it actually lands instead of after a guessed delay.
+  const deliveriesTick = useEntityRefresh(['webhook-delivery']);
+
   useEffect(() => {
     fetchWebhooks();
-  }, [fetchWebhooks]);
+  }, [fetchWebhooks, deliveriesTick]);
 
   const handleCreate = async () => {
     if (!canCreate) return;
@@ -163,7 +168,7 @@ export function WebhookListPage() {
   const handleTest = async (id: string) => {
     try {
       await api.testWebhook(id);
-      setTimeout(fetchWebhooks, 2000);
+      // No refetch here — the delivery worker's webhook-delivery event triggers it on completion.
     } catch {
       setError('Failed to send test');
     }

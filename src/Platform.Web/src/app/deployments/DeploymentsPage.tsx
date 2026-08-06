@@ -8,6 +8,7 @@ import { EnvLabel } from '@/components/environments/EnvBadge';
 import { FilterPanel } from '@/components/ui/FilterPanel';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { api } from '@/lib/api';
@@ -32,9 +33,12 @@ export function DeploymentsPage() {
   const setHiddenProducts = useUserPrefsStore((s) => s.setHiddenProducts);
   const [allProductNames, setAllProductNames] = useState<string[]>([]);
 
+  // New deploys move products' latest-activity ordering and env freshness on this index.
+  const deploymentsTick = useEntityRefresh(['deployment']);
+
   useEffect(() => {
     fetchProducts();
-  }, [fetchProducts]);
+  }, [fetchProducts, deploymentsTick]);
 
   useEffect(() => {
     let cancelled = false;

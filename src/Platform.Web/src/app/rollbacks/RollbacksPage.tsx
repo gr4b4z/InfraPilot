@@ -24,6 +24,7 @@ import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 
 const STATUS_CONFIG: Record<
   RollbackStatus,
@@ -112,10 +113,14 @@ export function RollbacksPage() {
       .finally(() => setLoading(false));
   };
 
+  // Rollback items move through RollingBack → RolledBack/Failed server-side as completions
+  // are matched — without push this list goes stale mid-rollback, its most-watched moment.
+  const rollbacksTick = useEntityRefresh(['rollback']);
+
   useEffect(() => {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, productFilter, targetEnvFilter]);
+  }, [statusFilter, productFilter, targetEnvFilter, rollbacksTick]);
 
   const openCreate = () => {
     setSearchParams((prev) => {
