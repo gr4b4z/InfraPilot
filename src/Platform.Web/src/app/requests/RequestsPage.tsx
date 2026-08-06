@@ -4,6 +4,7 @@ import { StatusBadge } from '@/components/requests/StatusBadge';
 import type { ServiceRequest } from '@/lib/types';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import { FileText, ArrowUpRight, Inbox, User, Users } from 'lucide-react';
 
@@ -19,6 +20,10 @@ export function RequestsPage() {
   // title tracks the toggle anyway — it's what the tab is showing, which is the other half of the job.
   useDocumentTitle([scope === 'mine' ? 'My requests' : 'All requests']);
 
+  // Status changes are driven by approvers and the executor worker, not this user — push keeps
+  // the badges honest while the page sits open.
+  const requestsTick = useEntityRefresh(['request', 'approval']);
+
   useEffect(() => {
     setLoading(true);
     const params: Record<string, string> = {};
@@ -27,7 +32,7 @@ export function RequestsPage() {
       .then((data) => setRequests(data.items || []))
       .catch(() => setRequests([]))
       .finally(() => setLoading(false));
-  }, [scope]);
+  }, [scope, requestsTick]);
 
   const statusCounts = {
     total: requests.length,

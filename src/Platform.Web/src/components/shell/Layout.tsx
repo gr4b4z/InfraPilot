@@ -3,13 +3,13 @@ import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
 import { KeyboardLayer } from './KeyboardLayer';
-import { useSseEvents } from '@/hooks/useSseEvents';
+import { useRealtimeEvents } from '@/hooks/useRealtimeEvents';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useMyTasksPolling } from '@/stores/myTasksStore';
 
 export function Layout() {
-  useSseEvents();
+  useRealtimeEvents();
   // Feeds the sidebar counters, the topbar bell badge and the My Tasks page from one fetch.
   useMyTasksPolling();
   const { sidebarOpen, sidebarExpanded } = useConversationStore();

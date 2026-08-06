@@ -35,6 +35,7 @@ import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { refreshMyTasks } from '@/stores/myTasksStore';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import {
   AlertTriangle,
@@ -383,6 +384,11 @@ export function PromotionsPage() {
     };
   }, []);
 
+  // Server-pushed promotion changes rerun the same invalidation a filter change does; work-item
+  // sign-offs refresh the per-row progress cells without refetching the candidate lists.
+  const promotionsTick = useEntityRefresh(['promotion']);
+  const workItemsTick = useEntityRefresh(['work-item']);
+
   useEffect(() => {
     fetchData();
     fetchAwaitingDeploy();
@@ -391,7 +397,7 @@ export function PromotionsPage() {
     setArchive(null);
     setRejected(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productFilter, serviceFilter, targetEnvFilter, referenceFilter]);
+  }, [productFilter, serviceFilter, targetEnvFilter, referenceFilter, promotionsTick]);
 
   // Lazy loads for the tabs that aren't fetched up front. Fires on tab change and after a filter
   // change has reset the sets to null. `filterKey` is a dependency so a filter change tears down an
@@ -555,7 +561,7 @@ export function PromotionsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [progressTargets.map((c) => c.id).join(',')]);
+  }, [progressTargets.map((c) => c.id).join(','), workItemsTick]);
 
   // Known target envs from the currently-loaded candidate set, for the dropdown. Keeping the
   // current filter selection in the list even if nothing matches so the user can clear it.

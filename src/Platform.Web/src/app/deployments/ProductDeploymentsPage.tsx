@@ -22,6 +22,7 @@ import {
   ChevronsUpDown,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { api } from '@/lib/api';
 import type { PromotionCandidate } from '@/lib/api';
 import { useFeatureFlag, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -237,10 +238,19 @@ export function ProductDeploymentsPage() {
     [updateParams]
   );
 
+  // The wall-monitor view: deploy events for this product repaint the matrix live, and
+  // promotion changes update the per-cell pending-promotion cue.
+  const deploymentsTick = useEntityRefresh(['deployment'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+  const promotionsTick = useEntityRefresh(['promotion'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+
   // Fetch state matrix (always needed for state tab)
   useEffect(() => {
     if (product) fetchState(product);
-  }, [product, fetchState]);
+  }, [product, fetchState, deploymentsTick]);
 
   // Pending promotions for this product, for the matrix's per-cell cue. Skipped entirely when the
   // feature is off — there is nothing to show and no reason to call the endpoint.
@@ -263,7 +273,7 @@ export function ProductDeploymentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [product, promotionsEnabled]);
+  }, [product, promotionsEnabled, promotionsTick]);
 
   // Fetch recent activity when state tab has a time filter
   useEffect(() => {
@@ -271,7 +281,7 @@ export function ProductDeploymentsPage() {
       if (timeFilter === 'custom' && !customDate) return;
       fetchRecentByProduct(product, computeSince(timeFilter, customDate));
     }
-  }, [product, tab, timeFilter, customDate, fetchRecentByProduct]);
+  }, [product, tab, timeFilter, customDate, fetchRecentByProduct, deploymentsTick]);
 
   // Fetch recent activity for activity tab
   useEffect(() => {
@@ -279,7 +289,7 @@ export function ProductDeploymentsPage() {
       if (activityTimeFilter === 'custom' && !activityCustomDate) return;
       fetchRecentByProduct(product, computeSince(activityTimeFilter, activityCustomDate));
     }
-  }, [product, tab, activityTimeFilter, activityCustomDate, fetchRecentByProduct]);
+  }, [product, tab, activityTimeFilter, activityCustomDate, fetchRecentByProduct, deploymentsTick]);
 
   // Build a set of recently-changed (service, env) keys for highlighting
   const recentKeys = useMemo(() => {

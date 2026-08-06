@@ -50,6 +50,7 @@ import {
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
@@ -135,9 +136,16 @@ export function PromotionDetailPage() {
       .finally(() => setLoading(false));
   };
 
+  // Live refresh for this candidate: its own events by id, plus work-item sign-offs which
+  // change the approval progress shown here (their events carry a key, not the candidate id).
+  const realtimeTick = useEntityRefresh(['promotion', 'work-item'], {
+    filter: (evt) => evt.entity === 'work-item' || !evt.id || evt.id === id,
+  });
+
   useEffect(() => {
     fetchData();
-  }, [id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, realtimeTick]);
 
   // Above the early returns below, so the hook order holds on every render. The edge is in the title
   // as well as the service: "which promotion" is a (service, source → target) question, and two
@@ -1830,10 +1838,15 @@ function TicketRow({
     }
   };
 
+  // Each row owns its work-item context, so it also owns reacting to that work item changing.
+  const workItemTick = useEntityRefresh(['work-item'], {
+    filter: (evt) => !evt.key || evt.key === key,
+  });
+
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, candidate.product, candidate.targetEnv, candidate.id]);
+  }, [key, candidate.product, candidate.targetEnv, candidate.id, workItemTick]);
 
   const Icon = REFERENCE_ICONS[reference.type] ?? Ticket;
   const href = resolveReferenceHref({

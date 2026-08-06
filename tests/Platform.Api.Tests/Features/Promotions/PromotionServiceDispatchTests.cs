@@ -133,7 +133,7 @@ public class PromotionServiceDispatchTests : IDisposable
     }
 
     [Fact]
-    public async Task NoAutoApprove_DoesNotDispatchWebhook()
+    public async Task NoAutoApprove_DispatchesCreatedButNoDecisionWebhook()
     {
         SeedPolicy(approverGroup: "ops");
 
@@ -141,8 +141,13 @@ public class PromotionServiceDispatchTests : IDisposable
 
         Assert.NotNull(candidate);
         Assert.Equal(PromotionStatus.Pending, candidate!.Status);
+        // Creation always announces itself; what a Pending candidate must NOT do is claim a decision.
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.created",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>());
         await _webhookDispatcher.DidNotReceive().DispatchAsync(
-            Arg.Any<string>(),
+            Arg.Is<string>(e => e != "promotion.created"),
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
     }
@@ -250,8 +255,10 @@ public class PromotionServiceDispatchTests : IDisposable
             () => _sut.BypassAsync(candidate!.Id, reason: "   "));
 
         Assert.Equal(PromotionStatus.Pending, _db.PromotionCandidates.Single().Status);
+        // Only creation announced itself — the failed bypass must not have dispatched a decision.
         await _webhookDispatcher.DidNotReceive().DispatchAsync(
-            Arg.Any<string>(), Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+            Arg.Is<string>(e => e != "promotion.created"),
+            Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
     }
 
     [Fact]
