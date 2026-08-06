@@ -129,7 +129,47 @@ public class PromotionServiceDispatchTests : IDisposable
         await _webhookDispatcher.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Theory]
+    // Every path to Approved must queue the approval webhook the same way — held, and keyed so
+    // CancelApprovalAsync can find it. A path that dispatched it plainly would be un-undoable.
+    [InlineData("gate")]
+    [InlineData("bypass")]
+    [InlineData("auto")]
+    public async Task PromotionApprovedWebhook_IsHeldAndCancellable_OnEveryApprovalPath(string path)
+    {
+        SeedPolicy(approverGroup: path == "auto" ? null : "ops");
+        var candidate = await CreateAsync();
+
+        if (path == "gate") await _sut.ApproveAsync(candidate!.Id, comment: null);
+        else if (path == "bypass") await _sut.BypassAsync(candidate!.Id, reason: "hotfix");
+
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Is<WebhookDispatchOptions>(o =>
+                o.Delay == PromotionService.ApprovedWebhookDelay
+                && o.CancelKey == PromotionService.ApprovedWebhookCancelKey(candidate!.Id)));
+    }
+
+    [Fact]
+    public async Task RejectedWebhook_IsNotHeld()
+    {
+        // The hold buys back a mistaken approval. Nothing else is retractable, so nothing else waits.
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.RejectAsync(candidate!.Id, comment: "not ready");
+
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.rejected",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Is<WebhookDispatchOptions?>(o => o == null || o.Delay == null));
     }
 
     [Fact]
@@ -145,11 +185,13 @@ public class PromotionServiceDispatchTests : IDisposable
         await _webhookDispatcher.Received(1).DispatchAsync(
             "promotion.created",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
         await _webhookDispatcher.DidNotReceive().DispatchAsync(
             Arg.Is<string>(e => e != "promotion.created"),
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -167,7 +209,8 @@ public class PromotionServiceDispatchTests : IDisposable
         await _webhookDispatcher.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -185,7 +228,8 @@ public class PromotionServiceDispatchTests : IDisposable
                 JsonSerializer.Serialize(o).Contains("approvedBy")
                 && JsonSerializer.Serialize(o).Contains("alice@example.com")
                 && JsonSerializer.Serialize(o).Contains("\"via\":\"approval\"")),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -205,7 +249,8 @@ public class PromotionServiceDispatchTests : IDisposable
                 && JsonSerializer.Serialize(o).Contains("\"via\":\"bypass\"")
                 && JsonSerializer.Serialize(o).Contains("alice@example.com")
                 && JsonSerializer.Serialize(o).Contains("INC-1234 hotfix")),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -221,7 +266,8 @@ public class PromotionServiceDispatchTests : IDisposable
         await _webhookDispatcher.Received(1).DispatchAsync(
             "promotion.rejected",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -242,7 +288,8 @@ public class PromotionServiceDispatchTests : IDisposable
         await _webhookDispatcher.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -258,7 +305,7 @@ public class PromotionServiceDispatchTests : IDisposable
         // Only creation announced itself — the failed bypass must not have dispatched a decision.
         await _webhookDispatcher.DidNotReceive().DispatchAsync(
             Arg.Is<string>(e => e != "promotion.created"),
-            Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+            Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]

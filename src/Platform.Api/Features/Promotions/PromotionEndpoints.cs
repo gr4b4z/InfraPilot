@@ -110,6 +110,9 @@ public static class PromotionEndpoints
             // instead, so a blocked approver still gets the button — disabled, with the reason.
             var gateBlocking = progress.WorkItems is { Required: true, Satisfied: false };
             var canApprove = eligibleRequirements.Count > 0 && !gateBlocking;
+            // Offered on an Approved candidate that hasn't been dispatched yet; mirrors the service's
+            // own guards so the button appears exactly when the action would go through.
+            var canCancelApproval = await svc.CanUserCancelApprovalAsync(c);
 
             var targetCurrent = await db.DeployEvents
                 .AsNoTracking()
@@ -128,6 +131,15 @@ public static class PromotionEndpoints
                 .OrderByDescending(a => a.Timestamp)
                 .Select(a => new { a.ActorName, a.Timestamp, a.AfterState })
                 .FirstOrDefaultAsync();
+            // …but a bypass that was subsequently cancelled is history, not the current state. Both
+            // actions are audit entries on the same candidate, so the later one wins.
+            var cancelledAt = await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.approval.cancelled" && a.EntityId == id)
+                .OrderByDescending(a => a.Timestamp)
+                .Select(a => (DateTimeOffset?)a.Timestamp)
+                .FirstOrDefaultAsync();
+            if (bypassEntry is not null && cancelledAt is { } cancelled && cancelled > bypassEntry.Timestamp)
+                bypassEntry = null;
             object? bypass = null;
             if (bypassEntry is not null)
             {
@@ -181,6 +193,7 @@ public static class PromotionEndpoints
                 comments = comments.Select(ToCommentDto),
                 approvalProgress = progress,
                 bypass,
+                canCancelApproval,
             });
         });
 
@@ -449,6 +462,28 @@ public static class PromotionEndpoints
             PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
         {
             return await RunDecisionAsync(() => svc.RejectAsync(id, body?.Comment));
+        });
+
+        // Cancel approval — Approved back to Pending, for the wrong row approved by mistake. Only
+        // while the candidate hasn't been dispatched; the service refuses everything else. Returns
+        // whether the held promotion.approved webhook was caught in time, which is what the person
+        // undoing wants to know.
+        group.MapPost("/{id:guid}/cancel-approval", async (
+            PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
+        {
+            try
+            {
+                var result = await svc.CancelApprovalAsync(id, body?.Comment);
+                return Results.Ok(new
+                {
+                    candidate = ToDto(result.Candidate, canApprove: false),
+                    clearedApprovals = result.ClearedApprovals,
+                    approvedWebhookStopped = result.ApprovedWebhookStopped,
+                });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
         // Bulk approve — succeeds partially: returns per-id outcome so the UI can show

@@ -315,7 +315,8 @@ export interface WebhookSubscription {
 export interface WebhookDelivery {
   id: string;
   eventType: string;
-  status: 'pending' | 'delivered' | 'failed';
+  /** `cancelled` — the source event was retracted while the delivery was still held. */
+  status: 'pending' | 'delivered' | 'failed' | 'cancelled';
   attempts: number;
   httpStatus: number | null;
   responseBody: string | null;

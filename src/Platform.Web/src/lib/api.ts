@@ -365,6 +365,8 @@ class ApiClient {
       approvalProgress: PromotionApprovalProgress;
       eligibleRequirements: EligibleRequirement[];
       bypass: { byName: string; at: string; reason: string | null } | null;
+      /** Whether the current user may undo this promotion's approval right now. */
+      canCancelApproval: boolean;
     }>(`/promotions/${id}`);
   }
 
@@ -479,6 +481,22 @@ class ApiClient {
 
   rejectPromotion(id: string, comment?: string) {
     return this.request<PromotionCandidate>(`/promotions/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+  }
+
+  /**
+   * Undo an approval: an Approved promotion that hasn't been dispatched goes back to Pending and its
+   * recorded sign-offs are cleared. `approvedWebhookStopped` reports whether the promotion.approved
+   * webhook was caught inside its 10s hold — i.e. whether downstream ever heard about the approval.
+   */
+  cancelPromotionApproval(id: string, comment?: string) {
+    return this.request<{
+      candidate: PromotionCandidate;
+      clearedApprovals: number;
+      approvedWebhookStopped: boolean;
+    }>(`/promotions/${id}/cancel-approval`, {
       method: 'POST',
       body: JSON.stringify({ comment }),
     });

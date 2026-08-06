@@ -451,7 +451,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         await _factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -485,7 +486,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         await _factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -667,6 +669,87 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         detailResponse.EnsureSuccessStatusCode();
         var detail = await Deserialize(detailResponse);
         Assert.Equal("Pending", detail.GetProperty("candidate").GetProperty("status").GetString());
+    }
+
+    /// <summary>
+    /// The undo, over HTTP: approve, change your mind, and the queue has the promotion back as if the
+    /// approval had never happened — same person able to approve it again.
+    /// </summary>
+    [Fact]
+    public async Task Approve_ThenCancelApproval_ReturnsCandidateToPending()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"undo-svc-{Guid.NewGuid():N}"[..20];
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.1.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v8.1.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var approveResponse = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/approve", new { comment = "ship it" });
+        approveResponse.EnsureSuccessStatusCode();
+
+        var beforeUndo = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Approved", beforeUndo.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.True(beforeUndo.GetProperty("canCancelApproval").GetBoolean());
+
+        _factory.WebhookDispatcher.ClearReceivedCalls();
+
+        var cancelResponse = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/cancel-approval", new { comment = "wrong service" });
+        cancelResponse.EnsureSuccessStatusCode();
+        var cancelBody = await Deserialize(cancelResponse);
+        Assert.Equal("Pending", cancelBody.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.Equal(1, cancelBody.GetProperty("clearedApprovals").GetInt32());
+
+        await _factory.WebhookDispatcher.Received().DispatchAsync(
+            "promotion.approval.cancelled",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+
+        // The trail is empty again and the same approver can approve — the undo is real, not a label.
+        var afterUndo = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Empty(afterUndo.GetProperty("approvals").EnumerateArray());
+        Assert.False(afterUndo.GetProperty("canCancelApproval").GetBoolean());
+
+        var reapprove = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/approve", new { comment = "meant this one" });
+        reapprove.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// The window closes at dispatch: a promotion the executor already has cannot be un-approved,
+    /// because un-approving it would not stop anything.
+    /// </summary>
+    [Fact]
+    public async Task CancelApproval_OnADeployedPromotion_Is400()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"undo-late-{Guid.NewGuid():N}"[..20];
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.2.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v8.2.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        await _adminClient.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { comment = "ok" });
+        // The version lands in prod, which closes the candidate as Deployed.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.2.0", service: service));
+
+        var cancelResponse = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/cancel-approval", new { comment = "too late" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, cancelResponse.StatusCode);
     }
 
     // ── Utility ─────────────────────────────────────────────────────────────
