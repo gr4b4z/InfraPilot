@@ -372,12 +372,12 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         var items = preview.GetProperty("items").EnumerateArray().ToList();
         var a = items.Single(i => i.GetProperty("service").GetString() == "svc-a");
         var b = items.Single(i => i.GetProperty("service").GetString() == "svc-b");
-        var c = items.Single(i => i.GetProperty("service").GetString() == "svc-c");
         Assert.True(a.GetProperty("eligible").GetBoolean());      // 2.0 → 1.0, 1.0 ran in staging
         Assert.Equal("1.0", a.GetProperty("toVersion").GetString());
         Assert.False(b.GetProperty("eligible").GetBoolean());     // excluded
         Assert.Equal("excluded", b.GetProperty("skipReason").GetString());
-        Assert.False(c.GetProperty("eligible").GetBoolean());     // already matching (2.0 == 2.0)
+        // svc-c already matches the reference (2.0 == 2.0), so it isn't in the diff and isn't listed.
+        Assert.DoesNotContain(items, i => i.GetProperty("service").GetString() == "svc-c");
 
         var create = await _admin.PostAsJsonAsync("/api/rollbacks", body);
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
