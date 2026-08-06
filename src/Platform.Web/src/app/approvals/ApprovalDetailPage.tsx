@@ -6,6 +6,7 @@ import { ApprovalProgress } from '@/components/approvals/ApprovalProgress';
 import { StatusBadge } from '@/components/requests/StatusBadge';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   ArrowLeft,
@@ -33,9 +34,14 @@ export function ApprovalDetailPage() {
       .finally(() => setLoading(false));
   };
 
+  const realtimeTick = useEntityRefresh(['approval'], {
+    filter: (evt) => !evt.id || evt.id === id,
+  });
+
   useEffect(() => {
     fetchApproval();
-  }, [id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, realtimeTick]);
 
   // Above the early returns below, so the hook order is stable across renders.
   useDocumentTitle([approval?.serviceRequest?.catalogItem?.name, 'Approval']);

@@ -5,6 +5,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { marked } from 'marked';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { api, type ReleaseNoteFeedItem } from '@/lib/api';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
@@ -66,10 +67,14 @@ export function ReleaseNotesPage() {
     setPage(1);
   }, [product, environment]);
 
+  const releaseNotesTick = useEntityRefresh(['release-note'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product, environment, page]);
+  }, [product, environment, page, releaseNotesTick]);
 
   const productEntry = products.find((p) => p.product === product);
   const envsFromProduct = productEntry ? Object.keys(productEntry.environments) : [];

@@ -257,6 +257,10 @@ public class PromotionService
             candidate.Id, LogSanitizer.Clean(product), LogSanitizer.Clean(service),
             LogSanitizer.Clean(version), candidate.Status);
 
+        // Announce the new candidate (this also covers any Pending candidates the create just
+        // superseded — a list refresh shows both changes at once).
+        await DispatchWebhookAsync(candidate, "promotion.created", ct);
+
         // A new build invalidates the "held back" verdicts made against the old one.
         await ResetHeldWorkItemDecisionsAsync(candidate, payloadWorkItems, ct);
 
@@ -317,6 +321,9 @@ public class PromotionService
         _logger.LogInformation(
             "Updated existing candidate {CandidateId} from external create (refs={Count})",
             existing.Id, references.Count);
+
+        await DispatchWebhookAsync(existing, "promotion.updated", ct,
+            new { source = "external", refCount = references.Count });
 
         if (existing.Status == PromotionStatus.Pending) return await ReevaluateAsync(existing.Id, ct);
         return existing;
@@ -1753,6 +1760,10 @@ public class PromotionService
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Candidate {Id} → Deploying (run={Run})", candidateId, externalRunUrl);
+
+        await DispatchWebhookAsync(candidate, "promotion.deploying", ct,
+            new { externalRunUrl });
+
         return candidate;
     }
 
@@ -1965,7 +1976,7 @@ public class PromotionService
                      && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved))
             .ToListAsync(ct);
 
-        var superseded = 0;
+        var supersededCandidates = new List<PromotionCandidate>();
         foreach (var candidate in open)
         {
             // Only supersede what this deploy actually overtook. A promotion created after the deploy
@@ -1984,15 +1995,21 @@ public class PromotionService
                 $"Superseded — {service} {landedVersion} was deployed to {environment} on "
                 + $"{landedAt:u}, a newer version than the {candidate.Version} this promotion carries. "
                 + "It is no longer going out.");
-            superseded++;
+            supersededCandidates.Add(candidate);
 
             _logger.LogInformation(
                 "Candidate {Id} → Superseded: {Environment} moved on to {LandedVersion} (was carrying {Version})",
                 candidate.Id, environment, landedVersion, candidate.Version);
         }
 
-        if (superseded > 0) await _db.SaveChangesAsync(ct);
-        return superseded;
+        if (supersededCandidates.Count > 0)
+        {
+            await _db.SaveChangesAsync(ct);
+            foreach (var candidate in supersededCandidates)
+                await DispatchWebhookAsync(candidate, "promotion.superseded", ct,
+                    new { landedVersion, landedAt });
+        }
+        return supersededCandidates.Count;
     }
 
     /// <summary>

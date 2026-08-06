@@ -89,6 +89,7 @@ if (authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase))
         options.MapInboundClaims = false;
         options.TokenValidationParameters.RoleClaimType = "roles";
         options.TokenValidationParameters.NameClaimType = "name";
+        AcceptHubAccessToken(options);
     });
 }
 else
@@ -112,6 +113,7 @@ else
                 NameClaimType = "name",
                 RoleClaimType = "roles",
             };
+            AcceptHubAccessToken(options);
         });
 }
 var isMsal = authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase);
@@ -213,16 +215,19 @@ builder.Services.AddScoped<CatalogAgent>();
 // Webhooks
 builder.Services.AddDataProtection()
     .PersistKeysToDbContext<PlatformDbContext>();
-builder.Services.AddScoped<IWebhookDispatcher, WebhookDispatcher>();
+// The realtime decorator mirrors every dispatched event onto the SignalR hub so open pages
+// refresh, then hands off to the real dispatcher for actual webhook delivery.
+builder.Services.AddScoped<WebhookDispatcher>();
+builder.Services.AddScoped<IWebhookDispatcher, RealtimeNotifyingWebhookDispatcher>();
 builder.Services.AddHttpClient("webhook-delivery");
 builder.Services.AddHostedService<WebhookDeliveryWorker>();
 
 // Retry handler
 builder.Services.AddScoped<RetryHandler>();
 
-// SSE / Realtime
-builder.Services.AddSingleton<SseConnectionManager>();
-builder.Services.AddScoped<IPlatformEventPublisher, SsePlatformEventPublisher>();
+// Realtime — SignalR hub pushing entity-changed signals and chat notifications to the web app.
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<IPlatformEventPublisher, SignalRPlatformEventPublisher>();
 
 // Background services
 builder.Services.AddHostedService<EscalationTimerService>();
@@ -271,6 +276,28 @@ static bool IsLoopbackOrigin(string origin)
     if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
     if (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
     return System.Net.IPAddress.TryParse(uri.Host, out var ip) && System.Net.IPAddress.IsLoopback(ip);
+}
+
+// Browsers cannot set an Authorization header on a WebSocket handshake, so the SignalR client
+// sends the JWT as ?access_token=… instead. Accept it — for hub paths only, so ordinary API
+// calls can't smuggle tokens through query strings (where they'd end up in access logs).
+// Wraps any handler an auth library installed rather than replacing it.
+static void AcceptHubAccessToken(JwtBearerOptions options)
+{
+    options.Events ??= new JwtBearerEvents();
+    var prior = options.Events.OnMessageReceived;
+    options.Events.OnMessageReceived = async context =>
+    {
+        if (prior is not null) await prior(context);
+
+        string? accessToken = context.Request.Query["access_token"];
+        if (string.IsNullOrEmpty(context.Token)
+            && !string.IsNullOrEmpty(accessToken)
+            && context.HttpContext.Request.Path.StartsWithSegments("/api/hubs"))
+        {
+            context.Token = accessToken;
+        }
+    };
 }
 
 // JSON serialization — handle circular references from EF navigation properties
@@ -376,8 +403,8 @@ app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(Authori
 
 app.MapGroup("/agent").MapAgentEndpoints().AllowAnonymous();
 
-// SSE endpoint
-app.MapSseEndpoints();
+// Realtime hub — WebSocket (with SignalR's fallbacks) for entity-changed signals
+app.MapHub<EventsHub>("/api/hubs/events").RequireAuthorization();
 
 app.Run();
 
