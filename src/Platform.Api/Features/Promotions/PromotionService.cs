@@ -42,6 +42,21 @@ public class PromotionService
         PropertyNameCaseInsensitive = true,
     };
 
+    /// <summary>
+    /// How long a <c>promotion.approved</c> delivery is held before it goes out. The window exists
+    /// so <see cref="CancelApprovalAsync"/> can catch the mistake everyone makes — approving the
+    /// wrong row — before the downstream pipeline it triggers has heard about it. Deliberately short:
+    /// long enough to hit undo, short enough that nobody plans around it.
+    /// </summary>
+    public static readonly TimeSpan ApprovedWebhookDelay = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Handle the held <c>promotion.approved</c> deliveries are queued under, so cancelling an
+    /// approval can stop exactly this candidate's rows and nobody else's.
+    /// </summary>
+    public static string ApprovedWebhookCancelKey(Guid candidateId)
+        => $"promotion.approved:{candidateId}";
+
     public PromotionService(
         PlatformDbContext db,
         PromotionPolicyResolver resolver,
@@ -274,7 +289,8 @@ public class PromotionService
                 "PromotionCandidate", candidate.Id, null,
                 new { autoApprove = true });
 
-            await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+            await DispatchWebhookAsync(candidate, "promotion.approved", ct,
+                options: ApprovedWebhookOptions(candidate));
         }
 
         // Last: the version may already be live in the target. Ingest can only close a promotion that
@@ -1122,7 +1138,8 @@ public class PromotionService
         _logger.LogInformation(
             "Candidate {Id} → Approved via gate evaluator", candidate.Id);
 
-        await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+        await DispatchWebhookAsync(candidate, "promotion.approved", ct,
+            options: ApprovedWebhookOptions(candidate));
 
         return candidate;
     }
@@ -1139,8 +1156,9 @@ public class PromotionService
     /// service-specific policy still wins resolution re-projects to an identical snapshot and is
     /// left untouched.</para>
     ///
-    /// <para>Safety rails: candidates that are Approved/Deploying/terminal are never touched (an
-    /// approval that already fired its webhook is not retractable — reject or supersede instead),
+    /// <para>Safety rails: candidates that are Approved/Deploying/terminal are never touched (a
+    /// policy edit must not silently un-approve work — undoing an approval is a deliberate act, see
+    /// <see cref="CancelApprovalAsync"/>),
     /// and when no policy resolves at all any more (policy deleted with no fallback) the candidate
     /// keeps its creation-time snapshot — deleting a gate's configuration must not auto-approve
     /// everything that was waiting on it.</para>
@@ -1264,9 +1282,165 @@ public class PromotionService
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
             new { trigger = "administrator-bypass", reason = trimmedReason },
-            bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason));
+            bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason),
+            options: ApprovedWebhookOptions(candidate));
 
         return candidate;
+    }
+
+    // ---------------------------------------------------------------------
+    // Undo (Approved → Pending)
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Takes back an approval: an <see cref="PromotionStatus.Approved"/> candidate that has not been
+    /// handed to the executor yet goes back to <see cref="PromotionStatus.Pending"/> and its recorded
+    /// sign-offs are cleared. The everyday case is the wrong row approved by mistake, so the window is
+    /// deliberately narrow — the moment the candidate is Deploying it belongs to the pipeline, and the
+    /// answer becomes rollback, not undo.
+    ///
+    /// <para>Clearing the <see cref="PromotionApproval"/> rows is what makes the undo real rather than
+    /// cosmetic: leaving them would let the very next gate evaluation re-approve the candidate, and
+    /// would leave the mistaken approver unable to approve again (one decision per person). The
+    /// cleared sign-offs are named in the system comment, so the thread still records who had
+    /// approved and who took it back.</para>
+    ///
+    /// <para>Refused when the gate would re-satisfy itself with no approvals at all — an auto-approve
+    /// policy. There is no human decision to retract there, and the candidate would flip straight back
+    /// to Approved; rejecting it is the honest action.</para>
+    ///
+    /// <para>Best case, this also catches the <c>promotion.approved</c> webhook inside its
+    /// <see cref="ApprovedWebhookDelay"/> hold and stops it going out at all — reported back as
+    /// <see cref="CancelApprovalResult.ApprovedWebhookStopped"/> so the UI can tell the user whether
+    /// downstream heard about the approval before they took it back.</para>
+    /// </summary>
+    public async Task<CancelApprovalResult> CancelApprovalAsync(
+        Guid candidateId, string? comment, CancellationToken ct = default)
+    {
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        if (candidate.Status != PromotionStatus.Approved)
+        {
+            throw new InvalidOperationException(candidate.Status switch
+            {
+                PromotionStatus.Pending =>
+                    "This promotion is not approved — there is nothing to cancel.",
+                PromotionStatus.Deploying or PromotionStatus.Deployed =>
+                    $"This promotion is already {candidate.Status.ToString().ToLowerInvariant()} — "
+                    + "cancelling the approval would not stop it. Roll back instead.",
+                _ =>
+                    $"This promotion is {candidate.Status} — its approval can no longer be cancelled.",
+            });
+        }
+
+        var snapshot = ReadSnapshot(candidate);
+
+        // Anyone the policy trusts to approve this candidate may take an approval back — including an
+        // approver other than the one who made the mistake, which is the point when the mistake is
+        // spotted by a colleague. Admins qualify regardless, matching the bypass escape hatch.
+        if (!_currentUser.IsAdmin
+            && !await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
+        {
+            throw new UnauthorizedAccessException(
+                "You are not authorized to cancel the approval on this promotion");
+        }
+
+        var wouldReapprove = await EvaluateGateAsync(candidate, snapshot, ct, ignoreRecordedApprovals: true);
+        if (wouldReapprove.Satisfied)
+        {
+            throw new InvalidOperationException(
+                "This promotion's policy approves it without human sign-off, so there is no approval "
+                + "to take back — it would be approved again immediately. Reject it instead.");
+        }
+
+        var approvals = await _db.PromotionApprovals
+            .Where(a => a.CandidateId == candidateId && a.Decision == PromotionDecision.Approved)
+            .ToListAsync(ct);
+        var clearedNames = approvals
+            .Select(a => string.IsNullOrWhiteSpace(a.ApproverName) ? a.ApproverEmail : a.ApproverName)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _db.PromotionApprovals.RemoveRange(approvals);
+
+        candidate.Status = PromotionStatus.Pending;
+        candidate.ApprovedAt = null;
+
+        var trimmedComment = (comment ?? "").Trim();
+        // A bypass records no approval row, so "cleared" would read as "nothing happened" on one.
+        var cleared = clearedNames.Count == 0
+            ? "the promotion is back to pending"
+            : $"the promotion is back to pending and the sign-off(s) by {string.Join(", ", clearedNames)} were cleared";
+        StageSystemComment(candidateId, trimmedComment.Length == 0
+            ? $"{Actor} cancelled the approval — {cleared}."
+            : $"{Actor} cancelled the approval — {cleared}. Reason: {trimmedComment}");
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.approval.cancelled",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { comment = trimmedComment.Length == 0 ? null : trimmedComment, clearedApprovals = approvals.Count });
+
+        _logger.LogInformation(
+            "Candidate {Id} approval cancelled by {Email}; {Count} approval row(s) cleared",
+            candidate.Id, _currentUser.Email, approvals.Count);
+
+        // Stop the held promotion.approved delivery first, so a consumer that does receive both
+        // events can never see the cancellation before the approval it cancels.
+        var stopped = 0;
+        try
+        {
+            stopped = await _webhookDispatcher.CancelPendingAsync(ApprovedWebhookCancelKey(candidate.Id), ct);
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal, exactly like dispatch: the state change is already persisted, and the
+            // promotion.approval.cancelled event below still tells consumers what happened.
+            _logger.LogWarning(ex,
+                "Cancelling held promotion.approved deliveries failed for candidate {Id}", candidate.Id);
+        }
+
+        await DispatchWebhookAsync(candidate, "promotion.approval.cancelled", ct,
+            new
+            {
+                comment = trimmedComment.Length == 0 ? null : trimmedComment,
+                clearedApprovals = approvals.Count,
+                // True ⇒ we caught it in the hold window and no promotion.approved ever left. A
+                // consumer that saw one knows this cancellation retracts it.
+                approvedWebhookStopped = stopped > 0,
+            });
+
+        return new CancelApprovalResult(candidate, approvals.Count, stopped > 0);
+    }
+
+    /// <summary>
+    /// Non-throwing form of the cancel-approval checks, for the UI's <c>canCancelApproval</c> flag.
+    /// Mirrors <see cref="CancelApprovalAsync"/>'s guards so the button is offered exactly when the
+    /// action would succeed.
+    /// </summary>
+    public async Task<bool> CanUserCancelApprovalAsync(
+        PromotionCandidate candidate, CancellationToken ct = default)
+    {
+        if (candidate.Status != PromotionStatus.Approved) return false;
+
+        try
+        {
+            var snapshot = ReadSnapshot(candidate);
+            if (!_currentUser.IsAdmin
+                && !await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
+                return false;
+
+            var wouldReapprove = await EvaluateGateAsync(candidate, snapshot, ct, ignoreRecordedApprovals: true);
+            return !wouldReapprove.Satisfied;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Cancel-approval capability probe failed for candidate {Id}", candidate.Id);
+            return false;
+        }
     }
 
     /// <summary>
@@ -1291,10 +1465,17 @@ public class PromotionService
     /// A work item counts as approved when it has at least one Approved <see cref="WorkItemApproval"/>
     /// row for <c>(WorkItemKey, Product, TargetEnv)</c> and zero Issue / Blocked rows.
     /// </remarks>
+    /// <param name="ignoreRecordedApprovals">
+    /// Evaluate as if no <see cref="PromotionApproval"/> row existed. Answers the one question
+    /// <see cref="CancelApprovalAsync"/> has to ask before it acts — "if I clear the sign-offs, does
+    /// this candidate stay approved anyway?" — which is true for a policy that approves on its own,
+    /// and means there is no approval to take back.
+    /// </param>
     internal async Task<GateResult> EvaluateGateAsync(
         PromotionCandidate candidate,
         ResolvedPolicySnapshot snapshot,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool ignoreRecordedApprovals = false)
     {
         // Source-drift invariant: a candidate is only promotable while its source environment is
         // still running the candidate's version. If the source was rolled back (or otherwise moved
@@ -1342,7 +1523,11 @@ public class PromotionService
         if (snapshot.IsAutoApprove)
             return new GateResult(true, Array.Empty<string>());
 
-        // 4. Human approver requirements must be satisfied.
+        // 4. Human approver requirements must be satisfied. Steps 1-3 above are approval-independent,
+        // so this is the only one a hypothetical "with no approvals recorded" run has to short-circuit.
+        if (ignoreRecordedApprovals)
+            return new GateResult(false, new[] { "No approvals recorded" });
+
         return await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct);
     }
 
@@ -2215,12 +2400,22 @@ public class PromotionService
     // ---------------------------------------------------------------------
 
     /// <summary>
+    /// Delivery controls every <c>promotion.approved</c> dispatch uses: held for
+    /// <see cref="ApprovedWebhookDelay"/> and keyed so <see cref="CancelApprovalAsync"/> can stop it.
+    /// Applied on all three approval paths (gate satisfied, admin bypass, born-approved) so the rule
+    /// downstream sees is one rule, not three special cases.
+    /// </summary>
+    private static WebhookDispatchOptions ApprovedWebhookOptions(PromotionCandidate candidate)
+        => new(Delay: ApprovedWebhookDelay, CancelKey: ApprovedWebhookCancelKey(candidate.Id));
+
+    /// <summary>
     /// Dispatches a webhook event for a promotion state change. Non-fatal: logs a warning on
     /// failure but never throws — the state transition has already been persisted.
     /// </summary>
     private async Task DispatchWebhookAsync(
         PromotionCandidate candidate, string eventType, CancellationToken ct, object? change = null,
-        (string Name, string Email, DateTimeOffset At, string Reason)? bypass = null)
+        (string Name, string Email, DateTimeOffset At, string Reason)? bypass = null,
+        WebhookDispatchOptions? options = null)
     {
         try
         {
@@ -2284,7 +2479,7 @@ public class PromotionService
 
             var filters = new WebhookEventFilters(Product: candidate.Product, Environment: candidate.TargetEnv);
 
-            await _webhookDispatcher.DispatchAsync(eventType, payload, filters);
+            await _webhookDispatcher.DispatchAsync(eventType, payload, filters, options);
         }
         catch (Exception ex)
         {
@@ -2651,6 +2846,17 @@ public record PromotionQuery(
 /// not a structured machine-consumable shape.
 /// </summary>
 public record GateResult(bool Satisfied, IReadOnlyList<string> Blockers);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.CancelApprovalAsync"/>. The two counters exist for the
+/// user, not the caller's control flow: how many sign-offs the undo wiped, and — the question anyone
+/// undoing a mistake actually has — whether the <c>promotion.approved</c> webhook was caught before
+/// it left.
+/// </summary>
+public record CancelApprovalResult(
+    PromotionCandidate Candidate,
+    int ClearedApprovals,
+    bool ApprovedWebhookStopped);
 
 /// <summary>
 /// Structured approval progress for the detail view, produced by

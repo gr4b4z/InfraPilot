@@ -90,7 +90,8 @@ public class PromotionGateTests
         await factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
         await factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.ticket.approved",
             Arg.Any<object>(),
