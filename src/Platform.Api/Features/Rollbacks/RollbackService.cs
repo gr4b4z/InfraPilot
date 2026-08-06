@@ -224,11 +224,11 @@ public class RollbackService
                 result.Add(new ResolvedRollbackItem(service, current ?? "", "", false, $"not present in {dto.ReferenceEnv}"));
                 continue;
             }
+            // Same version in both envs — not part of the diff, so not a candidate at all. Emitting it
+            // as a skipped item padded the preview with rows the operator can do nothing about (and
+            // inflated the "N of M" denominator); align is defined by the diff, so it's omitted.
             if (string.Equals(refVersion, current, StringComparison.OrdinalIgnoreCase))
-            {
-                result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion, false, "already matching"));
                 continue;
-            }
             var history = await VersionHistoryAsync(dto.Product, service, dto.TargetEnv, ct);
             var (eligible, reason) = EvaluateTarget(refVersion, current, history);
             result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion, eligible, reason));
