@@ -13,6 +13,7 @@ export const AVAILABLE_EVENTS = [
   'approval.changesrequested',
   'promotion.created',
   'promotion.approved',
+  'promotion.approval.cancelled',
   'promotion.rejected',
   'promotion.deploying',
   'promotion.deployed',

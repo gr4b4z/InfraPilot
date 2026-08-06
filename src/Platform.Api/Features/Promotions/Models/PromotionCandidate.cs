@@ -10,6 +10,10 @@ namespace Platform.Api.Features.Promotions.Models;
 /// once the version lands in the target environment the change IS live, so ingestion closes the
 /// candidate there from any open state — including Rejected.
 ///
+/// <para>Approved → Pending is the one backwards edge, and only while the candidate is still
+/// undispatched: <see cref="PromotionService.CancelApprovalAsync"/> undoes an approval given by
+/// mistake. From Deploying onwards the pipeline owns the change and the answer is a rollback.</para>
+///
 /// <para>Candidates are created externally via <see cref="PromotionService.CreateExternalCandidateAsync"/>
 /// (an external system POSTs the authoritative net change set) and closed by either approval +
 /// executor dispatch or a newer version replacing them. The candidate is <b>self-contained</b>: it

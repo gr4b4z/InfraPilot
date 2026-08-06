@@ -34,7 +34,9 @@ public class RealtimeNotifyingWebhookDispatcher : IWebhookDispatcher
         _logger = logger;
     }
 
-    public async Task DispatchAsync(string eventType, object payload, WebhookEventFilters? filters = null)
+    public async Task DispatchAsync(
+        string eventType, object payload, WebhookEventFilters? filters = null,
+        WebhookDispatchOptions? options = null)
     {
         try
         {
@@ -46,8 +48,14 @@ public class RealtimeNotifyingWebhookDispatcher : IWebhookDispatcher
             _logger.LogWarning(ex, "Realtime broadcast for '{EventType}' failed", eventType);
         }
 
-        await _inner.DispatchAsync(eventType, payload, filters);
+        // The realtime broadcast is NOT delayed even when the delivery is: the browser is showing
+        // the state the transition just wrote, and holding the UI back for a webhook grace period
+        // would make the page lie about what the database says.
+        await _inner.DispatchAsync(eventType, payload, filters, options);
     }
+
+    public Task<int> CancelPendingAsync(string cancelKey, CancellationToken ct = default)
+        => _inner.CancelPendingAsync(cancelKey, ct);
 
     /// <summary>
     /// Translates a webhook event name into the entity-changed signal(s) it implies. The payloads
