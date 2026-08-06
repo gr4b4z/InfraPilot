@@ -30,6 +30,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
@@ -109,7 +110,13 @@ export function DeploymentDetailPage() {
     }
   }, [id]);
 
-  useEffect(() => { void load(); }, [load]);
+  // Enrichment fills in work-item titles minutes after ingest, and linked promotions/rollbacks
+  // move while this page is open — follow this event's own updates.
+  const realtimeTick = useEntityRefresh(['deployment'], {
+    filter: (evt) => !evt.id || evt.id === id,
+  });
+
+  useEffect(() => { void load(); }, [load, realtimeTick]);
 
   // Before the early returns below, so the hook order is the same on every render. A deploy event is
   // the most-pasted link in the app ("this is the one that failed"), and until it loads the id is

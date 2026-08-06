@@ -5,6 +5,7 @@ import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
@@ -54,9 +55,13 @@ export function DeploymentHistoryPage() {
   // the title has to name the environment or every one of those links reads the same.
   useDocumentTitle([`${product}/${service}`, environment, 'Deployment history']);
 
+  const deploymentsTick = useEntityRefresh(['deployment'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+
   useEffect(() => {
     if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
-  }, [product, service, fetchHistory]);
+  }, [product, service, fetchHistory, deploymentsTick]);
 
   const environments = useMemo(() => {
     const envSet = new Set(allHistory.map((e) => e.environment));

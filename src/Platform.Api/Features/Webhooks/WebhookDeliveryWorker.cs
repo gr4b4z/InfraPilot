@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.Features.Webhooks;
 
@@ -10,6 +11,7 @@ public class WebhookDeliveryWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IDataProtector _protector;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IPlatformEventPublisher _events;
     private readonly ILogger<WebhookDeliveryWorker> _logger;
 
     private static readonly int[] RetryDelaysSeconds = [30, 120, 600, 3600, 14400]; // 30s, 2m, 10m, 1h, 4h
@@ -18,11 +20,13 @@ public class WebhookDeliveryWorker : BackgroundService
         IServiceScopeFactory scopeFactory,
         IDataProtectionProvider dataProtection,
         IHttpClientFactory httpClientFactory,
+        IPlatformEventPublisher events,
         ILogger<WebhookDeliveryWorker> logger)
     {
         _scopeFactory = scopeFactory;
         _protector = dataProtection.CreateProtector("WebhookSecrets");
         _httpClientFactory = httpClientFactory;
+        _events = events;
         _logger = logger;
     }
 
@@ -74,6 +78,18 @@ public class WebhookDeliveryWorker : BackgroundService
         }
 
         await db.SaveChangesAsync(ct);
+
+        // Let the admin webhook screens replace their "wait a couple of seconds and refetch"
+        // guesswork with an actual signal. One event per subscription touched this cycle.
+        foreach (var subscriptionId in deliveries.Select(d => d.SubscriptionId).Distinct())
+        {
+            await _events.PublishEntityChanged(new EntityChangedEvent
+            {
+                Entity = "webhook-delivery",
+                Action = "updated",
+                Id = subscriptionId.ToString(),
+            });
+        }
     }
 
     private async Task AttemptDelivery(HttpClient client, Models.WebhookDelivery delivery, CancellationToken ct)

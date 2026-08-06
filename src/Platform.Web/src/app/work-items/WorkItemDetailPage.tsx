@@ -14,6 +14,7 @@ import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { Linkified } from '@/lib/linkify';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { refreshMyTasks } from '@/stores/myTasksStore';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
@@ -89,9 +90,15 @@ export function WorkItemDetailPage() {
     }
   }, [workItemKey, product, targetEnv]);
 
+  // Sign-offs, comments and promotion changes from other sessions land here live. Promotion
+  // events don't carry the work-item key, so only work-item events are narrowed by it.
+  const realtimeTick = useEntityRefresh(['work-item', 'promotion'], {
+    filter: (evt) => evt.entity === 'promotion' || !evt.key || evt.key === workItemKey,
+  });
+
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, realtimeTick]);
 
   // Above the early returns, so the hook order is stable. The (product, targetEnv) pair is in the
   // title for the same reason it's in the URL: it's part of this page's identity, and the same work

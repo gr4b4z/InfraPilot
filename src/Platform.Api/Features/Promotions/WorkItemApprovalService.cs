@@ -10,6 +10,7 @@ using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.Features.Promotions;
 
@@ -41,6 +42,7 @@ public class WorkItemApprovalService
     private readonly PromotionService _promotion;
     private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<WorkItemApprovalService> _logger;
+    private readonly IPlatformEventPublisher _events;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -66,7 +68,8 @@ public class WorkItemApprovalService
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
         UserPreferencesService userPrefs,
-        ILogger<WorkItemApprovalService> logger)
+        ILogger<WorkItemApprovalService> logger,
+        IPlatformEventPublisher events)
     {
         _db = db;
         _auth = auth;
@@ -76,6 +79,7 @@ public class WorkItemApprovalService
         _promotion = promotion;
         _userPrefs = userPrefs;
         _logger = logger;
+        _events = events;
     }
 
     // ---------------------------------------------------------------------
@@ -1063,6 +1067,14 @@ public class WorkItemApprovalService
             "WorkItemComment", comment.Id, null,
             new { workItemKey = key, product = prod, targetEnv = env });
 
+        // Comments are conversation, not a subscriber-facing contract event — realtime only,
+        // so an open work-item view shows the new entry without a reload.
+        await _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "work-item", Action = "commented",
+            Key = key, Product = prod, Environment = env,
+        });
+
         return comment;
     }
 
@@ -1086,6 +1098,12 @@ public class WorkItemApprovalService
             "WorkItemComment", comment.Id, null,
             new { comment.WorkItemKey, comment.Product, comment.TargetEnv });
 
+        await _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "work-item", Action = "commented",
+            Key = comment.WorkItemKey, Product = comment.Product, Environment = comment.TargetEnv,
+        });
+
         return comment;
     }
 
@@ -1103,6 +1121,12 @@ public class WorkItemApprovalService
             _currentUser.Id, _currentUser.Name, "user",
             "WorkItemComment", commentId, null,
             new { comment.WorkItemKey, comment.Product, comment.TargetEnv });
+
+        await _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "work-item", Action = "commented",
+            Key = comment.WorkItemKey, Product = comment.Product, Environment = comment.TargetEnv,
+        });
     }
 
     private void EnsureCommentEditable(WorkItemComment comment, string verb)

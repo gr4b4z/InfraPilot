@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { ApprovalRequest } from '@/lib/types';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import { Clock, CheckCircle, XCircle, AlertTriangle, Shield, ArrowUpRight } from 'lucide-react';
 
@@ -12,12 +13,15 @@ export function ApprovalsPage() {
 
   useDocumentTitle(['Approvals']);
 
+  // New approvals appear and colleagues' decisions resolve rows while the page is open.
+  const approvalsTick = useEntityRefresh(['approval', 'request']);
+
   useEffect(() => {
     api.getApprovals()
       .then((data) => setApprovals(data.items || []))
       .catch(() => setApprovals([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [approvalsTick]);
 
   const pending = approvals.filter((a) => a.status === 'Pending');
   const resolved = approvals.filter((a) => a.status !== 'Pending');

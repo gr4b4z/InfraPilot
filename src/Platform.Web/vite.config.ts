@@ -40,10 +40,16 @@ export default defineConfig({
      * to keep in step and no port coupling left to break.
      */
     proxy: {
+      // The realtime hub needs its own entry: `/api` below pins `ws: false`, which would refuse
+      // the SignalR WebSocket upgrade. Longer prefixes win, so this one catches the hub traffic.
+      '/api/hubs': {
+        target: apiTarget,
+        changeOrigin: true,
+        ws: true,
+      },
       '/api': {
         target: apiTarget,
         changeOrigin: true,
-        // The event stream must not be buffered, or SSE arrives in one lump when the request ends.
         ws: false,
       },
       '/agent': {

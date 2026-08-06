@@ -6,6 +6,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 import { ArrowLeft, Clock, User, Cpu, AlertTriangle, Copy, CheckCircle, ExternalLink, Loader2, RotateCcw, XCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 
 interface ExecutionOutput {
   // Azure DevOps fields
@@ -54,11 +55,18 @@ export function RequestDetailPage() {
       .catch((err) => setError(err.message));
   }, [id]);
 
+  // Approval decisions and executor transitions arrive as pushes. Approval events aren't
+  // narrowed by id — they carry the approval's id, not this request's.
+  const realtimeTick = useEntityRefresh(['request', 'approval'], {
+    filter: (evt) => evt.entity !== 'request' || !evt.id || evt.id === id,
+  });
+
   useEffect(() => {
     fetchData().finally(() => setLoading(false));
-  }, [fetchData]);
+  }, [fetchData, realtimeTick]);
 
-  // Auto-refresh while request is in Executing status (pipeline running)
+  // Auto-refresh while request is in Executing status (pipeline running): execution results and
+  // audit rows accumulate without an entity event, so the poll stays as the fallback here.
   useEffect(() => {
     if (!request || request.status !== 'Executing') return;
 

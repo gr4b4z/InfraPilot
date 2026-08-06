@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Save,
 } from 'lucide-react';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
   AVAILABLE_EVENTS,
@@ -63,9 +64,14 @@ export function WebhookDetailPage() {
     }
   }, [id]);
 
+  // Delivery events carry the subscription id — only this webhook's traffic refreshes the page.
+  const deliveriesTick = useEntityRefresh(['webhook-delivery'], {
+    filter: (evt) => !evt.id || evt.id === id,
+  });
+
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+  }, [fetchData, deliveriesTick]);
 
   useDocumentTitle([webhook?.name, 'Webhooks']);
 
@@ -130,7 +136,8 @@ export function WebhookDetailPage() {
     if (!id) return;
     try {
       await api.testWebhook(id);
-      setTimeout(fetchData, 2000);
+      // The queued row should appear immediately; its outcome arrives via the delivery event.
+      await fetchData();
     } catch {
       setError('Failed to send test');
     }
@@ -139,7 +146,7 @@ export function WebhookDetailPage() {
   const handleRetry = async (deliveryId: string) => {
     try {
       await api.retryWebhookDelivery(deliveryId);
-      setTimeout(fetchData, 1000);
+      await fetchData();
     } catch {
       setError('Failed to retry');
     }
