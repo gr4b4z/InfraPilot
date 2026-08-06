@@ -8,20 +8,25 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Data.Common;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Integration.Tests;
 
 /// <summary>
-/// End-to-end tests for the rollback feature: feature-flag + per-product gating, the two selection
-/// modes (manual + align-all-except), the "version must have run here" safety rule, auto-approve +
-/// completion via deploy event, and the stale-promotion invariant (drift block + reactivation).
+/// End-to-end tests for the rollback feature: per-product creator and approver permissions
+/// (<c>RollbackPolicy</c>), the admin approval-gate override, the two selection modes (manual +
+/// align-all-except), the "version must have run here" safety rule, completion via deploy event, and
+/// the stale-promotion invariant (drift block + reactivation).
 /// </summary>
 public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.RollbackFactory>, IDisposable
 {
     private readonly RollbackFactory _factory;
     private readonly HttpClient _admin;
     private readonly HttpClient _apiKey;
+    // Two non-admin identities, so creator/approver membership can be tested from both sides.
+    private readonly HttpClient _user;   // user@localhost   — QA + User
+    private readonly HttpClient _viewer; // viewer@localhost — no roles at all
 
     private const string Product = "acme";
 
@@ -31,32 +36,244 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         _admin = factory.CreateAdminClient();
         _apiKey = factory.CreateClient();
         _apiKey.DefaultRequestHeaders.Add("X-Api-Key", RollbackFactory.TestApiKey);
+        _user = factory.CreateAuthenticatedClient("user@localhost", "user123");
+        _viewer = factory.CreateAuthenticatedClient("viewer@localhost", "viewer123");
     }
 
     public void Dispose()
     {
         _admin.Dispose();
         _apiKey.Dispose();
+        _user.Dispose();
+        _viewer.Dispose();
     }
+
+    private static object RollbackBody(string product, string toVersion, string targetEnv = "staging") => new
+    {
+        product,
+        targetEnv,
+        mode = "manual",
+        items = new[] { new { service = "api", toVersion } },
+    };
 
     // ── Tests ─────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Create_WhenProductNotEnrolled_Returns400()
+    public async Task Create_ForUnconfiguredProduct_ByNonAdmin_Returns403()
     {
         await EnableRollbacksAsync();
-        // Deliberately do NOT enroll a fresh product.
-        var product = $"unenrolled-{Guid.NewGuid():N}";
+        // Deliberately do NOT configure a policy for this product.
+        var product = $"unconfigured-{Guid.NewGuid():N}";
         await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
 
-        var resp = await _admin.PostAsJsonAsync("/api/rollbacks", new
+        var resp = await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_ForUnconfiguredProduct_ByAdmin_LandsPending_AndNeverAutoApproves()
+    {
+        // The security fix: an unconfigured environment used to project to "auto-approve" and revert
+        // with no human gate at all. It must now land Pending, approvable only by an explicit override.
+        await EnableRollbacksAsync();
+        var product = $"unconfigured-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString();
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.True(detail.GetProperty("unconfigured").GetBoolean());
+        Assert.False(detail.GetProperty("canApprove").GetBoolean());  // nobody is authorized
+        Assert.True(detail.GetProperty("canOverride").GetBoolean());  // only route forward
+
+        // A normal approval must refuse, and say why.
+        var approve = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.BadRequest, approve.StatusCode);
+        Assert.Contains("override", (await Body(approve)).GetProperty("error").GetString()!);
+    }
+
+    [Fact]
+    public async Task Create_ByNonCreator_Returns403_AndByListedCreator_Succeeds()
+    {
+        await EnableRollbacksAsync();
+        var product = $"creators-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        // Only user@localhost may create; viewer@localhost may not.
+        await UpsertPolicyAsync(product, "staging", creatorUsers: new[] { "user@localhost" }, requirementGroup: null);
+
+        var denied = await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+
+        var allowed = await _user.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Created, allowed.StatusCode);
+    }
+
+    [Fact]
+    public async Task Preview_ByNonCreator_Returns403()
+    {
+        // The dry run reports current and candidate versions across environments, so it is gated by the
+        // same create permission rather than left open as a "read-only" endpoint.
+        await EnableRollbacksAsync();
+        var product = $"preview-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await UpsertPolicyAsync(product, "staging", creatorUsers: new[] { "user@localhost" }, requirementGroup: null);
+
+        var resp = await _viewer.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Approve_ByAdminNotNamedInGate_Returns403()
+    {
+        // Admins are NOT implicit members of every approver group for rollbacks (unlike promotions):
+        // an admin clearing a gate has to do it through the reason-carrying override, so a bypass never
+        // looks like an ordinary approval in the history.
+        await EnableRollbacksAsync();
+        var product = $"gated-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await UpsertPolicyAsync(product, "staging",
+            creatorUsers: new[] { "admin@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString();
+
+        // admin@localhost is in no group in the strict test directory, so the only thing that could let
+        // this through is the implicit admin shortcut — which rollbacks switch off.
+        var approve = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.Forbidden, approve.StatusCode);
+
+        // Still Pending, and the gate reports 0 of 1 satisfied.
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Pending", detail.GetProperty("status").GetString());
+        var req = detail.GetProperty("gate").EnumerateArray().Single();
+        Assert.Equal(0, req.GetProperty("matched").GetInt32());
+        Assert.Equal(1, req.GetProperty("required").GetInt32());
+        Assert.False(req.GetProperty("satisfied").GetBoolean());
+
+        // A genuine member of the group can approve, confirming the gate is refusing the admin
+        // specifically rather than being unsatisfiable.
+        var byMember = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.OK, byMember.StatusCode);
+        Assert.Equal("Approved", (await Body(byMember)).GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Override_RequiresAdminAndReason_ThenApprovesAndIsFlagged()
+    {
+        await EnableRollbacksAsync();
+        var product = $"override-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await UpsertPolicyAsync(product, "staging",
+            creatorUsers: new[] { "admin@localhost", "viewer@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        var id = created.GetProperty("id").GetString();
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+
+        // Non-admin cannot override even though they may create here.
+        var byViewer = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval",
+            new { reason = "let me through" });
+        Assert.Equal(HttpStatusCode.Forbidden, byViewer.StatusCode);
+
+        // A reason is mandatory.
+        var noReason = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval", new { reason = "  " });
+        Assert.Equal(HttpStatusCode.BadRequest, noReason.StatusCode);
+
+        var ok = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval",
+            new { reason = "SEV1 INC-42, approvers unreachable" });
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Approved", detail.GetProperty("status").GetString());
+        Assert.True(detail.GetProperty("approvalOverridden").GetBoolean());
+        var approval = detail.GetProperty("approvals").EnumerateArray().Single();
+        Assert.True(approval.GetProperty("isOverride").GetBoolean());
+        Assert.Equal("SEV1 INC-42, approvers unreachable", approval.GetProperty("comment").GetString());
+        Assert.Equal("admin@localhost", approval.GetProperty("approverEmail").GetString());
+
+        // Overriding twice is refused — the request is no longer Pending.
+        var again = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval", new { reason = "again" });
+        Assert.Equal(HttpStatusCode.BadRequest, again.StatusCode);
+    }
+
+    [Fact]
+    public async Task Approve_ByNamedUser_SatisfiesGate()
+    {
+        // The positive path for the gate: a requirement naming a user explicitly is satisfied by them.
+        await EnableRollbacksAsync();
+        var product = $"approve-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        var resp = await _admin.PostAsJsonAsync("/api/rollbacks/admin/policies", new
         {
             product,
             targetEnv = "staging",
-            mode = "manual",
-            items = new[] { new { service = "api", toVersion = "1.0" } },
+            creators = new { groups = Array.Empty<object>(), users = new[] { "admin@localhost" } },
+            steps = new[]
+            {
+                new
+                {
+                    name = "Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Named approver",
+                            groups = Array.Empty<object>(),
+                            users = new[] { "viewer@localhost" },
+                            minApprovers = 1,
+                        },
+                    },
+                },
+            },
         });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        var id = created.GetProperty("id").GetString();
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+
+        var approve = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { comment = "ok" });
+        Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
+        Assert.Equal("Approved", (await Body(approve)).GetProperty("status").GetString());
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.False(detail.GetProperty("approvalOverridden").GetBoolean()); // a real approval, not a bypass
+    }
+
+    [Fact]
+    public async Task EnvSpecificPolicy_WinsOverProductDefault()
+    {
+        await EnableRollbacksAsync();
+        var product = $"scoped-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await IngestAsync(product, "api", "prod", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "prod", "1.1", Hours(-1));
+
+        // Product default: ungated. Prod: gated. Same product, different answers per environment.
+        await UpsertPolicyAsync(product, targetEnv: null,
+            creatorUsers: new[] { "viewer@localhost" }, requirementGroup: null);
+        await UpsertPolicyAsync(product, targetEnv: "prod",
+            creatorUsers: new[] { "viewer@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var staging = await Body(await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Approved", staging.GetProperty("status").GetString()); // default policy, no gate
+
+        var prod = await Body(await _viewer.PostAsJsonAsync("/api/rollbacks",
+            RollbackBody(product, "1.0", targetEnv: "prod")));
+        Assert.Equal("Pending", prod.GetProperty("status").GetString());     // env-specific gate applies
     }
 
     [Fact]
@@ -332,12 +549,50 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             .ToListAsync();
     }
 
-    private async Task EnrollAsync(string product)
+    // Enrollment is now the existence of a rollback policy. An "enrolled" product in these tests gets
+    // an ungated (empty-steps) policy, which reproduces what the pre-policy code did for these
+    // scenarios: the rollback target is staging, the seeded promotion policy targets prod, so
+    // target-only resolution found nothing and every rollback auto-approved.
+    private async Task EnrollAsync(string product, string targetEnv = "staging")
+        => await UpsertPolicyAsync(product, targetEnv, creatorUsers: null, requirementGroup: null);
+
+    /// <summary>
+    /// Creates a rollback policy. <paramref name="creatorUsers"/> null ⇒ no creator set (admins only);
+    /// <paramref name="requirementGroup"/> null ⇒ no approval requirements (auto-approve).
+    /// </summary>
+    private async Task<string> UpsertPolicyAsync(
+        string product, string? targetEnv, string[]? creatorUsers, string? requirementGroup,
+        int minApprovers = 1)
     {
-        var enabled = await GetEnabledProductsAsync();
-        enabled.Add(product);
-        (await _admin.PutAsJsonAsync("/api/rollbacks/admin/enabled-products", new { products = enabled }))
-            .EnsureSuccessStatusCode();
+        object? steps = requirementGroup is null
+            ? Array.Empty<object>()
+            : new[]
+            {
+                new
+                {
+                    name = "Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Approvers",
+                            groups = new[] { new { id = requirementGroup, name = requirementGroup } },
+                            users = Array.Empty<string>(),
+                            minApprovers,
+                        },
+                    },
+                },
+            };
+
+        var resp = await _admin.PostAsJsonAsync("/api/rollbacks/admin/policies", new
+        {
+            product,
+            targetEnv,
+            creators = new { groups = Array.Empty<object>(), users = creatorUsers ?? Array.Empty<string>() },
+            steps,
+        });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        return (await Body(resp)).GetProperty("id").GetString()!;
     }
 
     private async Task EnableRollbacksAsync()
@@ -350,17 +605,8 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     {
         await EnableRollbacksAsync();
         var product = $"acme-{Guid.NewGuid():N}";
-        var enabled = await GetEnabledProductsAsync();
-        enabled.Add(product);
-        (await _admin.PutAsJsonAsync("/api/rollbacks/admin/enabled-products", new { products = enabled }))
-            .EnsureSuccessStatusCode();
+        await EnrollAsync(product);
         return product;
-    }
-
-    private async Task<List<string>> GetEnabledProductsAsync()
-    {
-        var body = await Body(await _admin.GetAsync("/api/rollbacks/admin/enabled-products"));
-        return body.GetProperty("products").EnumerateArray().Select(e => e.GetString()!).ToList();
     }
 
     private async Task IngestAsync(string product, string service, string env, string version,
@@ -432,12 +678,53 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     {
         public const string TestApiKey = "rollback-test-api-key-13579";
 
+        /// <summary>The one group with real membership in these tests: viewer@localhost only.</summary>
+        public const string ApproverGroup = "release-managers";
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             base.ConfigureWebHost(builder);
             builder.UseSetting("Deployments:ApiKeys:0:Name", "rollback-integration-test");
             builder.UseSetting("Deployments:ApiKeys:0:Key", TestApiKey);
             builder.UseSetting("Deployments:ApiKeys:0:Roles:0", "InfraPortal.Admin");
+
+            // The default StubIdentityService answers GetGroupMembers with *every* active local user
+            // regardless of the group asked for, so under local auth everyone is in every group. That
+            // makes group-based approver requirements untestable — and in particular it cannot show
+            // whether an admin cleared a gate by genuine membership or by the implicit admin shortcut,
+            // which is exactly the distinction rollbacks now depend on. Swap in a strict directory.
+            builder.ConfigureServices(services =>
+            {
+                RemoveService<IIdentityService>(services);
+                services.AddScoped<IIdentityService, StrictIdentityService>();
+            });
         }
+    }
+
+    /// <summary>
+    /// Test directory with explicit membership: <see cref="RollbackFactory.ApproverGroup"/> contains
+    /// viewer@localhost and nobody else, and every other group is empty. Notably admin@localhost is in
+    /// no group at all, so any gate an admin clears must have been cleared by an override.
+    /// </summary>
+    private sealed class StrictIdentityService : IIdentityService
+    {
+        private static readonly Dictionary<string, UserInfo[]> Members = new(StringComparer.OrdinalIgnoreCase)
+        {
+            [RollbackFactory.ApproverGroup] = [new UserInfo("viewer-1", "Viewer", "viewer@localhost")],
+        };
+
+        public Task<IReadOnlyList<UserInfo>> GetGroupMembers(string groupId, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(
+                Members.TryGetValue(groupId, out var m) ? m : Array.Empty<UserInfo>());
+
+        public Task<UserInfo?> GetUser(string userId, CancellationToken ct = default)
+            => Task.FromResult<UserInfo?>(null);
+
+        public Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
+
+        public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<GroupInfo>>(
+                [new GroupInfo(RollbackFactory.ApproverGroup, RollbackFactory.ApproverGroup)]);
     }
 }

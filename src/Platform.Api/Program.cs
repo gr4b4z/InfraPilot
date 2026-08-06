@@ -189,6 +189,7 @@ builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
@@ -329,6 +330,13 @@ var app = builder.Build();
     // install that predates a role its producers now send can still assign and filter on it.
     await ParticipantRoleSeeder.MergeDefaults(
         db, scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ParticipantRoleSeeder)));
+
+    // One-time migration of rollback enrollment (the retired rollback.enabledProducts setting) into
+    // RollbackPolicy rows, preserving each enrolled product's existing approval gate. Creator lists
+    // come out empty — admins only — because the old create path had no authorization to migrate from.
+    await Platform.Api.Features.Rollbacks.RollbackPolicySeeder.MigrateEnrolledProducts(
+        db, scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+            .CreateLogger(nameof(Platform.Api.Features.Rollbacks.RollbackPolicySeeder)));
 
     // Seed catalog from YAML (production-safe: only adds new slugs)
     var loader = scope.ServiceProvider.GetRequiredService<CatalogYamlLoader>();

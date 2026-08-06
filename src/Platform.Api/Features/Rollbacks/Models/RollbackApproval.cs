@@ -17,4 +17,13 @@ public class RollbackApproval
     public string? Comment { get; set; }
     public PromotionDecision Decision { get; set; } = PromotionDecision.Approved;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// True when an admin forced this request past its approval gate rather than satisfying it.
+    /// An override is recorded as an approval row so the decision history stays in one place, but it
+    /// is flagged so the audit trail can tell a bypass from a legitimate approval — the reason the
+    /// implicit "admins satisfy every group" shortcut is switched off for rollbacks
+    /// (see <c>RollbackService.OverrideApprovalAsync</c>).
+    /// </summary>
+    public bool IsOverride { get; set; }
 }

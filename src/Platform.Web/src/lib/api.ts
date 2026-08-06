@@ -719,9 +719,7 @@ class ApiClient {
   }
 
   getRollback(id: string) {
-    return this.request<RollbackRequest & { approvals: RollbackApprovalEntry[] }>(
-      `/rollbacks/${id}`,
-    );
+    return this.request<RollbackDetail>(`/rollbacks/${id}`);
   }
 
   previewRollback(body: RollbackInput) {
@@ -758,16 +756,48 @@ class ApiClient {
     });
   }
 
+  // Admin-only: force a pending rollback past its approval gate. The reason is mandatory and is
+  // recorded on the resulting approval row, which is flagged as an override.
+  overrideRollbackApproval(id: string, reason: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/override-approval`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  // Products the caller may actually raise a rollback for (their hidden products removed).
   getRollbackEnabledProducts() {
     return this.request<{ products: string[] }>(`/rollbacks/enabled-products`);
   }
 
-  // Admin: set the full set of products enrolled in rollbacks.
-  setRollbackEnabledProducts(products: string[]) {
-    return this.request<{ products: string[] }>(`/rollbacks/admin/enabled-products`, {
-      method: 'PUT',
-      body: JSON.stringify({ products }),
-    });
+  // Whether the caller may create a rollback for this (product, env), and the server's reason if not.
+  canCreateRollback(product: string, targetEnv: string) {
+    const qs = new URLSearchParams({ product, targetEnv }).toString();
+    return this.request<{ allowed: boolean; reason: string | null }>(`/rollbacks/can-create?${qs}`);
+  }
+
+  // ── Rollback policy admin ──────────────────────────────────────────────
+  // A policy says who may create rollbacks for a product and who must approve them. Its existence is
+  // also the product's rollback enrollment — there is no separate enabled-products list.
+
+  listRollbackPolicies() {
+    return this.request<{ policies: RollbackPolicy[] }>(`/rollbacks/admin/policies`);
+  }
+
+  upsertRollbackPolicy(policy: UpsertRollbackPolicyPayload, id?: string) {
+    return id
+      ? this.request<RollbackPolicy>(`/rollbacks/admin/policies/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(policy),
+        })
+      : this.request<RollbackPolicy>(`/rollbacks/admin/policies`, {
+          method: 'POST',
+          body: JSON.stringify(policy),
+        });
+  }
+
+  deleteRollbackPolicy(id: string) {
+    return this.request<void>(`/rollbacks/admin/policies/${id}`, { method: 'DELETE' });
   }
 
   // ── Feature flags ──────────────────────────────────────────────────────
@@ -1572,6 +1602,10 @@ export interface RollbackRequest {
   approvedAt: string | null;
   completedAt: string | null;
   canApprove: boolean;
+  /** Admin, still pending, and gated — i.e. the override action would succeed. */
+  canOverride: boolean;
+  /** An admin forced this request past its gate rather than satisfying it. */
+  approvalOverridden: boolean;
   items: RollbackItem[];
 }
 
@@ -1581,6 +1615,59 @@ export interface RollbackApprovalEntry {
   decision: 'Approved' | 'Rejected';
   comment: string | null;
   createdAt: string;
+  /** True for a gate override; `comment` then holds the mandatory reason. */
+  isOverride: boolean;
+}
+
+/** One approver requirement plus its progress, as returned on the rollback detail. */
+export interface RollbackGateRequirement {
+  name: string;
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+  matched: number;
+  required: number;
+  satisfied: boolean;
+}
+
+/** Detail shape: the list fields plus the gate, its progress, and the decision history. */
+export interface RollbackDetail extends RollbackRequest {
+  /** No rollback policy governs this environment: only an admin override can move it. */
+  unconfigured: boolean;
+  gate: RollbackGateRequirement[];
+  approvals: RollbackApprovalEntry[];
+}
+
+// ── Rollback policies ───────────────────────────────────────────────────────
+
+/** A group ∪ user set. Empty grants nobody — it never means "everyone". */
+export interface RollbackPrincipalSet {
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+}
+
+export interface RollbackPolicy {
+  id: string;
+  product: string;
+  /** null ⇒ the product default, covering every environment without its own row. */
+  targetEnv: string | null;
+  creators: RollbackPrincipalSet;
+  steps: PromotionPolicyStep[];
+  escalationGroup: string | null;
+  /** False ⇒ only admins can create rollbacks in this scope. */
+  hasCreators: boolean;
+  /** True ⇒ no approval required in this scope (distinct from having no policy at all). */
+  isAutoApprove: boolean;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export interface UpsertRollbackPolicyPayload {
+  product: string;
+  targetEnv: string | null;
+  creators: RollbackPrincipalSet;
+  steps: PromotionPolicyStep[];
+  escalationGroup: string | null;
 }
 
 /** Body shared by previewRollback / createRollback. */

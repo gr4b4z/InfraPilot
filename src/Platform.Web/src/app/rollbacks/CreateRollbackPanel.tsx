@@ -56,12 +56,53 @@ export function CreateRollbackPanel({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Result of the last create-permission probe, tagged with the scope it answered for. Create
+  // permission is per-(product, environment), so a product appearing in the picker doesn't settle it
+  // — the panel checks up front and explains itself rather than letting Preview come back 403.
+  // Tagging (rather than clearing on change) means a slow answer for the previous scope can never be
+  // shown against the current one.
+  const [createCheck, setCreateCheck] = useState<{
+    product: string;
+    targetEnv: string;
+    reason: string | null;
+  } | null>(null);
+
   useEffect(() => {
     api
       .getRollbackEnabledProducts()
       .then((d) => setProducts(d.products || []))
       .catch(() => setProducts([]));
   }, []);
+
+  useEffect(() => {
+    if (!product || !targetEnv) return;
+    let cancelled = false;
+    api
+      .canCreateRollback(product, targetEnv)
+      .then((r) => {
+        if (!cancelled)
+          setCreateCheck({
+            product,
+            targetEnv,
+            reason: r.allowed ? null : (r.reason ?? 'You cannot create rollbacks here'),
+          });
+      })
+      // A transient probe failure shouldn't lock the form: create/preview are authoritative and will
+      // refuse on their own, so treat an unknown answer as "not blocked here".
+      .catch(() => {
+        if (!cancelled) setCreateCheck({ product, targetEnv, reason: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product, targetEnv]);
+
+  const scopeChosen = !!product && !!targetEnv;
+  const permissionKnown =
+    createCheck?.product === product && createCheck?.targetEnv === targetEnv;
+  const createBlock = scopeChosen && permissionKnown ? createCheck!.reason : null;
+  // Hold Preview until the probe lands, so the first click can't race the answer.
+  const permissionPending = scopeChosen && !permissionKnown;
 
   // Manual mode (not deep-linked): load the services deployed in the target env so the user
   // can pick which one to roll back.
@@ -140,6 +181,8 @@ export function CreateRollbackPanel({
   const canPreview =
     !!product &&
     !!targetEnv &&
+    !createBlock &&
+    !permissionPending &&
     (mode === 'Align'
       ? !!referenceEnv && referenceEnv !== targetEnv
       : !!manualService && !!manualVersion);
@@ -236,6 +279,18 @@ export function CreateRollbackPanel({
               ))}
             </select>
           </Field>
+
+          {/* Not permitted here. Placed directly under the two inputs that decide it, so the cause
+              is adjacent to the message, and above Mode so the rest of the form reads as inert. */}
+          {createBlock && (
+            <div
+              className="flex items-start gap-2 px-3 py-2 rounded-lg text-[12px]"
+              style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            >
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>{createBlock}</span>
+            </div>
+          )}
 
           {/* Mode */}
           <Field label="Mode">
