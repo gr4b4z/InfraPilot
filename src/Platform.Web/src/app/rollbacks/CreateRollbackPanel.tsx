@@ -16,7 +16,8 @@ interface Prefill {
  *  - Manual: pick a target version for a single service (prefilled from a deploy
  *    event when deep-linked).
  *  - Align: pick a reference environment and exclude services; the backend
- *    resolves which services move and to what version.
+ *    resolves which services move and to what version (services already on the
+ *    reference version aren't in the diff, so they never reach this panel).
  *
  * Both modes run `previewRollback` to surface the resolved items (eligible +
  * skipped-with-reason) before the user commits with `createRollback`.
