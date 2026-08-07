@@ -85,7 +85,8 @@ public class ServiceDeletionService
 
         _logger.LogInformation(
             "Service {Product}/{Service} retired by {Actor}; {Deployments} deployment(s) and {Promotions} open promotion(s) leave the lists",
-            product, service, _user.Name, deployments, openPromotions);
+            SanitizeForLog(product), SanitizeForLog(service), SanitizeForLog(_user.Name),
+            deployments, openPromotions);
 
         return (row, new Impact(deployments, openPromotions));
     }
@@ -106,7 +107,8 @@ public class ServiceDeletionService
         _db.DeletedServices.Remove(row);
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogInformation("Service {Product}/{Service} restored by {Actor}", product, service, _user.Name);
+        _logger.LogInformation("Service {Product}/{Service} restored by {Actor}",
+            SanitizeForLog(product), SanitizeForLog(service), SanitizeForLog(_user.Name));
         return true;
     }
 
@@ -131,9 +133,28 @@ public class ServiceDeletionService
 
         _logger.LogInformation(
             "Service {Product}/{Service} was retired on {DeletedAt} but deployed again at {DeployedAt}; restoring it",
-            product, service, row.DeletedAt, deployedAt);
+            SanitizeForLog(product), SanitizeForLog(service), row.DeletedAt, deployedAt);
 
         return true;
+    }
+
+    // Scrubs user-provided strings before they land in a log line. Drops ASCII control
+    // characters (including CR/LF) so a crafted product or service name can't inject fake log
+    // entries (CWE-117, log forging) — these names come from an admin's request body and from
+    // whatever a pipeline posts at ingest. Also caps length so a huge value can't blow up log
+    // storage. Mirrors the helper in PromotionEndpoints.
+    private static string SanitizeForLog(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        var trimmed = value.Length > 200 ? value[..200] : value;
+        var sb = new System.Text.StringBuilder(trimmed.Length);
+        foreach (var ch in trimmed)
+        {
+            // Skip C0 controls (0x00-0x1F) and DEL (0x7F); keep ordinary printable characters.
+            if (ch < 0x20 || ch == 0x7F) continue;
+            sb.Append(ch);
+        }
+        return sb.ToString();
     }
 }
 
