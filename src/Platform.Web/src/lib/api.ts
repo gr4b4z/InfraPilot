@@ -223,6 +223,31 @@ class ApiClient {
   }
 
   /**
+   * Retired services — the admin soft delete. A retired `(product, service)` disappears from the
+   * deployment matrix, from promotions and from the work-item queue; nothing is erased, and a new
+   * deployment for the service un-retires it on its own. This endpoint is the only way to see the
+   * retired ones, which is why the restore UI calls it directly rather than deriving the list.
+   */
+  listDeletedServices(product?: string) {
+    const query = product ? `?product=${encodeURIComponent(product)}` : '';
+    return this.request<DeletedService[]>(`/deployments/admin/deleted-services${query}`);
+  }
+
+  deleteService(body: { product: string; service: string; reason?: string }) {
+    return this.request<DeleteServiceResult>('/deployments/admin/deleted-services', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  restoreService(product: string, service: string) {
+    return this.request<void>(
+      `/deployments/admin/deleted-services?product=${encodeURIComponent(product)}&serviceName=${encodeURIComponent(service)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  /**
    * Webhook delivery maintenance: `failed` is the whole failed set (bulk-retryable), `purgeable`
    * counts settled rows (delivered or failed) older than the cutoff. Pending rows are never counted
    * or purged — they are still owed to a receiver.
@@ -1493,6 +1518,27 @@ export interface PromotionReconcileCandidate {
   at: string;
   /** For a supersede, the newer version now in the target. Null for a close. */
   landedVersion: string | null;
+}
+
+/** A service an admin retired. See {@link ApiClient.listDeletedServices}. */
+export interface DeletedService {
+  id: string;
+  product: string;
+  service: string;
+  deletedAt: string;
+  deletedByName: string;
+  reason: string | null;
+}
+
+/**
+ * What a retirement took out of view. The counts are reported so the admin can see the size of what
+ * they hid — `hiddenOpenPromotions` especially, since a promotion somebody was waiting to approve
+ * disappearing is the one surprising consequence of retiring a service.
+ */
+export interface DeleteServiceResult {
+  service: DeletedService;
+  hiddenDeployments: number;
+  hiddenOpenPromotions: number;
 }
 
 export interface PromotionPolicy {

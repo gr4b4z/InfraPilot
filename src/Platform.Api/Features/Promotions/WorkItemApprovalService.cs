@@ -493,9 +493,12 @@ public class WorkItemApprovalService
         // offers a person whose only items are on a hidden product.
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
 
+        // Retired services drop out on the same principle: the queue is a list of work to do, and
+        // nobody is signing off tickets for a component that has been migrated away.
         var pending = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Pending)
             .Where(c => !hidden.Contains(c.Product))
+            .ExcludingDeletedServices(_db)
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync(ct);
 
@@ -504,6 +507,7 @@ public class WorkItemApprovalService
         var stranded = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Superseded || c.Status == PromotionStatus.Rejected)
             .Where(c => !hidden.Contains(c.Product))
+            .ExcludingDeletedServices(_db)
             .OrderByDescending(c => c.CreatedAt)
             .Take(OrphanScanLimit)
             .ToListAsync(ct);

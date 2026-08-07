@@ -17,6 +17,7 @@ public class DeploymentService
     private readonly IPromotionIngestHook _promotionHook;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
     private readonly UserPreferencesService _userPrefs;
+    private readonly ServiceDeletionService _serviceDeletions;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -41,6 +42,7 @@ public class DeploymentService
         IPromotionIngestHook promotionHook,
         IOptionsMonitor<NormalizationOptions> normalization,
         UserPreferencesService userPrefs,
+        ServiceDeletionService serviceDeletions,
         ILogger<DeploymentService> logger)
     {
         _db = db;
@@ -48,6 +50,7 @@ public class DeploymentService
         _promotionHook = promotionHook;
         _normalization = normalization;
         _userPrefs = userPrefs;
+        _serviceDeletions = serviceDeletions;
         _logger = logger;
     }
 
@@ -118,6 +121,9 @@ public class DeploymentService
     /// across attempts. The guard is check-then-insert (no unique index across providers), so a
     /// truly concurrent duplicate can still slip through; <see cref="RemoveDuplicates"/> remains
     /// the backstop for that case.
+    /// <para>Either path un-retires the service if an admin had soft-deleted it — see
+    /// <see cref="ServiceDeletionService.ReviveOnDeployAsync"/>. A replay counts: the retirement was
+    /// wrong either way, and the sender should not have to post a second, distinct deploy to undo it.</para>
     /// </summary>
     public async Task<IngestResult> IngestEventWithResult(CreateDeployEventDto dto, CancellationToken ct = default)
     {
@@ -126,6 +132,9 @@ public class DeploymentService
         // Optional canonicalisation — controlled by appsettings `Normalization:*`. Off by
         // default, so senders' original casing is preserved unless an admin opts in.
         var environment = norm.ApplyEnvironment(dto.Environment);
+
+        // Staged, not saved: it rides along with whichever SaveChanges below commits the event.
+        await _serviceDeletions.ReviveOnDeployAsync(dto.Product, dto.Service, dto.DeployedAt, ct);
 
         var replayed = await _db.DeployEvents
             .Where(e => e.Product == dto.Product && e.Service == dto.Service
@@ -484,7 +493,10 @@ public class DeploymentService
             return new List<DeploymentVersionDto>();
 
         var query = _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == product && e.Environment == environment);
+            .Where(e => e.Product == product && e.Environment == environment)
+            // A retired service is not a rollback target — offering its versions in the picker would
+            // invite somebody to redeploy the thing that was just migrated away.
+            .ExcludingDeletedServices(_db);
         if (!string.IsNullOrWhiteSpace(serviceName))
             query = query.Where(e => e.Service == serviceName);
 
@@ -545,9 +557,14 @@ public class DeploymentService
         return versions;
     }
 
+    /// <summary>
+    /// The service × environment matrix. Services an admin has retired are dropped here — this is the
+    /// query the product page derives its service list from, so filtering it is what actually takes
+    /// an obsolete service off the page.
+    /// </summary>
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
-        var query = _db.DeployEvents.AsQueryable();
+        var query = _db.DeployEvents.ExcludingDeletedServices(_db);
         if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
         if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
@@ -573,6 +590,9 @@ public class DeploymentService
 
         var latest = await _db.DeployEvents
             .Where(e => !hidden.Contains(e.Product))
+            // Retired services stop counting towards the per-environment service totals too, or the
+            // product card would keep advertising components the product page no longer lists.
+            .ExcludingDeletedServices(_db)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
             .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
             .ToListAsync(ct);
@@ -601,6 +621,7 @@ public class DeploymentService
         string product, string service, string? environment, int limit = 50, CancellationToken ct = default)
     {
         var query = _db.DeployEvents
+            .ExcludingDeletedServices(_db)
             .Where(e => e.Product == product && e.Service == service);
 
         if (!string.IsNullOrEmpty(environment))
@@ -619,6 +640,7 @@ public class DeploymentService
         string product, string environment, DateTimeOffset since, CancellationToken ct = default)
     {
         var events = await _db.DeployEvents
+            .ExcludingDeletedServices(_db)
             .Where(e => e.Product == product && e.Environment == environment && e.DeployedAt >= since)
             .OrderByDescending(e => e.DeployedAt)
             .ToListAsync(ct);
@@ -631,6 +653,7 @@ public class DeploymentService
         string product, DateTimeOffset since, int limit = 200, CancellationToken ct = default)
     {
         var events = await _db.DeployEvents
+            .ExcludingDeletedServices(_db)
             .Where(e => e.Product == product && e.DeployedAt >= since)
             .OrderByDescending(e => e.DeployedAt)
             .Take(limit)
