@@ -35,6 +35,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
     public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
     public DbSet<ReferenceParticipantOverride> ReferenceParticipantOverrides => Set<ReferenceParticipantOverride>();
+    public DbSet<DeletedService> DeletedServices => Set<DeletedService>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
@@ -304,6 +305,23 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.DeployEventId, x.ReferenceKey, x.Role }).IsUnique();
             // Lookup: batch-load all overrides for an event when reading the merged list.
             e.HasIndex(x => x.DeployEventId);
+        });
+
+        // Retired services. Deliberately keyed on the (product, service) names rather than joined to
+        // deploy_events: the pair is the identity of a service here, and a retirement has to outlive
+        // any individual event — including one an admin later purges as a duplicate.
+        modelBuilder.Entity<DeletedService>(e =>
+        {
+            e.ToTable("deleted_services");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.DeletedById).HasMaxLength(100).IsRequired();
+            e.Property(x => x.DeletedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(500);
+            // One tombstone per service: retiring an already-retired service updates in place rather
+            // than stacking rows, and the list queries can rely on a single match.
+            e.HasIndex(x => new { x.Product, x.Service }).IsUnique();
         });
 
         // Webhook Subscriptions

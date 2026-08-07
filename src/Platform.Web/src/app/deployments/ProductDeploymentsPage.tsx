@@ -20,11 +20,14 @@ import {
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
+  Trash2,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { api } from '@/lib/api';
 import type { PromotionCandidate } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { useFeatureFlag, FeatureFlag } from '@/stores/featureFlagsStore';
 import { collectParticipants } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
@@ -127,6 +130,12 @@ export function ProductDeploymentsPage() {
   const [promotions, setPromotions] = useState<{ product: string; candidates: PromotionCandidate[] }>(
     { product: '', candidates: [] },
   );
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  // The service the admin is about to retire, and how that attempt is going. One at a time — this is
+  // a per-row decision, and a queue of half-confirmed retirements would be a worse UI, not a faster one.
+  const [retiring, setRetiring] = useState<string | null>(null);
+  const [retireBusy, setRetireBusy] = useState(false);
+  const [retireError, setRetireError] = useState<string | null>(null);
   const navigate = useNavigate();
   // Clicking a deployment goes to its own page rather than opening a drawer: the drawer could only
   // ever show a summary, while the questions people arrive with — why did it fail, what did it print,
@@ -236,6 +245,27 @@ export function ProductDeploymentsPage() {
   const setEnvFilter = useCallback(
     (v: string) => updateParams({ env: v === 'all' ? null : v }),
     [updateParams]
+  );
+
+  // Retire a service (admin). The refetch is what removes the row: the server owns the filter, so
+  // the page asks for the matrix again rather than splicing the service out of its local copy —
+  // which would also be the only version of the rule the client got to have an opinion about.
+  const retireService = useCallback(
+    async (service: string, reason: string) => {
+      if (!product) return;
+      setRetireBusy(true);
+      setRetireError(null);
+      try {
+        await api.deleteService({ product, service, reason: reason || undefined });
+        setRetiring(null);
+        await fetchState(product);
+      } catch (e) {
+        setRetireError(e instanceof Error ? e.message : 'Failed to remove the service');
+      } finally {
+        setRetireBusy(false);
+      }
+    },
+    [product, fetchState],
   );
 
   // The wall-monitor view: deploy events for this product repaint the matrix live, and
@@ -823,16 +853,36 @@ export function ProductDeploymentsPage() {
                   style={{ borderBottom: '1px solid var(--border-color)' }}
                 >
                   <td
-                    className="px-4 py-3 font-medium"
+                    className="px-4 py-3 font-medium group"
                     style={{ color: 'var(--text-primary)' }}
                   >
-                    <Link
-                      to={`/deployments/${product}/${service}/history`}
-                      className="hover:underline"
-                      style={{ color: 'var(--text-primary)' }}
-                    >
-                      {service}
-                    </Link>
+                    <span className="inline-flex items-center gap-2">
+                      <Link
+                        to={`/deployments/${product}/${service}/history`}
+                        className="hover:underline"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {service}
+                      </Link>
+                      {/* Admin-only. Retires a service a migration made obsolete: it leaves this
+                          matrix and promotions, keeps all of its history, and comes back on its own
+                          the moment something deploys it again. Revealed on hover/focus so a
+                          destructive-looking control isn't sitting next to every service name. */}
+                      {isAdmin && (
+                        <button
+                          onClick={() => {
+                            setRetireError(null);
+                            setRetiring(service);
+                          }}
+                          title={`Remove ${service} from this product`}
+                          aria-label={`Remove ${service} from this product`}
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </span>
                   </td>
                   {environments.map((env, envIdx) => (
                     <MatrixCell
@@ -894,6 +944,29 @@ export function ProductDeploymentsPage() {
         </div>
       )}
 
+      {retiring && (
+        <ConfirmDialog
+          title={`Remove ${retiring}?`}
+          body={
+            <>
+              <strong>{retiring}</strong> disappears from this matrix, from promotions and from the
+              work-item queue. Nothing is deleted — its deployment history stays exactly as it is, an
+              admin can restore it from Settings → Maintenance, and it comes back by itself if a
+              pipeline deploys it again.
+            </>
+          }
+          confirmLabel="Remove service"
+          confirmTone="danger"
+          commentLabel="Reason (optional)"
+          busy={retireBusy}
+          error={retireError}
+          onConfirm={(reason) => void retireService(retiring, reason)}
+          onCancel={() => {
+            setRetiring(null);
+            setRetireError(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -230,3 +230,26 @@ public record DeploymentVersionDto(
     DateTimeOffset DeployedAt,
     string? DeployerEmail,
     bool IsRollback);
+
+// --- Retired services (admin soft delete) ---
+
+/// <summary>A retired service as the restore list shows it.</summary>
+public record DeletedServiceDto(
+    Guid Id,
+    string Product,
+    string Service,
+    DateTimeOffset DeletedAt,
+    string DeletedByName,
+    string? Reason);
+
+public record DeleteServiceRequest(string Product, string Service, string? Reason = null);
+
+/// <summary>
+/// What the retirement took out of view. Reported back so the admin sees the size of what they just
+/// hid — particularly the open promotions, which are the part nobody thinks about when retiring a
+/// service and the part somebody may still be waiting to approve.
+/// </summary>
+public record DeleteServiceResultDto(
+    DeletedServiceDto Service,
+    int HiddenDeployments,
+    int HiddenOpenPromotions);
