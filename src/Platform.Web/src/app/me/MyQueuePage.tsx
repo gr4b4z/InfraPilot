@@ -6,6 +6,11 @@ import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
 import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
 import { FilterPanel, filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
+import {
+  ListEmptyState,
+  type ActiveFilterChip,
+  type EmptyStateTone,
+} from '@/components/ui/ListEmptyState';
 import { CopyViewLinkButton } from '@/components/ui/CopyViewLinkButton';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
@@ -29,6 +34,9 @@ import {
   ArrowRight,
   Inbox,
   Unlink,
+  Filter,
+  UserPlus,
+  History,
 } from 'lucide-react';
 import {
   buildQueueParams,
@@ -51,8 +59,10 @@ import {
   saveScopeFilter,
   applyScopeFilter,
   hasActiveScope,
+  SCOPE_FILTER_DEFAULT,
   type ScopeFilterValue,
 } from './ScopeFilter';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 /**
  * "My queue" page — work items awaiting the current user's signoff. Reads
@@ -114,6 +124,9 @@ export function MyQueuePage() {
   // these tabs run — so the numbers are live on every tab, not just once you've opened one.
   const assignedToMeCount = useMyTasksStore((s) => s.workItems.length);
   const notAssignedCount = useMyTasksStore((s) => s.unassignedWorkItems.length);
+  // Environments are stored by key and shown by display name; the empty state's filter chips have to
+  // read back the same way the dropdowns that set them do.
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
 
   // Defined as an async function so the initial fetch from `useEffect` can be a
   // microtask (avoids the eslint react-hooks/set-state-in-effect rule and the
@@ -204,6 +217,96 @@ export function MyQueuePage() {
     setDeciderFilter(next);
     syncUrl({ decider: next });
   };
+
+  /**
+   * Resets every filter the current tab actually shows, in one pass. Scoped to the visible controls
+   * for the same reason {@link activeFilterCount} is: a time frame behind a tab that doesn't use it
+   * is not something the reader was told about, so silently rewriting it would be a change they
+   * can't see. The URL is written once at the end — the individual handlers each rebuild the
+   * parameters from state that hasn't re-rendered yet.
+   */
+  const clearAllFilters = () => {
+    saveScopeFilter(SCOPE_FILTER_DEFAULT);
+    setScopeFilter(SCOPE_FILTER_DEFAULT);
+    const next: Partial<QueueParams> = { scope: SCOPE_FILTER_DEFAULT };
+    if (view === 'pending') {
+      saveAssigneeFilter({ mode: 'all' });
+      setAssigneeFilter({ mode: 'all' });
+      next.assignee = { mode: 'all' };
+    }
+    if (view === 'decided') {
+      saveTimeFrame('all');
+      setTimeFrame('all');
+      saveDeciderFilter({ mode: 'all' });
+      setDeciderFilter({ mode: 'all' });
+      next.timeFrame = 'all';
+      next.decider = { mode: 'all' };
+    }
+    syncUrl(next);
+  };
+
+  /**
+   * Every narrowing in effect on this tab, named and clearable, for the empty state to report. Same
+   * controls in the same order the filter panel renders them.
+   *
+   * Wider than {@link activeFilterCount}, deliberately, and on one control: the decided tab's time
+   * frame is listed at its "Last day" default too. The badge counts filters the user changed; this
+   * lists filters that are hiding rows, and "your team decided nothing in the last 24 hours" is by
+   * far the most common reason that tab comes up empty.
+   */
+  const activeFilters: ActiveFilterChip[] = [];
+  if (view === 'decided' && timeFrame !== 'all') {
+    activeFilters.push({
+      label: 'Time frame',
+      value: TIME_FRAME_LABELS[timeFrame],
+      // Clears to "All time", not back to the '1d' default: the point of clearing from an empty
+      // list is to widen it, and the default is itself a narrowing.
+      onClear: () => handleTimeFrameChange('all'),
+    });
+  }
+  if (view === 'decided' && deciderFilter.mode !== 'all') {
+    activeFilters.push({
+      label: 'Decided by',
+      value: deciderFilter.mode === 'me' ? 'Me' : deciderFilter.displayName,
+      onClear: () => handleDeciderChange({ mode: 'all' }),
+    });
+  }
+  if (view === 'pending' && assigneeFilter.mode !== 'all') {
+    activeFilters.push({
+      label: 'Assigned to',
+      value: assigneeLabel(assigneeFilter),
+      onClear: () => handleFilterChange({ mode: 'all' }),
+    });
+  }
+  if (scopeFilter.product) {
+    activeFilters.push({
+      label: 'Product',
+      value: scopeFilter.product,
+      onClear: () => handleScopeChange({ ...scopeFilter, product: null }),
+    });
+  }
+  if (scopeFilter.service) {
+    activeFilters.push({
+      label: 'Service',
+      value: scopeFilter.service,
+      onClear: () => handleScopeChange({ ...scopeFilter, service: null }),
+    });
+  }
+  if (scopeFilter.targetEnv) {
+    activeFilters.push({
+      // Display name, not the raw key — the chip has to be recognisable as the dropdown's own pick.
+      label: 'Target env',
+      value: getDisplayName(scopeFilter.targetEnv),
+      onClear: () => handleScopeChange({ ...scopeFilter, targetEnv: null }),
+    });
+  }
+  if (scopeFilter.deployedEnv) {
+    activeFilters.push({
+      label: 'Testable in',
+      value: getDisplayName(scopeFilter.deployedEnv),
+      onClear: () => handleScopeChange({ ...scopeFilter, deployedEnv: null }),
+    });
+  }
 
   // Server-narrowed list × scope filter → what the user actually sees.
   const filteredTickets = useMemo(
@@ -391,42 +494,15 @@ export function MyQueuePage() {
           ))}
         </div>
       ) : filteredTickets.length === 0 ? (
-        <div
-          className="flex flex-col items-center justify-center py-20 rounded-xl border"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-          }}
-        >
-          <div
-            className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-          >
-            <Inbox size={24} />
-          </div>
-          <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-            {tickets.length > 0 && hasActiveScope(scopeFilter)
-              ? 'No work items match the current filters.'
-              : view === 'decided'
-                ? decidedEmptyTitle(deciderFilter)
-                : view === 'mine'
-                  ? 'Nothing assigned to you right now.'
-                  : view === 'not-assigned'
-                    ? 'Every work item has the people its policy requires.'
-                    : emptyStateTitle(assigneeFilter)}
-          </p>
-          <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-            {tickets.length > 0 && hasActiveScope(scopeFilter)
-              ? 'Widen the product / service / target-env picks to see more rows.'
-              : view === 'decided'
-                ? 'Try a wider time frame, or switch the decider to "Anyone".'
-                : view === 'mine'
-                  ? 'Switch to "Pending" to see everything you\'re authorised to sign off.'
-                  : view === 'not-assigned'
-                    ? 'Work items whose promotion policy asks for a role nobody is in will show up here.'
-                    : emptyStateBody(assigneeFilter)}
-          </p>
-        </div>
+        <QueueEmptyState
+          view={view}
+          filters={activeFilters}
+          onClearFilters={clearAllFilters}
+          /* Rows the tab loaded that the client-side scope narrowing then hid. Zero means the
+             narrowing that emptied the list happened server-side (or there was nothing to begin
+             with), which is a different sentence. */
+          hiddenByScope={hasActiveScope(scopeFilter) ? tickets.length : 0}
+        />
       ) : (
         <div>
           <h2
@@ -565,6 +641,19 @@ export type { TimeFrameValue };
 
 const TIME_FRAME_STORAGE_KEY = 'me.queue.timeFrame';
 
+/**
+ * The select's option labels — also what the empty state's chip reads back, so the filter it names
+ * is quotable from the dropdown that set it.
+ */
+const TIME_FRAME_LABELS: Record<TimeFrameValue, string> = {
+  '1d': 'Last day',
+  '7d': 'Last 7 days',
+  '30d': 'Last 30 days',
+  all: 'All time',
+};
+
+const TIME_FRAME_ORDER: readonly TimeFrameValue[] = ['1d', '7d', '30d', 'all'];
+
 /** The time frame as a document-title segment — terser than the select's own option labels. */
 const TIME_FRAME_TITLES: Record<TimeFrameValue, string> = {
   '1d': 'last day',
@@ -626,10 +715,11 @@ function TimeFrameFilter({
           color: 'var(--text-primary)',
         }}
       >
-        <option value="1d">Last day</option>
-        <option value="7d">Last 7 days</option>
-        <option value="30d">Last 30 days</option>
-        <option value="all">All time</option>
+        {TIME_FRAME_ORDER.map((t) => (
+          <option key={t} value={t}>
+            {TIME_FRAME_LABELS[t]}
+          </option>
+        ))}
       </select>
     </label>
   );
@@ -791,41 +881,107 @@ function deciderTitle(decider: DeciderFilterValue): string | null {
   }
 }
 
-function decidedEmptyTitle(decider: DeciderFilterValue): string {
-  switch (decider.mode) {
+/** The person filter as the dropdown shows it, for the empty state's chip. */
+function assigneeLabel(filter: AssigneeFilterValue): string {
+  switch (filter.mode) {
+    case 'all':
+      return 'Anyone';
     case 'me':
-      return 'No decisions you made in this time frame.';
+      return 'Me';
+    case 'unassigned':
+      return 'Missing a required role';
     case 'person':
-      return `No decisions by ${decider.displayName} in this time frame.`;
-    default:
-      return 'No decisions recorded in this time frame.';
+      return filter.displayName || filter.email || 'a person';
   }
 }
 
-function emptyStateTitle(filter: AssigneeFilterValue): string {
-  switch (filter.mode) {
-    case 'all':
-      return 'No work items awaiting your signoff.';
-    case 'me':
-      return 'Nothing assigned to you right now.';
-    case 'unassigned':
-      return 'Every work item has the people its policy requires.';
-    case 'person':
-      return `No work items where ${filter.displayName} holds a required role.`;
-  }
-}
+// ── Empty state ──────────────────────────────────────────────────────────────────────────
 
-function emptyStateBody(filter: AssigneeFilterValue): string {
-  switch (filter.mode) {
-    case 'all':
-      return 'New work items will appear here as promotions roll through your environments.';
-    case 'me':
-      return 'Switch "Assigned to" back to "Anyone" to see the full queue you can sign off on.';
-    case 'unassigned':
-      return 'Work items whose promotion policy asks for a role nobody is in will show up here.';
-    case 'person':
-      return 'Try a different person, or switch to "Anyone".';
+/**
+ * The unfiltered empty state per tab — what this tab would contain, and where to look instead.
+ *
+ * Tone is the editorial call the colour makes: an empty attention tab is the queue being clear,
+ * which deserves to read as good news rather than as a shrug, while an empty history is neither.
+ */
+const QUEUE_EMPTY_STATES: Record<
+  QueueView,
+  { icon: typeof Inbox; tone: EmptyStateTone; title: string; body: string }
+> = {
+  mine: {
+    icon: CheckCircle,
+    tone: 'good',
+    title: 'Nothing is waiting on your sign-off',
+    body: 'This tab holds work items where you hold a role their promotion policy requires. "Pending" shows everything you are authorised to sign off, whoever it is assigned to.',
+  },
+  'not-assigned': {
+    icon: UserPlus,
+    tone: 'good',
+    title: 'Every work item has the people its policy requires',
+    body: 'A work item lands here when its promotion policy asks for a role — a QA owner, a reviewer — that nobody has been put in, so nobody can sign it off.',
+  },
+  pending: {
+    icon: Inbox,
+    tone: 'good',
+    title: 'No work items are waiting for sign-off',
+    body: 'Everything you are authorised to sign off is done. New items appear here as promotions roll through your environments.',
+  },
+  decided: {
+    icon: History,
+    tone: 'neutral',
+    title: 'No decisions recorded yet',
+    body: 'Sign-offs made by you or by anyone else in your approver group are kept here.',
+  },
+};
+
+/**
+ * What the queue shows instead of rows.
+ *
+ * The old copy said "No work items match the current filters" and left the reader to go and find
+ * which of six controls — three of them behind a collapsed panel on a phone — was responsible. So
+ * the filters are named here, each one clearable in place, and the tab is named too: on this page a
+ * tab is itself a narrowing, and it is as likely to be the reason as any dropdown.
+ */
+function QueueEmptyState({
+  view,
+  filters,
+  onClearFilters,
+  hiddenByScope,
+}: {
+  view: QueueView;
+  filters: ActiveFilterChip[];
+  onClearFilters: () => void;
+  /**
+   * Rows this tab loaded that the client-side scope narrowing then hid. Zero means nothing was
+   * loaded to hide — the list was emptied server-side, or by there being nothing there at all.
+   */
+  hiddenByScope: number;
+}) {
+  if (filters.length > 0) {
+    const one = filters.length === 1;
+    return (
+      <ListEmptyState
+        icon={Filter}
+        tone="filtered"
+        title={`No work items match ${one ? 'this filter' : 'these filters'}`}
+        body={
+          hiddenByScope > 0
+            ? `${hiddenByScope} work item${hiddenByScope === 1 ? '' : 's'} on the "${
+                VIEW_LABELS[view]
+              }" tab ${hiddenByScope === 1 ? 'is' : 'are'} hidden by the narrowing below. Drop a filter to bring ${
+                hiddenByScope === 1 ? 'it' : 'them'
+              } back.`
+            : `Nothing on the "${VIEW_LABELS[view]}" tab survives ${
+                one ? 'this narrowing' : `all ${filters.length} narrowings`
+              }. Clear one to widen the queue, or try another tab.`
+        }
+        filters={filters}
+        onClearFilters={onClearFilters}
+      />
+    );
   }
+
+  const { icon, tone, title, body } = QUEUE_EMPTY_STATES[view];
+  return <ListEmptyState icon={icon} tone={tone} title={title} body={body} />;
 }
 
 /**
