@@ -18,6 +18,11 @@ import {
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
+import {
+  ListEmptyState,
+  type ActiveFilterChip,
+  type EmptyStateTone,
+} from '@/components/ui/ListEmptyState';
 import { CopyViewLinkButton } from '@/components/ui/CopyViewLinkButton';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
@@ -47,6 +52,7 @@ import {
   GitPullRequest,
   Ticket,
   ExternalLink,
+  Filter,
 } from 'lucide-react';
 
 /**
@@ -111,65 +117,105 @@ const VIEW_HEADINGS: Record<PromotionView, string> = {
   all: 'All promotions',
 };
 
-const EMPTY_STATES: Record<PromotionView, { icon: typeof Clock; title: string; body: string }> = {
+/**
+ * What each tab shows, as a noun phrase — the subject of the "no … match these filters" sentence.
+ * Deliberately spells out the narrowing the tab itself applies: on a filtered empty list the tab is
+ * as likely to be the reason as any dropdown, and it isn't one of the chips the panel can clear.
+ */
+const VIEW_SUBJECTS: Record<PromotionView, string> = {
+  pending: 'pending promotions',
+  mine: 'promotions you can approve',
+  'needs-attention': 'promotions with a work item missing someone',
+  'awaiting-deploy': 'approved promotions waiting to deploy',
+  resolved: 'resolved promotions',
+  rejected: 'rejected promotions',
+  all: 'promotions',
+};
+
+/**
+ * The unfiltered empty state per tab. Tone is the editorial call: an empty "Awaiting my approval" or
+ * "Needs attention" is the queue being clear, which reads better in green than as a shrug; history
+ * tabs with nothing in them are neither good nor bad.
+ */
+const EMPTY_STATES: Record<
+  PromotionView,
+  { icon: typeof Clock; tone: EmptyStateTone; title: string; body: string }
+> = {
   pending: {
-    icon: GitPullRequest,
-    title: 'No pending promotions',
-    body: 'Pending promotions awaiting approval will appear here.',
+    icon: CheckCircle,
+    tone: 'good',
+    title: 'No promotions are waiting for approval',
+    body: 'When a new version is ready to move up an environment, it lands here for review.',
   },
   mine: {
     icon: CheckCircle,
-    title: 'Nothing awaiting your approval',
-    body: 'Promotions you can approve will appear here.',
+    tone: 'good',
+    title: 'Nothing is waiting on you',
+    body: 'This tab holds the promotions you are authorised to approve. Others may still be pending for someone else — "All pending" shows those.',
   },
   'needs-attention': {
     icon: CheckCircle,
-    title: 'Nothing needs attention',
-    body: 'Every pending promotion has the people its policy requires on each of its work items.',
+    tone: 'good',
+    title: 'Every pending promotion has the people it needs',
+    body: 'A promotion shows up here when one of its work items has nobody in a role its policy requires, so nobody can sign it off.',
   },
   'awaiting-deploy': {
     icon: Rocket,
-    title: 'Nothing awaiting deploy',
-    body: 'Approved promotions not yet deployed will appear here.',
+    tone: 'neutral',
+    title: 'Nothing approved is waiting to deploy',
+    body: 'Approved promotions sit here until the deployment that carries them runs.',
   },
   resolved: {
-    icon: CheckCircle,
-    title: 'No resolved promotions',
-    body: 'Promotions that have been approved, deployed, rejected or superseded land here.',
+    icon: Clock,
+    tone: 'neutral',
+    title: 'Nothing has been resolved yet',
+    body: 'Promotions that were approved, deployed, rejected or superseded are kept here as history.',
   },
   rejected: {
     icon: XCircle,
-    title: 'No rejected promotions',
-    body: 'Promotions someone turned down will appear here.',
+    tone: 'neutral',
+    title: 'No promotion has been rejected',
+    body: 'A promotion someone turns down is kept here along with the reason they gave.',
   },
   all: {
     icon: GitPullRequest,
-    title: 'No promotions',
-    body: 'Nothing has been promoted yet for the current filters.',
+    tone: 'neutral',
+    title: 'No promotions recorded yet',
+    body: 'Every promotion, at any status, appears here once one is created for a product you can see.',
   },
 };
 
-function EmptyState({ view }: { view: PromotionView }) {
-  const { icon: Icon, title, body } = EMPTY_STATES[view];
-  return (
-    <div
-      className="flex flex-col items-center justify-center py-16 rounded-xl border"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-    >
-      <div
-        className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-        style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-      >
-        <Icon size={24} />
-      </div>
-      <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-        {title}
-      </p>
-      <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-        {body}
-      </p>
-    </div>
-  );
+function EmptyState({
+  view,
+  filters,
+  onClearFilters,
+}: {
+  view: PromotionView;
+  /** The dropdowns and boxes currently narrowing the fetch, as clearable chips. */
+  filters: ActiveFilterChip[];
+  onClearFilters: () => void;
+}) {
+  // Filters win over the per-tab copy. "No rejected promotions" is a claim about the whole system,
+  // and printing it while a product filter is quietly narrowing the fetch is how an empty list gets
+  // mistaken for a fact.
+  if (filters.length > 0) {
+    const one = filters.length === 1;
+    return (
+      <ListEmptyState
+        icon={Filter}
+        tone="filtered"
+        title={`No ${VIEW_SUBJECTS[view]} match ${one ? 'this filter' : 'these filters'}`}
+        body={`The "${VIEW_HEADINGS[view]}" tab has nothing left once ${
+          one ? 'this narrowing is' : `all ${filters.length} narrowings are`
+        } applied. Drop one to widen the list, or try another tab — a promotion you are looking for may have moved on already.`}
+        filters={filters}
+        onClearFilters={onClearFilters}
+      />
+    );
+  }
+
+  const { icon, tone, title, body } = EMPTY_STATES[view];
+  return <ListEmptyState icon={icon} tone={tone} title={title} body={body} />;
 }
 
 /**
@@ -333,6 +379,53 @@ export function PromotionsPage() {
     persistReference(next);
     syncUrl({ reference: next });
   };
+
+  const clearAllFilters = () => {
+    persistProduct('');
+    persistService('');
+    persistTargetEnv('');
+    persistReference('');
+    // One URL write rather than four: the handlers above each build the parameters from state that
+    // hasn't re-rendered yet, so calling them in sequence would leave three of the four behind.
+    syncUrl({ product: '', service: '', targetEnv: '', reference: '' });
+  };
+
+  /**
+   * The narrowings currently applied to the fetch, for the empty state to name and clear. Every
+   * filter here is server-side, so an empty list can't be attributed between them — the panel lists
+   * all of them and lets the reader drop whichever one it is.
+   */
+  const activeFilters: ActiveFilterChip[] = [];
+  if (productFilter) {
+    activeFilters.push({
+      label: 'Product',
+      value: productFilter,
+      onClear: () => handleProductChange(''),
+    });
+  }
+  if (serviceFilter) {
+    activeFilters.push({
+      label: 'Service',
+      value: serviceFilter,
+      onClear: () => handleServiceChange(''),
+    });
+  }
+  if (targetEnvFilter) {
+    activeFilters.push({
+      // The display name, not the raw key — it's what the dropdown shows, and the chip has to be
+      // recognisable as the control the reader set.
+      label: 'Target env',
+      value: getDisplayName(targetEnvFilter),
+      onClear: () => handleTargetEnvChange(''),
+    });
+  }
+  if (referenceFilter) {
+    activeFilters.push({
+      label: 'Reference',
+      value: referenceFilter,
+      onClear: () => handleReferenceChange(''),
+    });
+  }
 
   // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
   const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}`;
@@ -761,7 +854,7 @@ export function PromotionsPage() {
           ))}
         </div>
       ) : displayed.length === 0 ? (
-        <EmptyState view={view} />
+        <EmptyState view={view} filters={activeFilters} onClearFilters={clearAllFilters} />
       ) : (
         <div>
           <div className="flex items-center justify-between mb-3">
