@@ -1,3 +1,8 @@
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Infrastructure.Audit;
+using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Realtime;
+
 namespace Platform.Api.Features.Deployments;
 
 /// <summary>
@@ -43,6 +48,79 @@ public static class DeploymentAdminEndpoints
             return Results.Ok(new { logs, bytes });
         });
 
+        // ── Retired services (soft delete) ───────────────────────────────────
+        // A service that a migration made obsolete stops appearing in the deployment matrix and in
+        // promotions, without anything being erased. See ServiceDeletionService for the rules; the
+        // one worth repeating here is that a new deployment un-retires the service by itself, so an
+        // admin who retires something prematurely does not have to remember to undo it.
+
+        group.MapGet("/deleted-services", async (
+            ServiceDeletionService service, string? product, CancellationToken ct) =>
+        {
+            var rows = await service.ListAsync(product, ct);
+            return Results.Ok(rows.Select(ToDto).ToList());
+        });
+
+        group.MapPost("/deleted-services", async (
+            ServiceDeletionService service, ICurrentUser user, IAuditLogger audit,
+            IPlatformEventPublisher events, DeleteServiceRequest req, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Product) || string.IsNullOrWhiteSpace(req.Service))
+                return Results.BadRequest(new { error = "product and service are required" });
+
+            try
+            {
+                var (row, impact) = await service.DeleteAsync(req.Product, req.Service, req.Reason, ct);
+
+                await audit.Log(
+                    "deployments", "deployment.service.deleted",
+                    user.Id, user.Name, "user",
+                    "DeletedService", row.Id, null,
+                    new { row.Product, row.Service, row.Reason, impact.Deployments, impact.OpenPromotions });
+
+                await events.PublishEntityChanged(new EntityChangedEvent
+                {
+                    Entity = "deployment", Action = "updated", Product = row.Product,
+                });
+
+                return Results.Ok(new DeleteServiceResultDto(
+                    ToDto(row), impact.Deployments, impact.OpenPromotions));
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Results.NotFound(new { error = ex.Message });
+            }
+        });
+
+        // Query parameters rather than route segments: service names carry dots and slashes often
+        // enough that a path segment would need escaping the caller keeps getting wrong.
+        group.MapDelete("/deleted-services", async (
+            ServiceDeletionService service, ICurrentUser user, IAuditLogger audit,
+            IPlatformEventPublisher events, string? product, string? serviceName, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(serviceName))
+                return Results.BadRequest(new { error = "product and serviceName are required" });
+
+            if (!await service.RestoreAsync(product, serviceName, ct))
+                return Results.NotFound(new { error = $"{product}/{serviceName} is not retired." });
+
+            await audit.Log(
+                "deployments", "deployment.service.restored",
+                user.Id, user.Name, "user",
+                "DeletedService", null,
+                new { product, service = serviceName }, null);
+
+            await events.PublishEntityChanged(new EntityChangedEvent
+            {
+                Entity = "deployment", Action = "updated", Product = product,
+            });
+
+            return Results.NoContent();
+        });
+
         return group;
     }
+
+    private static DeletedServiceDto ToDto(DeletedService d) =>
+        new(d.Id, d.Product, d.Service, d.DeletedAt, d.DeletedByName, d.Reason);
 }

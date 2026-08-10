@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { Trash2, Check, ArrowRight, RotateCcw } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Trash2, Check, ArrowRight, RotateCcw, Undo2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { PromotionReconcileResult } from '@/lib/api';
+import type { DeletedService, PromotionReconcileResult } from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 
 /**
@@ -12,6 +12,7 @@ import { EnvBadge } from '@/components/environments/EnvBadge';
 export function MaintenanceSettings() {
   return (
     <div className="space-y-4">
+      <RemovedServicesCard />
       <DuplicateScanCard
         title="Duplicate deployment events"
         description="Duplicate deployment events can accumulate when CI systems retry ingest
@@ -37,6 +38,133 @@ export function MaintenanceSettings() {
       />
       <WebhookDeliveriesCard />
     </div>
+  );
+}
+
+// ── Removed services ────────────────────────────────────────────────────────────────────────
+
+/**
+ * The other half of the per-service Remove action on a product's deployment page.
+ *
+ * <p>Retiring a service hides it everywhere, which means this card is the only place it can be seen
+ * again — a restore control on the deployment matrix would have nothing to attach to. It breaks the
+ * preview-then-apply shape the rest of this page follows, and should: restoring is the undo, and
+ * making somebody scan before they can undo would be ceremony guarding nothing.</p>
+ */
+function RemovedServicesCard() {
+  const [services, setServices] = useState<DeletedService[] | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Bumped after a restore to re-run the load below, so the list has one fetch path rather than two.
+  const [reloadTick, setReloadTick] = useState(0);
+
+  // Loaded on mount rather than behind a button: an admin opening Maintenance to find a service
+  // somebody removed should see it, not have to guess that a scan would reveal it.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listDeletedServices()
+      .then((rows) => {
+        if (!cancelled) setServices(rows);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : 'Failed to load removed services');
+        setServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadTick]);
+
+  const handleRestore = async (svc: DeletedService) => {
+    setRestoring(svc.id);
+    setError(null);
+    try {
+      await api.restoreService(svc.product, svc.service);
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to restore the service');
+    } finally {
+      setRestoring(null);
+    }
+  };
+
+  return (
+    <section
+      className="rounded-xl border p-5 space-y-4"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div>
+        <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Removed services
+        </h2>
+        <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          Services an admin removed from a product — obsolete after a migration, typically. They are
+          hidden from the deployment matrix, from promotions and from the work-item queue; none of
+          their history was deleted. A service comes back on its own as soon as a pipeline deploys it
+          again, so restoring here is only needed for one nothing is deploying any more.
+        </p>
+      </div>
+
+      {services === null ? (
+        <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+          Loading…
+        </p>
+      ) : services.length === 0 ? (
+        <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+          No services have been removed.
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr
+                className="text-left text-[11px] uppercase tracking-wider"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                <th className="px-3 py-2 font-semibold">Service</th>
+                <th className="px-3 py-2 font-semibold">Removed</th>
+                <th className="px-3 py-2 font-semibold">Reason</th>
+                <th className="px-3 py-2 font-semibold" />
+              </tr>
+            </thead>
+            <tbody>
+              {services.map((svc) => (
+                <tr
+                  key={svc.id}
+                  className="border-t"
+                  style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+                >
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                      {svc.product} / {svc.service}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {new Date(svc.deletedAt).toLocaleDateString()} by {svc.deletedByName}
+                  </td>
+                  <td className="px-3 py-2">{svc.reason ?? '—'}</td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <button
+                      onClick={() => void handleRestore(svc)}
+                      disabled={restoring !== null}
+                      className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-lg transition-opacity hover:opacity-80 disabled:opacity-50"
+                      style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
+                    >
+                      <Undo2 size={12} />
+                      {restoring === svc.id ? 'Restoring…' : 'Restore'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {error && <CardError message={error} />}
+    </section>
   );
 }
 

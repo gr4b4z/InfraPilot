@@ -184,6 +184,7 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<DeploymentService>();
+builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceDeletionService>();
 builder.Services.AddScoped<ReferenceParticipantOverrideService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
