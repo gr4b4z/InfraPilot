@@ -67,6 +67,26 @@ deletes the volume as well.
 
 Logs and pid files go to `.local/` (gitignored).
 
+### Syncing MKP Versions
+
+```bash
+./scripts/sync-mkp-versions.ps1 -ApiKey $env:INFRAPILOT_API_KEY -WhatIf
+```
+
+Reads the version manifests MKP publishes for
+[staging](https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json) and
+[production](https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json), diffs them
+against what InfraPilot already believes is deployed, and records a manual deployment for every
+component whose version has moved. Components InfraPilot has never seen are seeded through the
+ingest endpoint first, since a manual entry is built from its predecessor and needs one to exist.
+
+Only the drift is written, so re-running it changes nothing. `-WhatIf` prints what it would record,
+`-Target staging|production` limits it to one environment, and `-Service 'mkp-web-*'` to a subset of
+components. Unlike the scripts above this one talks to any InfraPilot instance — pass `-ApiBaseUrl`
+— and needs credentials: an API key (`-ApiKey`, or `INFRAPILOT_API_KEY`) or an admin
+`-BearerToken`, which can update but not seed. `Get-Help ./scripts/sync-mkp-versions.ps1 -Full` has
+the rest.
+
 ## What Runs Locally
 
 `docker compose` starts three services:
