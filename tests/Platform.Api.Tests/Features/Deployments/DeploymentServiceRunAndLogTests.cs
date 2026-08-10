@@ -31,6 +31,7 @@ public class DeploymentServiceRunAndLogTests : IDisposable
             _db, Substitute.For<IWebhookDispatcher>(), Substitute.For<IPromotionIngestHook>(),
             TestOptions.Normalization(),
             TestUserPreferences.For(_db),
+            TestServiceDeletions.For(_db),
             Substitute.For<ILogger<DeploymentService>>());
     }
 

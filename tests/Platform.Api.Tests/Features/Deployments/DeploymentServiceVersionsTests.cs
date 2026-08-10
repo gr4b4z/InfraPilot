@@ -27,6 +27,7 @@ public class DeploymentServiceVersionsTests : IDisposable
             Substitute.For<IPromotionIngestHook>(),
             TestOptions.Normalization(),
             TestUserPreferences.For(_db),
+            TestServiceDeletions.For(_db),
             Substitute.For<ILogger<DeploymentService>>());
     }
 

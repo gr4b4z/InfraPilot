@@ -221,6 +221,47 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("catalog_item_versions", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeletedService", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("DeletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DeletedById")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("DeletedByName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "Service")
+                        .IsUnique();
+
+                    b.ToTable("deleted_services", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEvent", b =>
                 {
                     b.Property<Guid>("Id")

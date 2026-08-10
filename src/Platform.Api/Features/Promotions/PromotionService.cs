@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Webhooks;
@@ -578,6 +579,11 @@ public class PromotionService
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
         if (hidden.Count > 0) q = q.Where(c => !hidden.Contains(c.Product));
 
+        // Services an admin retired leave this list for the same reason they leave the deployment
+        // matrix: a promotion for an obsolete component is not work anybody is going to do. The
+        // candidates themselves stay — a later deploy un-retires the service and they come back.
+        q = q.ExcludingDeletedServices(_db);
+
         if (query.Status is { } s) q = q.Where(c => c.Status == s);
         if (!string.IsNullOrEmpty(query.Product)) q = q.Where(c => c.Product == query.Product);
         if (!string.IsNullOrEmpty(query.TargetEnv)) q = q.Where(c => c.TargetEnv == query.TargetEnv);
@@ -627,6 +633,9 @@ public class PromotionService
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
         var q = _db.PromotionCandidates.AsNoTracking().AsQueryable();
         if (hidden.Count > 0) q = q.Where(c => !hidden.Contains(c.Product));
+        // Same reasoning as hidden products: a filter whose only rows are retired services would
+        // narrow the page to nothing.
+        q = q.ExcludingDeletedServices(_db);
 
         var products = await q.Select(c => c.Product).Distinct().OrderBy(p => p).ToListAsync(ct);
         var targetEnvs = await q.Select(c => c.TargetEnv).Distinct().OrderBy(e => e).ToListAsync(ct);
