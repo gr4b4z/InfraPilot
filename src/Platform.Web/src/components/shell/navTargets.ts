@@ -2,6 +2,7 @@ import {
   LayoutGrid,
   FileText,
   CheckCircle,
+  ChartColumn,
   GitPullRequest,
   Inbox,
   Rocket,
@@ -33,6 +34,7 @@ export interface NavTarget {
 
 export const NAV_TARGETS: NavTarget[] = [
   { key: 'd', label: 'Deployments', to: '/deployments', icon: Rocket },
+  { key: 'y', label: 'Analytics', to: '/analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
   { key: 'p', label: 'Promotions', to: '/promotions', icon: GitPullRequest, featureFlag: FeatureFlag.Promotions },
   { key: 'w', label: 'Work items queue', to: '/me/work-items', icon: Inbox, featureFlag: FeatureFlag.Promotions },
   { key: 't', label: 'My tasks', to: '/my-tasks', icon: CheckCircle },
