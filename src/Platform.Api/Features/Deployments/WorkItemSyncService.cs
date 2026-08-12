@@ -89,17 +89,19 @@ public class WorkItemSyncService
         foreach (var r in refs)
         {
             var title = !string.IsNullOrWhiteSpace(r.Title) ? r.Title : singleEnrichedTitle;
+            var committedAt = WorkItemCommitTime.Resolve(r, rawRefs);
 
             if (existingByKey.TryGetValue(r.Key!, out var row))
             {
-                var before = (row.Provider, row.Url, row.Title, row.Content, row.Revision, row.Product);
+                var before = (row.Provider, row.Url, row.Title, row.Content, row.Revision, row.Product, row.CommittedAt);
                 row.Provider = r.Provider;
                 row.Url = r.Url;
                 row.Title = title;
                 row.Content = r.Content;
                 row.Revision = r.Revision;
                 row.Product = ev.Product;
-                if (before != (row.Provider, row.Url, row.Title, row.Content, row.Revision, row.Product))
+                row.CommittedAt = committedAt;
+                if (before != (row.Provider, row.Url, row.Title, row.Content, row.Revision, row.Product, row.CommittedAt))
                     changed++;
             }
             else
@@ -115,6 +117,7 @@ public class WorkItemSyncService
                     Title = title,
                     Content = r.Content,
                     Revision = r.Revision,
+                    CommittedAt = committedAt,
                     CreatedAt = DateTimeOffset.UtcNow,
                 });
                 changed++;

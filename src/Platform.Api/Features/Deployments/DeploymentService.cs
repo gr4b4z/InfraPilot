@@ -215,7 +215,12 @@ public class DeploymentService
                             Email: p.Email)).ToList(),
                     // Stored verbatim — normalisation applies to roles and environment names,
                     // not to a ticket body.
-                    Content: r.Content)).ToList(),
+                    Content: r.Content,
+                    // Carried through untouched: Commits links a work item to its commit/PR
+                    // references, OccurredAt is the lead-time clock start — both are consumed
+                    // by WorkItemCommitTime when the work-item projection is synced.
+                    Commits: r.Commits,
+                    OccurredAt: r.OccurredAt)).ToList(),
                 JsonOptions),
             ParticipantsJson = JsonSerializer.Serialize(
                 (dto.Participants ?? []).Select(p => new ParticipantDto(
