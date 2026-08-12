@@ -63,9 +63,12 @@ candidate; it does **not** recompute or infer the bundle.
 }
 ```
 
-- A `reference` is `{ type, url?, provider?, key?, revision?, title?, content?, participants? }`. Only
-  `type == "work-item"` references feed the approval gate (they become the candidate's work
-  items); `pull-request` / `repository` etc. are stored for display and traceability.
+- A `reference` is `{ type, url?, provider?, key?, revision?, title?, content?, participants?,
+  commits?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
+  become the candidate's work items); `pull-request` / `repository` etc. are stored for display
+  and traceability. `occurredAt` has the same per-type meaning as on deploy ingest
+  (`notes/deployment-ingest-api.md`) and is resolved into the work item's `CommittedAt` for
+  lead-time analytics.
 - Work-item references may carry their own `participants[]` (a ticket's QA, a PR's reviewer);
   these surface on the candidate.
 - `content` is the reference's body copied from the source system (Jira description, PR

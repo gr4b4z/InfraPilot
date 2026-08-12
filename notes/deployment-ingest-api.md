@@ -98,6 +98,8 @@ Rate limiting is applied per key.
 | `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. |
 | `content` | string | no | The reference's **body**, copied verbatim from the source system: a Jira ticket's description, a PR's description, a commit message body. Where `title` is the one-line summary, this is the prose under it. No length limit. On a `work-item` reference it surfaces as the **Content** section of the work-item detail page, between People and Sign-off; a work item with no `content` shows no such section. Rendered as plain text with line breaks preserved — **never** interpreted as markdown or HTML, so markup in the body appears literally. |
 | `participants` | array | no | Reference-scoped participants. Same shape as the top-level `participants[]` (see below) — a PR has its author/reviewer, a ticket has its QA/assignee, a commit has its author. Optional and may be omitted entirely on legacy senders. |
+| `commits` | array of strings | no | Commit hashes this reference was derived from. Meaningful on `work-item` references only: records which commit messages mentioned the ticket, so the read path can link the ticket to its `commit` references (matched on `key`) and the `pull-request` references those commits merged (matched on `revision`). Ignored on other types. |
+| `occurredAt` | ISO-8601 timestamp | no | When the referenced thing happened in its source system. Meaning follows `type`: `pull-request` → merge/completion time, `commit` → **committer** date (not the author date — author dates survive rebase/squash and would overstate lead time), `work-item` → created in the tracker, `pipeline` → build finish. Feeds the lead-time analytics clock start: `pull-request.occurredAt` first, `commit.occurredAt` as fallback (see `notes/analytics-api.md`). Omitting it is always safe — events without it are simply excluded from lead-time coverage. |
 
 #### `references[].participants[]` — reference-scoped participants
 
@@ -138,8 +140,13 @@ Common `type` values:
 |------|-------|
 | `repository` | Link to the source code repository. |
 | `pipeline` | Link to the CI/CD build or workflow run. |
+| `build` | The build that produced the artifact (e.g. Azure DevOps build id/number). Sent by producers that distinguish the artifact build from the deploying workflow. |
 | `pull-request` | Link to the merged PR that triggered the deploy. |
+| `commit` | The commit that was deployed. `key` is the SHA. |
+| `branch` | The source branch the build came from. `key` is the ref name. |
 | `work-item` | Link to a Jira ticket, Azure DevOps work item, etc. |
+
+The server stores any `type` verbatim — the table above is the vocabulary current producers send and the UI/analytics understand, not a validation list.
 
 **Commit deep-linking.** When a `repository` reference includes both `url` and `revision`, the UI renders a link to the specific commit, derived from `provider`:
 
