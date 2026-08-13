@@ -293,11 +293,15 @@ export interface WebhookSubscription {
   events: string[];
   filters: { product: string | null; environment: string | null };
   /** How the delivery is framed on the wire. Fixed at creation time. */
-  targetType: 'generic' | 'azure_devops' | 'github';
+  targetType: 'generic' | 'azure_devops' | 'github' | 'msteams' | 'discord';
   /** azure_devops only — the header carrying the HMAC-SHA1 checksum. */
   signatureHeader?: string | null;
   /** github only — overrides the repository_dispatch event_type. */
   githubEventType?: string | null;
+  /** msteams/discord only — Handlebars template for the message body. Null uses the per-event default. */
+  messageTemplate?: string | null;
+  /** msteams/discord only — heading template. Null uses the per-event default; empty means no heading. */
+  messageTitle?: string | null;
   active: boolean;
   createdAt: string;
   updatedAt?: string;

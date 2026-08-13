@@ -6,9 +6,10 @@ using Platform.Api.Features.Webhooks.Models;
 namespace Platform.Api.Features.Webhooks;
 
 /// <summary>
-/// Frames a queued delivery for the wire. Pure — no DB, no HTTP, no Data Protection: it takes the
-/// already-decrypted secret and returns the exact body and headers the worker should send, so the
-/// per-target request shapes are unit-testable without any plumbing.
+/// Frames a queued delivery for the wire. Pure — no DB, no HTTP, no Data Protection, no template
+/// compilation: it takes the already-decrypted secret and the already-rendered message and returns
+/// the exact body and headers the worker should send, so the per-target request shapes are
+/// unit-testable without any plumbing.
 /// </summary>
 public static class WebhookRequestBuilder
 {
@@ -20,15 +21,64 @@ public static class WebhookRequestBuilder
 
     private const string GitHubApiVersion = "2022-11-28";
 
+    /// <summary>
+    /// Adaptive Card schema version Teams renders reliably. Newer versions degrade silently on older
+    /// clients, and nothing here needs what they add.
+    /// </summary>
+    private const string AdaptiveCardVersion = "1.4";
+
+    /// <summary>
+    /// A Teams card tops out around 28 KB in total, and a rendered release note has no natural
+    /// ceiling — a note wide enough to blow the limit would otherwise fail delivery outright rather
+    /// than arriving trimmed.
+    /// </summary>
+    private const int TeamsTextLimit = 20000;
+
+    /// <summary>Discord's documented caps: 2000 for plain content, 4096 for an embed description, 256 for its title.</summary>
+    private const int DiscordContentLimit = 2000;
+    private const int DiscordDescriptionLimit = 4096;
+    private const int DiscordTitleLimit = 256;
+
+    /// <summary>
+    /// Applied to Discord embeds and Teams MessageCards so notifications read as one source in a busy
+    /// channel. Discord wants the integer, MessageCard wants the hex string.
+    /// </summary>
+    private const int AccentColor = 0x3B82F6;
+
+    /// <summary>
+    /// Hosts belonging to the retired Office 365 connector, which speaks MessageCard rather than the
+    /// <c>type: message</c> Adaptive Card envelope a Power Automate Workflows URL expects. Existing
+    /// connector URLs still work until Microsoft finishes switching them off, so the shape is chosen
+    /// from the URL instead of asking the operator which vintage of Teams webhook they pasted.
+    /// </summary>
+    private static readonly string[] LegacyTeamsConnectorHosts =
+        ["webhook.office.com", "outlook.office.com", "outlook.office365.com"];
+
     public sealed record WebhookHttpRequest(string Body, IReadOnlyList<(string Name, string Value)> Headers);
 
-    public static WebhookHttpRequest Build(WebhookSubscription sub, WebhookDelivery delivery, string secret)
+    /// <param name="message">
+    /// The rendered notification text. Required for messaging targets, which have no envelope to send
+    /// — their body <em>is</em> the message — and ignored by every other target.
+    /// </param>
+    public static WebhookHttpRequest Build(
+        WebhookSubscription sub,
+        WebhookDelivery delivery,
+        string secret,
+        MessageTemplateRenderer.RenderedMessage? message = null)
         => sub.TargetType switch
         {
             WebhookTargetTypes.AzureDevOps => BuildAzureDevOps(sub, delivery, secret),
             WebhookTargetTypes.GitHub => BuildGitHub(sub, delivery, secret),
+            WebhookTargetTypes.MicrosoftTeams => BuildMicrosoftTeams(sub, RequireMessage(sub, message)),
+            WebhookTargetTypes.Discord => BuildDiscord(RequireMessage(sub, message)),
             _ => BuildGeneric(delivery, secret),
         };
+
+    private static MessageTemplateRenderer.RenderedMessage RequireMessage(
+        WebhookSubscription sub, MessageTemplateRenderer.RenderedMessage? message)
+        => message ?? throw new ArgumentException(
+            $"Target '{sub.TargetType}' posts a rendered message and cannot be framed without one",
+            nameof(message));
 
     /// <summary>
     /// The original shape, kept byte-for-byte: the stored envelope, signed with HMAC-SHA256.
@@ -97,6 +147,136 @@ public static class WebhookRequestBuilder
             ("User-Agent", GitHubUserAgent),
         ]);
     }
+
+    // ── Chat notifications ──────────────────────────────────────────────────
+    // These two targets are the reason a message template exists: the receiver is a channel full of
+    // people, not a system, so what goes on the wire is prose rather than the event envelope. No
+    // signature and no token — the URL is the capability, which is why creating one demands https.
+
+    /// <summary>
+    /// Microsoft Teams. A Power Automate Workflows URL expects a <c>type: message</c> envelope
+    /// carrying an Adaptive Card; a legacy Office 365 connector URL expects a MessageCard. Both are
+    /// emitted from the same rendered message so the operator's template does not depend on which
+    /// kind of Teams webhook they were given.
+    /// </summary>
+    private static WebhookHttpRequest BuildMicrosoftTeams(
+        WebhookSubscription sub, MessageTemplateRenderer.RenderedMessage message)
+    {
+        var title = Truncate(message.Title, TeamsTextLimit);
+        var text = Truncate(message.Text, TeamsTextLimit);
+
+        var body = IsLegacyTeamsConnector(sub.Url)
+            ? LegacyTeamsMessageCard(title, text)
+            : TeamsAdaptiveCard(title, text);
+
+        return new WebhookHttpRequest(body.ToJsonString(), [("Accept", "application/json")]);
+    }
+
+    private static JsonObject TeamsAdaptiveCard(string title, string text)
+    {
+        // Adaptive Card text blocks render a markdown subset — bold, italics, links and bullet lists
+        // survive; tables and headings do not. Nothing is stripped here: dropping syntax Teams
+        // ignores would also drop it from the words a reader sees.
+        var blocks = new JsonArray();
+        if (title.Length > 0)
+        {
+            blocks.Add(new JsonObject
+            {
+                ["type"] = "TextBlock",
+                ["text"] = title,
+                ["weight"] = "Bolder",
+                ["size"] = "Medium",
+                ["wrap"] = true,
+            });
+        }
+        blocks.Add(new JsonObject
+        {
+            ["type"] = "TextBlock",
+            ["text"] = text,
+            ["wrap"] = true,
+        });
+
+        return new JsonObject
+        {
+            ["type"] = "message",
+            ["attachments"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["contentType"] = "application/vnd.microsoft.card.adaptive",
+                    ["contentUrl"] = null,
+                    ["content"] = new JsonObject
+                    {
+                        ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
+                        ["type"] = "AdaptiveCard",
+                        ["version"] = AdaptiveCardVersion,
+                        ["body"] = blocks,
+                    },
+                },
+            },
+        };
+    }
+
+    private static JsonObject LegacyTeamsMessageCard(string title, string text)
+    {
+        // `summary` is not decoration: a MessageCard without one is rejected outright, and it is what
+        // shows in the activity feed and mobile notification.
+        var card = new JsonObject
+        {
+            ["@type"] = "MessageCard",
+            ["@context"] = "https://schema.org/extensions",
+            ["summary"] = title.Length > 0 ? title : "InfraPilot notification",
+            ["themeColor"] = AccentColor.ToString("X6"),
+            ["text"] = text,
+        };
+        if (title.Length > 0) card["title"] = title;
+        return card;
+    }
+
+    private static bool IsLegacyTeamsConnector(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var uri)
+           && LegacyTeamsConnectorHosts.Any(host =>
+               uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase)
+               || uri.Host.EndsWith($".{host}", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Discord. Without a heading the message is posted as plain content, which is what a one-line
+    /// notification should look like in a channel; with one it becomes an embed, whose description
+    /// also happens to allow twice the text.
+    /// </summary>
+    private static WebhookHttpRequest BuildDiscord(MessageTemplateRenderer.RenderedMessage message)
+    {
+        JsonObject body;
+        if (message.Title.Length == 0)
+        {
+            body = new JsonObject { ["content"] = Truncate(message.Text, DiscordContentLimit) };
+        }
+        else
+        {
+            body = new JsonObject
+            {
+                ["embeds"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["title"] = Truncate(message.Title, DiscordTitleLimit),
+                        ["description"] = Truncate(message.Text, DiscordDescriptionLimit),
+                        ["color"] = AccentColor,
+                    },
+                },
+            };
+        }
+
+        return new WebhookHttpRequest(body.ToJsonString(), [("Accept", "application/json")]);
+    }
+
+    /// <summary>
+    /// Trims to a platform limit, marking the cut so a reader can tell a truncated message from one
+    /// that simply ended. Both platforms reject an over-long body outright, so this is the difference
+    /// between a trimmed notification and none.
+    /// </summary>
+    private static string Truncate(string value, int limit)
+        => value.Length <= limit ? value : value[..(limit - 1)] + "…";
 
     private enum HmacAlgorithm { Sha1, Sha256 }
 

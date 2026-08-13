@@ -17,23 +17,28 @@ import {
   ChevronDown,
   ChevronRight,
   BookOpen,
+  MessageSquare,
 } from 'lucide-react';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import {
   AVAILABLE_EVENTS,
   DEFAULT_ADO_SIGNATURE_HEADER,
-  TARGET_TYPES,
+  WEBHOOK_TARGET_TYPES,
   azureDevOpsUrl,
   githubDispatchUrl,
+  isNotificationTarget,
+  maskNotificationUrl,
   targetLabel,
   type WebhookTargetType,
 } from './webhookTargets';
+import { NotificationCreateForm } from './NotificationCreateForm';
 
 export function WebhookListPage() {
   const [webhooks, setWebhooks] = useState<WebhookSubscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [showCreateNotification, setShowCreateNotification] = useState(false);
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [secretCopied, setSecretCopied] = useState(false);
 
@@ -210,14 +215,32 @@ export function WebhookListPage() {
             Manage webhook subscriptions for platform events
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90"
-          style={{ backgroundColor: 'var(--accent)' }}
-        >
-          <Plus size={15} />
-          New Webhook
-        </button>
+        {/* Two entry points, because the two things ask for almost nothing in common: a webhook hands
+            an event envelope to a system, a notification posts words into a channel. */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setShowCreateNotification(true);
+              setShowCreate(false);
+            }}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-2 rounded-lg transition-colors hover:opacity-80"
+            style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+          >
+            <MessageSquare size={15} />
+            New Notification
+          </button>
+          <button
+            onClick={() => {
+              setShowCreate(true);
+              setShowCreateNotification(false);
+            }}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90"
+            style={{ backgroundColor: 'var(--accent)' }}
+          >
+            <Plus size={15} />
+            New Webhook
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -265,6 +288,17 @@ export function WebhookListPage() {
         </div>
       )}
 
+      {/* Create notification */}
+      {showCreateNotification && (
+        <NotificationCreateForm
+          onCancel={() => setShowCreateNotification(false)}
+          onCreated={async () => {
+            setShowCreateNotification(false);
+            await fetchWebhooks();
+          }}
+        />
+      )}
+
       {/* Create modal */}
       {showCreate && (
         <div
@@ -286,7 +320,7 @@ export function WebhookListPage() {
               Target
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {TARGET_TYPES.map((t) => (
+              {WEBHOOK_TARGET_TYPES.map((t) => (
                 <button
                   key={t.value}
                   onClick={() => setTargetType(t.value)}
@@ -658,9 +692,13 @@ export function WebhookListPage() {
                     >
                       {wh.name}
                     </Link>
+                    {/* A chat webhook URL is a bearer credential — its path is what lets anyone post
+                        to the channel, so only the host is shown here. */}
                     <div className="text-[12px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
                       <ExternalLink size={11} />
-                      <span className="truncate max-w-[250px]">{wh.url}</span>
+                      <span className="truncate max-w-[250px]">
+                        {isNotificationTarget(wh.targetType) ? maskNotificationUrl(wh.url) : wh.url}
+                      </span>
                     </div>
                     {wh.targetType && wh.targetType !== 'generic' && (
                       <span
@@ -802,7 +840,7 @@ export function WebhookListPage() {
               </h3>
               <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
                 A subscription's target decides how the delivery is framed. Event filtering, retries
-                and delivery history work the same way for all three. The target is fixed at
+                and delivery history work the same way for all of them. The target is fixed at
                 creation — to change it, delete the subscription and create a new one.
               </p>
               <div
@@ -815,6 +853,8 @@ export function WebhookListPage() {
                       ['Generic', 'Signed JSON POST to any URL', 'HMAC-SHA256 in X-Hub-Signature-256'],
                       ['Azure DevOps', 'Incoming WebHook service connection', 'HMAC-SHA1 in a header you choose'],
                       ['GitHub', 'repository_dispatch REST call', 'Bearer token, no signature'],
+                      ['Microsoft Teams', 'Adaptive Card posted to a channel', 'The webhook URL is the credential'],
+                      ['Discord', 'Message or embed posted to a channel', 'The webhook URL is the credential'],
                     ].map(([label, what, auth]) => (
                       <tr key={label} style={{ borderBottom: '1px solid var(--border-color)' }}>
                         <td className="px-3 py-2 font-semibold whitespace-nowrap" style={{ color: 'var(--accent)' }}>
@@ -1105,6 +1145,60 @@ jobs:
                 Leave <strong>Event type</strong> blank to dispatch under the InfraPilot event name,
                 so one workflow can filter several events by <code>types:</code>. Set it to collapse
                 every event onto a single dispatch name instead.
+              </p>
+            </div>
+
+            {/* Chat notifications */}
+            <div className="space-y-2 pt-1 border-t" style={{ borderColor: 'var(--border-color)' }}>
+              <h3 className="text-[13px] font-semibold pt-4" style={{ color: 'var(--text-primary)' }}>
+                Microsoft Teams and Discord — notifications
+              </h3>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                Created from <strong>New Notification</strong> rather than New Webhook. These targets
+                post a message a person reads, so the body is rendered from a Handlebars template
+                instead of being the event envelope. There is no secret and no signature: the webhook
+                URL is itself the capability to post, which is why an https URL is required and why
+                the URL is masked everywhere it is displayed.
+              </p>
+              <ul className="text-[13px] space-y-1.5 list-disc list-inside" style={{ color: 'var(--text-secondary)' }}>
+                <li>
+                  <strong>Teams:</strong> channel → <strong>⋯ → Workflows</strong> →{' '}
+                  <em>Post to a channel when a webhook request is received</em>, then copy the URL.
+                  InfraPilot sends an Adaptive Card. Legacy Office 365 connector URLs
+                  (<code>webhook.office.com</code>) are detected from the host and sent a MessageCard
+                  instead, so existing connectors keep working until Microsoft retires them.
+                </li>
+                <li>
+                  <strong>Discord:</strong> Server Settings → <strong>Integrations → Webhooks</strong>{' '}
+                  → New Webhook. With a heading the message is posted as an embed; without one, as
+                  plain content.
+                </li>
+              </ul>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                Every event has a default message, so a notification works before you write anything.
+                Release notes arrive already rendered and their default forwards{' '}
+                <code style={{ color: 'var(--accent)' }}>{'{{data.renderedContent}}'}</code> — that is
+                the path that replaces a relay function reformatting the note on the way through.
+              </p>
+              <pre
+                className="rounded-lg p-4 text-[12px] leading-relaxed overflow-x-auto"
+                style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+              >
+{`# Templates are Handlebars over the delivery envelope:
+{{eventType}}                     the event that fired
+{{data.product}} {{data.service}} the event's own fields, camelCase
+{{data.renderedContent}}          release notes, already rendered
+{{#if data.failureReason}}...{{/if}}
+{{#each data.items}}- {{this.service}}{{/each}}
+
+# A missing field renders empty rather than failing, so an
+# optional value needs no guard unless the wording around it does.`}
+              </pre>
+              <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                Both platforms render only a markdown subset — bold, italics, links and bullet lists
+                survive; tables do not, and Teams also drops headings. Over-long messages are trimmed
+                to the platform limit rather than being rejected. Use the live preview in the create
+                form to see the exact text and request body before saving.
               </p>
             </div>
 
