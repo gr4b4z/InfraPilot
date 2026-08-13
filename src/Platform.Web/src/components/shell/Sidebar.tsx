@@ -4,6 +4,7 @@ import {
   LayoutGrid,
   FileText,
   CheckCircle,
+  ChartColumn,
   ChevronLeft,
   ChevronRight,
   Settings,
@@ -62,6 +63,7 @@ const navGroups: NavGroup[] = [
     label: 'Deployments',
     items: [
       { to: '/deployments', label: 'Deployments', icon: Rocket },
+      { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
     ],
   },

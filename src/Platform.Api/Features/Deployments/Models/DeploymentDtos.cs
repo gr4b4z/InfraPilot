@@ -76,7 +76,14 @@ public record ReferenceDto(
     // the prose under it — what a reviewer reads to understand what they're signing off on.
     // Unbounded by design (a ticket description can run long); stored as-is and rendered as
     // plain text, never interpreted as markup.
-    string? Content = null);
+    string? Content = null,
+    // When the referenced thing happened in its source system. Meaning follows Type:
+    // `pull-request` → merge/completion time, `commit` → committer date, `work-item` →
+    // created in the tracker, `pipeline` → build finish. Producers should send the committer
+    // date (not the author date — it survives rebase/squash and would overstate lead time).
+    // Feeds the lead-time clock start (pull-request first, commit as fallback); ignored on
+    // other reference types by the analytics read path.
+    DateTimeOffset? OccurredAt = null);
 
 public record ParticipantDto(
     string Role,

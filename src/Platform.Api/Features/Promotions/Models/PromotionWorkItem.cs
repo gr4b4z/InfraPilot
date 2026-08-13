@@ -36,5 +36,10 @@ public class PromotionWorkItem
 
     public string? Revision { get; set; }
 
+    // When the change carrying this ticket entered trunk — same resolution as
+    // <see cref="Deployments.Models.DeployEventWorkItem.CommittedAt"/>, computed from the
+    // candidate's references. Null when the producer sent no timestamps.
+    public DateTimeOffset? CommittedAt { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

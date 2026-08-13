@@ -10,6 +10,7 @@ import { DeploymentsPage } from '@/app/deployments/DeploymentsPage';
 import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage';
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
+import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
@@ -59,6 +60,7 @@ function App() {
           <Route path="/deployments/events/:id" element={<DeploymentDetailPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
+          <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — work items awaiting the current user's signoff across products/envs. */}

@@ -47,7 +47,7 @@ public class AppSettingsService
         [
             new("development", "Development", "#2563eb"),
             new("staging", "Staging", "#d97706"),
-            new("production", "Production", "#dc2626"),
+            new("production", "Production", "#dc2626", IsProduction: true),
         ],
         // The roles producers actually send. Anything missing here reads as "not a configured role"
         // in the UI and can't be assigned to, so the defaults cover the whole vocabulary the deploy

@@ -946,6 +946,87 @@ class ApiClient {
       body: JSON.stringify({ products }),
     });
   }
+
+  // ── Analytics ──────────────────────────────────────────────────────────
+
+  getDeploymentFrequency(params?: {
+    product?: string;
+    serviceName?: string;
+    environment?: string;
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week';
+    groupBy?: 'none' | 'service' | 'environment' | 'product';
+    tz?: string;
+    includeRollbacks?: boolean;
+    includeRedeploys?: boolean;
+    summaryOnly?: boolean;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.serviceName) entries.push(['serviceName', params.serviceName]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.groupBy) entries.push(['groupBy', params.groupBy]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    if (params?.includeRollbacks) entries.push(['includeRollbacks', 'true']);
+    if (params?.includeRedeploys) entries.push(['includeRedeploys', 'true']);
+    if (params?.summaryOnly) entries.push(['summaryOnly', 'true']);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<FrequencyResponse>(`/analytics/deployments/frequency${query}`);
+  }
+
+  getWorkItemMatrix(params: {
+    product: string;
+    environment?: string;
+    reachedEnv?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries: [string, string][] = [['product', params.product]];
+    if (params.environment) entries.push(['environment', params.environment]);
+    if (params.reachedEnv) entries.push(['reachedEnv', params.reachedEnv]);
+    if (params.from) entries.push(['from', params.from]);
+    if (params.to) entries.push(['to', params.to]);
+    if (params.limit) entries.push(['limit', String(params.limit)]);
+    if (params.offset) entries.push(['offset', String(params.offset)]);
+    return this.request<WorkItemMatrixResponse>(
+      `/analytics/work-items/matrix?` + new URLSearchParams(entries).toString());
+  }
+
+  getPromotionQueueStats(params?: { product?: string; from?: string; to?: string }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<PromotionQueueResponse>(`/analytics/promotions/queue${query}`);
+  }
+
+  getLeadTime(params?: {
+    product?: string;
+    serviceName?: string;
+    environment?: string;
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week';
+    tz?: string;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.serviceName) entries.push(['serviceName', params.serviceName]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
+  }
 }
 
 export interface UserPreferencesPayload {
@@ -954,7 +1035,7 @@ export interface UserPreferencesPayload {
 
 export interface AppSettingsPayload {
   /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values. */
-  environments: { key: string; displayName: string; color?: string | null }[];
+  environments: { key: string; displayName: string; color?: string | null; isProduction?: boolean }[];
   roles: { key: string; displayName: string }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
 }
@@ -1741,6 +1822,124 @@ export interface RollbackPreview {
   mode: RollbackMode;
   referenceEnv: string | null;
   items: ResolvedItem[];
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────
+
+export interface AnalyticsRange {
+  from: string;
+  to: string;
+}
+
+export interface FrequencyBucket {
+  start: string;
+  count: number;
+  failed: number;
+  rollbacks: number;
+}
+
+export interface FrequencySeries {
+  key: { product: string | null; serviceName: string | null; environment: string | null };
+  buckets: FrequencyBucket[];
+  summary: {
+    total: number;
+    perWeek: number;
+    medianIntervalHours: number | null;
+    longestGapHours: number | null;
+    lastDeployedAt: string | null;
+    changeFailureRate: number | null;
+    previousPeriodTotal: number;
+    batchSizeP50: number | null;
+  };
+}
+
+export interface FrequencyResponse {
+  definition: {
+    bucket: string;
+    groupBy: string;
+    tz: string;
+    includeRollbacks: boolean;
+    includeRedeploys: boolean;
+    changeFailureRate: string;
+  };
+  range: AnalyticsRange;
+  series: FrequencySeries[];
+}
+
+export type MatrixCellState =
+  | 'deployed'
+  | 'approved-awaiting-deploy'
+  | 'awaiting-approval'
+  | 'absent';
+
+export interface MatrixCell {
+  state: MatrixCellState;
+  version?: string | null;
+  at?: string | null;
+  deployEventId?: string | null;
+  candidateId?: string | null;
+}
+
+export interface MatrixItem {
+  key: string;
+  title: string | null;
+  url: string | null;
+  furthestEnv: string | null;
+  envs: Record<string, MatrixCell>;
+  lastActivityAt: string;
+}
+
+export interface WorkItemMatrixResponse {
+  environments: string[];
+  coverage: { deployments: number; withoutWorkItem: number; ratio: number };
+  totals: Record<string, number>;
+  totalItems: number;
+  items: MatrixItem[];
+  range: AnalyticsRange;
+}
+
+export interface PromotionQueueEdge {
+  product: string;
+  targetEnv: string;
+  pending: number;
+  awaitingDeploy: number;
+  oldestPendingHours: number | null;
+  oldestAwaitingDeployHours: number | null;
+}
+
+export interface LatencyStats {
+  n: number;
+  p50Hours: number | null;
+  p90Hours: number | null;
+}
+
+export interface PromotionQueueResponse {
+  edges: PromotionQueueEdge[];
+  approvalLatency: LatencyStats;
+  deployLatency: LatencyStats;
+  range: AnalyticsRange;
+}
+
+export interface LeadTimeEnvStats {
+  environment: string;
+  n: number;
+  p50Hours: number | null;
+  p75Hours: number | null;
+  p90Hours: number | null;
+}
+
+export interface LeadTimeResponse {
+  definition: {
+    clockStart: string;
+    clockStartFallback: string;
+    clockStop: string;
+    grain: string;
+  };
+  coverage: { workItems: number; withClockStart: number; ratio: number };
+  byEnvironment: LeadTimeEnvStats[];
+  buckets: { start: string; environment: string; n: number; p50Hours: number | null }[];
+  slowest: { workItemKey: string; environment: string; hours: number; deployEventId: string }[];
+  range: AnalyticsRange;
 }
 
 export const api = new ApiClient();

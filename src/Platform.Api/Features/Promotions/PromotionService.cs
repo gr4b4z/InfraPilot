@@ -464,6 +464,7 @@ public class PromotionService
     private void SyncWorkItems(PromotionCandidate candidate, IReadOnlyList<ReferenceDto> workItemRefs)
     {
         var now = DateTimeOffset.UtcNow;
+        var allRefs = candidate.References;
         foreach (var r in workItemRefs)
         {
             _db.PromotionWorkItems.Add(new PromotionWorkItem
@@ -478,6 +479,7 @@ public class PromotionService
                 Title = r.Title,
                 Content = r.Content,
                 Revision = r.Revision,
+                CommittedAt = Deployments.WorkItemCommitTime.Resolve(r, allRefs),
                 CreatedAt = now,
             });
         }
