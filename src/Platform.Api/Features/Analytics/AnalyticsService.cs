@@ -260,10 +260,11 @@ public class AnalyticsService
         if (!string.IsNullOrWhiteSpace(notYetOnEnv))
             selected = selected.Where(b => !b.Deployed.ContainsKey(notYetOnEnv)).ToList();
 
-        // reachedEnv may be a comma-separated set (multi-region production). ALL semantics:
-        // the story qualifies once it has landed on EVERY listed environment, and the window is
-        // matched against the moment that completed the set — when the LAST of them got it.
-        // "Shipped" in a report means "customers have it everywhere", not "the rollout started".
+        // reachedEnv may be a comma-separated set (multi-region production). ANY semantics:
+        // the story qualifies once it has landed on AT LEAST ONE listed environment, dated by
+        // the FIRST landing among them. Which further regions ever receive it is a business
+        // decision, not an obligation — so one production suffices to count as shipped, and a
+        // story that first reached any of them before the window is not "shipped this period".
         if (!string.IsNullOrWhiteSpace(reachedEnv))
         {
             var targets = reachedEnv
@@ -272,13 +273,16 @@ public class AnalyticsService
             selected = selected
                 .Where(b =>
                 {
-                    DateTimeOffset completed = DateTimeOffset.MinValue;
+                    DateTimeOffset? shippedAt = null;
                     foreach (var env in targets)
                     {
-                        if (!b.FirstDeployed.TryGetValue(env, out var first)) return false;
-                        if (first > completed) completed = first;
+                        if (b.FirstDeployed.TryGetValue(env, out var first)
+                            && (shippedAt is null || first < shippedAt))
+                        {
+                            shippedAt = first;
+                        }
                     }
-                    return completed >= rangeFrom && completed < rangeTo;
+                    return shippedAt is not null && shippedAt >= rangeFrom && shippedAt < rangeTo;
                 })
                 .ToList();
         }

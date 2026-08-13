@@ -83,10 +83,11 @@ env), `reachedEnv?` (the "shipped this period" filter — see below), `from?`, `
 
 **`reachedEnv` semantics.** A single env keeps only stories whose **first** successful deploy to
 it falls inside the window. A comma-separated set (`reachedEnv=prod-eu,prod-us` — multi-region
-production) uses **ALL semantics**: the story qualifies once it has landed on *every* listed
-environment, and the window is matched against the moment that completed the set — when the
-LAST of them got it. "Shipped" in a report means "customers have it everywhere", not "the
-rollout started".
+production) uses **ANY semantics**: the story qualifies once it has landed on *at least one*
+listed environment, dated by the FIRST landing among them. One production means real users have
+it; which further regions ever receive the change is a business decision, not an obligation —
+so a story that first reached any listed env before the window is not "shipped this period",
+and the per-environment rollout state lives in the matrix cells.
 
 Selection vs. state: the window selects **which stories appear** (any deploy or candidate
 activity inside it, or a currently open candidate). The cells always show **full state**,
@@ -108,7 +109,7 @@ rule fired):
 1. Environments **marked** `isProduction` in app settings (Settings → Environments, "Prod"
    column; several may be marked — multi-region). The executive strip aggregates over ALL marked
    environments present in scope: deploy counts sum, failure counts sum before dividing,
-   "shipped" means landed on every one, "in flight" means missing from at least one.
+   "shipped" means landed on at least one of them, "in flight" means deployed to none.
 2. Else, unconfigured keys whose **name** reads as production — `prod`, `production`, `prd`,
    `live`, alone or suffixed (`prod-eu`); `preprod` never matches. This is the **default
    mapping**: it holds until an admin adds the key to settings, which then always wins.

@@ -201,10 +201,11 @@ export function AnalyticsPage() {
     frequency, matrix, queue, leadTime,
     prodEnvs, prodSource, configuredEnvs, getDisplayName, Math.round(range.days), allProducts);
 
-  // In flight = missing from AT LEAST ONE production environment, mirroring shipped's
-  // ALL-of-them rule: a story live in one region and absent in the other is still in flight.
+  // In flight = deployed to NO production environment, mirroring shipped's ANY-of-them rule:
+  // one production suffices to count as shipped (whether further regions ever receive the
+  // change is a business decision, not a backlog).
   const inFlight = (matrix?.items ?? []).filter(
-    (i) => prodEnvs.length > 0 && prodEnvs.some((env) => i.envs[env]?.state !== 'deployed'),
+    (i) => prodEnvs.length > 0 && prodEnvs.every((env) => i.envs[env]?.state !== 'deployed'),
   );
 
   const period = PERIODS.find((p) => p.key === periodKey) ?? PERIODS[0];
@@ -475,9 +476,9 @@ function ShippedList({
           <InfoPopover
             label="Shipped this period"
             content={{
-              what: `Stories that reached EVERY production environment (${prodEnvs.map(getDisplayName).join(', ')}).`,
-              how: 'A story counts as shipped when its first successful deploy has landed on all marked production environments, dated by the one that completed the set.',
-              why: '"Shipped" in a report means customers have it everywhere — counting from the first region would flatter the number while a rollout is still in progress.',
+              what: `Stories that reached AT LEAST ONE production environment (${prodEnvs.map(getDisplayName).join(', ')}).`,
+              how: 'A story counts as shipped from its first successful deploy to any marked production environment. Whether further regions ever receive it is a business decision — the matrix below shows the per-environment state.',
+              why: 'One production means real users have it. Requiring every region would hold the number hostage to rollouts that may deliberately never happen.',
             }}
           />
         )}
@@ -540,14 +541,7 @@ function InFlightList({
                 {i.title}
               </span>
               <span className="shrink-0" style={{ color: 'var(--text-muted)' }}>
-                {prodEnvs.length > 1
-                  ? `missing: ${prodEnvs
-                      .filter((env) => i.envs[env]?.state !== 'deployed')
-                      .map(getDisplayName)
-                      .join(', ')}`
-                  : i.furthestEnv
-                    ? `on ${getDisplayName(i.furthestEnv)}`
-                    : 'not deployed'}
+                {i.furthestEnv ? `on ${getDisplayName(i.furthestEnv)}` : 'not deployed'}
               </span>
             </li>
           ))}
