@@ -36,6 +36,15 @@ public static class AppSettingsEndpoints
                     .Select(l => new ActivityTemplateLineDto(l.Template, string.IsNullOrWhiteSpace(l.Style) ? "secondary" : l.Style))
                     .ToList());
 
+            // Environment keys must be unique: lookups (display name, colour, order, production
+            // flag) resolve by first match, so a duplicate key silently mislabels every surface
+            // that renders the other row's environment.
+            var duplicateKey = cleaned.Environments
+                .GroupBy(e => e.Key, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(g => g.Count() > 1)?.Key;
+            if (duplicateKey is not null)
+                return Results.BadRequest(new { error = $"duplicate environment key '{duplicateKey}' — keys must be unique" });
+
             await settings.SaveSettings(cleaned, ct);
             return Results.NoContent();
         }).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);

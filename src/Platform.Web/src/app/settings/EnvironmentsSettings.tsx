@@ -29,6 +29,18 @@ export function EnvironmentsSettings() {
         color: normalizeHexColor(i.color),
         isProduction: i.isProduction ?? false,
       }));
+    // Keys must be unique — display name, colour, order and the production flag all resolve by
+    // first match, so a duplicate silently mislabels the other row's environment everywhere.
+    // The server enforces this too; checking here gives the message before a failed round-trip.
+    const seen = new Set<string>();
+    for (const i of cleaned) {
+      const k = i.key.toLowerCase();
+      if (seen.has(k)) {
+        setError(`Duplicate environment key "${i.key}" — keys must be unique.`);
+        return;
+      }
+      seen.add(k);
+    }
     setSaving(true);
     setError(null);
     try {
