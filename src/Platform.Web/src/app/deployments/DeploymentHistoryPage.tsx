@@ -117,8 +117,10 @@ export function DeploymentHistoryPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
+        {/* Up one level is the service's detail page, not the product matrix — history is a
+            sub-page of the service now that the service has a page of its own. */}
         <Link
-          to={`/deployments/${product}`}
+          to={`/deployments/${product}/${service}`}
           className="p-1.5 rounded-lg transition-colors hover:opacity-80"
           style={{ color: 'var(--text-muted)' }}
         >
