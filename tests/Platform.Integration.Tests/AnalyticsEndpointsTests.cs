@@ -235,37 +235,40 @@ public class AnalyticsEndpointsTests : IClassFixture<AnalyticsEndpointsTests.Ana
     }
 
     [Fact]
-    public async Task Matrix_ReachedEnvs_AllSemantics_RequiresEveryEnvironment()
+    public async Task Matrix_ReachedEnvs_AnySemantics_OneProductionSuffices()
     {
         await EnablePromotionsAsync();
-        var product = Unique("matrixall");
-        // BOTH-1 landed on both prods; the SECOND landing (prod-eu, 08-05) dates it.
-        await IngestAsync(product, "api", "prod-us", "v1", "2026-08-02T10:00:00Z", workItems: ["BOTH-1"]);
-        await IngestAsync(product, "api", "prod-eu", "v1", "2026-08-05T10:00:00Z", workItems: ["BOTH-1"]);
-        // HALF-1 reached only one of the two — not shipped.
+        var product = Unique("matrixany");
+        // HALF-1 reached only one of the two prods — shipped nonetheless: which further regions
+        // ever receive a change is a business decision, not a backlog.
         await IngestAsync(product, "api", "prod-us", "v2", "2026-08-03T10:00:00Z", workItems: ["HALF-1"]);
+        // NONE-1 reached no production at all — not shipped.
+        await IngestAsync(product, "api", "staging", "v1", "2026-08-02T10:00:00Z", workItems: ["NONE-1"]);
 
         var body = await GetJson(
             $"/api/analytics/work-items/matrix?product={product}&reachedEnv=prod-us,prod-eu&from=2026-08-01T00:00:00Z&to=2026-08-08T00:00:00Z");
 
         var item = Assert.Single(body.GetProperty("items").EnumerateArray());
-        Assert.Equal("BOTH-1", item.GetProperty("key").GetString());
+        Assert.Equal("HALF-1", item.GetProperty("key").GetString());
     }
 
     [Fact]
-    public async Task Matrix_ReachedEnvs_WindowMatchesCompletionOfTheSet()
+    public async Task Matrix_ReachedEnvs_WindowMatchesFirstProductionLanding()
     {
         await EnablePromotionsAsync();
-        var product = Unique("matrixcomp");
-        // First prod long before the window, second inside it → completion is in-window: shipped.
-        await IngestAsync(product, "api", "prod-us", "v1", "2026-06-01T10:00:00Z", workItems: ["LATE-1"]);
-        await IngestAsync(product, "api", "prod-eu", "v1", "2026-08-03T10:00:00Z", workItems: ["LATE-1"]);
+        var product = Unique("matrixfirst");
+        // First landed on a production BEFORE the window; the later second-region rollout inside
+        // the window does not make it "shipped this period" again.
+        await IngestAsync(product, "api", "prod-us", "v1", "2026-06-01T10:00:00Z", workItems: ["OLD-1"]);
+        await IngestAsync(product, "api", "prod-eu", "v1", "2026-08-03T10:00:00Z", workItems: ["OLD-1"]);
+        // FRESH-1 first reached a production inside the window.
+        await IngestAsync(product, "api", "prod-eu", "v2", "2026-08-04T10:00:00Z", workItems: ["FRESH-1"]);
 
         var body = await GetJson(
             $"/api/analytics/work-items/matrix?product={product}&reachedEnv=prod-us,prod-eu&from=2026-08-01T00:00:00Z&to=2026-08-08T00:00:00Z");
 
         var item = Assert.Single(body.GetProperty("items").EnumerateArray());
-        Assert.Equal("LATE-1", item.GetProperty("key").GetString());
+        Assert.Equal("FRESH-1", item.GetProperty("key").GetString());
     }
 
     // ── Queue ───────────────────────────────────────────────────────────────
