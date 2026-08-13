@@ -4,6 +4,8 @@ import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
 import { canonicaliseRoleKey } from '@/lib/roleKey';
+// Type-only import in envStage keeps this from being a runtime cycle.
+import { defaultStageRank } from '@/lib/envStage';
 
 export interface EnvironmentConfig {
   key: string;
@@ -154,11 +156,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   getOrderedEnvironments: (keys) => {
     const order = get().environments.map((e) => e.key);
-    return [...keys].sort((a, b) => {
-      const ai = order.indexOf(a);
-      const bi = order.indexOf(b);
-      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-    });
+    // Configured keys keep their settings position; unknown keys get the default name-based
+    // stage order (dev < test < staging < prod — lib/envStage.ts, mirrored server-side) so an
+    // unconfigured "prod" never sorts before "test" by alphabetical accident.
+    const rank = (k: string) => {
+      const i = order.indexOf(k);
+      return i === -1 ? 1000 + defaultStageRank(k) : i;
+    };
+    return [...keys].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   },
 }));
 

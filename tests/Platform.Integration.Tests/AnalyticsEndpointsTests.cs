@@ -234,6 +234,40 @@ public class AnalyticsEndpointsTests : IClassFixture<AnalyticsEndpointsTests.Ana
         Assert.Equal(["SHIP-1"], keys);
     }
 
+    [Fact]
+    public async Task Matrix_ReachedEnvs_AllSemantics_RequiresEveryEnvironment()
+    {
+        await EnablePromotionsAsync();
+        var product = Unique("matrixall");
+        // BOTH-1 landed on both prods; the SECOND landing (prod-eu, 08-05) dates it.
+        await IngestAsync(product, "api", "prod-us", "v1", "2026-08-02T10:00:00Z", workItems: ["BOTH-1"]);
+        await IngestAsync(product, "api", "prod-eu", "v1", "2026-08-05T10:00:00Z", workItems: ["BOTH-1"]);
+        // HALF-1 reached only one of the two — not shipped.
+        await IngestAsync(product, "api", "prod-us", "v2", "2026-08-03T10:00:00Z", workItems: ["HALF-1"]);
+
+        var body = await GetJson(
+            $"/api/analytics/work-items/matrix?product={product}&reachedEnv=prod-us,prod-eu&from=2026-08-01T00:00:00Z&to=2026-08-08T00:00:00Z");
+
+        var item = Assert.Single(body.GetProperty("items").EnumerateArray());
+        Assert.Equal("BOTH-1", item.GetProperty("key").GetString());
+    }
+
+    [Fact]
+    public async Task Matrix_ReachedEnvs_WindowMatchesCompletionOfTheSet()
+    {
+        await EnablePromotionsAsync();
+        var product = Unique("matrixcomp");
+        // First prod long before the window, second inside it → completion is in-window: shipped.
+        await IngestAsync(product, "api", "prod-us", "v1", "2026-06-01T10:00:00Z", workItems: ["LATE-1"]);
+        await IngestAsync(product, "api", "prod-eu", "v1", "2026-08-03T10:00:00Z", workItems: ["LATE-1"]);
+
+        var body = await GetJson(
+            $"/api/analytics/work-items/matrix?product={product}&reachedEnv=prod-us,prod-eu&from=2026-08-01T00:00:00Z&to=2026-08-08T00:00:00Z");
+
+        var item = Assert.Single(body.GetProperty("items").EnumerateArray());
+        Assert.Equal("LATE-1", item.GetProperty("key").GetString());
+    }
+
     // ── Queue ───────────────────────────────────────────────────────────────
 
     [Fact]

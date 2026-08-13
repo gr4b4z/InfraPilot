@@ -14,7 +14,6 @@ import {
 import {
   api,
   type FrequencyResponse,
-  type FrequencySeries,
   type LeadTimeResponse,
   type MatrixCell,
   type PromotionQueueResponse,
@@ -27,6 +26,8 @@ import { InfoPopover } from '@/components/ui/InfoPopover';
 import { ListEmptyState } from '@/components/ui/ListEmptyState';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { resolveProductionEnvs, type ProdSource } from '@/lib/envStage';
+import type { EnvironmentConfig } from '@/stores/settingsStore';
 import { DeployTrendChart } from './DeployTrendChart';
 
 /** Sentinel product meaning "aggregate layer 1 across every product". */
@@ -112,29 +113,21 @@ export function AnalyticsPage() {
   );
   const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
 
-  // The final env the executive tiles report on, with its provenance (surfaced in the tile's
-  // ⓘ popover so "why does the tile say X?" is answerable from the tile itself):
-  //   1. the last environment MARKED isProduction in settings that this scope uses ("marked");
-  //   2. else the last configured environment present ("the org's declared end of pipeline");
-  //   3. else the last environment in settings order — products that never reach a configured
-  //      env (a dev/test-only pipeline) report on their own last stage.
-  const { finalEnv, finalEnvSource } = useMemo(() => {
+  // The production environment SET the executive tiles report on, with its provenance (surfaced
+  // in the tiles' ⓘ popovers): explicitly marked in settings → name-based default mapping for
+  // unconfigured keys ("prod", "production", "live"…) → last-in-order convention. A product
+  // genuinely deployed to several production environments gets ALL of them — tiles aggregate
+  // over the set, "shipped" means "landed on every one".
+  const { prodEnvs, prodSource } = useMemo(() => {
     const universe = allProducts
       ? (frequency?.series ?? []).map((s) => s.key.environment).filter((e): e is string => !!e)
       : (matrix?.environments ?? []);
-    const configured = configuredEnvs.map((e) => e.key);
-    const marked = configuredEnvs.filter((e) => e.isProduction).map((e) => e.key);
-    const union = Array.from(new Set([...universe, ...(allProducts ? configured : [])]));
+    const union = Array.from(
+      new Set([...universe, ...(allProducts ? configuredEnvs.map((e) => e.key) : [])]),
+    );
     const ordered = getOrderedEnvironments(union);
-    const reversed = [...ordered].reverse();
-
-    const lastMarked = reversed.find((e) => marked.includes(e));
-    if (lastMarked) return { finalEnv: lastMarked, finalEnvSource: 'marked' as const };
-    const lastConfigured = reversed.find((e) => configured.includes(e));
-    return {
-      finalEnv: lastConfigured ?? ordered[ordered.length - 1] ?? '',
-      finalEnvSource: 'convention' as const,
-    };
+    const { envs, source } = resolveProductionEnvs(union, configuredEnvs, ordered);
+    return { prodEnvs: envs, prodSource: source };
   }, [allProducts, frequency, matrix, configuredEnvs, getOrderedEnvironments]);
 
   // Loading starts true and flips once: refetches (period/product/filter changes) keep the
@@ -163,12 +156,13 @@ export function AnalyticsPage() {
       matrixReq,
       api.getPromotionQueueStats({ product: productParam, ...window }),
       api.getLeadTime({ product: productParam, ...window, tz }),
-      // "Shipped this period" needs the final env, known only after the matrix answers.
+      // "Shipped this period" targets the SAME production set the tiles report on — resolved
+      // here from the matrix's own environments so the list can never disagree with the header.
       matrixReq.then((m) => {
         if (!m) return null;
-        const final = m.environments[m.environments.length - 1];
-        return final
-          ? api.getWorkItemMatrix({ product, ...window, reachedEnv: final, limit: 100 })
+        const { envs } = resolveProductionEnvs(m.environments, configuredEnvs, m.environments);
+        return envs.length > 0
+          ? api.getWorkItemMatrix({ product, ...window, reachedEnv: envs.join(','), limit: 100 })
           : null;
       }),
     ])
@@ -192,7 +186,7 @@ export function AnalyticsPage() {
     return () => {
       cancelled = true;
     };
-  }, [product, allProducts, notYetOn, range.from, range.to, tz]);
+  }, [product, allProducts, notYetOn, range.from, range.to, tz, configuredEnvs]);
 
   const updateParams = (patch: Record<string, string>) => {
     const next = new URLSearchParams(searchParams);
@@ -203,13 +197,14 @@ export function AnalyticsPage() {
     setSearchParams(next, { replace: true });
   };
 
-  const finalSeries = frequency?.series.find((s) => s.key.environment === finalEnv) ?? null;
   const tiles = buildTiles(
-    finalSeries, frequency, matrix, queue, leadTime,
-    finalEnv, finalEnvSource, getDisplayName, Math.round(range.days), allProducts);
+    frequency, matrix, queue, leadTime,
+    prodEnvs, prodSource, configuredEnvs, getDisplayName, Math.round(range.days), allProducts);
 
+  // In flight = missing from AT LEAST ONE production environment, mirroring shipped's
+  // ALL-of-them rule: a story live in one region and absent in the other is still in flight.
   const inFlight = (matrix?.items ?? []).filter(
-    (i) => finalEnv && i.envs[finalEnv]?.state !== 'deployed',
+    (i) => prodEnvs.length > 0 && prodEnvs.some((env) => i.envs[env]?.state !== 'deployed'),
   );
 
   const period = PERIODS.find((p) => p.key === periodKey) ?? PERIODS[0];
@@ -283,8 +278,8 @@ export function AnalyticsPage() {
 
           {!allProducts && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <ShippedList shipped={shipped} finalEnv={finalEnv} getDisplayName={getDisplayName} />
-              <InFlightList items={inFlight} finalEnv={finalEnv} getDisplayName={getDisplayName} />
+              <ShippedList shipped={shipped} prodEnvs={prodEnvs} getDisplayName={getDisplayName} />
+              <InFlightList items={inFlight} prodEnvs={prodEnvs} getDisplayName={getDisplayName} />
             </div>
           )}
 
@@ -317,36 +312,61 @@ export function AnalyticsPage() {
 
 // ── Layer 1 pieces ─────────────────────────────────────────────────────────
 
+/** Display label for the production set: one env → its name; several → "Production (n envs)". */
+function prodLabel(prodEnvs: string[], getDisplayName: (env: string) => string): string {
+  if (prodEnvs.length === 0) return '—';
+  if (prodEnvs.length === 1) return getDisplayName(prodEnvs[0]);
+  return `Production (${prodEnvs.length} envs)`;
+}
+
 function buildTiles(
-  finalSeries: FrequencySeries | null,
   frequency: FrequencyResponse | null,
   matrix: WorkItemMatrixResponse | null,
   queue: PromotionQueueResponse | null,
   leadTime: LeadTimeResponse | null,
-  finalEnv: string,
-  finalEnvSource: 'marked' | 'convention',
+  prodEnvs: string[],
+  prodSource: ProdSource,
+  configuredEnvs: EnvironmentConfig[],
   getDisplayName: (env: string) => string,
   periodDays: number,
   allProducts: boolean,
 ): StatTile[] {
-  const envName = finalEnv ? getDisplayName(finalEnv) : '—';
+  const envName = prodLabel(prodEnvs, getDisplayName);
   const vsPrev = `vs prev ${periodDays}d`;
 
-  const deploys = finalSeries?.summary.total ?? 0;
-  const prevDeploys = finalSeries?.summary.previousPeriodTotal ?? 0;
-  const cfr = finalSeries?.summary.changeFailureRate;
+  // Aggregate over the production SET: sums for counts, bucket sums for failure math (per-series
+  // ratios cannot be averaged), worst-environment view for lead time (percentiles cannot be
+  // merged client-side — the honest single number is the slowest region's).
+  const prodSeries = (frequency?.series ?? []).filter(
+    (s) => s.key.environment !== null && prodEnvs.includes(s.key.environment),
+  );
+  const deploys = prodSeries.reduce((n, s) => n + s.summary.total, 0);
+  const prevDeploys = prodSeries.reduce((n, s) => n + s.summary.previousPeriodTotal, 0);
+  const failed = prodSeries.reduce(
+    (n, s) => n + s.buckets.reduce((m, b) => m + b.failed, 0), 0);
+  const rollbacks = prodSeries.reduce(
+    (n, s) => n + s.buckets.reduce((m, b) => m + b.rollbacks, 0), 0);
+  const attempts = deploys + failed;
+  const cfr = attempts > 0 ? (failed + rollbacks) / attempts : null;
+
   const approval = queue?.approvalLatency;
   const coverage = matrix?.coverage;
-  const leadFinal = leadTime?.byEnvironment.find((e) => e.environment === finalEnv);
+  const leadProd = (leadTime?.byEnvironment ?? [])
+    .filter((e) => prodEnvs.includes(e.environment) && e.n > 0)
+    .sort((a, b) => (b.p50Hours ?? 0) - (a.p50Hours ?? 0))[0];
   const leadCoverage = leadTime?.coverage.ratio ?? 0;
   const leadCovered = leadCoverage > 0;
 
-  // Where the reported environment came from — quoted in the popovers so "why does the tile
+  // Where the reported environment set came from — quoted in the popovers so "why does the tile
   // say X?" never needs this conversation's history to answer.
+  const envList = prodEnvs.map(getDisplayName).join(', ') || '—';
   const envProvenance =
-    finalEnvSource === 'marked'
-      ? `Environment: ${envName} — marked as production stage in Settings → Environments.`
-      : `Environment: ${envName} — last environment in Settings order (no production stage marked).`;
+    prodSource === 'marked'
+      ? `Environment${prodEnvs.length > 1 ? 's' : ''}: ${envList} — marked as production stage in Settings → Environments.`
+      : prodSource === 'default-name'
+        ? `Environment${prodEnvs.length > 1 ? 's' : ''}: ${envList} — recognised as production by name (default mapping; add the key in Settings → Environments to override).`
+        : `Environment: ${envList} — last environment in order (no production stage marked).`;
+  const configuredHint = configuredEnvs.length === 0 ? ' No environments are configured yet.' : '';
 
   return [
     {
@@ -361,8 +381,8 @@ function buildTiles(
           ? { text: fmtDelta(deploys - prevDeploys), good: deploys > prevDeploys, up: deploys > prevDeploys }
           : undefined,
       info: {
-        what: `Successful deployments to ${envName} in the selected ${periodDays}-day window.`,
-        how: `Deploy events with status "succeeded". Rollbacks and re-deploys of the same version are not counted (they are reported separately). The delta compares the identical window immediately before. ${envProvenance}`,
+        what: `Successful deployments to ${envName} in the selected ${periodDays}-day window${prodEnvs.length > 1 ? ' — summed across all marked production environments' : ''}.`,
+        how: `Deploy events with status "succeeded". Rollbacks and re-deploys of the same version are not counted (they are reported separately). The delta compares the identical window immediately before. ${envProvenance}${configuredHint}`,
         why: 'Delivery tempo. Neither good nor bad on its own — read it together with the change failure rate next to it: rising tempo at a stable CFR is improvement; rising tempo with a rising CFR is speed on borrowed stability.',
       },
     },
@@ -374,8 +394,8 @@ function buildTiles(
       color: 'var(--warning)',
       bg: 'var(--warning-bg)',
       info: {
-        what: 'The share of changes that failed.',
-        how: `${frequency?.definition.changeFailureRate ?? '(failed + rollbacks) / (succeeded + failed) within the window'} — quoted verbatim from the API's definition block. ${envProvenance}`,
+        what: `The share of changes that failed${prodEnvs.length > 1 ? ', computed jointly over all marked production environments' : ''}.`,
+        how: `${frequency?.definition.changeFailureRate ?? '(failed + rollbacks) / (succeeded + failed) within the window'} — counts summed across the production set before dividing (ratios can't be averaged). ${envProvenance}`,
         why: `The counterweight to tempo. Beware small numbers: at 10 deploys a single rollback moves this by 10 percentage points — that's why the deploy count is shown beside it.`,
       },
     },
@@ -415,16 +435,16 @@ function buildTiles(
     {
       label: `Lead time p50 · ${envName}`,
       sub: leadCovered
-        ? `coverage ${Math.round(leadCoverage * 100)}%`
+        ? `coverage ${Math.round(leadCoverage * 100)}%${prodEnvs.length > 1 && leadProd ? ` · slowest: ${getDisplayName(leadProd.environment)}` : ''}`
         : 'awaiting producer data (occurredAt)',
-      value: leadCovered ? fmtHours(leadFinal?.p50Hours) : '—',
+      value: leadCovered ? fmtHours(leadProd?.p50Hours) : '—',
       icon: GitCommitHorizontal,
       color: 'var(--text-muted)',
       bg: 'var(--bg-secondary)',
       muted: !leadCovered,
       info: {
         what: `Median time from a change being merged to its first successful deployment to ${envName} — cumulative from the commit, so this measures the whole path, not the last hop.`,
-        how: `Clock start: ${leadTime?.definition.clockStart ?? 'pull-request.occurredAt'} (fallback: ${leadTime?.definition.clockStartFallback ?? 'commit.occurredAt'}); clock stop: first successful deploy per environment; grain: story × environment. Only stories whose producer sent timestamps are measurable — current coverage ${Math.round(leadCoverage * 100)}%. ${envProvenance}`,
+        how: `Clock start: ${leadTime?.definition.clockStart ?? 'pull-request.occurredAt'} (fallback: ${leadTime?.definition.clockStartFallback ?? 'commit.occurredAt'}); clock stop: first successful deploy per environment; grain: story × environment. ${prodEnvs.length > 1 ? 'With several production environments the tile shows the SLOWEST one — percentiles cannot be merged; per-environment figures are in the lead-time data. ' : ''}Only stories whose producer sent timestamps are measurable — current coverage ${Math.round(leadCoverage * 100)}%. ${envProvenance}`,
         why: 'How long code waits on its way to users. Do NOT compare periods with materially different coverage — a backfill reaching deeper into one quarter than another manufactures a trend.',
       },
     },
@@ -433,14 +453,15 @@ function buildTiles(
 
 function ShippedList({
   shipped,
-  finalEnv,
+  prodEnvs,
   getDisplayName,
 }: {
   shipped: WorkItemMatrixResponse | null;
-  finalEnv: string;
+  prodEnvs: string[];
   getDisplayName: (env: string) => string;
 }) {
   const items = shipped?.items ?? [];
+  const label = prodLabel(prodEnvs, getDisplayName);
   return (
     <section
       className="rounded-xl border p-4"
@@ -448,12 +469,22 @@ function ShippedList({
     >
       <h2 className="text-[13px] font-semibold mb-3 flex items-center gap-2">
         <CheckCircle2 size={14} style={{ color: 'var(--success)' }} />
-        Shipped this period · {finalEnv ? getDisplayName(finalEnv) : '—'}
+        Shipped this period · {label}
         <span style={{ color: 'var(--text-muted)' }}>({shipped?.totalItems ?? 0})</span>
+        {prodEnvs.length > 1 && (
+          <InfoPopover
+            label="Shipped this period"
+            content={{
+              what: `Stories that reached EVERY production environment (${prodEnvs.map(getDisplayName).join(', ')}).`,
+              how: 'A story counts as shipped when its first successful deploy has landed on all marked production environments, dated by the one that completed the set.',
+              why: '"Shipped" in a report means customers have it everywhere — counting from the first region would flatter the number while a rollout is still in progress.',
+            }}
+          />
+        )}
       </h2>
       {items.length === 0 ? (
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-          No stories reached {finalEnv ? getDisplayName(finalEnv) : 'the final environment'} in this window.
+          No stories reached {label} in this window.
         </p>
       ) : (
         <ul className="space-y-1.5">
@@ -478,13 +509,14 @@ function ShippedList({
 
 function InFlightList({
   items,
-  finalEnv,
+  prodEnvs,
   getDisplayName,
 }: {
   items: WorkItemMatrixResponse['items'];
-  finalEnv: string;
+  prodEnvs: string[];
   getDisplayName: (env: string) => string;
 }) {
+  const label = prodLabel(prodEnvs, getDisplayName);
   return (
     <section
       className="rounded-xl border p-4"
@@ -492,7 +524,7 @@ function InFlightList({
     >
       <h2 className="text-[13px] font-semibold mb-3 flex items-center gap-2">
         <CircleDashed size={14} style={{ color: 'var(--warning)' }} />
-        In flight — not yet on {finalEnv ? getDisplayName(finalEnv) : '—'}
+        In flight — not yet on {label}
         <span style={{ color: 'var(--text-muted)' }}>({items.length})</span>
       </h2>
       {items.length === 0 ? (
@@ -508,7 +540,14 @@ function InFlightList({
                 {i.title}
               </span>
               <span className="shrink-0" style={{ color: 'var(--text-muted)' }}>
-                {i.furthestEnv ? `on ${getDisplayName(i.furthestEnv)}` : 'not deployed'}
+                {prodEnvs.length > 1
+                  ? `missing: ${prodEnvs
+                      .filter((env) => i.envs[env]?.state !== 'deployed')
+                      .map(getDisplayName)
+                      .join(', ')}`
+                  : i.furthestEnv
+                    ? `on ${getDisplayName(i.furthestEnv)}`
+                    : 'not deployed'}
               </span>
             </li>
           ))}
@@ -524,6 +563,9 @@ function InFlightList({
 }
 
 // ── Layer 2 pieces ─────────────────────────────────────────────────────────
+
+/** Rows the matrix shows before "Show all" — recent activity first, the rest one click away. */
+const MATRIX_TOP_N = 15;
 
 function MatrixSection({
   matrix,
@@ -542,17 +584,22 @@ function MatrixSection({
   onNotYetOn: (env: string) => void;
   getDisplayName: (env: string) => string;
 }) {
+  const [showAllRows, setShowAllRows] = useState(false);
   if (!matrix) return null;
   const { environments, coverage, totals } = matrix;
 
   const needle = search.trim().toLowerCase();
-  const items = needle
+  const matching = needle
     ? matrix.items.filter(
         (i) =>
           i.key.toLowerCase().includes(needle) || (i.title ?? '').toLowerCase().includes(needle),
       )
     : matrix.items;
   const filtered = Boolean(needle || notYetOn);
+  // Capped by default — at dozens of deploys a week this list runs long, and the newest activity
+  // (the sort order) is what people come for. Searching always shows every match.
+  const items = needle || showAllRows ? matching : matching.slice(0, MATRIX_TOP_N);
+  const hiddenRows = matching.length - items.length;
 
   return (
     <section className="space-y-2">
@@ -695,6 +742,17 @@ function MatrixSection({
               ))}
             </tbody>
           </table>
+          {(hiddenRows > 0 || showAllRows) && !needle && (
+            <button
+              onClick={() => setShowAllRows((v) => !v)}
+              className="m-3 text-[12px] underline"
+              style={{ color: 'var(--accent)' }}
+            >
+              {showAllRows
+                ? `Show latest ${MATRIX_TOP_N} only`
+                : `Show all ${matching.length} stories`}
+            </button>
+          )}
         </div>
       )}
     </section>
