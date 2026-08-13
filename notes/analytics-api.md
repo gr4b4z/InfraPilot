@@ -29,7 +29,17 @@ How often things change, per series.
 Query: `product?`, `serviceName?`, `environment?`, `from?`, `to?`, `bucket?` (default `day`),
 `groupBy?` (`none`|`service`|`environment`|`product`, default `none`), `tz?`,
 `includeRollbacks?` (default false), `includeRedeploys?` (default false; a redeploy is
-`version == previousVersion`).
+`version == previousVersion`), `summaryOnly?` (default false — when true, every series'
+`buckets` array is empty; use for tables that read summaries alone, where at hundreds of
+services the zero-filled buckets would dominate the payload).
+
+Two `groupBy=service` specifics:
+
+- **Stale services are reported, not dropped.** A service with deploy history under the current
+  filters but no deploys in the window gets an explicit zero series (`total: 0`, its true
+  all-time `lastDeployedAt`, buckets all zero). A plain GROUP BY would silently omit it — and a
+  service nobody deploys is the alarm this report exists to ring.
+- Combined with `summaryOnly=true` this is the intended feed for a per-service cadence table.
 
 Counting rules (echoed in `definition`):
 
@@ -85,6 +95,15 @@ cells carry `candidateId`. A deployed cell always wins over any candidate state.
 `environments` is settings-ordered (the `Environments` list in app settings); keys the settings
 don't know are appended at the end, never dropped. `furthestEnv` is the furthest environment in
 that order with a successful deploy.
+
+**Which environment is "production"?** Environments in app settings carry an `isProduction`
+flag (Settings → Environments, "Prod" column; several may be marked — multi-region). The
+executive tiles report on the last *marked* environment present in the current scope; when none
+is marked, the historical convention applies: the last environment in settings order is treated
+as the end of the pipeline. The tiles' ⓘ popovers state which rule produced the environment they
+show. Products that never reach a marked environment (a dev/test-only pipeline) report on their
+own last stage — the flag narrows the choice, it never forces an environment a product doesn't
+use.
 
 ```jsonc
 {
