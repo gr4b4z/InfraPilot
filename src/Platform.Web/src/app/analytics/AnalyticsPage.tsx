@@ -8,6 +8,7 @@ import {
   Clock,
   GitCommitHorizontal,
   Rocket,
+  Search,
   Ticket,
 } from 'lucide-react';
 import {
@@ -25,34 +26,67 @@ import { StatTiles, type StatTile } from '@/components/ui/StatTiles';
 import { ListEmptyState } from '@/components/ui/ListEmptyState';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { DeployTrendChart } from './DeployTrendChart';
+
+/** Sentinel product meaning "aggregate layer 1 across every product". */
+const ALL_PRODUCTS = 'all';
 
 const PERIODS = [
-  { key: '14', label: '14 days', days: 14 },
-  { key: '30', label: '30 days', days: 30 },
+  { key: '14', label: '14 days' },
+  { key: '30', label: '30 days' },
+  { key: 'this-month', label: 'This month' },
+  { key: 'last-month', label: 'Last month' },
 ] as const;
+
+/**
+ * Rolling windows for day-to-day use; calendar months for reporting. The distinction matters:
+ * a rolling "last 30 days" shifts every day, so two looks at "the same report" a few days apart
+ * disagree — calendar presets give leadership a window that holds still.
+ */
+function computeRange(key: string): { from: string; to?: string; days: number } {
+  const now = new Date();
+  if (key === 'this-month') {
+    const from = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { from: from.toISOString(), days: (now.getTime() - from.getTime()) / 86_400_000 || 1 };
+  }
+  if (key === 'last-month') {
+    const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const to = new Date(now.getFullYear(), now.getMonth(), 1);
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      days: (to.getTime() - from.getTime()) / 86_400_000,
+    };
+  }
+  const days = key === '30' ? 30 : 14;
+  return { from: new Date(now.getTime() - days * 86_400_000).toISOString(), days };
+}
 
 /**
  * Analytics: two layers over the same window.
  *
- * Layer 1 is the executive strip — KPI tiles with delta vs the previous equal-length period,
- * plus "shipped this period" / "in flight" lists. It is sized to fit one screen: this is what
- * gets shown on a bi-weekly/monthly report call, and the matrix below answers the follow-up
- * question ("which stories?") with the SAME selection the tiles were computed from.
+ * Layer 1 is the executive strip — trend chart and KPI tiles with delta vs the previous
+ * equal-length period, plus "shipped this period" / "in flight" lists. It fits one screen and
+ * supports "All products" for org-level reporting.
  *
- * Layer 2 is the team view: story × environment matrix, promotion queue, per-service cadence.
+ * Layer 2 is the team view: story × environment matrix (searchable, filterable to "not yet on
+ * env"), promotion queue, per-service cadence including stale services. Product-scoped — the
+ * story matrix has no meaningful cross-product form, so "All products" hides it with a hint.
  *
  * Numbers are live — computed from the transactional tables at request time, no snapshots.
  */
 export function AnalyticsPage() {
   useDocumentTitle(['Analytics']);
   const [searchParams, setSearchParams] = useSearchParams();
-  const { getDisplayName } = useSettingsStore();
+  const { getDisplayName, getOrderedEnvironments, environments: configuredEnvs } = useSettingsStore();
   const refreshTick = useEntityRefresh(['deployment', 'promotion']);
 
   const [products, setProducts] = useState<string[]>([]);
   const product = searchParams.get('product') ?? products[0] ?? '';
+  const allProducts = product === ALL_PRODUCTS;
   const periodKey = searchParams.get('period') ?? '14';
-  const period = PERIODS.find((p) => p.key === periodKey) ?? PERIODS[0];
+  const notYetOn = searchParams.get('notYetOn') ?? '';
+  const [search, setSearch] = useState('');
 
   const [frequency, setFrequency] = useState<FrequencyResponse | null>(null);
   const [serviceFrequency, setServiceFrequency] = useState<FrequencyResponse | null>(null);
@@ -70,42 +104,64 @@ export function AnalyticsPage() {
       .catch(() => setProducts([]));
   }, []);
 
-  // The window: [now - period, now). All requests share it so both layers agree.
-  const fromIso = useMemo(
-    () => new Date(Date.now() - period.days * 24 * 3600 * 1000).toISOString(),
+  const range = useMemo(
+    () => computeRange(periodKey),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [period.days, refreshTick],
+    [periodKey, refreshTick],
   );
   const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
 
-  // The environments come back settings-ordered; the last one is the "final" env the
-  // executive tiles report on (same convention the deployments matrix uses for compare).
-  const environments = matrix?.environments ?? [];
-  const finalEnv = environments[environments.length - 1] ?? '';
+  // The final env the executive tiles report on. Prefer the last CONFIGURED environment
+  // (settings order) — that is the org's declared "end of the pipeline" even in a window where
+  // nothing deployed there ("0 deploys to production" is the honest headline, "1 deploy to dev"
+  // is not). Unconfigured env keys only win when nothing configured appears in the data at all.
+  const finalEnv = useMemo(() => {
+    const universe = allProducts
+      ? (frequency?.series ?? []).map((s) => s.key.environment).filter((e): e is string => !!e)
+      : (matrix?.environments ?? []);
+    const configured = configuredEnvs.map((e) => e.key);
+    const union = Array.from(new Set([...universe, ...(allProducts ? configured : [])]));
+    const ordered = getOrderedEnvironments(union);
+    const lastConfigured = [...ordered].reverse().find((e) => configured.includes(e));
+    return lastConfigured ?? ordered[ordered.length - 1] ?? '';
+  }, [allProducts, frequency, matrix, configuredEnvs, getOrderedEnvironments]);
 
+  // Loading starts true and flips once: refetches (period/product/filter changes) keep the
+  // previous data on screen until the new response swaps in, instead of flashing skeletons.
   useEffect(() => {
     if (!product) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
 
-    const matrixReq = api.getWorkItemMatrix({ product, from: fromIso, limit: 200 });
+    const productParam = allProducts ? undefined : product;
+    const window = { from: range.from, to: range.to };
+
+    const matrixReq = allProducts
+      ? Promise.resolve(null)
+      : api.getWorkItemMatrix({
+          product,
+          ...window,
+          environment: notYetOn || undefined,
+          limit: 200,
+        });
+
     Promise.all([
-      api.getDeploymentFrequency({ product, from: fromIso, groupBy: 'environment', tz }),
-      api.getDeploymentFrequency({ product, from: fromIso, groupBy: 'service', tz }),
+      api.getDeploymentFrequency({ product: productParam, ...window, groupBy: 'environment', tz }),
+      api.getDeploymentFrequency({ product: productParam, ...window, groupBy: 'service', tz }),
       matrixReq,
-      api.getPromotionQueueStats({ product, from: fromIso }),
-      api.getLeadTime({ product, from: fromIso, tz }),
-      // "Shipped this period" needs the final env, which we only know from the matrix response.
+      api.getPromotionQueueStats({ product: productParam, ...window }),
+      api.getLeadTime({ product: productParam, ...window, tz }),
+      // "Shipped this period" needs the final env, known only after the matrix answers.
       matrixReq.then((m) => {
+        if (!m) return null;
         const final = m.environments[m.environments.length - 1];
         return final
-          ? api.getWorkItemMatrix({ product, from: fromIso, reachedEnv: final, limit: 100 })
+          ? api.getWorkItemMatrix({ product, ...window, reachedEnv: final, limit: 100 })
           : null;
       }),
     ])
       .then(([freq, svcFreq, m, q, lt, shippedRes]) => {
         if (cancelled) return;
+        setError(null);
         setFrequency(freq);
         setServiceFrequency(svcFreq);
         setMatrix(m);
@@ -123,7 +179,7 @@ export function AnalyticsPage() {
     return () => {
       cancelled = true;
     };
-  }, [product, fromIso, tz]);
+  }, [product, allProducts, notYetOn, range.from, range.to, tz]);
 
   const updateParams = (patch: Record<string, string>) => {
     const next = new URLSearchParams(searchParams);
@@ -135,11 +191,14 @@ export function AnalyticsPage() {
   };
 
   const finalSeries = frequency?.series.find((s) => s.key.environment === finalEnv) ?? null;
-  const tiles = buildTiles(finalSeries, matrix, queue, leadTime, finalEnv, getDisplayName, period.days);
+  const tiles = buildTiles(
+    finalSeries, matrix, queue, leadTime, finalEnv, getDisplayName, Math.round(range.days), allProducts);
 
   const inFlight = (matrix?.items ?? []).filter(
     (i) => finalEnv && i.envs[finalEnv]?.state !== 'deployed',
   );
+
+  const period = PERIODS.find((p) => p.key === periodKey) ?? PERIODS[0];
 
   return (
     <div className="space-y-6">
@@ -151,7 +210,7 @@ export function AnalyticsPage() {
         </div>
         <select
           value={product}
-          onChange={(e) => updateParams({ product: e.target.value })}
+          onChange={(e) => updateParams({ product: e.target.value, notYetOn: '' })}
           className="text-[13px] px-3 py-1.5 rounded-lg border"
           style={{
             borderColor: 'var(--border-color)',
@@ -160,6 +219,7 @@ export function AnalyticsPage() {
           }}
         >
           {products.length === 0 && <option value="">No products</option>}
+          {products.length > 1 && <option value={ALL_PRODUCTS}>All products</option>}
           {products.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -195,7 +255,7 @@ export function AnalyticsPage() {
         </div>
       )}
 
-      {loading && !matrix ? (
+      {loading && !frequency ? (
         <div className="space-y-3">
           <div className="skeleton h-24" />
           <div className="skeleton h-40" />
@@ -205,17 +265,35 @@ export function AnalyticsPage() {
         <>
           {/* ── Layer 1: executive strip ─────────────────────────────────── */}
           <StatTiles tiles={tiles} />
+          <DeployTrendChart frequency={frequency} />
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ShippedList shipped={shipped} finalEnv={finalEnv} getDisplayName={getDisplayName} />
-            <InFlightList items={inFlight} finalEnv={finalEnv} getDisplayName={getDisplayName} />
-          </div>
+          {!allProducts && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <ShippedList shipped={shipped} finalEnv={finalEnv} getDisplayName={getDisplayName} />
+              <InFlightList items={inFlight} finalEnv={finalEnv} getDisplayName={getDisplayName} />
+            </div>
+          )}
 
           {/* ── Layer 2: team view ───────────────────────────────────────── */}
-          <MatrixSection matrix={matrix} periodLabel={period.label} />
+          {allProducts ? (
+            <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+              Select a single product to see the story × environment matrix and its shipped /
+              in-flight lists — stories don't aggregate meaningfully across products.
+            </p>
+          ) : (
+            <MatrixSection
+              matrix={matrix}
+              periodLabel={period.label}
+              search={search}
+              onSearch={setSearch}
+              notYetOn={notYetOn}
+              onNotYetOn={(env) => updateParams({ notYetOn: env })}
+              getDisplayName={getDisplayName}
+            />
+          )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <QueueSection queue={queue} />
-            <ServiceFrequencySection frequency={serviceFrequency} />
+            <QueueSection queue={queue} showProduct={allProducts} />
+            <ServiceFrequencySection frequency={serviceFrequency} showProduct={allProducts} />
           </div>
         </>
       )}
@@ -233,6 +311,7 @@ function buildTiles(
   finalEnv: string,
   getDisplayName: (env: string) => string,
   periodDays: number,
+  allProducts: boolean,
 ): StatTile[] {
   const envName = finalEnv ? getDisplayName(finalEnv) : '—';
   const vsPrev = `vs prev ${periodDays}d`;
@@ -276,11 +355,16 @@ function buildTiles(
     },
     {
       label: 'Story coverage',
-      sub: coverage ? `${coverage.withoutWorkItem} deploys w/o story` : undefined,
-      value: coverage ? `${Math.round(coverage.ratio * 100)}%` : '—',
+      sub: allProducts
+        ? 'per product — pick one'
+        : coverage
+          ? `${coverage.withoutWorkItem} deploys w/o story`
+          : undefined,
+      value: !allProducts && coverage ? `${Math.round(coverage.ratio * 100)}%` : '—',
       icon: Ticket,
       color: 'var(--success)',
       bg: 'var(--success-bg)',
+      muted: allProducts,
     },
     {
       label: `Lead time p50 · ${envName}`,
@@ -324,7 +408,7 @@ function ShippedList({
         <ul className="space-y-1.5">
           {items.slice(0, 8).map((i) => (
             <li key={i.key} className="text-[13px] flex items-baseline gap-2 min-w-0">
-              <WorkItemLink itemKey={i.key} url={i.url} />
+              <WorkItemLink itemKey={i.key} />
               <span className="truncate" style={{ color: 'var(--text-secondary)' }}>
                 {i.title}
               </span>
@@ -332,7 +416,7 @@ function ShippedList({
           ))}
           {items.length > 8 && (
             <li className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-              +{(shipped?.totalItems ?? items.length) - 8} more — see the matrix below
+              +{(shipped?.totalItems ?? items.length) - 8} more
             </li>
           )}
         </ul>
@@ -368,7 +452,7 @@ function InFlightList({
         <ul className="space-y-1.5">
           {items.slice(0, 8).map((i) => (
             <li key={i.key} className="text-[13px] flex items-baseline gap-2 min-w-0">
-              <WorkItemLink itemKey={i.key} url={i.url} />
+              <WorkItemLink itemKey={i.key} />
               <span className="truncate flex-1" style={{ color: 'var(--text-secondary)' }}>
                 {i.title}
               </span>
@@ -393,20 +477,90 @@ function InFlightList({
 function MatrixSection({
   matrix,
   periodLabel,
+  search,
+  onSearch,
+  notYetOn,
+  onNotYetOn,
+  getDisplayName,
 }: {
   matrix: WorkItemMatrixResponse | null;
   periodLabel: string;
+  search: string;
+  onSearch: (v: string) => void;
+  notYetOn: string;
+  onNotYetOn: (env: string) => void;
+  getDisplayName: (env: string) => string;
 }) {
   if (!matrix) return null;
-  const { environments, items, coverage, totals } = matrix;
+  const { environments, coverage, totals } = matrix;
+
+  const needle = search.trim().toLowerCase();
+  const items = needle
+    ? matrix.items.filter(
+        (i) =>
+          i.key.toLowerCase().includes(needle) || (i.title ?? '').toLowerCase().includes(needle),
+      )
+    : matrix.items;
+  const filtered = Boolean(needle || notYetOn);
 
   return (
     <section className="space-y-2">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <h2 className="text-[15px] font-semibold">Stories × environments</h2>
-        <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-          {matrix.totalItems} stories with activity in the last {periodLabel.toLowerCase()}; checkmarks show full state
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-baseline gap-2 mr-auto">
+          <h2 className="text-[15px] font-semibold">Stories × environments</h2>
+          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            {matrix.totalItems} stories with activity in the last {periodLabel.toLowerCase()}
+          </span>
+        </div>
+        <div className="relative">
+          <Search
+            size={13}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2"
+            style={{ color: 'var(--text-muted)' }}
+          />
+          <input
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Find story…"
+            className="text-[13px] pl-8 pr-3 py-1.5 rounded-lg border w-52"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+        </div>
+        <select
+          value={notYetOn}
+          onChange={(e) => onNotYetOn(e.target.value)}
+          className="text-[13px] px-3 py-1.5 rounded-lg border"
+          style={{
+            borderColor: notYetOn ? 'var(--accent)' : 'var(--border-color)',
+            backgroundColor: 'var(--bg-primary)',
+            color: notYetOn ? 'var(--accent)' : 'var(--text-primary)',
+          }}
+        >
+          <option value="">All stories</option>
+          {environments.map((env) => (
+            <option key={env} value={env}>
+              Not yet on {getDisplayName(env)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Legend: the cell states ARE the product here — nobody should need a hover to learn them. */}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        <span className="inline-flex items-center gap-1.5">
+          <CheckCircle2 size={13} style={{ color: 'var(--success)' }} /> deployed
         </span>
+        <span className="inline-flex items-center gap-1.5">
+          <Clock size={13} style={{ color: 'var(--warning)' }} /> awaiting approval
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <CircleDashed size={13} style={{ color: 'var(--info)' }} /> approved · awaiting deploy
+        </span>
+        <span className="inline-flex items-center gap-1.5">— no activity</span>
       </div>
 
       {/* Coverage strip — permanent, not dismissible: with a third of deploys carrying no
@@ -425,8 +579,19 @@ function MatrixSection({
       {items.length === 0 ? (
         <ListEmptyState
           icon={Ticket}
-          title="No stories in this window"
-          body="No work items were referenced by deployments or open promotions in the selected period."
+          tone={filtered ? 'filtered' : 'neutral'}
+          title={filtered ? 'No stories match the filters' : 'No stories in this window'}
+          body={
+            filtered
+              ? 'Loosen the search or the environment filter.'
+              : 'No work items were referenced by deployments or open promotions in the selected period.'
+          }
+          filters={[
+            ...(needle ? [{ label: 'Search', value: search, onClear: () => onSearch('') }] : []),
+            ...(notYetOn
+              ? [{ label: 'Not yet on', value: getDisplayName(notYetOn), onClear: () => onNotYetOn('') }]
+              : []),
+          ]}
         />
       ) : (
         <div
@@ -454,7 +619,7 @@ function MatrixSection({
                 <tr key={item.key} style={{ borderTop: '1px solid var(--border-color)' }}>
                   <td className="px-4 py-2.5 max-w-105">
                     <div className="flex items-baseline gap-2 min-w-0">
-                      <WorkItemLink itemKey={item.key} url={item.url} />
+                      <WorkItemLink itemKey={item.key} />
                       <span className="truncate" style={{ color: 'var(--text-secondary)' }}>
                         {item.title}
                       </span>
@@ -462,7 +627,7 @@ function MatrixSection({
                   </td>
                   {environments.map((env) => (
                     <td key={env} className="px-4 py-2.5 text-center">
-                      <MatrixCellView cell={item.envs[env]} />
+                      <MatrixCellView cell={item.envs[env]} env={getDisplayName(env)} />
                     </td>
                   ))}
                 </tr>
@@ -480,16 +645,18 @@ function MatrixSection({
  * the pipeline", "waiting for a human", and "nothing staged" — which is exactly the question the
  * matrix exists to answer. Deployed cells link the deploy event; pending ones the candidate.
  */
-function MatrixCellView({ cell }: { cell?: MatrixCell }) {
+function MatrixCellView({ cell, env }: { cell?: MatrixCell; env: string }) {
   const navigate = useNavigate();
   if (!cell || cell.state === 'absent') {
     return <span style={{ color: 'var(--text-muted)' }}>—</span>;
   }
   if (cell.state === 'deployed') {
+    const label = `Deployed to ${env}${cell.version ? `: ${cell.version}` : ''}`;
     return (
       <button
         onClick={() => cell.deployEventId && navigate(`/deployments/events/${cell.deployEventId}`)}
         title={cell.version ? `${cell.version} · ${fmtDate(cell.at)}` : undefined}
+        aria-label={label}
         className="inline-flex"
         style={{ color: 'var(--success)' }}
       >
@@ -498,10 +665,14 @@ function MatrixCellView({ cell }: { cell?: MatrixCell }) {
     );
   }
   const pendingApproval = cell.state === 'awaiting-approval';
+  const label = pendingApproval
+    ? `Awaiting approval for ${env}`
+    : `Approved for ${env} · awaiting deploy`;
   return (
     <button
       onClick={() => cell.candidateId && navigate(`/promotions/${cell.candidateId}`)}
-      title={pendingApproval ? 'Awaiting approval' : 'Approved · awaiting deploy'}
+      title={label}
+      aria-label={label}
       className="inline-flex items-center gap-1 text-[11px]"
       style={{ color: pendingApproval ? 'var(--warning)' : 'var(--info)' }}
     >
@@ -510,7 +681,13 @@ function MatrixCellView({ cell }: { cell?: MatrixCell }) {
   );
 }
 
-function QueueSection({ queue }: { queue: PromotionQueueResponse | null }) {
+function QueueSection({
+  queue,
+  showProduct,
+}: {
+  queue: PromotionQueueResponse | null;
+  showProduct: boolean;
+}) {
   if (!queue) return null;
   return (
     <section
@@ -526,6 +703,7 @@ function QueueSection({ queue }: { queue: PromotionQueueResponse | null }) {
         <table className="w-full text-[13px]">
           <thead>
             <tr style={{ color: 'var(--text-muted)' }}>
+              {showProduct && <th className="text-left py-1 font-medium">Product</th>}
               <th className="text-left py-1 font-medium">Target env</th>
               <th className="text-right py-1 font-medium">Pending</th>
               <th className="text-right py-1 font-medium">Awaiting deploy</th>
@@ -535,6 +713,7 @@ function QueueSection({ queue }: { queue: PromotionQueueResponse | null }) {
           <tbody>
             {queue.edges.map((e) => (
               <tr key={`${e.product}/${e.targetEnv}`} style={{ borderTop: '1px solid var(--border-color)' }}>
+                {showProduct && <td className="py-1.5 font-medium">{e.product}</td>}
                 <td className="py-1.5">
                   <EnvLabel env={e.targetEnv} />
                 </td>
@@ -565,9 +744,19 @@ function QueueSection({ queue }: { queue: PromotionQueueResponse | null }) {
   );
 }
 
-function ServiceFrequencySection({ frequency }: { frequency: FrequencyResponse | null }) {
+function ServiceFrequencySection({
+  frequency,
+  showProduct,
+}: {
+  frequency: FrequencyResponse | null;
+  showProduct: boolean;
+}) {
   if (!frequency) return null;
-  const series = [...frequency.series].sort((a, b) => b.summary.total - a.summary.total);
+  // Stale services (zero deploys in the window) surface FIRST — they are the alarm, and sorted
+  // to the bottom of a busy table nobody would ever see them.
+  const series = [...frequency.series].sort(
+    (a, b) => Number(a.summary.total > 0) - Number(b.summary.total > 0) || b.summary.total - a.summary.total,
+  );
   return (
     <section
       className="rounded-xl border p-4"
@@ -590,37 +779,56 @@ function ServiceFrequencySection({ frequency }: { frequency: FrequencyResponse |
             </tr>
           </thead>
           <tbody>
-            {series.map((s) => (
-              <tr
-                key={`${s.key.serviceName}`}
-                style={{ borderTop: '1px solid var(--border-color)' }}
-              >
-                <td className="py-1.5 font-medium">{s.key.serviceName}</td>
-                <td className="py-1.5 text-right">
-                  {s.summary.total}
-                  {s.summary.total !== s.summary.previousPeriodTotal && (
-                    <span
-                      className="ml-1 text-[11px]"
-                      style={{
-                        color:
-                          s.summary.total > s.summary.previousPeriodTotal
-                            ? 'var(--success)'
-                            : 'var(--danger)',
-                      }}
-                    >
-                      {fmtDelta(s.summary.total - s.summary.previousPeriodTotal)}
-                    </span>
-                  )}
-                </td>
-                <td className="py-1.5 text-right">{s.summary.perWeek}</td>
-                <td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>
-                  {fmtHours(s.summary.medianIntervalHours)}
-                </td>
-                <td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>
-                  {fmtAgo(s.summary.lastDeployedAt)}
-                </td>
-              </tr>
-            ))}
+            {series.map((s) => {
+              const stale = s.summary.total === 0;
+              return (
+                <tr
+                  key={`${s.key.product}/${s.key.serviceName}`}
+                  style={{ borderTop: '1px solid var(--border-color)' }}
+                >
+                  <td className="py-1.5 font-medium">
+                    {showProduct && (
+                      <span style={{ color: 'var(--text-muted)' }}>{s.key.product} · </span>
+                    )}
+                    {s.key.serviceName}
+                    {stale && (
+                      <span
+                        className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase"
+                        style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+                      >
+                        stale
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    {s.summary.total}
+                    {s.summary.total !== s.summary.previousPeriodTotal && (
+                      <span
+                        className="ml-1 text-[11px]"
+                        style={{
+                          color:
+                            s.summary.total > s.summary.previousPeriodTotal
+                              ? 'var(--success)'
+                              : 'var(--danger)',
+                        }}
+                      >
+                        ({fmtDelta(s.summary.total - s.summary.previousPeriodTotal)})
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1.5 text-right">{s.summary.perWeek}</td>
+                  <td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>
+                    {fmtHours(s.summary.medianIntervalHours)}
+                  </td>
+                  <td
+                    className="py-1.5 text-right"
+                    style={{ color: stale ? 'var(--warning)' : 'var(--text-muted)' }}
+                  >
+                    {fmtAgo(s.summary.lastDeployedAt)}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -630,7 +838,7 @@ function ServiceFrequencySection({ frequency }: { frequency: FrequencyResponse |
 
 // ── Shared bits ────────────────────────────────────────────────────────────
 
-function WorkItemLink({ itemKey }: { itemKey: string; url?: string | null }) {
+function WorkItemLink({ itemKey }: { itemKey: string }) {
   // Links to the internal work-item detail page (which itself links out to the tracker) —
   // keeping matrix clicks inside the app so env/product context isn't lost.
   return (

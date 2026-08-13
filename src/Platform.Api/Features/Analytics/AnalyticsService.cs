@@ -76,6 +76,7 @@ public class AnalyticsService
         };
 
         var series = new List<FrequencySeriesDto>();
+        var seenKeys = new HashSet<FrequencySeriesKeyDto>();
         foreach (var group in current.GroupBy(keyOf).OrderBy(g => g.Key.Product).ThenBy(g => g.Key.ServiceName).ThenBy(g => g.Key.Environment))
         {
             var buckets = BuildBuckets(rangeFrom, rangeTo, bucket, tz);
@@ -122,6 +123,7 @@ public class AnalyticsService
                 intervals.Add((countedTimes[i] - countedTimes[i - 1]).TotalHours);
 
             var attempts = counted + failed;
+            seenKeys.Add(group.Key);
             series.Add(new FrequencySeriesDto(
                 group.Key,
                 buckets.Values.Select(b => (FrequencyBucketDto)b).ToList(),
@@ -134,6 +136,41 @@ public class AnalyticsService
                     ChangeFailureRate: attempts > 0 ? Math.Round((failed + rollbacks) / (double)attempts, 3) : null,
                     PreviousPeriodTotal: prevTotal,
                     BatchSizeP50: Round(Percentiles.Median(batchSizes)))));
+        }
+
+        // Stale services are the alarm this report exists to ring, and a plain GROUP BY silently
+        // drops them: a service with no deploys in the window has no rows to group. When grouping
+        // by service, emit an explicit zero series (with its true all-time last deploy) for every
+        // service that has ever deployed under the current filters but didn't in this window.
+        if (groupBy == "service")
+        {
+            var staleQuery = _db.DeployEvents.AsNoTracking().Where(e => e.DeployedAt < rangeTo);
+            if (!string.IsNullOrWhiteSpace(product)) staleQuery = staleQuery.Where(e => e.Product == product);
+            if (!string.IsNullOrWhiteSpace(serviceName)) staleQuery = staleQuery.Where(e => e.Service == serviceName);
+            if (!string.IsNullOrWhiteSpace(environment)) staleQuery = staleQuery.Where(e => e.Environment == environment);
+
+            var lastByService = await staleQuery
+                .GroupBy(e => new { e.Product, e.Service })
+                .Select(g => new { g.Key.Product, g.Key.Service, Last = g.Max(e => e.DeployedAt) })
+                .ToListAsync(ct);
+
+            foreach (var svc in lastByService.OrderBy(s => s.Product).ThenBy(s => s.Service))
+            {
+                var key = new FrequencySeriesKeyDto(svc.Product, svc.Service, environment.NullIfBlank());
+                if (seenKeys.Contains(key)) continue;
+                series.Add(new FrequencySeriesDto(
+                    key,
+                    BuildBuckets(rangeFrom, rangeTo, bucket, tz).Values.Select(b => (FrequencyBucketDto)b).ToList(),
+                    new FrequencySummaryDto(
+                        Total: 0, PerWeek: 0,
+                        MedianIntervalHours: null, LongestGapHours: null,
+                        LastDeployedAt: svc.Last,
+                        ChangeFailureRate: null,
+                        PreviousPeriodTotal: previous.Count(e =>
+                            e.Product == svc.Product && e.Service == svc.Service
+                            && Classify(e, includeRollbacks, includeRedeploys) is EventKind.Counted or EventKind.RollbackCounted),
+                        BatchSizeP50: null)));
+            }
         }
 
         return new FrequencyResponseDto(

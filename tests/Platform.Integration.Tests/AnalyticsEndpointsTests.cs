@@ -100,6 +100,25 @@ public class AnalyticsEndpointsTests : IClassFixture<AnalyticsEndpointsTests.Ana
     }
 
     [Fact]
+    public async Task Frequency_GroupByService_EmitsZeroSeriesForStaleServices()
+    {
+        var product = Unique("freqstale");
+        // "worker" deployed long before the window — must still appear, as a zero series
+        // with its true last deploy, so stale services can't fall out of the report.
+        await IngestAsync(product, "worker", "dev", "v1", "2026-05-01T10:00:00Z");
+        await IngestAsync(product, "api", "dev", "v2", "2026-08-02T10:00:00Z");
+
+        var body = await GetJson(
+            $"/api/analytics/deployments/frequency?product={product}&groupBy=service&from=2026-08-01T00:00:00Z&to=2026-08-08T00:00:00Z");
+
+        var series = body.GetProperty("series").EnumerateArray().ToList();
+        Assert.Equal(2, series.Count);
+        var worker = series.Single(s => s.GetProperty("key").GetProperty("serviceName").GetString() == "worker");
+        Assert.Equal(0, worker.GetProperty("summary").GetProperty("total").GetInt32());
+        Assert.StartsWith("2026-05-01", worker.GetProperty("summary").GetProperty("lastDeployedAt").GetString());
+    }
+
+    [Fact]
     public async Task Frequency_InvalidBucket_Returns400()
     {
         var response = await _adminClient.GetAsync("/api/analytics/deployments/frequency?bucket=month");
