@@ -116,6 +116,32 @@ public static class DeploymentEndpoints
             return Results.Ok(await service.GetState(product, environment, serviceName, ct));
         });
 
+        // Cross-product service search — the deployments page's "find a service without knowing
+        // its product" box. Case-insensitive substring match on the service name; a name shared by
+        // two products returns two hits, because (product, service) is the identity.
+        group.MapGet("/services/search", async (
+            DeploymentService service, string? q, int? limit, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(q))
+                return Results.BadRequest(new { error = "'q' is required" });
+
+            var results = await service.SearchServices(q, limit is > 0 and <= 100 ? limit.Value : 20, ct);
+            return Results.Ok(new { results });
+        });
+
+        // Everything the service detail page shows, in one round trip: current state per
+        // environment, the last distinct versions, and the service's promotions. No collision with
+        // /services/search above — that route has one segment fewer, so a product named "search"
+        // would still resolve here.
+        group.MapGet("/services/{product}/{serviceName}", async (
+            DeploymentService service, string product, string serviceName,
+            int? versionsLimit, CancellationToken ct) =>
+        {
+            var detail = await service.GetServiceDetail(
+                product, serviceName, versionsLimit is > 0 and <= 50 ? versionsLimit.Value : 10, ct);
+            return detail is null ? Results.NotFound() : Results.Ok(detail);
+        });
+
         // Deployment history for a specific service
         group.MapGet("/history/{product}/{serviceName}", async (
             DeploymentService service, string product, string serviceName,

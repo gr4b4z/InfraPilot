@@ -238,6 +238,62 @@ public record DeploymentVersionDto(
     string? DeployerEmail,
     bool IsRollback);
 
+// --- Service search & detail ---
+
+/// <summary>
+/// One hit from the cross-product service search. Identity is the (product, service) pair — the
+/// same service name under two products is two hits — so the product always rides along: the whole
+/// point of the search is finding a service without knowing which product it lives in.
+/// </summary>
+public record ServiceSearchResultDto(
+    string Product,
+    string Service,
+    List<ServiceSearchEnvironmentDto> Environments,
+    DateTimeOffset LastDeployedAt);
+
+public record ServiceSearchEnvironmentDto(
+    string Environment,
+    DateTimeOffset LastDeployedAt);
+
+/// <summary>
+/// Everything the service detail page shows, in one round trip: where the service currently runs
+/// (latest event per environment), the most recent distinct versions and which environments each
+/// reached, and the promotions moving it between environments.
+/// </summary>
+public record ServiceDetailDto(
+    string Product,
+    string Service,
+    List<DeploymentStateDto> Environments,
+    List<ServiceVersionDto> RecentVersions,
+    List<ServicePromotionDto> Promotions);
+
+/// <summary>
+/// One distinct version of a service, most-recent-first, with the environments it was deployed to.
+/// An environment entry is that version's latest deploy there, so a redeploy doesn't duplicate it.
+/// </summary>
+public record ServiceVersionDto(
+    string Version,
+    DateTimeOffset LastDeployedAt,
+    List<ServiceVersionEnvironmentDto> Environments);
+
+public record ServiceVersionEnvironmentDto(
+    Guid EventId,
+    string Environment,
+    string Status,
+    bool IsRollback,
+    DateTimeOffset DeployedAt);
+
+/// <summary>A promotion of this service, regardless of version — the service page's promotion feed.</summary>
+public record ServicePromotionDto(
+    Guid Id,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    string Status,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? ApprovedAt,
+    DateTimeOffset? DeployedAt);
+
 // --- Retired services (admin soft delete) ---
 
 /// <summary>A retired service as the restore list shows it.</summary>

@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { formatDistanceToNow } from 'date-fns';
-import { Rocket, Loader2, CheckCircle, AlertTriangle, Check, EyeOff } from 'lucide-react';
-import { EnvLabel } from '@/components/environments/EnvBadge';
+import { Rocket, Loader2, CheckCircle, AlertTriangle, Check, ChevronRight, EyeOff, Search, SearchX, X } from 'lucide-react';
+import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { FilterPanel } from '@/components/ui/FilterPanel';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
-import { useSearchScope } from '@/stores/searchScopeStore';
+import { useSearchScope, type SearchHit } from '@/stores/searchScopeStore';
 import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import type { ProductSummary } from '@/lib/types';
+import type { ProductSummary, ServiceSearchResult } from '@/lib/types';
+
+/** Below this the box is treated as empty — one letter matches half the fleet. */
+const MIN_SEARCH_LENGTH = 2;
 
 export function DeploymentsPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
@@ -94,22 +97,86 @@ export function DeploymentsPage() {
   // hidden count instead, purely to drive the accent treatment and the auto-open.
   const shownCount = products.length;
 
-  // `/` searches products here — the only thing this page lists.
+  // The service search box: find a service without knowing which product it lives in. Server-side,
+  // because this page only ever loaded the product matrix — the services aren't here to filter.
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<ServiceSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const trimmedQuery = searchQuery.trim();
+  const searchActive = trimmedQuery.length >= MIN_SEARCH_LENGTH;
+
+  // Clearing and the spinner flip live in the change handler rather than the fetch effect — the
+  // effect only talks to the server, so it never sets state synchronously during a render pass.
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      const prevTrimmed = searchQuery.trim();
+      setSearchQuery(value);
+      const trimmed = value.trim();
+      if (trimmed === prevTrimmed) return;
+      if (trimmed.length < MIN_SEARCH_LENGTH) {
+        setSearching(false);
+        setSearchResults([]);
+      } else {
+        setSearching(true);
+      }
+    },
+    [searchQuery],
+  );
+
+  useEffect(() => {
+    if (!searchActive) return;
+    let cancelled = false;
+    // Debounced so a keystroke burst costs one round trip, not one per letter.
+    const timer = setTimeout(() => {
+      api
+        .searchDeploymentServices(trimmedQuery, 50)
+        .then((r) => {
+          if (cancelled) return;
+          setSearchResults(r.results);
+          setSearching(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setSearchResults([]);
+          setSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchActive, trimmedQuery, deploymentsTick]);
+
+  // `/` searches both: products from the loaded matrix, services via the same server search the
+  // box uses — so the quick-find can also answer "where does this service live".
   useSearchScope(
     {
-      label: 'Products',
-      placeholder: 'Find a product…',
+      label: 'Products & services',
+      placeholder: 'Find a product or service…',
       search: async (query) => {
         const needle = query.toLowerCase();
-        return products
+        const productHits: SearchHit[] = products
           .filter((p) => p.product.toLowerCase().includes(needle))
-          .slice(0, 25)
+          .slice(0, 10)
           .map((p) => ({
             id: p.product,
             title: p.product,
             subtitle: `${Object.keys(p.environments).length} environment(s)`,
             to: `/deployments/${p.product}`,
           }));
+        let serviceHits: SearchHit[] = [];
+        try {
+          const r = await api.searchDeploymentServices(query, 15);
+          serviceHits = r.results.map((s) => ({
+            id: `${s.product}/${s.service}`,
+            title: s.service,
+            subtitle: `${s.product} · ${s.environments.map((e) => e.environment).join(', ')}`,
+            to: `/deployments/${encodeURIComponent(s.product)}/${encodeURIComponent(s.service)}`,
+          }));
+        } catch {
+          // Degrade to product hits; the box on the page will surface the error state instead.
+        }
+        return [...productHits, ...serviceHits];
       },
     },
     [products],
@@ -117,15 +184,62 @@ export function DeploymentsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          Deployments
-        </h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
-          Product overview — current deployment state across environments
-        </p>
+      <div className="flex flex-wrap items-start gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            Deployments
+          </h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
+            Product overview — current deployment state across environments
+          </p>
+        </div>
+        {/* Service search: the one control on this page that reaches past the product matrix. You
+           know the service's name, not its product — so it queries the server across all products
+           and each hit carries the product it was found in. */}
+        <div className="relative w-full sm:w-80 sm:ml-auto">
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+            style={{ color: 'var(--text-muted)' }}
+          />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="Find a service in any product…"
+            aria-label="Find a service in any product"
+            className="w-full rounded-lg border pl-8 pr-8 py-1.5 text-[13px]"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => handleSearchChange('')}
+              aria-label="Clear service search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 transition-opacity hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* While a search is typed the results replace the matrix — they answer a different question
+         ("where is this service") and the two lists fighting for the same viewport helps neither. */}
+      {searchActive ? (
+        <ServiceSearchResults
+          results={searchResults}
+          searching={searching}
+          query={trimmedQuery}
+          orderEnvironments={getOrderedEnvironments}
+        />
+      ) : (
+        <>
       {/* Which products the matrix shows. A chip per product rather than a multi-select: the set is
          small, and a control you can read the current state off at a glance beats one you have to
          open.
@@ -239,7 +353,107 @@ export function DeploymentsPage() {
           </table>
         </div>
       )}
+        </>
+      )}
     </div>
+  );
+}
+
+/**
+ * The cross-product search results: one row per (product, service) hit, most recently deployed
+ * first. The whole row links to the service's detail page — the place that answers everything
+ * else about it.
+ */
+function ServiceSearchResults({
+  results,
+  searching,
+  query,
+  orderEnvironments,
+}: {
+  results: ServiceSearchResult[];
+  searching: boolean;
+  query: string;
+  orderEnvironments: (envs: string[]) => string[];
+}) {
+  if (searching && results.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="animate-spin" size={24} style={{ color: 'var(--text-muted)' }} />
+      </div>
+    );
+  }
+
+  if (results.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <SearchX size={40} style={{ color: 'var(--text-muted)' }} />
+        <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>
+          No services match “{query}”
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div aria-busy={searching}>
+      <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        {results.length} service{results.length === 1 ? '' : 's'} matching “{query}” — most recently
+        deployed first
+      </p>
+      <KeyboardList className="space-y-1.5 mt-2" count={results.length} ariaLabel="Service search results">
+        {results.map((hit, index) => (
+          <ServiceSearchRow
+            key={`${hit.product}/${hit.service}`}
+            index={index}
+            hit={hit}
+            orderEnvironments={orderEnvironments}
+          />
+        ))}
+      </KeyboardList>
+    </div>
+  );
+}
+
+function ServiceSearchRow({
+  index,
+  hit,
+  orderEnvironments,
+}: {
+  index: number;
+  hit: ServiceSearchResult;
+  orderEnvironments: (envs: string[]) => string[];
+}) {
+  // An anchor row, so it activates itself — the hook only adds the roving tabindex + arrow keys.
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    selfActivating: true,
+    label: `${hit.service} in ${hit.product}`,
+  });
+
+  const envs = orderEnvironments(hit.environments.map((e) => e.environment));
+
+  return (
+    <Link
+      {...rowProps}
+      to={`/deployments/${encodeURIComponent(hit.product)}/${encodeURIComponent(hit.service)}`}
+      className="card-hover rounded-lg border px-3 py-2.5 flex items-center gap-3 transition-colors"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <span className="font-medium text-[13px]" style={{ color: 'var(--text-primary)' }}>
+        {hit.service}
+      </span>
+      <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>{hit.product}</span>
+      <span className="hidden sm:flex flex-wrap items-center gap-1">
+        {envs.map((env) => (
+          <EnvBadge key={env} env={env} size="xs" />
+        ))}
+      </span>
+      <span className="flex-1" />
+      <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+        {formatDistanceToNow(new Date(hit.lastDeployedAt), { addSuffix: true })}
+      </span>
+      <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+    </Link>
   );
 }
 

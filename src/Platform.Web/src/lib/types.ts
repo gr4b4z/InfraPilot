@@ -283,6 +283,60 @@ export interface DeploymentDetail {
   workItems: RelatedWorkItem[];
 }
 
+// Service search & detail types
+
+/**
+ * One hit from the cross-product service search. Identity is the (product, service) pair — the
+ * same name under two products is two hits — so the product always rides along.
+ */
+export interface ServiceSearchResult {
+  product: string;
+  service: string;
+  environments: ServiceSearchEnvironment[];
+  lastDeployedAt: string;
+}
+
+export interface ServiceSearchEnvironment {
+  environment: string;
+  lastDeployedAt: string;
+}
+
+/** One distinct version of a service and the environments it was deployed to. */
+export interface ServiceVersion {
+  version: string;
+  lastDeployedAt: string;
+  environments: ServiceVersionEnvironment[];
+}
+
+export interface ServiceVersionEnvironment {
+  /** The deploy event behind this entry — the key for linking to its detail page. */
+  eventId: string;
+  environment: string;
+  status: string;
+  isRollback: boolean;
+  deployedAt: string;
+}
+
+/** A promotion of this service, regardless of version — the service page's promotion feed. */
+export interface ServicePromotion {
+  id: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  status: string;
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+}
+
+export interface ServiceDetail {
+  product: string;
+  service: string;
+  environments: DeploymentStateEntry[];
+  recentVersions: ServiceVersion[];
+  promotions: ServicePromotion[];
+}
+
 // Webhook types
 
 export interface WebhookSubscription {

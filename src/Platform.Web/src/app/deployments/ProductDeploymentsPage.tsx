@@ -365,8 +365,8 @@ export function ProductDeploymentsPage() {
   }, [stateMatrix, sortBy, sortDir, getCell]);
 
   // `/` searches this product's services. Client-side over the loaded matrix, which is the whole
-  // product — a server round trip would return the same rows. Enter goes to the service's history,
-  // the page that answers "what has happened to this one".
+  // product — a server round trip would return the same rows. Enter goes to the service's detail
+  // page, the page that answers "how is this one doing".
   useSearchScope(
     {
       label: product ?? 'Services',
@@ -385,7 +385,7 @@ export function ProductDeploymentsPage() {
                 return `${getDisplayName(env)} ${cell ? `v${cell.version}` : '—'}`;
               })
               .join(' · '),
-            to: `/deployments/${product}/${service}/history`,
+            to: `/deployments/${product}/${service}`,
           }));
       },
     },
@@ -858,7 +858,7 @@ export function ProductDeploymentsPage() {
                   >
                     <span className="inline-flex items-center gap-2">
                       <Link
-                        to={`/deployments/${product}/${service}/history`}
+                        to={`/deployments/${product}/${service}`}
                         className="hover:underline"
                         style={{ color: 'var(--text-primary)' }}
                       >
