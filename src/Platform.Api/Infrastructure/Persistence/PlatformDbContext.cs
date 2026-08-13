@@ -342,6 +342,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .HasDefaultValue(WebhookTargetTypes.Generic);
             e.Property(x => x.SignatureHeader).HasMaxLength(100);
             e.Property(x => x.GitHubEventType).HasMaxLength(100);
+            // Generous but bounded: a chat message template is a handful of lines, not a document,
+            // and the cap is what stops a paste of an entire release-note template landing here.
+            e.Property(x => x.MessageTemplate).HasMaxLength(8000);
+            e.Property(x => x.MessageTitle).HasMaxLength(200);
             e.HasIndex(x => x.Active);
         });
 

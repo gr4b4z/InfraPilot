@@ -21,6 +21,9 @@ import { formatDistanceToNow, format } from 'date-fns';
 import {
   AVAILABLE_EVENTS,
   DEFAULT_ADO_SIGNATURE_HEADER,
+  defaultMessageTemplate,
+  isNotificationTarget,
+  maskNotificationUrl,
   targetLabel,
 } from './webhookTargets';
 
@@ -45,7 +48,15 @@ export function WebhookDetailPage() {
   const [editGitHubEventType, setEditGitHubEventType] = useState('');
   // Never seeded from the webhook — the stored credential is write-only. Blank means "keep it".
   const [editSecret, setEditSecret] = useState('');
+  const [editMessageTitle, setEditMessageTitle] = useState('');
+  const [editMessageTemplate, setEditMessageTemplate] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Preview of the message this notification will post, rendered by the API against a sample payload
+  // so it cannot drift from what a real delivery produces.
+  const [previewEvent, setPreviewEvent] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ title: string; text: string } | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -75,6 +86,50 @@ export function WebhookDetailPage() {
 
   useDocumentTitle([webhook?.name, 'Webhooks']);
 
+  // Which event the preview renders. Templates are per-notification rather than per-event, so the
+  // preview has to pick one; the first subscribed event is the one it was most likely written for.
+  const effectivePreviewEvent =
+    previewEvent && webhook?.events.includes(previewEvent)
+      ? previewEvent
+      : (webhook?.events[0] ?? 'ping');
+
+  useEffect(() => {
+    if (!webhook || !isNotificationTarget(webhook.targetType)) return;
+    // While editing, preview what is in the boxes; otherwise what is stored. Null falls through to
+    // the API's own per-event default, which is exactly what an untouched subscription posts.
+    const title = editing ? editMessageTitle : (webhook.messageTitle ?? undefined);
+    const template = editing ? editMessageTemplate : (webhook.messageTemplate ?? undefined);
+
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      api
+        .previewNotificationMessage({
+          targetType: webhook.targetType,
+          eventType: effectivePreviewEvent,
+          messageTitle: title,
+          messageTemplate: template,
+          url: webhook.url,
+        })
+        .then((result) => {
+          if (cancelled) return;
+          setPreview({ title: result.title, text: result.text });
+          setPreviewError(null);
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setPreview(null);
+          setPreviewError(e instanceof Error ? e.message : 'Preview failed');
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [webhook, editing, editMessageTitle, editMessageTemplate, effectivePreviewEvent]);
+
+  const isNotification = isNotificationTarget(webhook?.targetType);
+
   const startEditing = () => {
     if (!webhook) return;
     setEditName(webhook.name);
@@ -85,6 +140,11 @@ export function WebhookDetailPage() {
     setEditSignatureHeader(webhook.signatureHeader ?? '');
     setEditGitHubEventType(webhook.githubEventType ?? '');
     setEditSecret('');
+    // Null means the subscription is riding the server-side default; show that default so editing
+    // starts from what is actually being posted rather than an empty box.
+    const fallback = defaultMessageTemplate(webhook.events[0] ?? 'ping');
+    setEditMessageTitle(webhook.messageTitle ?? fallback.title);
+    setEditMessageTemplate(webhook.messageTemplate ?? fallback.body);
     setEditing(true);
   };
 
@@ -99,6 +159,8 @@ export function WebhookDetailPage() {
         filters: { product: editFilterProduct || undefined, environment: editFilterEnv || undefined },
         signatureHeader: webhook.targetType === 'azure_devops' ? editSignatureHeader : undefined,
         gitHubEventType: webhook.targetType === 'github' ? editGitHubEventType : undefined,
+        messageTitle: isNotification ? editMessageTitle : undefined,
+        messageTemplate: isNotification ? editMessageTemplate : undefined,
         // Sent only when the operator typed a replacement — omitting it keeps the stored one.
         secret: editSecret.trim() || undefined,
       });
@@ -213,8 +275,9 @@ export function WebhookDetailPage() {
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               {webhook.name}
             </h1>
+            {/* Masked for chat targets: the URL's path is the capability to post to the channel. */}
             <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {webhook.url}
+              {isNotification ? maskNotificationUrl(webhook.url) : webhook.url}
             </p>
           </div>
         </div>
@@ -368,9 +431,47 @@ export function WebhookDetailPage() {
               </div>
             </div>
 
+            {/* Message template — the whole payload for a chat target, so it is edited here rather
+                than being a per-target detail tucked in beside a signature header. */}
+            {isNotification && (
+              <div className="space-y-3 pt-3 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Heading <span style={{ color: 'var(--text-muted)' }}>(empty posts no heading)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editMessageTitle}
+                    onChange={(e) => setEditMessageTitle(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Message body
+                  </label>
+                  <textarea
+                    value={editMessageTemplate}
+                    onChange={(e) => setEditMessageTemplate(e.target.value)}
+                    rows={8}
+                    spellCheck={false}
+                    className="w-full px-3 py-2 rounded-lg border font-mono text-[12px] leading-relaxed resize-y outline-none transition-colors focus:border-[var(--accent)]"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                  />
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    Handlebars over the event payload — <code>{'{{eventType}}'}</code>,{' '}
+                    <code>{'{{data.product}}'}</code>, <code>{'{{data.renderedContent}}'}</code> for
+                    release notes. Leave the body empty to fall back to the default for each event.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Target-specific settings. The target itself is fixed at creation — changing it would
-                invalidate the stored credential with nothing able to detect that. */}
-            {webhook.targetType !== 'generic' && (
+                invalidate the stored credential with nothing able to detect that. Chat targets have
+                no credential to rotate: their URL is it. */}
+            {webhook.targetType !== 'generic' && !isNotification && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {webhook.targetType === 'azure_devops' && (
                   <div className="space-y-1.5">
@@ -482,6 +583,76 @@ export function WebhookDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Message preview — what this notification posts, rendered by the API against a sample
+          payload for the chosen event. Editing updates it live, so a template is checked before it
+          is saved rather than after a real event reaches the channel. */}
+      {isNotification && (
+        <div
+          className="rounded-xl border p-5 space-y-3"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+        >
+          <div className="flex items-center gap-2">
+            <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Message preview
+            </h2>
+            {webhook.events.length > 1 && (
+              <select
+                value={effectivePreviewEvent}
+                onChange={(e) => setPreviewEvent(e.target.value)}
+                className="text-[12px] px-2 py-1 rounded-md border outline-none"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-primary)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {webhook.events.map((event) => (
+                  <option key={event} value={event}>
+                    {event}
+                  </option>
+                ))}
+              </select>
+            )}
+            {webhook.events.length === 1 && (
+              <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                {webhook.events[0]}
+              </span>
+            )}
+          </div>
+
+          {previewError ? (
+            <div
+              className="px-3 py-2 rounded-lg text-[12px]"
+              style={{ backgroundColor: 'var(--error-bg)', color: 'var(--error)' }}
+            >
+              {previewError}
+            </div>
+          ) : (
+            <div
+              className="rounded-lg p-3 space-y-1"
+              style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}
+            >
+              {preview?.title && (
+                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {preview.title}
+                </div>
+              )}
+              <div
+                className="text-[13px] whitespace-pre-wrap break-words"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {preview?.text || '—'}
+              </div>
+            </div>
+          )}
+
+          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Raw text as posted. Both platforms render a markdown subset — bold, italics, links and
+            bullet lists survive; tables do not, and Teams also drops headings.
+          </p>
+        </div>
+      )}
 
       {/* Delivery history */}
       <div

@@ -26,6 +26,7 @@ public static class WebhookEndpoints
         group.MapGet("/{id:guid}/deliveries", GetDeliveries);
         group.MapPost("/deliveries/{id:guid}/retry", RetryDelivery);
         group.MapPost("/{id:guid}/test", TestSubscription);
+        group.MapPost("/preview-message", PreviewMessage);
 
         // ── Delivery maintenance (Settings → Maintenance) ────────────────────
         // Bulk counterparts to the per-delivery retry above, plus retention. The per-row button is
@@ -124,6 +125,11 @@ public static class WebhookEndpoints
     private static readonly Regex HeaderNamePattern =
         new(@"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$", RegexOptions.Compiled);
 
+    /// <summary>Maximum message template length, matching the column width.</summary>
+    private const int MessageTemplateMaxLength = 8000;
+
+    private const int MessageTitleMaxLength = 200;
+
     /// <summary>
     /// Validates the target-specific half of a create/update request. Returns an error message, or
     /// null when the combination is deliverable. <paramref name="requireSecret"/> is false on update,
@@ -135,17 +141,42 @@ public static class WebhookEndpoints
         string? secret,
         string? signatureHeader,
         string? gitHubEventType,
-        bool requireSecret)
+        bool requireSecret,
+        string? messageTemplate = null,
+        string? messageTitle = null)
     {
         if (!WebhookTargetTypes.IsValid(targetType))
             return $"targetType must be one of: {string.Join(", ", WebhookTargetTypes.All)}";
 
         var hasSignatureHeader = !string.IsNullOrWhiteSpace(signatureHeader);
         var hasGitHubEventType = !string.IsNullOrWhiteSpace(gitHubEventType);
+        var isMessaging = WebhookTargetTypes.IsMessaging(targetType);
 
         // A secret reaching an Authorization header must not be able to smuggle in a second header.
         if (secret is not null && secret.Any(char.IsControl))
             return "secret must not contain control characters";
+
+        // Message templates belong to the chat targets. Accepting one elsewhere would store a
+        // setting that silently never renders.
+        if (!isMessaging)
+        {
+            if (!string.IsNullOrWhiteSpace(messageTemplate))
+                return $"messageTemplate applies only to messaging targets: {string.Join(", ", WebhookTargetTypes.Messaging)}";
+            if (!string.IsNullOrWhiteSpace(messageTitle))
+                return $"messageTitle applies only to messaging targets: {string.Join(", ", WebhookTargetTypes.Messaging)}";
+        }
+        else
+        {
+            if (messageTemplate is { Length: > MessageTemplateMaxLength })
+                return $"messageTemplate must be {MessageTemplateMaxLength} characters or fewer";
+            if (messageTitle is { Length: > MessageTitleMaxLength })
+                return $"messageTitle must be {MessageTitleMaxLength} characters or fewer";
+            // Compiled now so a typo is a rejected form field rather than a run of failed deliveries.
+            if (MessageTemplateRenderer.Validate(messageTemplate) is { } bodyError)
+                return $"messageTemplate is not a valid template: {bodyError}";
+            if (MessageTemplateRenderer.Validate(messageTitle) is { } titleError)
+                return $"messageTitle is not a valid template: {titleError}";
+        }
 
         switch (targetType)
         {
@@ -180,10 +211,32 @@ public static class WebhookEndpoints
                 if (!uri.AbsolutePath.EndsWith("/dispatches", StringComparison.Ordinal))
                     return "github target URL must be a repository_dispatch endpoint, e.g. https://api.github.com/repos/{owner}/{repo}/dispatches";
                 break;
+
+            case WebhookTargetTypes.MicrosoftTeams:
+            case WebhookTargetTypes.Discord:
+                if (hasSignatureHeader) return "signatureHeader applies only to azure_devops targets";
+                if (hasGitHubEventType) return "githubEventType applies only to github targets";
+                // Anyone holding the URL can post to the channel, so there is nothing to authenticate
+                // with and nothing to rotate — accepting a secret here would only imply otherwise.
+                if (!string.IsNullOrWhiteSpace(secret))
+                    return $"secret does not apply to {targetType} targets — the webhook URL is itself the credential";
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var chatUri) || chatUri.Scheme != Uri.UriSchemeHttps)
+                    return $"{targetType} targets require an absolute https URL";
+                if (targetType == WebhookTargetTypes.Discord && !LooksLikeDiscordWebhook(chatUri))
+                    return "discord target URL must be a channel webhook, e.g. https://discord.com/api/webhooks/{id}/{token}";
+                break;
         }
 
         return null;
     }
+
+    /// <summary>
+    /// Catches the common paste error — a Discord channel or invite link instead of a webhook URL —
+    /// without locking the target to Discord's own hostnames, since a gateway or proxy in front of it
+    /// still speaks the same body shape.
+    /// </summary>
+    private static bool LooksLikeDiscordWebhook(Uri uri)
+        => uri.AbsolutePath.Contains("/api/webhooks/", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Resolves the stored signature header: Azure DevOps targets persist the effective value (so
@@ -201,6 +254,25 @@ public static class WebhookEndpoints
             ? null
             : gitHubEventType.Trim();
 
+    /// <summary>
+    /// A blank body template stores as null, which means "use the per-event default" — an empty chat
+    /// message is not something either platform accepts, so blank cannot mean empty here.
+    /// </summary>
+    private static string? NormalizeMessageTemplate(string targetType, string? messageTemplate)
+        => !WebhookTargetTypes.IsMessaging(targetType) || string.IsNullOrWhiteSpace(messageTemplate)
+            ? null
+            : messageTemplate.Trim();
+
+    /// <summary>
+    /// Unlike the body, a blank title is preserved as an empty string: a heading is genuinely
+    /// optional, so clearing the field has to mean "post without one" rather than silently
+    /// reinstating the default. Only an omitted field (null) falls back to the default.
+    /// </summary>
+    private static string? NormalizeMessageTitle(string targetType, string? messageTitle)
+        => !WebhookTargetTypes.IsMessaging(targetType) || messageTitle is null
+            ? null
+            : messageTitle.Trim();
+
     private static async Task<IResult> CreateSubscription(
         PlatformDbContext db,
         IDataProtectionProvider dataProtection,
@@ -217,13 +289,15 @@ public static class WebhookEndpoints
 
         var error = ValidateTarget(
             targetType, request.Url, request.Secret, request.SignatureHeader, request.GitHubEventType,
-            requireSecret: true);
+            requireSecret: true, request.MessageTemplate, request.MessageTitle);
         if (error is not null) return Results.BadRequest(new { error });
 
-        // Generic keeps generating its own secret, as it always has. The other targets must reuse
-        // the credential the receiving system already holds, so it comes from the caller.
+        // Generic keeps generating its own secret, as it always has. The signature/token targets must
+        // reuse the credential the receiving system already holds, so it comes from the caller.
+        // Messaging targets store nothing — the URL they post to is the whole credential.
         var isGeneric = targetType == WebhookTargetTypes.Generic;
-        var rawSecret = isGeneric ? GenerateSecret() : request.Secret!.Trim();
+        var isMessaging = WebhookTargetTypes.IsMessaging(targetType);
+        var rawSecret = isGeneric ? GenerateSecret() : request.Secret?.Trim() ?? "";
         var protector = dataProtection.CreateProtector("WebhookSecrets");
 
         var sub = new WebhookSubscription
@@ -231,13 +305,15 @@ public static class WebhookEndpoints
             Id = Guid.NewGuid(),
             Name = request.Name,
             Url = request.Url,
-            EncryptedSecret = protector.Protect(rawSecret),
+            EncryptedSecret = isMessaging ? "" : protector.Protect(rawSecret),
             EventsJson = JsonSerializer.Serialize(request.Events),
             FilterProduct = request.Filters?.Product,
             FilterEnvironment = request.Filters?.Environment,
             TargetType = targetType,
             SignatureHeader = NormalizeSignatureHeader(targetType, request.SignatureHeader),
             GitHubEventType = NormalizeGitHubEventType(targetType, request.GitHubEventType),
+            MessageTemplate = NormalizeMessageTemplate(targetType, request.MessageTemplate),
+            MessageTitle = NormalizeMessageTitle(targetType, request.MessageTitle),
             Active = true,
         };
 
@@ -256,6 +332,8 @@ public static class WebhookEndpoints
             targetType = sub.TargetType,
             signatureHeader = sub.SignatureHeader,
             githubEventType = sub.GitHubEventType,
+            messageTemplate = sub.MessageTemplate,
+            messageTitle = sub.MessageTitle,
             sub.Active,
             sub.CreatedAt,
         });
@@ -275,6 +353,8 @@ public static class WebhookEndpoints
                 targetType = s.TargetType,
                 signatureHeader = s.SignatureHeader,
                 githubEventType = s.GitHubEventType,
+                messageTemplate = s.MessageTemplate,
+                messageTitle = s.MessageTitle,
                 s.Active,
                 s.CreatedAt,
                 s.UpdatedAt,
@@ -308,6 +388,8 @@ public static class WebhookEndpoints
             s.targetType,
             s.signatureHeader,
             s.githubEventType,
+            s.messageTemplate,
+            s.messageTitle,
             s.Active,
             s.CreatedAt,
             s.UpdatedAt,
@@ -353,6 +435,8 @@ public static class WebhookEndpoints
             targetType = sub.TargetType,
             signatureHeader = sub.SignatureHeader,
             githubEventType = sub.GitHubEventType,
+            messageTemplate = sub.MessageTemplate,
+            messageTitle = sub.MessageTitle,
             sub.Active,
             sub.CreatedAt,
             sub.UpdatedAt,
@@ -382,7 +466,9 @@ public static class WebhookEndpoints
             request.Secret,
             request.SignatureHeader ?? sub.SignatureHeader,
             request.GitHubEventType ?? sub.GitHubEventType,
-            requireSecret: false);
+            requireSecret: false,
+            request.MessageTemplate ?? sub.MessageTemplate,
+            request.MessageTitle ?? sub.MessageTitle);
         if (error is not null) return Results.BadRequest(new { error });
 
         if (request.Name is not null) sub.Name = request.Name;
@@ -397,6 +483,10 @@ public static class WebhookEndpoints
             sub.SignatureHeader = NormalizeSignatureHeader(sub.TargetType, request.SignatureHeader);
         if (request.GitHubEventType is not null)
             sub.GitHubEventType = NormalizeGitHubEventType(sub.TargetType, request.GitHubEventType);
+        if (request.MessageTemplate is not null)
+            sub.MessageTemplate = NormalizeMessageTemplate(sub.TargetType, request.MessageTemplate);
+        if (request.MessageTitle is not null)
+            sub.MessageTitle = NormalizeMessageTitle(sub.TargetType, request.MessageTitle);
         // Rotation: GitHub tokens expire and an Azure DevOps connection secret can be re-rolled.
         // A blank value is "leave it alone", never "wipe the credential".
         if (!string.IsNullOrWhiteSpace(request.Secret))
@@ -416,6 +506,8 @@ public static class WebhookEndpoints
             targetType = sub.TargetType,
             signatureHeader = sub.SignatureHeader,
             githubEventType = sub.GitHubEventType,
+            messageTemplate = sub.MessageTemplate,
+            messageTitle = sub.MessageTitle,
             sub.Active,
             sub.UpdatedAt,
         });
@@ -516,6 +608,58 @@ public static class WebhookEndpoints
         return Results.Ok(new { message = "Test delivery queued", deliveryId });
     }
 
+    /// <summary>
+    /// Renders a message template against a representative payload for the chosen event, and frames
+    /// it exactly as a real delivery would. Authoring a Handlebars template against a payload shape
+    /// you cannot see is guesswork otherwise — and the alternative way to find out is to wait for a
+    /// production event to land in a channel.
+    /// </summary>
+    private static IResult PreviewMessage(
+        MessageTemplateRenderer renderer, PreviewMessageRequest request)
+    {
+        var targetType = string.IsNullOrWhiteSpace(request.TargetType)
+            ? WebhookTargetTypes.MicrosoftTeams
+            : request.TargetType.Trim();
+        if (!WebhookTargetTypes.IsMessaging(targetType))
+            return Results.BadRequest(new
+            {
+                error = $"targetType must be one of: {string.Join(", ", WebhookTargetTypes.Messaging)}",
+            });
+
+        var eventType = string.IsNullOrWhiteSpace(request.EventType) ? "ping" : request.EventType.Trim();
+
+        if (MessageTemplateRenderer.Validate(request.MessageTemplate) is { } bodyError)
+            return Results.BadRequest(new { error = $"messageTemplate is not a valid template: {bodyError}" });
+        if (MessageTemplateRenderer.Validate(request.MessageTitle) is { } titleError)
+            return Results.BadRequest(new { error = $"messageTitle is not a valid template: {titleError}" });
+
+        var payload = NotificationTemplates.SampleEnvelope(eventType);
+        var message = renderer.Render(request.MessageTitle, request.MessageTemplate, eventType, payload);
+
+        // The URL matters for Teams, where it decides Adaptive Card versus legacy MessageCard, so the
+        // preview is only faithful when the operator's own URL is the one being framed.
+        var sub = new WebhookSubscription
+        {
+            TargetType = targetType,
+            Url = request.Url ?? "",
+        };
+        var framed = WebhookRequestBuilder.Build(
+            sub,
+            new WebhookDelivery { EventType = eventType, PayloadJson = payload },
+            secret: "",
+            message);
+
+        return Results.Ok(new
+        {
+            eventType,
+            targetType,
+            title = message.Title,
+            text = message.Text,
+            samplePayload = payload,
+            requestBody = framed.Body,
+        });
+    }
+
     private static string GenerateSecret()
     {
         var bytes = RandomNumberGenerator.GetBytes(32);
@@ -530,14 +674,19 @@ public record CreateWebhookRequest(
     string Url,
     string[] Events,
     WebhookFilterDto? Filters = null,
-    // generic (default) | azure_devops | github
+    // generic (default) | azure_devops | github | msteams | discord
     string? TargetType = null,
-    // Required for azure_devops and github; ignored for generic, which mints its own.
+    // Required for azure_devops and github; rejected for msteams and discord, whose URL is the
+    // credential; ignored for generic, which mints its own.
     string? Secret = null,
     // azure_devops only — defaults to X-Hub-Signature.
     string? SignatureHeader = null,
     // github only — defaults to the InfraPilot event type.
-    string? GitHubEventType = null);
+    string? GitHubEventType = null,
+    // msteams and discord only — blank falls back to the per-event default message.
+    string? MessageTemplate = null,
+    // msteams and discord only — omit for the per-event default heading, empty for no heading.
+    string? MessageTitle = null);
 
 public record UpdateWebhookRequest(
     string? Name = null,
@@ -550,6 +699,19 @@ public record UpdateWebhookRequest(
     // Replaces the stored secret/token when non-blank; omit to keep the current one.
     string? Secret = null,
     string? SignatureHeader = null,
-    string? GitHubEventType = null);
+    string? GitHubEventType = null,
+    string? MessageTemplate = null,
+    string? MessageTitle = null);
 
 public record WebhookFilterDto(string? Product = null, string? Environment = null);
+
+/// <summary>
+/// A template render against a sample payload — nothing is stored and nothing is sent, so this is
+/// safe to call on every keystroke in the editor.
+/// </summary>
+public record PreviewMessageRequest(
+    string? TargetType = null,
+    string? EventType = null,
+    string? MessageTemplate = null,
+    string? MessageTitle = null,
+    string? Url = null);

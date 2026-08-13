@@ -334,7 +334,181 @@ public class WebhookIntegrationTests : IClassFixture<WebhookIntegrationTests.Web
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    // ── Chat notification subscriptions ─────────────────────────────────────
+    // The messaging targets invert two of the rules above: no secret is minted or accepted, and the
+    // message template is the payload. These cover the wiring end to end — route, body binding,
+    // renderer resolution and persistence — which the unit tests around each piece cannot.
+
+    [Fact]
+    public async Task CreateTeamsNotification_PersistsTheTemplateAndMintsNoSecret()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "Release channel",
+            url = TeamsUrl,
+            events = new[] { "release_note.generated" },
+            targetType = "msteams",
+            messageTemplate = "{{data.renderedContent}}",
+            messageTitle = "Release notes — {{data.product}}",
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await Deserialize(response);
+        Assert.Equal("msteams", body.GetProperty("targetType").GetString());
+        Assert.Equal("{{data.renderedContent}}", body.GetProperty("messageTemplate").GetString());
+        Assert.Equal("Release notes — {{data.product}}", body.GetProperty("messageTitle").GetString());
+        // Nothing was generated, so there is nothing to show once: the URL is the credential.
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("secret").ValueKind);
+
+        // And it reads back the same way, rather than only echoing the create request.
+        var id = body.GetProperty("id").GetString();
+        var fetched = await Deserialize(await _adminClient.GetAsync($"/api/webhooks/{id}"));
+        Assert.Equal("{{data.renderedContent}}", fetched.GetProperty("messageTemplate").GetString());
+    }
+
+    [Fact]
+    public async Task CreateNotification_WithoutATemplate_IsAcceptedAndUsesTheEventDefault()
+    {
+        var created = await CreateAsync(new
+        {
+            name = "Deploys",
+            url = DiscordUrl,
+            events = new[] { "deployment.created" },
+            targetType = "discord",
+        });
+
+        // Null means "fall back to the per-event default", which is what makes a notification useful
+        // before anyone writes a template.
+        Assert.Equal(JsonValueKind.Null, created.GetProperty("messageTemplate").ValueKind);
+    }
+
+    [Fact]
+    public async Task CreateNotification_RejectsASecret()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "Nope",
+            url = DiscordUrl,
+            events = new[] { "deployment.created" },
+            targetType = "discord",
+            secret = "whsec_should_not_be_here",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateNotification_RejectsATemplateThatDoesNotCompile()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "Broken",
+            url = DiscordUrl,
+            events = new[] { "deployment.created" },
+            targetType = "discord",
+            messageTemplate = "{{#if data.x}}never closed",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateNotification_ReplacesTheMessageTemplate()
+    {
+        var created = await CreateAsync(new
+        {
+            name = "Deploys",
+            url = DiscordUrl,
+            events = new[] { "deployment.created" },
+            targetType = "discord",
+            messageTemplate = "{{data.service}}",
+        });
+        var id = created.GetProperty("id").GetString();
+
+        var response = await _adminClient.PutAsJsonAsync($"/api/webhooks/{id}", new
+        {
+            messageTemplate = "{{data.service}} → {{data.environment}}",
+            messageTitle = "",
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await Deserialize(response);
+        Assert.Equal("{{data.service}} → {{data.environment}}", body.GetProperty("messageTemplate").GetString());
+        // An explicitly blank heading is kept as blank — that is how "post without a heading" is said.
+        Assert.Equal("", body.GetProperty("messageTitle").GetString());
+    }
+
+    [Fact]
+    public async Task PreviewMessage_RendersTheTemplateAndTheTeamsRequestBody()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks/preview-message", new
+        {
+            targetType = "msteams",
+            eventType = "deployment.created",
+            messageTemplate = "{{data.service}} {{data.version}} → {{data.environment}}",
+            messageTitle = "Deployed",
+            url = TeamsUrl,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await Deserialize(response);
+        Assert.Equal("Deployed", body.GetProperty("title").GetString());
+        // Rendered against the sample payload for this event, so the fields resolve to real values.
+        Assert.Equal("api 4.12.0 → production", body.GetProperty("text").GetString());
+
+        // The framed body is what a delivery would actually POST — an Adaptive Card for a Workflows URL.
+        var requestBody = body.GetProperty("requestBody").GetString()!;
+        Assert.Contains("application/vnd.microsoft.card.adaptive", requestBody);
+        Assert.Contains("api 4.12.0", requestBody);
+    }
+
+    [Fact]
+    public async Task PreviewMessage_WithNoTemplate_FallsBackToTheEventDefault()
+    {
+        var body = await Deserialize(await _adminClient.PostAsJsonAsync("/api/webhooks/preview-message", new
+        {
+            targetType = "discord",
+            eventType = "release_note.generated",
+        }));
+
+        // The release-note default forwards the already-rendered note — the reason this path can
+        // replace a relay that reformatted it.
+        Assert.Contains("billing-platform", body.GetProperty("text").GetString()!);
+        Assert.Contains("Release notes", body.GetProperty("title").GetString()!);
+    }
+
+    [Fact]
+    public async Task PreviewMessage_RejectsANonMessagingTarget()
+    {
+        var response = await _adminClient.PostAsJsonAsync("/api/webhooks/preview-message", new
+        {
+            targetType = "generic",
+            eventType = "deployment.created",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PreviewMessage_IsAdminOnly()
+    {
+        var response = await _userClient.PostAsJsonAsync("/api/webhooks/preview-message", new
+        {
+            targetType = "discord",
+            eventType = "ping",
+        });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private const string TeamsUrl =
+        "https://prod-12.westeurope.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke";
+
+    private const string DiscordUrl = "https://discord.com/api/webhooks/1234567890/aBcDeF-token";
 
     private const string AzureDevOpsUrl =
         "https://dev.azure.com/acme/_apis/public/distributedtask/webhooks/deploy?api-version=6.0-preview";
