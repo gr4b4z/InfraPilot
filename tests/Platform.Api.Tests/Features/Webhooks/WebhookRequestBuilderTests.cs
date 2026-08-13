@@ -157,4 +157,151 @@ public class WebhookRequestBuilderTests
         Assert.Null(Header(request, "X-Hub-Signature-256"));
         Assert.Null(Header(request, "X-Hub-Signature"));
     }
+
+    // ── messaging targets ───────────────────────────────────────────────────
+    // These frame a rendered message rather than the envelope, and each platform wants its own
+    // wrapper. Nothing here signs or authenticates: the URL is the credential.
+
+    private static readonly MessageTemplateRenderer.RenderedMessage Message =
+        new("Deployment", "**api** `4.12.0` reached production");
+
+    private static WebhookSubscription MessagingSubscription(string targetType, string url)
+        => new() { Id = Guid.NewGuid(), Name = "chat", Url = url, TargetType = targetType };
+
+    private const string TeamsWorkflowUrl =
+        "https://prod-12.westeurope.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke";
+    private const string TeamsConnectorUrl =
+        "https://acme.webhook.office.com/webhookb2/guid@guid/IncomingWebhook/hash/guid";
+
+    [Fact]
+    public void Teams_WorkflowUrl_SendsAnAdaptiveCardInAMessageEnvelope()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeams, TeamsWorkflowUrl),
+            Delivery(), secret: "", Message);
+
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal("message", body.RootElement.GetProperty("type").GetString());
+
+        var attachment = body.RootElement.GetProperty("attachments")[0];
+        Assert.Equal("application/vnd.microsoft.card.adaptive",
+            attachment.GetProperty("contentType").GetString());
+
+        var content = attachment.GetProperty("content");
+        Assert.Equal("AdaptiveCard", content.GetProperty("type").GetString());
+
+        var blocks = content.GetProperty("body");
+        Assert.Equal(2, blocks.GetArrayLength());
+        Assert.Equal("Deployment", blocks[0].GetProperty("text").GetString());
+        Assert.Equal("Bolder", blocks[0].GetProperty("weight").GetString());
+        Assert.Equal("**api** `4.12.0` reached production", blocks[1].GetProperty("text").GetString());
+        // Without wrap a long notification renders as a single clipped line.
+        Assert.True(blocks[1].GetProperty("wrap").GetBoolean());
+    }
+
+    [Fact]
+    public void Teams_WithoutAHeading_SendsOnlyTheBodyBlock()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeams, TeamsWorkflowUrl),
+            Delivery(), secret: "", new MessageTemplateRenderer.RenderedMessage("", "just the text"));
+
+        using var body = JsonDocument.Parse(request.Body);
+        var blocks = body.RootElement
+            .GetProperty("attachments")[0].GetProperty("content").GetProperty("body");
+        Assert.Equal(1, blocks.GetArrayLength());
+        Assert.Equal("just the text", blocks[0].GetProperty("text").GetString());
+    }
+
+    /// <summary>
+    /// A connector URL rejects the Adaptive Card envelope, so the shape has to be chosen from the
+    /// host. Operators who set one up before the Workflows migration keep working without touching it.
+    /// </summary>
+    [Fact]
+    public void Teams_LegacyConnectorUrl_SendsAMessageCard()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeams, TeamsConnectorUrl),
+            Delivery(), secret: "", Message);
+
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal("MessageCard", body.RootElement.GetProperty("@type").GetString());
+        Assert.Equal("Deployment", body.RootElement.GetProperty("title").GetString());
+        Assert.Equal("**api** `4.12.0` reached production",
+            body.RootElement.GetProperty("text").GetString());
+        // A MessageCard without a summary is rejected outright.
+        Assert.False(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("summary").GetString()));
+        Assert.False(body.RootElement.TryGetProperty("attachments", out _));
+    }
+
+    [Fact]
+    public void Discord_WithAHeading_SendsAnEmbed()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.Discord, "https://discord.com/api/webhooks/1/t"),
+            Delivery(), secret: "", Message);
+
+        using var body = JsonDocument.Parse(request.Body);
+        var embed = body.RootElement.GetProperty("embeds")[0];
+        Assert.Equal("Deployment", embed.GetProperty("title").GetString());
+        Assert.Equal("**api** `4.12.0` reached production", embed.GetProperty("description").GetString());
+        Assert.False(body.RootElement.TryGetProperty("content", out _));
+    }
+
+    [Fact]
+    public void Discord_WithoutAHeading_SendsPlainContent()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.Discord, "https://discord.com/api/webhooks/1/t"),
+            Delivery(), secret: "", new MessageTemplateRenderer.RenderedMessage("", "one-liner"));
+
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal("one-liner", body.RootElement.GetProperty("content").GetString());
+        Assert.False(body.RootElement.TryGetProperty("embeds", out _));
+    }
+
+    /// <summary>
+    /// Discord rejects an over-long body outright, so trimming is what makes the difference between a
+    /// delivered notification and a failed one — a release note is easily longer than the cap.
+    /// </summary>
+    [Fact]
+    public void Discord_TrimsAnOverlongMessageToTheLimit()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.Discord, "https://discord.com/api/webhooks/1/t"),
+            Delivery(), secret: "",
+            new MessageTemplateRenderer.RenderedMessage("", new string('x', 5000)));
+
+        using var body = JsonDocument.Parse(request.Body);
+        var content = body.RootElement.GetProperty("content").GetString()!;
+        Assert.Equal(2000, content.Length);
+        Assert.EndsWith("…", content);
+    }
+
+    [Fact]
+    public void Messaging_NeverSignsOrAuthenticates()
+    {
+        foreach (var targetType in WebhookTargetTypes.Messaging)
+        {
+            var url = targetType == WebhookTargetTypes.Discord
+                ? "https://discord.com/api/webhooks/1/t"
+                : TeamsWorkflowUrl;
+            var request = WebhookRequestBuilder.Build(
+                MessagingSubscription(targetType, url), Delivery(), secret: "", Message);
+
+            Assert.Null(Header(request, "Authorization"));
+            Assert.Null(Header(request, "X-Hub-Signature"));
+            Assert.Null(Header(request, "X-Hub-Signature-256"));
+        }
+    }
+
+    /// <summary>
+    /// A messaging delivery framed without a message is a wiring bug, not a payload the receiver
+    /// could make sense of — better to fail loudly than post an empty card.
+    /// </summary>
+    [Fact]
+    public void Messaging_WithoutAMessage_Throws()
+        => Assert.Throws<ArgumentException>(() => WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.Discord, "https://discord.com/api/webhooks/1/t"),
+            Delivery(), secret: ""));
 }
