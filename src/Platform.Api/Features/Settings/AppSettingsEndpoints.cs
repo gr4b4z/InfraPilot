@@ -24,7 +24,8 @@ public static class AppSettingsEndpoints
                     .Select(e => new EnvironmentConfigDto(
                         e.Key.Trim(),
                         (e.DisplayName ?? "").Trim(),
-                        AppSettingsService.NormalizeHexColor(e.Color)))
+                        AppSettingsService.NormalizeHexColor(e.Color),
+                        e.IsProduction))
                     .ToList(),
                 Roles: (body.Roles ?? [])
                     .Where(r => !string.IsNullOrWhiteSpace(r.Key))

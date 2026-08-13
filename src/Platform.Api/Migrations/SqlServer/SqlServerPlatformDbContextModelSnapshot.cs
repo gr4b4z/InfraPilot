@@ -410,6 +410,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTimeOffset?>("CommittedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Content")
                         .HasColumnType("nvarchar(max)");
 
@@ -769,6 +772,9 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.Property<Guid>("CandidateId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("CommittedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("Content")
                         .HasColumnType("nvarchar(max)");

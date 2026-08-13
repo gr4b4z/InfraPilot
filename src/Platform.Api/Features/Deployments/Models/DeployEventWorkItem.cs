@@ -31,5 +31,11 @@ public class DeployEventWorkItem
 
     public string? Revision { get; set; }
 
+    // When the change carrying this ticket entered trunk — min OccurredAt over the ticket's
+    // linked pull-request references (fallback: commit references). Resolved at sync time by
+    // WorkItemCommitTime so lead-time analytics can subtract it from DeployedAt without
+    // scanning ReferencesJson. Null when the producer sent no timestamps (older events).
+    public DateTimeOffset? CommittedAt { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
