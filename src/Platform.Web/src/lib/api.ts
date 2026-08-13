@@ -324,8 +324,10 @@ class ApiClient {
   /**
    * `secret` is required for the azure_devops and github targets — those reuse a credential the
    * receiving system already holds. Generic targets ignore it and mint their own, returned once.
+   * The msteams and discord targets reject it outright: their URL is the credential. Those two take
+   * `messageTemplate` / `messageTitle` instead, and fall back to per-event defaults without them.
    */
-  createWebhook(data: { name: string; url: string; events: string[]; filters?: { product?: string; environment?: string }; targetType?: string; secret?: string; signatureHeader?: string; gitHubEventType?: string }) {
+  createWebhook(data: { name: string; url: string; events: string[]; filters?: { product?: string; environment?: string }; targetType?: string; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
     return this.request<import('./types').WebhookSubscription>('/webhooks', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -333,9 +335,33 @@ class ApiClient {
   }
 
   /** `secret` rotates the stored credential; omit it to keep the current one. */
-  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: { product?: string; environment?: string }; active?: boolean; secret?: string; signatureHeader?: string; gitHubEventType?: string }) {
+  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: { product?: string; environment?: string }; active?: boolean; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
     return this.request<import('./types').WebhookSubscription>(`/webhooks/${id}`, {
       method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Renders a notification template against a sample payload for the given event. Nothing is stored
+   * and nothing is posted, so this is safe to call while the operator types.
+   */
+  previewNotificationMessage(data: {
+    targetType: string;
+    eventType: string;
+    messageTemplate?: string;
+    messageTitle?: string;
+    url?: string;
+  }) {
+    return this.request<{
+      eventType: string;
+      targetType: string;
+      title: string;
+      text: string;
+      samplePayload: string;
+      requestBody: string;
+    }>('/webhooks/preview-message', {
+      method: 'POST',
       body: JSON.stringify(data),
     });
   }

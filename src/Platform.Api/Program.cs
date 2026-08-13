@@ -223,6 +223,9 @@ builder.Services.AddDataProtection()
 // refresh, then hands off to the real dispatcher for actual webhook delivery.
 builder.Services.AddScoped<WebhookDispatcher>();
 builder.Services.AddScoped<IWebhookDispatcher, RealtimeNotifyingWebhookDispatcher>();
+// Singleton so the compiled-template cache survives between deliveries — the same handful of
+// notification templates render over and over.
+builder.Services.AddSingleton<MessageTemplateRenderer>();
 builder.Services.AddHttpClient("webhook-delivery");
 builder.Services.AddHostedService<WebhookDeliveryWorker>();
 

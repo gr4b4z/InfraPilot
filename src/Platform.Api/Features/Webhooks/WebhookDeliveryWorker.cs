@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.Realtime;
 
@@ -12,6 +13,7 @@ public class WebhookDeliveryWorker : BackgroundService
     private readonly IDataProtector _protector;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IPlatformEventPublisher _events;
+    private readonly MessageTemplateRenderer _messages;
     private readonly ILogger<WebhookDeliveryWorker> _logger;
 
     private static readonly int[] RetryDelaysSeconds = [30, 120, 600, 3600, 14400]; // 30s, 2m, 10m, 1h, 4h
@@ -21,12 +23,14 @@ public class WebhookDeliveryWorker : BackgroundService
         IDataProtectionProvider dataProtection,
         IHttpClientFactory httpClientFactory,
         IPlatformEventPublisher events,
+        MessageTemplateRenderer messages,
         ILogger<WebhookDeliveryWorker> logger)
     {
         _scopeFactory = scopeFactory;
         _protector = dataProtection.CreateProtector("WebhookSecrets");
         _httpClientFactory = httpClientFactory;
         _events = events;
+        _messages = messages;
         _logger = logger;
     }
 
@@ -101,8 +105,18 @@ public class WebhookDeliveryWorker : BackgroundService
         {
             // The secret is the HMAC key for the generic and Azure DevOps targets, and the bearer
             // token for GitHub — which of those it is, the builder decides from the target type.
-            var secret = _protector.Unprotect(sub.EncryptedSecret);
-            var framed = WebhookRequestBuilder.Build(sub, delivery, secret);
+            // Messaging targets store none at all: their URL is the capability to post.
+            var secret = string.IsNullOrEmpty(sub.EncryptedSecret)
+                ? ""
+                : _protector.Unprotect(sub.EncryptedSecret);
+
+            // Rendered per attempt rather than stored on the delivery, so fixing a bad template takes
+            // effect on retry instead of requiring the event to happen again.
+            var message = WebhookTargetTypes.IsMessaging(sub.TargetType)
+                ? _messages.Render(sub, delivery)
+                : null;
+
+            var framed = WebhookRequestBuilder.Build(sub, delivery, secret, message);
 
             using var request = new HttpRequestMessage(HttpMethod.Post, sub.Url);
             request.Content = new StringContent(framed.Body, Encoding.UTF8, "application/json");
