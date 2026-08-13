@@ -78,9 +78,15 @@ Buckets are pre-filled with zeros across the whole window, so charts need no gap
 Which stories are where — the story × environment checkmark matrix.
 
 Query: `product` (**required**), `environment?` (keep only stories **not yet deployed** on that
-env), `reachedEnv?` (keep only stories whose **first** successful deploy to that env falls inside
-the window — the "shipped this period" list), `from?`, `to?`, `limit?` (default 100, max 500),
-`offset?`.
+env), `reachedEnv?` (the "shipped this period" filter — see below), `from?`, `to?`, `limit?`
+(default 100, max 500), `offset?`.
+
+**`reachedEnv` semantics.** A single env keeps only stories whose **first** successful deploy to
+it falls inside the window. A comma-separated set (`reachedEnv=prod-eu,prod-us` — multi-region
+production) uses **ALL semantics**: the story qualifies once it has landed on *every* listed
+environment, and the window is matched against the moment that completed the set — when the
+LAST of them got it. "Shipped" in a report means "customers have it everywhere", not "the
+rollout started".
 
 Selection vs. state: the window selects **which stories appear** (any deploy or candidate
 activity inside it, or a currently open candidate). The cells always show **full state**,
@@ -96,13 +102,27 @@ cells carry `candidateId`. A deployed cell always wins over any candidate state.
 don't know are appended at the end, never dropped. `furthestEnv` is the furthest environment in
 that order with a successful deploy.
 
-**Which environment is "production"?** Environments in app settings carry an `isProduction`
-flag (Settings → Environments, "Prod" column; several may be marked — multi-region). The
-executive tiles report on the last *marked* environment present in the current scope; when none
-is marked, the historical convention applies: the last environment in settings order is treated
-as the end of the pipeline. The tiles' ⓘ popovers state which rule produced the environment they
-show. Products that never reach a marked environment (a dev/test-only pipeline) report on their
-own last stage — the flag narrows the choice, it never forces an environment a product doesn't
+**Which environments are "production"?** Resolution order (the tiles' ⓘ popovers state which
+rule fired):
+
+1. Environments **marked** `isProduction` in app settings (Settings → Environments, "Prod"
+   column; several may be marked — multi-region). The executive strip aggregates over ALL marked
+   environments present in scope: deploy counts sum, failure counts sum before dividing,
+   "shipped" means landed on every one, "in flight" means missing from at least one.
+2. Else, unconfigured keys whose **name** reads as production — `prod`, `production`, `prd`,
+   `live`, alone or suffixed (`prod-eu`); `preprod` never matches. This is the **default
+   mapping**: it holds until an admin adds the key to settings, which then always wins.
+3. Else the historical convention: the last environment in order is the end of the pipeline.
+
+The same default name mapping also orders unconfigured keys (dev-like < test-like <
+staging-like < unrecognised < prod-like) so an unconfigured `prod` never sorts before `test`
+alphabetically. Implemented in `EnvironmentStage` (API) and `lib/envStage.ts` (web) — change
+them together. Environment keys in settings are **not** validated unique (a deliberate
+choice — operators own their data): be aware that every lookup (display name, colour, order,
+production flag) resolves by FIRST match, so with duplicate keys the first row wins everywhere.
+
+Products that never reach a production environment (a dev/test-only pipeline) report on their
+own last stage — the rules narrow the choice, they never force an environment a product doesn't
 use.
 
 ```jsonc

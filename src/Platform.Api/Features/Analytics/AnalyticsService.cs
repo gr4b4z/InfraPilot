@@ -260,11 +260,28 @@ public class AnalyticsService
         if (!string.IsNullOrWhiteSpace(notYetOnEnv))
             selected = selected.Where(b => !b.Deployed.ContainsKey(notYetOnEnv)).ToList();
 
+        // reachedEnv may be a comma-separated set (multi-region production). ALL semantics:
+        // the story qualifies once it has landed on EVERY listed environment, and the window is
+        // matched against the moment that completed the set — when the LAST of them got it.
+        // "Shipped" in a report means "customers have it everywhere", not "the rollout started".
         if (!string.IsNullOrWhiteSpace(reachedEnv))
-            selected = selected
-                .Where(b => b.FirstDeployed.TryGetValue(reachedEnv, out var first)
-                    && first >= rangeFrom && first < rangeTo)
+        {
+            var targets = reachedEnv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .ToList();
+            selected = selected
+                .Where(b =>
+                {
+                    DateTimeOffset completed = DateTimeOffset.MinValue;
+                    foreach (var env in targets)
+                    {
+                        if (!b.FirstDeployed.TryGetValue(env, out var first)) return false;
+                        if (first > completed) completed = first;
+                    }
+                    return completed >= rangeFrom && completed < rangeTo;
+                })
+                .ToList();
+        }
 
         var totals = environments.ToDictionary(e => e,
             e => selected.Count(b => b.Deployed.ContainsKey(e)), StringComparer.OrdinalIgnoreCase);
@@ -452,9 +469,12 @@ public class AnalyticsService
         var known = configured
             .Where(k => universe.Contains(k, StringComparer.OrdinalIgnoreCase))
             .ToList();
+        // Keys settings don't know get the default name-based stage order (dev < test < staging
+        // < prod) instead of the alphabetical accident that would put "prod" before "test".
         var unknown = universe
             .Where(k => !configured.Contains(k, StringComparer.OrdinalIgnoreCase))
-            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase);
+            .OrderBy(EnvironmentStage.DefaultRank)
+            .ThenBy(k => k, StringComparer.OrdinalIgnoreCase);
         known.AddRange(unknown);
         return known;
     }
