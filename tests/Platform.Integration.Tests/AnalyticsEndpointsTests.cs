@@ -119,6 +119,20 @@ public class AnalyticsEndpointsTests : IClassFixture<AnalyticsEndpointsTests.Ana
     }
 
     [Fact]
+    public async Task Frequency_SummaryOnly_OmitsBuckets()
+    {
+        var product = Unique("freqsum");
+        await IngestAsync(product, "api", "dev", "v1", "2026-08-02T10:00:00Z");
+
+        var body = await GetJson(
+            $"/api/analytics/deployments/frequency?product={product}&summaryOnly=true&from=2026-08-01T00:00:00Z&to=2026-08-08T00:00:00Z");
+
+        var series = Assert.Single(body.GetProperty("series").EnumerateArray());
+        Assert.Equal(0, series.GetProperty("buckets").GetArrayLength());
+        Assert.Equal(1, series.GetProperty("summary").GetProperty("total").GetInt32());
+    }
+
+    [Fact]
     public async Task Frequency_InvalidBucket_Returns400()
     {
         var response = await _adminClient.GetAsync("/api/analytics/deployments/frequency?bucket=month");

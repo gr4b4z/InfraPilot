@@ -11,6 +11,10 @@ export interface EnvironmentConfig {
   /** Admin-chosen accent (`#rrggbb`) used to tell environments apart at a glance. When unset,
    *  `getEnvironmentColor` derives a stable colour from the key. */
   color?: string | null;
+  /** Marks a production stage — what executive analytics report on. Several environments may be
+   *  marked (multi-region production). When none is, consumers fall back to the historical
+   *  convention: the last environment in the list is the end of the pipeline. */
+  isProduction?: boolean;
 }
 
 export interface RoleConfig {
@@ -53,7 +57,7 @@ interface SettingsState {
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
   { key: 'development', displayName: 'Development', color: '#2563eb' },
   { key: 'staging', displayName: 'Staging', color: '#d97706' },
-  { key: 'production', displayName: 'Production', color: '#dc2626' },
+  { key: 'production', displayName: 'Production', color: '#dc2626', isProduction: true },
 ];
 
 const DEFAULT_ROLES: RoleConfig[] = [

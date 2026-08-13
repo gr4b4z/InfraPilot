@@ -23,6 +23,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { EnvLabel } from '@/components/environments/EnvBadge';
 import { StatTiles, type StatTile } from '@/components/ui/StatTiles';
+import { InfoPopover } from '@/components/ui/InfoPopover';
 import { ListEmptyState } from '@/components/ui/ListEmptyState';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
@@ -111,19 +112,29 @@ export function AnalyticsPage() {
   );
   const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
 
-  // The final env the executive tiles report on. Prefer the last CONFIGURED environment
-  // (settings order) — that is the org's declared "end of the pipeline" even in a window where
-  // nothing deployed there ("0 deploys to production" is the honest headline, "1 deploy to dev"
-  // is not). Unconfigured env keys only win when nothing configured appears in the data at all.
-  const finalEnv = useMemo(() => {
+  // The final env the executive tiles report on, with its provenance (surfaced in the tile's
+  // ⓘ popover so "why does the tile say X?" is answerable from the tile itself):
+  //   1. the last environment MARKED isProduction in settings that this scope uses ("marked");
+  //   2. else the last configured environment present ("the org's declared end of pipeline");
+  //   3. else the last environment in settings order — products that never reach a configured
+  //      env (a dev/test-only pipeline) report on their own last stage.
+  const { finalEnv, finalEnvSource } = useMemo(() => {
     const universe = allProducts
       ? (frequency?.series ?? []).map((s) => s.key.environment).filter((e): e is string => !!e)
       : (matrix?.environments ?? []);
     const configured = configuredEnvs.map((e) => e.key);
+    const marked = configuredEnvs.filter((e) => e.isProduction).map((e) => e.key);
     const union = Array.from(new Set([...universe, ...(allProducts ? configured : [])]));
     const ordered = getOrderedEnvironments(union);
-    const lastConfigured = [...ordered].reverse().find((e) => configured.includes(e));
-    return lastConfigured ?? ordered[ordered.length - 1] ?? '';
+    const reversed = [...ordered].reverse();
+
+    const lastMarked = reversed.find((e) => marked.includes(e));
+    if (lastMarked) return { finalEnv: lastMarked, finalEnvSource: 'marked' as const };
+    const lastConfigured = reversed.find((e) => configured.includes(e));
+    return {
+      finalEnv: lastConfigured ?? ordered[ordered.length - 1] ?? '',
+      finalEnvSource: 'convention' as const,
+    };
   }, [allProducts, frequency, matrix, configuredEnvs, getOrderedEnvironments]);
 
   // Loading starts true and flips once: refetches (period/product/filter changes) keep the
@@ -146,7 +157,9 @@ export function AnalyticsPage() {
 
     Promise.all([
       api.getDeploymentFrequency({ product: productParam, ...window, groupBy: 'environment', tz }),
-      api.getDeploymentFrequency({ product: productParam, ...window, groupBy: 'service', tz }),
+      // summaryOnly: the cadence table reads summaries alone, and at hundreds of services the
+      // zero-filled bucket arrays would dominate the payload.
+      api.getDeploymentFrequency({ product: productParam, ...window, groupBy: 'service', tz, summaryOnly: true }),
       matrixReq,
       api.getPromotionQueueStats({ product: productParam, ...window }),
       api.getLeadTime({ product: productParam, ...window, tz }),
@@ -192,7 +205,8 @@ export function AnalyticsPage() {
 
   const finalSeries = frequency?.series.find((s) => s.key.environment === finalEnv) ?? null;
   const tiles = buildTiles(
-    finalSeries, matrix, queue, leadTime, finalEnv, getDisplayName, Math.round(range.days), allProducts);
+    finalSeries, frequency, matrix, queue, leadTime,
+    finalEnv, finalEnvSource, getDisplayName, Math.round(range.days), allProducts);
 
   const inFlight = (matrix?.items ?? []).filter(
     (i) => finalEnv && i.envs[finalEnv]?.state !== 'deployed',
@@ -305,10 +319,12 @@ export function AnalyticsPage() {
 
 function buildTiles(
   finalSeries: FrequencySeries | null,
+  frequency: FrequencyResponse | null,
   matrix: WorkItemMatrixResponse | null,
   queue: PromotionQueueResponse | null,
   leadTime: LeadTimeResponse | null,
   finalEnv: string,
+  finalEnvSource: 'marked' | 'convention',
   getDisplayName: (env: string) => string,
   periodDays: number,
   allProducts: boolean,
@@ -322,7 +338,15 @@ function buildTiles(
   const approval = queue?.approvalLatency;
   const coverage = matrix?.coverage;
   const leadFinal = leadTime?.byEnvironment.find((e) => e.environment === finalEnv);
-  const leadCovered = (leadTime?.coverage.ratio ?? 0) > 0;
+  const leadCoverage = leadTime?.coverage.ratio ?? 0;
+  const leadCovered = leadCoverage > 0;
+
+  // Where the reported environment came from — quoted in the popovers so "why does the tile
+  // say X?" never needs this conversation's history to answer.
+  const envProvenance =
+    finalEnvSource === 'marked'
+      ? `Environment: ${envName} — marked as production stage in Settings → Environments.`
+      : `Environment: ${envName} — last environment in Settings order (no production stage marked).`;
 
   return [
     {
@@ -336,6 +360,11 @@ function buildTiles(
         deploys !== prevDeploys
           ? { text: fmtDelta(deploys - prevDeploys), good: deploys > prevDeploys, up: deploys > prevDeploys }
           : undefined,
+      info: {
+        what: `Successful deployments to ${envName} in the selected ${periodDays}-day window.`,
+        how: `Deploy events with status "succeeded". Rollbacks and re-deploys of the same version are not counted (they are reported separately). The delta compares the identical window immediately before. ${envProvenance}`,
+        why: 'Delivery tempo. Neither good nor bad on its own — read it together with the change failure rate next to it: rising tempo at a stable CFR is improvement; rising tempo with a rising CFR is speed on borrowed stability.',
+      },
     },
     {
       label: 'Change failure rate',
@@ -344,6 +373,11 @@ function buildTiles(
       icon: AlertTriangle,
       color: 'var(--warning)',
       bg: 'var(--warning-bg)',
+      info: {
+        what: 'The share of changes that failed.',
+        how: `${frequency?.definition.changeFailureRate ?? '(failed + rollbacks) / (succeeded + failed) within the window'} — quoted verbatim from the API's definition block. ${envProvenance}`,
+        why: `The counterweight to tempo. Beware small numbers: at 10 deploys a single rollback moves this by 10 percentage points — that's why the deploy count is shown beside it.`,
+      },
     },
     {
       label: 'Approval p50',
@@ -352,6 +386,11 @@ function buildTiles(
       icon: Clock,
       color: 'var(--info)',
       bg: 'var(--info-bg)',
+      info: {
+        what: 'Median time from a promotion candidate being created to it being approved.',
+        how: `createdAt → approvedAt for candidates approved inside the window (n=${approval?.n ?? 0}). A percentile, not an average — one forgotten candidate should not distort the picture.`,
+        why: 'Measures waiting on a HUMAN, not on the pipeline (that is "approved→deployed" in the queue section below). If this grows, the approval process is the bottleneck — not CI.',
+      },
     },
     {
       label: 'Story coverage',
@@ -365,17 +404,29 @@ function buildTiles(
       color: 'var(--success)',
       bg: 'var(--success-bg)',
       muted: allProducts,
+      info: {
+        what: 'The share of deployments that carry a story/ticket reference.',
+        how: coverage
+          ? `Deployments in the window with at least one work-item reference (${coverage.deployments - coverage.withoutWorkItem} of ${coverage.deployments}).`
+          : 'Deployments in the window with at least one work-item reference, over all deployments. Computed per product.',
+        why: 'The credibility of every other number here. At 65% coverage, every per-story metric on this page undercounts by about a third. This is a number to push UP — it rises when pipelines consistently send ticket keys.',
+      },
     },
     {
       label: `Lead time p50 · ${envName}`,
       sub: leadCovered
-        ? `coverage ${Math.round((leadTime?.coverage.ratio ?? 0) * 100)}%`
+        ? `coverage ${Math.round(leadCoverage * 100)}%`
         : 'awaiting producer data (occurredAt)',
       value: leadCovered ? fmtHours(leadFinal?.p50Hours) : '—',
       icon: GitCommitHorizontal,
       color: 'var(--text-muted)',
       bg: 'var(--bg-secondary)',
       muted: !leadCovered,
+      info: {
+        what: `Median time from a change being merged to its first successful deployment to ${envName} — cumulative from the commit, so this measures the whole path, not the last hop.`,
+        how: `Clock start: ${leadTime?.definition.clockStart ?? 'pull-request.occurredAt'} (fallback: ${leadTime?.definition.clockStartFallback ?? 'commit.occurredAt'}); clock stop: first successful deploy per environment; grain: story × environment. Only stories whose producer sent timestamps are measurable — current coverage ${Math.round(leadCoverage * 100)}%. ${envProvenance}`,
+        why: 'How long code waits on its way to users. Do NOT compare periods with materially different coverage — a backfill reaching deeper into one quarter than another manufactures a trend.',
+      },
     },
   ];
 }
@@ -507,7 +558,17 @@ function MatrixSection({
     <section className="space-y-2">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-baseline gap-2 mr-auto">
-          <h2 className="text-[15px] font-semibold">Stories × environments</h2>
+          <h2 className="text-[15px] font-semibold flex items-center gap-1.5">
+            Stories × environments
+            <InfoPopover
+              label="Stories × environments"
+              content={{
+                what: 'Which stories are deployed — or waiting — in which environment.',
+                how: 'The time window selects WHICH stories appear (any deploy or promotion activity inside it, or a currently open candidate); the cells always show full state, including deploys from before the window. A story is linked to a deployment through the work-item references its pipeline sends.',
+                why: 'Answers "where is ticket X" and "what has not reached production yet" without opening Jira. Read it alongside the coverage strip: deployments without a story reference are invisible here.',
+              }}
+            />
+          </h2>
           <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
             {matrix.totalItems} stories with activity in the last {periodLabel.toLowerCase()}
           </span>
@@ -694,7 +755,17 @@ function QueueSection({
       className="rounded-xl border p-4"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
-      <h2 className="text-[13px] font-semibold mb-3">Promotion queue</h2>
+      <h2 className="text-[13px] font-semibold mb-3 flex items-center gap-1.5">
+        Promotion queue
+        <InfoPopover
+          label="Promotion queue"
+          content={{
+            what: 'What is waiting to move forward right now, per target environment.',
+            how: 'Open promotion candidates: "Pending" awaits a human approval, "Awaiting deploy" is approved but not yet landed. "Oldest" is the age of the longest-waiting candidate. The two latencies below are computed over candidates that closed inside the window: approval = createdAt→approvedAt, approved→deployed = approvedAt→deployedAt (p50/p90).',
+            why: 'This is the actionable list — a candidate aging in the queue is a decision someone owes today, not a trend to review next quarter. The two latencies split "waiting on a human" from "waiting on the pipeline", which point at different fixes.',
+          }}
+        />
+      </h2>
       {queue.edges.length === 0 ? (
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
           Nothing is waiting for approval or deploy.
@@ -744,6 +815,14 @@ function QueueSection({
   );
 }
 
+/**
+ * Cadence at fleet scale (hundreds of services): the section shows SIGNAL, not inventory —
+ * a one-line summary, the stale services (the alarm this section exists to ring), and the top
+ * of the league table. The full list stays one click away, with a search, so the page never
+ * renders 400 rows nobody reads.
+ */
+const CADENCE_TOP_N = 10;
+
 function ServiceFrequencySection({
   frequency,
   showProduct,
@@ -751,86 +830,183 @@ function ServiceFrequencySection({
   frequency: FrequencyResponse | null;
   showProduct: boolean;
 }) {
+  const [showAll, setShowAll] = useState(false);
+  const [staleOpen, setStaleOpen] = useState(false);
+  const [search, setSearch] = useState('');
   if (!frequency) return null;
-  // Stale services (zero deploys in the window) surface FIRST — they are the alarm, and sorted
-  // to the bottom of a busy table nobody would ever see them.
-  const series = [...frequency.series].sort(
-    (a, b) => Number(a.summary.total > 0) - Number(b.summary.total > 0) || b.summary.total - a.summary.total,
-  );
+
+  const active = frequency.series
+    .filter((s) => s.summary.total > 0)
+    .sort((a, b) => b.summary.total - a.summary.total);
+  // Oldest-first: the service nobody touched the longest is the headline.
+  const stale = frequency.series
+    .filter((s) => s.summary.total === 0)
+    .sort((a, b) => (a.summary.lastDeployedAt ?? '').localeCompare(b.summary.lastDeployedAt ?? ''));
+  const totalDeploys = active.reduce((sum, s) => sum + s.summary.total, 0);
+
+  const needle = search.trim().toLowerCase();
+  const listed = showAll
+    ? [...active, ...stale].filter(
+        (s) => !needle || (s.key.serviceName ?? '').toLowerCase().includes(needle),
+      )
+    : active.slice(0, CADENCE_TOP_N);
+
   return (
     <section
       className="rounded-xl border p-4"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
-      <h2 className="text-[13px] font-semibold mb-3">Deploy cadence per service · all environments</h2>
-      {series.length === 0 ? (
+      <h2 className="text-[13px] font-semibold mb-1 flex items-center gap-1.5">
+        Deploy cadence per service · all environments
+        <InfoPopover
+          label="Deploy cadence per service"
+          content={{
+            what: 'How often each service ships, over every environment.',
+            how: 'Successful, non-rollback deploy events grouped by service. A service with deploy history but nothing in this window is STALE — it is reported explicitly instead of silently dropping out. The delta in parentheses compares the previous equal-length window.',
+            why: 'Stale services are the alarm: a service nobody has deployed in weeks is where risk quietly accumulates (unpatched dependencies, rusty pipeline, lost knowledge). The league table is for orientation; the stale list is for action.',
+          }}
+        />
+      </h2>
+      <p className="text-[12px] mb-3" style={{ color: 'var(--text-muted)' }}>
+        {active.length} active {active.length === 1 ? 'service' : 'services'} · {totalDeploys} deploys
+        {stale.length > 0 && <> · {stale.length} stale</>}
+      </p>
+
+      {stale.length > 0 && (
+        <button
+          onClick={() => setStaleOpen((v) => !v)}
+          aria-expanded={staleOpen}
+          className="w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg border text-[12px] mb-3"
+          style={{ borderColor: 'var(--warning)', backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+        >
+          <AlertTriangle size={13} className="shrink-0" />
+          <span className="mr-auto">
+            {stale.length} {stale.length === 1 ? 'service' : 'services'} with no deploy in this window —
+            oldest: <b>{stale[0]?.key.serviceName}</b> ({fmtAgo(stale[0]?.summary.lastDeployedAt)})
+          </span>
+          <span className="shrink-0 underline">{staleOpen ? 'hide' : 'show'}</span>
+        </button>
+      )}
+      {staleOpen && (
+        <ul className="mb-3 space-y-0.5 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {stale.map((s) => (
+            <li key={`${s.key.product}/${s.key.serviceName}`} className="flex justify-between gap-3">
+              <span className="truncate">
+                {showProduct && <span style={{ color: 'var(--text-muted)' }}>{s.key.product} · </span>}
+                {s.key.serviceName}
+              </span>
+              <span className="shrink-0" style={{ color: 'var(--warning)' }}>
+                {fmtAgo(s.summary.lastDeployedAt)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {active.length === 0 && stale.length === 0 ? (
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
           No deployments in this window.
         </p>
       ) : (
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr style={{ color: 'var(--text-muted)' }}>
-              <th className="text-left py-1 font-medium">Service</th>
-              <th className="text-right py-1 font-medium">Deploys</th>
-              <th className="text-right py-1 font-medium">/week</th>
-              <th className="text-right py-1 font-medium">Median gap</th>
-              <th className="text-right py-1 font-medium">Last deploy</th>
-            </tr>
-          </thead>
-          <tbody>
-            {series.map((s) => {
-              const stale = s.summary.total === 0;
-              return (
-                <tr
-                  key={`${s.key.product}/${s.key.serviceName}`}
-                  style={{ borderTop: '1px solid var(--border-color)' }}
-                >
-                  <td className="py-1.5 font-medium">
-                    {showProduct && (
-                      <span style={{ color: 'var(--text-muted)' }}>{s.key.product} · </span>
-                    )}
-                    {s.key.serviceName}
-                    {stale && (
-                      <span
-                        className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase"
-                        style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
-                      >
-                        stale
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-1.5 text-right">
-                    {s.summary.total}
-                    {s.summary.total !== s.summary.previousPeriodTotal && (
-                      <span
-                        className="ml-1 text-[11px]"
-                        style={{
-                          color:
-                            s.summary.total > s.summary.previousPeriodTotal
-                              ? 'var(--success)'
-                              : 'var(--danger)',
-                        }}
-                      >
-                        ({fmtDelta(s.summary.total - s.summary.previousPeriodTotal)})
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-1.5 text-right">{s.summary.perWeek}</td>
-                  <td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>
-                    {fmtHours(s.summary.medianIntervalHours)}
-                  </td>
-                  <td
-                    className="py-1.5 text-right"
-                    style={{ color: stale ? 'var(--warning)' : 'var(--text-muted)' }}
+        <>
+          {showAll && (
+            <div className="relative mb-2">
+              <Search
+                size={13}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2"
+                style={{ color: 'var(--text-muted)' }}
+              />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Find service…"
+                className="text-[13px] pl-8 pr-3 py-1.5 rounded-lg border w-full"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-primary)',
+                  color: 'var(--text-primary)',
+                }}
+              />
+            </div>
+          )}
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr style={{ color: 'var(--text-muted)' }}>
+                <th className="text-left py-1 font-medium">Service</th>
+                <th className="text-right py-1 font-medium">Deploys</th>
+                <th className="text-right py-1 font-medium">/week</th>
+                <th className="text-right py-1 font-medium">Median gap</th>
+                <th className="text-right py-1 font-medium">Last deploy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {listed.map((s) => {
+                const isStale = s.summary.total === 0;
+                return (
+                  <tr
+                    key={`${s.key.product}/${s.key.serviceName}`}
+                    style={{ borderTop: '1px solid var(--border-color)' }}
                   >
-                    {fmtAgo(s.summary.lastDeployedAt)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    <td className="py-1.5 font-medium">
+                      {showProduct && (
+                        <span style={{ color: 'var(--text-muted)' }}>{s.key.product} · </span>
+                      )}
+                      {s.key.serviceName}
+                      {isStale && (
+                        <span
+                          className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase"
+                          style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+                        >
+                          stale
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 text-right">
+                      {s.summary.total}
+                      {s.summary.total !== s.summary.previousPeriodTotal && (
+                        <span
+                          className="ml-1 text-[11px]"
+                          style={{
+                            color:
+                              s.summary.total > s.summary.previousPeriodTotal
+                                ? 'var(--success)'
+                                : 'var(--danger)',
+                          }}
+                        >
+                          ({fmtDelta(s.summary.total - s.summary.previousPeriodTotal)})
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 text-right">{s.summary.perWeek}</td>
+                    <td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>
+                      {fmtHours(s.summary.medianIntervalHours)}
+                    </td>
+                    <td
+                      className="py-1.5 text-right"
+                      style={{ color: isStale ? 'var(--warning)' : 'var(--text-muted)' }}
+                    >
+                      {fmtAgo(s.summary.lastDeployedAt)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {(active.length > CADENCE_TOP_N || stale.length > 0) && (
+            <button
+              onClick={() => {
+                setShowAll((v) => !v);
+                setSearch('');
+              }}
+              className="mt-2 text-[12px] underline"
+              style={{ color: 'var(--accent)' }}
+            >
+              {showAll
+                ? `Show top ${CADENCE_TOP_N} only`
+                : `Show all ${active.length + stale.length} services`}
+            </button>
+          )}
+        </>
       )}
     </section>
   );

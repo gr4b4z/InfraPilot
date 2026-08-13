@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import { TrendingDown, TrendingUp } from 'lucide-react';
+import { InfoPopover, type InfoContent } from './InfoPopover';
 
 export interface StatTileDelta {
   /** Formatted delta, e.g. "+3" or "-4h". */
@@ -21,6 +22,8 @@ export interface StatTile {
   delta?: StatTileDelta;
   /** Dims the tile and hints the value is not available yet. */
   muted?: boolean;
+  /** When present, renders a ⓘ that opens a what/how/why explainer for the number. */
+  info?: InfoContent;
 }
 
 /**
@@ -34,13 +37,18 @@ export function StatTiles({ tiles }: { tiles: StatTile[] }) {
       {tiles.map((t) => (
         <div
           key={t.label}
-          className="flex items-center gap-3 p-3.5 rounded-xl border"
+          className="relative flex items-center gap-3 p-3.5 rounded-xl border"
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
             opacity: t.muted ? 0.6 : 1,
           }}
         >
+          {t.info && (
+            <span className="absolute top-1.5 right-1.5">
+              <InfoPopover label={t.label} content={t.info} />
+            </span>
+          )}
           <div
             className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
             style={{ backgroundColor: t.bg, color: t.color }}

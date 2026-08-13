@@ -27,6 +27,7 @@ export function EnvironmentsSettings() {
         // Normalise here too so a half-typed hex never round-trips as a broken colour; the
         // server applies the same rule, and null means "derive from the key".
         color: normalizeHexColor(i.color),
+        isProduction: i.isProduction ?? false,
       }));
     setSaving(true);
     setError(null);
@@ -42,7 +43,7 @@ export function EnvironmentsSettings() {
     }
   };
 
-  const updateItem = (index: number, field: keyof EnvironmentConfig, value: string | null) => {
+  const updateItem = (index: number, field: keyof EnvironmentConfig, value: string | boolean | null) => {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
   };
   const removeItem = (index: number) => {
@@ -77,7 +78,9 @@ export function EnvironmentsSettings() {
         </h2>
         <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
           Define the environments and their display order. Drag to reorder. The colour marks every
-          item targeting that environment — promotions, rollbacks, deployment activity.
+          item targeting that environment — promotions, rollbacks, deployment activity. "Prod"
+          marks production stages — the environments executive analytics report on; several may be
+          marked (multi-region). With none marked, the last environment in the list is assumed.
         </p>
       </div>
 
@@ -88,13 +91,14 @@ export function EnvironmentsSettings() {
       <div className="overflow-x-auto">
       <div className="space-y-1.5 min-w-[520px]">
         <div
-          className="grid grid-cols-[28px_1fr_1fr_150px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
+          className="grid grid-cols-[28px_1fr_1fr_150px_44px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
           style={{ color: 'var(--text-muted)' }}
         >
           <span />
           <span>Key</span>
           <span>Display Name</span>
           <span>Colour</span>
+          <span title="Production stage">Prod</span>
           <span />
         </div>
 
@@ -105,7 +109,7 @@ export function EnvironmentsSettings() {
             onDragStart={() => handleDragStart(index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragEnd={handleDragEnd}
-            className="grid grid-cols-[28px_1fr_1fr_150px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
+            className="grid grid-cols-[28px_1fr_1fr_150px_44px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
             style={{ backgroundColor: dragIndex === index ? 'var(--accent-muted)' : undefined }}
           >
             <span className="cursor-grab flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
@@ -142,6 +146,18 @@ export function EnvironmentsSettings() {
               onClose={() => setPickerIndex(null)}
               onChange={(color) => updateItem(index, 'color', color)}
             />
+            <label
+              className="flex items-center justify-center cursor-pointer"
+              title="Production stage — executive analytics report on this environment"
+            >
+              <input
+                type="checkbox"
+                checked={item.isProduction ?? false}
+                onChange={(e) => updateItem(index, 'isProduction', e.target.checked)}
+                className="accent-[var(--accent)]"
+                aria-label={`Mark ${item.key || 'environment'} as production stage`}
+              />
+            </label>
             <button
               onClick={() => removeItem(index)}
               className="p-1 rounded-lg transition-colors hover:opacity-80"

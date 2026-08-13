@@ -17,7 +17,11 @@ public record AppSettingsDto(
 /// deploy activity). Stored normalised as <c>#rrggbb</c>; null means "no explicit choice",
 /// in which case the client derives a stable colour from the key.
 /// </summary>
-public record EnvironmentConfigDto(string Key, string DisplayName, string? Color = null);
+// IsProduction marks the environment as a production stage — the environment(s) executive
+// analytics report on ("deploys to production", "shipped this period"). More than one may be
+// marked (multi-region production). When none is marked, consumers fall back to the historical
+// convention: the LAST environment in this list is the end of the pipeline.
+public record EnvironmentConfigDto(string Key, string DisplayName, string? Color = null, bool IsProduction = false);
 
 public record RoleConfigDto(string Key, string DisplayName);
 

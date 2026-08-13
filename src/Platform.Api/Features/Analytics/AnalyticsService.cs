@@ -38,6 +38,7 @@ public class AnalyticsService
         DateTimeOffset? from, DateTimeOffset? to,
         string bucket, string groupBy, TimeZoneInfo tz,
         bool includeRollbacks, bool includeRedeploys,
+        bool summaryOnly,
         CancellationToken ct)
     {
         var (rangeFrom, rangeTo) = ResolveRange(from, to);
@@ -126,7 +127,9 @@ public class AnalyticsService
             seenKeys.Add(group.Key);
             series.Add(new FrequencySeriesDto(
                 group.Key,
-                buckets.Values.Select(b => (FrequencyBucketDto)b).ToList(),
+                // summaryOnly drops the bucket arrays: a per-service TABLE reads only summaries,
+                // and at hundreds of services the zero-filled buckets dominate the payload.
+                summaryOnly ? [] : buckets.Values.Select(b => (FrequencyBucketDto)b).ToList(),
                 new FrequencySummaryDto(
                     Total: counted,
                     PerWeek: span.TotalDays > 0 ? Math.Round(counted / span.TotalDays * 7, 2) : 0,
@@ -160,7 +163,9 @@ public class AnalyticsService
                 if (seenKeys.Contains(key)) continue;
                 series.Add(new FrequencySeriesDto(
                     key,
-                    BuildBuckets(rangeFrom, rangeTo, bucket, tz).Values.Select(b => (FrequencyBucketDto)b).ToList(),
+                    summaryOnly
+                        ? []
+                        : BuildBuckets(rangeFrom, rangeTo, bucket, tz).Values.Select(b => (FrequencyBucketDto)b).ToList(),
                     new FrequencySummaryDto(
                         Total: 0, PerWeek: 0,
                         MedianIntervalHours: null, LongestGapHours: null,

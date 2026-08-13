@@ -23,6 +23,7 @@ public static class AnalyticsEndpoints
             DateTimeOffset? from, DateTimeOffset? to,
             string? bucket, string? groupBy, string? tz,
             bool? includeRollbacks, bool? includeRedeploys,
+            bool? summaryOnly,
             CancellationToken ct) =>
         {
             var resolvedBucket = bucket ?? "day";
@@ -38,7 +39,8 @@ public static class AnalyticsEndpoints
 
             return Results.Ok(await analytics.GetDeploymentFrequency(
                 product, serviceName, environment, from, to,
-                resolvedBucket, resolvedGroupBy, tzInfo, includeRollbacks ?? false, includeRedeploys ?? false, ct));
+                resolvedBucket, resolvedGroupBy, tzInfo, includeRollbacks ?? false, includeRedeploys ?? false,
+                summaryOnly ?? false, ct));
         });
 
         // Work-item × environment matrix: which stories are deployed / awaiting where. The window

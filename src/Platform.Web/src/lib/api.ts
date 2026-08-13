@@ -960,6 +960,7 @@ class ApiClient {
     tz?: string;
     includeRollbacks?: boolean;
     includeRedeploys?: boolean;
+    summaryOnly?: boolean;
   }) {
     const entries: [string, string][] = [];
     if (params?.product) entries.push(['product', params.product]);
@@ -972,6 +973,7 @@ class ApiClient {
     if (params?.tz) entries.push(['tz', params.tz]);
     if (params?.includeRollbacks) entries.push(['includeRollbacks', 'true']);
     if (params?.includeRedeploys) entries.push(['includeRedeploys', 'true']);
+    if (params?.summaryOnly) entries.push(['summaryOnly', 'true']);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<FrequencyResponse>(`/analytics/deployments/frequency${query}`);
   }
@@ -1033,7 +1035,7 @@ export interface UserPreferencesPayload {
 
 export interface AppSettingsPayload {
   /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values. */
-  environments: { key: string; displayName: string; color?: string | null }[];
+  environments: { key: string; displayName: string; color?: string | null; isProduction?: boolean }[];
   roles: { key: string; displayName: string }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
 }
