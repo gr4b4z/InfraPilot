@@ -142,6 +142,30 @@ class ApiClient {
     return this.request<import('./types').DeploymentStateEntry[]>(`/deployments/state${query}`);
   }
 
+  /**
+   * Cross-product service search — find a service without knowing which product it lives in.
+   * Case-insensitive substring match on the service name; the same name under two products
+   * returns two hits.
+   */
+  searchDeploymentServices(q: string, limit?: number) {
+    const entries: [string, string][] = [['q', q]];
+    if (limit) entries.push(['limit', String(limit)]);
+    return this.request<{ results: import('./types').ServiceSearchResult[] }>(
+      `/deployments/services/search?${new URLSearchParams(entries).toString()}`,
+    );
+  }
+
+  /**
+   * Everything the service detail page shows, in one call: current state per environment, the
+   * last distinct versions and which environments each reached, and the service's promotions.
+   */
+  getServiceDetail(product: string, service: string, params?: { versionsLimit?: number }) {
+    const query = params?.versionsLimit ? `?versionsLimit=${params.versionsLimit}` : '';
+    return this.request<import('./types').ServiceDetail>(
+      `/deployments/services/${encodeURIComponent(product)}/${encodeURIComponent(service)}${query}`,
+    );
+  }
+
   getDeploymentHistory(product: string, service: string, params?: { environment?: string; limit?: number }) {
     const entries: [string, string][] = [];
     if (params?.environment) entries.push(['environment', params.environment]);
