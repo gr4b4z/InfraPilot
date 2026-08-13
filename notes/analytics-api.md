@@ -117,8 +117,9 @@ rule fired):
 The same default name mapping also orders unconfigured keys (dev-like < test-like <
 staging-like < unrecognised < prod-like) so an unconfigured `prod` never sorts before `test`
 alphabetically. Implemented in `EnvironmentStage` (API) and `lib/envStage.ts` (web) — change
-them together. Environment keys in settings are validated unique — lookups resolve by first
-match, so a duplicate key would silently mislabel the other row's environment everywhere.
+them together. Environment keys in settings are **not** validated unique (a deliberate
+choice — operators own their data): be aware that every lookup (display name, colour, order,
+production flag) resolves by FIRST match, so with duplicate keys the first row wins everywhere.
 
 Products that never reach a production environment (a dev/test-only pipeline) report on their
 own last stage — the rules narrow the choice, they never force an environment a product doesn't
