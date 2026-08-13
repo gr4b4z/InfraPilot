@@ -622,6 +622,112 @@ public class DeploymentService
         return grouped;
     }
 
+    /// <summary>
+    /// Cross-product service search: case-insensitive substring match on the service name. This is
+    /// the query behind "find a service without knowing its product", so unlike the other read
+    /// paths it takes no product argument at all. Hidden products are dropped for the same reason
+    /// they are in <see cref="GetProductSummaries"/> — hiding a product hides it everywhere — and
+    /// retired services stay out like on every other read path. Results are most-recently-deployed
+    /// first, capped by <paramref name="limit"/>.
+    /// </summary>
+    public async Task<List<ServiceSearchResultDto>> SearchServices(
+        string query, int limit = 20, CancellationToken ct = default)
+    {
+        var needle = query.Trim().ToLower();
+        if (needle.Length == 0) return new List<ServiceSearchResultDto>();
+
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+
+        // One row per (product, service, environment) — grouped into per-service hits in memory,
+        // which keeps the query translatable (a nested Distinct inside a GroupBy projection isn't).
+        var rows = await _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .Where(e => !hidden.Contains(e.Product))
+            .Where(e => e.Service.ToLower().Contains(needle))
+            .GroupBy(e => new { e.Product, e.Service, e.Environment })
+            .Select(g => new
+            {
+                g.Key.Product,
+                g.Key.Service,
+                g.Key.Environment,
+                LastDeployedAt = g.Max(e => e.DeployedAt),
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => new { r.Product, r.Service })
+            .Select(g => new ServiceSearchResultDto(
+                g.Key.Product,
+                g.Key.Service,
+                g.OrderByDescending(r => r.LastDeployedAt)
+                    .Select(r => new ServiceSearchEnvironmentDto(r.Environment, r.LastDeployedAt))
+                    .ToList(),
+                g.Max(r => r.LastDeployedAt)))
+            .OrderByDescending(s => s.LastDeployedAt)
+            .Take(Math.Max(1, limit))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Assembles the service detail page's payload for one (product, service): the latest event per
+    /// environment, the most recent distinct versions with the environments each reached, and the
+    /// service's promotions. Returns null when the pair has no visible deployments — unknown and
+    /// retired look the same here, exactly as they do on every other read path.
+    /// </summary>
+    public async Task<ServiceDetailDto?> GetServiceDetail(
+        string product, string service, int versionsLimit = 10, CancellationToken ct = default)
+    {
+        var environments = await GetState(product, null, service, ct);
+        if (environments.Count == 0) return null;
+
+        // Recent deploys, newest first, folded into distinct versions in memory (same reasoning as
+        // GetVersions: GroupBy + First doesn't translate cleanly). Oversampled so a version that was
+        // redeployed many times doesn't starve the list of older versions.
+        var recent = await _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .Where(e => e.Product == product && e.Service == service)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new { e.Id, e.Environment, e.Version, e.Status, e.IsRollback, e.DeployedAt })
+            .Take(Math.Max(1, versionsLimit) * 20)
+            .ToListAsync(ct);
+
+        var versions = new List<ServiceVersionDto>();
+        var byVersion = new Dictionary<string, List<ServiceVersionEnvironmentDto>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in recent)
+        {
+            if (!byVersion.TryGetValue(e.Version, out var envs))
+            {
+                if (versions.Count >= versionsLimit) continue;
+                envs = new List<ServiceVersionEnvironmentDto>();
+                byVersion[e.Version] = envs;
+                // Rows arrive newest-first, so first sight of a version fixes its LastDeployedAt.
+                versions.Add(new ServiceVersionDto(e.Version, e.DeployedAt, envs));
+            }
+            // Latest event per (version, environment): rows are newest-first, so keep the first one.
+            if (envs.Any(x => string.Equals(x.Environment, e.Environment, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            envs.Add(new ServiceVersionEnvironmentDto(e.Id, e.Environment, e.Status, e.IsRollback, e.DeployedAt));
+        }
+
+        var promotions = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Product == product && c.Service == service)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(25)
+            .Select(c => new
+            {
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status, c.CreatedAt, c.ApprovedAt, c.DeployedAt,
+            })
+            .ToListAsync(ct);
+
+        var promotionDtos = promotions
+            .Select(c => new ServicePromotionDto(
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status.ToString(),
+                c.CreatedAt, c.ApprovedAt, c.DeployedAt))
+            .ToList();
+
+        return new ServiceDetailDto(product, service, environments, versions, promotionDtos);
+    }
+
     public async Task<List<DeployEventResponseDto>> GetHistory(
         string product, string service, string? environment, int limit = 50, CancellationToken ct = default)
     {
