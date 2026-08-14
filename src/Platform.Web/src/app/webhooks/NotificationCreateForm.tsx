@@ -39,6 +39,14 @@ const PLATFORMS: {
       'In Teams: channel → ⋯ → Workflows → "Post to a channel when a webhook request is received", then copy the generated URL. Legacy Office 365 connector URLs (webhook.office.com) still work and are detected automatically.',
   },
   {
+    value: 'msteams_html',
+    label: 'Microsoft Teams (HTML)',
+    description: 'Posts HTML to a flow that forwards it. Reads as an ordinary message.',
+    urlPlaceholder: 'https://prod-00.westeurope.logic.azure.com:443/workflows/...',
+    urlHint:
+      'For a Power Automate flow whose action is "Post message in a chat or channel" rather than "Post card" — it takes the HTML itself, so the body is posted raw rather than wrapped in a card. Pick this if you already have such a flow, or if you want tables and headings, which Adaptive Cards drop.',
+  },
+  {
     value: 'discord',
     label: 'Discord',
     description: 'Posts a message or embed into the channel.',
@@ -106,6 +114,7 @@ export function NotificationCreateForm({ onCancel, onCreated }: NotificationCrea
     text: string;
     samplePayload: string;
     requestBody: string;
+    contentType: string;
   } | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -388,8 +397,9 @@ export function NotificationCreateForm({ onCancel, onCreated }: NotificationCrea
         )}
 
         <p className="text-[11px] leading-snug" style={{ color: 'var(--text-muted)' }}>
-          Shown as the raw text that gets posted. Both platforms render a markdown subset — bold,
-          italics, links and bullet lists survive; tables do not, and Teams also drops headings.
+          {targetType === 'msteams_html'
+            ? 'Shown as the raw text that gets posted. It is converted to HTML on the way out, so the full markdown vocabulary survives — tables and headings included. Literal HTML in the template is passed through untouched.'
+            : 'Shown as the raw text that gets posted. Both platforms render a markdown subset — bold, italics, links and bullet lists survive; tables do not, and Teams also drops headings.'}
         </p>
 
         {preview && (
@@ -417,7 +427,10 @@ export function NotificationCreateForm({ onCancel, onCreated }: NotificationCrea
                 </div>
                 <div className="space-y-1">
                   <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                    Body sent to {platform.label}
+                    Body sent to {platform.label}{' '}
+                    <code style={{ color: 'var(--text-muted)' }}>
+                      ({preview.contentType.split(';')[0]})
+                    </code>
                   </span>
                   <pre
                     className="p-2 rounded-lg text-[11px] overflow-auto max-h-56"

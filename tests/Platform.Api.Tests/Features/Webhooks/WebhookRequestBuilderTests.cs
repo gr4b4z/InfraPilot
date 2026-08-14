@@ -234,6 +234,135 @@ public class WebhookRequestBuilderTests
         Assert.False(body.RootElement.TryGetProperty("attachments", out _));
     }
 
+    // ── Teams HTML ──────────────────────────────────────────────────────────
+    // A flow built around "Post message in a chat or channel" takes the HTML itself rather than a
+    // card envelope, which is the contract the marketplace pipeline already posts against.
+
+    [Fact]
+    public void TeamsHtml_PostsTheRenderedMessageAsAnHtmlFragment()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsWorkflowUrl),
+            Delivery(), secret: "", Message);
+
+        // Raw HTML, not JSON wrapping HTML — the receiving flow binds the body directly.
+        Assert.StartsWith("text/html", request.ContentType);
+        Assert.Contains("<h2>Deployment</h2>", request.Body);
+        Assert.Contains("<strong>api</strong>", request.Body);
+        Assert.Contains("<code>4.12.0</code>", request.Body);
+        Assert.DoesNotContain("attachments", request.Body);
+    }
+
+    [Fact]
+    public void TeamsHtml_WithoutAHeading_SendsOnlyTheBody()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsWorkflowUrl),
+            Delivery(), secret: "", new MessageTemplateRenderer.RenderedMessage("", "just the text"));
+
+        Assert.DoesNotContain("<h2>", request.Body);
+        Assert.Contains("just the text", request.Body);
+    }
+
+    /// <summary>
+    /// The heading is prose rather than markdown, so it is encoded — a product named "R&amp;D" should
+    /// reach the channel as written and not as a broken entity.
+    /// </summary>
+    [Fact]
+    public void TeamsHtml_EncodesTheHeading()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsWorkflowUrl),
+            Delivery(), secret: "", new MessageTemplateRenderer.RenderedMessage("R&D <prod>", "body"));
+
+        Assert.Contains("<h2>R&amp;D &lt;prod&gt;</h2>", request.Body);
+    }
+
+    /// <summary>
+    /// The reason this target exists alongside the Adaptive Card one: a card drops tables and
+    /// headings, and a release note that uses either arrives as run-together text.
+    /// </summary>
+    [Fact]
+    public void TeamsHtml_KeepsTablesAndHeadingsTheAdaptiveCardWouldDrop()
+    {
+        var markdown = """
+            ## billing-platform
+
+            | service | version |
+            | --- | --- |
+            | api | 4.12.0 |
+            """;
+
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsWorkflowUrl),
+            Delivery(), secret: "", new MessageTemplateRenderer.RenderedMessage("", markdown));
+
+        Assert.Contains("<table>", request.Body);
+        Assert.Contains("<td>4.12.0</td>", request.Body);
+        Assert.Contains("billing-platform</h2>", request.Body);
+    }
+
+    /// <summary>
+    /// A template that already emits HTML — the shape the pipeline's own report builds — has to reach
+    /// the channel untouched, or migrating an existing report to a notification would mangle it.
+    /// </summary>
+    [Fact]
+    public void TeamsHtml_PassesLiteralHtmlThrough()
+    {
+        var html = "<ul>\n<li><strong>api:</strong> (4.11.3 → 4.12.0)</li>\n</ul>";
+
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsWorkflowUrl),
+            Delivery(), secret: "", new MessageTemplateRenderer.RenderedMessage("", html));
+
+        Assert.Contains("<li><strong>api:</strong> (4.11.3 → 4.12.0)</li>", request.Body);
+        // Passed through, not escaped into visible tag text.
+        Assert.DoesNotContain("&lt;li&gt;", request.Body);
+    }
+
+    /// <summary>
+    /// Trimming happens on the markdown, before conversion: cutting the HTML would sooner or later
+    /// sever a tag and hand Teams a fragment it renders as literal text.
+    /// </summary>
+    [Fact]
+    public void TeamsHtml_TrimsBeforeConvertingSoTheFragmentStaysWellFormed()
+    {
+        var request = WebhookRequestBuilder.Build(
+            MessagingSubscription(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsWorkflowUrl),
+            Delivery(), secret: "",
+            new MessageTemplateRenderer.RenderedMessage("", new string('x', 25000)));
+
+        Assert.Contains("…", request.Body);
+        Assert.EndsWith("</p>", request.Body.TrimEnd());
+    }
+
+    /// <summary>
+    /// Every other target sends JSON with the charset the worker used to append itself, so making the
+    /// content type per-target changed nothing on the wire for the targets that predate it.
+    /// </summary>
+    [Fact]
+    public void NonHtmlTargets_StillSendJson()
+    {
+        foreach (var targetType in new[]
+                 {
+                     WebhookTargetTypes.Generic, WebhookTargetTypes.AzureDevOps,
+                     WebhookTargetTypes.GitHub, WebhookTargetTypes.MicrosoftTeams,
+                     WebhookTargetTypes.Discord,
+                 })
+        {
+            var url = targetType switch
+            {
+                WebhookTargetTypes.Discord => "https://discord.com/api/webhooks/1/t",
+                WebhookTargetTypes.GitHub => "https://api.github.com/repos/o/r/dispatches",
+                _ => TeamsWorkflowUrl,
+            };
+            var request = WebhookRequestBuilder.Build(
+                MessagingSubscription(targetType, url), Delivery(), secret: "s", Message);
+
+            Assert.Equal("application/json; charset=utf-8", request.ContentType);
+        }
+    }
+
     [Fact]
     public void Discord_WithAHeading_SendsAnEmbed()
     {
