@@ -854,6 +854,7 @@ export function WebhookListPage() {
                       ['Azure DevOps', 'Incoming WebHook service connection', 'HMAC-SHA1 in a header you choose'],
                       ['GitHub', 'repository_dispatch REST call', 'Bearer token, no signature'],
                       ['Microsoft Teams', 'Adaptive Card posted to a channel', 'The webhook URL is the credential'],
+                      ['Microsoft Teams (HTML)', 'HTML posted to a Power Automate flow', 'The webhook URL is the credential'],
                       ['Discord', 'Message or embed posted to a channel', 'The webhook URL is the credential'],
                     ].map(([label, what, auth]) => (
                       <tr key={label} style={{ borderBottom: '1px solid var(--border-color)' }}>
@@ -1169,6 +1170,14 @@ jobs:
                   instead, so existing connectors keep working until Microsoft retires them.
                 </li>
                 <li>
+                  <strong>Teams (HTML):</strong> the same kind of URL, for a Power Automate flow whose
+                  action is <em>Post message in a chat or channel</em> rather than <em>Post card</em>.
+                  That action takes HTML, so the message is converted and POSTed raw instead of being
+                  wrapped in a card. Nothing in the URL says which flow you have, so pick this one
+                  deliberately — it reads as an ordinary message rather than a card attributed to the
+                  Workflows app, and it keeps tables and headings.
+                </li>
+                <li>
                   <strong>Discord:</strong> Server Settings → <strong>Integrations → Webhooks</strong>{' '}
                   → New Webhook. With a heading the message is posted as an embed; without one, as
                   plain content.
@@ -1195,10 +1204,12 @@ jobs:
 # optional value needs no guard unless the wording around it does.`}
               </pre>
               <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-                Both platforms render only a markdown subset — bold, italics, links and bullet lists
-                survive; tables do not, and Teams also drops headings. Over-long messages are trimmed
-                to the platform limit rather than being rejected. Use the live preview in the create
-                form to see the exact text and request body before saving.
+                The card and embed targets render only a markdown subset — bold, italics, links and
+                bullet lists survive; tables do not, and Teams also drops headings. Teams (HTML) is
+                the exception: the message is converted to HTML on the way out, so the full markdown
+                vocabulary survives and literal HTML in a template passes through untouched. Over-long
+                messages are trimmed to the platform limit rather than being rejected. Use the live
+                preview in the create form to see the exact text and request body before saving.
               </p>
             </div>
 

@@ -464,6 +464,41 @@ public class WebhookIntegrationTests : IClassFixture<WebhookIntegrationTests.Web
         Assert.Contains("api 4.12.0", requestBody);
     }
 
+    /// <summary>
+    /// The HTML target shares every rule with the card one and differs only in what goes on the wire,
+    /// so this is the check that the difference actually survives the round trip.
+    /// </summary>
+    [Fact]
+    public async Task CreateTeamsHtmlNotification_PersistsAndPreviewsAsHtml()
+    {
+        var created = await CreateAsync(new
+        {
+            name = "Versions report",
+            url = TeamsUrl,
+            events = new[] { "release_note.generated" },
+            targetType = "msteams_html",
+            messageTitle = "",
+        });
+        Assert.Equal("msteams_html", created.GetProperty("targetType").GetString());
+        Assert.Equal(JsonValueKind.Null, created.GetProperty("secret").ValueKind);
+
+        var preview = await Deserialize(await _adminClient.PostAsJsonAsync("/api/webhooks/preview-message", new
+        {
+            targetType = "msteams_html",
+            eventType = "release_note.generated",
+            url = TeamsUrl,
+        }));
+
+        // Raw HTML rather than a card envelope, and declared as such so the receiving flow binds the
+        // body rather than parsing it as JSON.
+        var requestBody = preview.GetProperty("requestBody").GetString()!;
+        Assert.StartsWith("text/html", preview.GetProperty("contentType").GetString());
+        Assert.DoesNotContain("adaptive", requestBody, StringComparison.OrdinalIgnoreCase);
+        // The release-note default forwards the rendered note, so its markdown arrives as markup.
+        Assert.Contains("<strong>api</strong>", requestBody);
+        Assert.Contains("<li>", requestBody);
+    }
+
     [Fact]
     public async Task PreviewMessage_WithNoTemplate_FallsBackToTheEventDefault()
     {

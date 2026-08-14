@@ -31,15 +31,25 @@ export const AVAILABLE_EVENTS = [
   'ping',
 ];
 
-export type WebhookTargetType = 'generic' | 'azure_devops' | 'github' | 'msteams' | 'discord';
+export type WebhookTargetType =
+  | 'generic'
+  | 'azure_devops'
+  | 'github'
+  | 'msteams'
+  | 'msteams_html'
+  | 'discord';
 
 /** Chat targets — they post a rendered message instead of the event envelope. Matches WebhookTargetTypes.Messaging. */
-export type NotificationTargetType = 'msteams' | 'discord';
+export type NotificationTargetType = 'msteams' | 'msteams_html' | 'discord';
 
-export const NOTIFICATION_TARGET_TYPES: NotificationTargetType[] = ['msteams', 'discord'];
+export const NOTIFICATION_TARGET_TYPES: NotificationTargetType[] = [
+  'msteams',
+  'msteams_html',
+  'discord',
+];
 
 export function isNotificationTarget(value: string | undefined): value is NotificationTargetType {
-  return value === 'msteams' || value === 'discord';
+  return NOTIFICATION_TARGET_TYPES.includes(value as NotificationTargetType);
 }
 
 /** Matches WebhookRequestBuilder.DefaultAzureDevOpsSignatureHeader on the API side. */
@@ -69,6 +79,11 @@ export const TARGET_TYPES: {
     value: 'msteams',
     label: 'Microsoft Teams',
     description: 'Posts a message straight into a Teams channel. No relay needed.',
+  },
+  {
+    value: 'msteams_html',
+    label: 'Microsoft Teams (HTML)',
+    description: 'Posts HTML to a Power Automate flow that forwards it into the channel.',
   },
   {
     value: 'discord',

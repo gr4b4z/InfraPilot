@@ -119,14 +119,24 @@ public class WebhookTargetValidationTests
     public void Discord_NeedsNothingBeyondAWebhookUrl()
         => Assert.Null(Validate(WebhookTargetTypes.Discord, DiscordUrl));
 
+    /// <summary>
+    /// Same URL shape as the Adaptive Card target — the flow behind it differs, and nothing in the
+    /// URL says which, so the operator picks rather than the validator guessing.
+    /// </summary>
+    [Fact]
+    public void TeamsHtml_NeedsNothingBeyondAnHttpsUrl()
+        => Assert.Null(Validate(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsUrl));
+
     [Theory]
     [InlineData(WebhookTargetTypes.MicrosoftTeams, TeamsUrl)]
+    [InlineData(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsUrl)]
     [InlineData(WebhookTargetTypes.Discord, DiscordUrl)]
     public void Messaging_RejectsASecret(string targetType, string url)
         => Assert.Contains("secret does not apply", Validate(targetType, url, secret: "whsec_nope"));
 
     [Theory]
     [InlineData(WebhookTargetTypes.MicrosoftTeams, "http://prod-12.westeurope.logic.azure.com/workflows/abc")]
+    [InlineData(WebhookTargetTypes.MicrosoftTeamsHtml, "http://prod-12.westeurope.logic.azure.com/workflows/abc")]
     [InlineData(WebhookTargetTypes.Discord, "http://discord.com/api/webhooks/1/t")]
     [InlineData(WebhookTargetTypes.MicrosoftTeams, "not-a-url")]
     public void Messaging_RequiresHttps(string targetType, string url)
@@ -145,6 +155,7 @@ public class WebhookTargetValidationTests
 
     [Theory]
     [InlineData(WebhookTargetTypes.MicrosoftTeams, TeamsUrl)]
+    [InlineData(WebhookTargetTypes.MicrosoftTeamsHtml, TeamsUrl)]
     [InlineData(WebhookTargetTypes.Discord, DiscordUrl)]
     public void Messaging_AcceptsAValidTemplate(string targetType, string url)
         => Assert.Null(Validate(

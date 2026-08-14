@@ -119,7 +119,11 @@ public class WebhookDeliveryWorker : BackgroundService
             var framed = WebhookRequestBuilder.Build(sub, delivery, secret, message);
 
             using var request = new HttpRequestMessage(HttpMethod.Post, sub.Url);
-            request.Content = new StringContent(framed.Body, Encoding.UTF8, "application/json");
+            // Content type comes from the framing, not from here: every target but the Teams HTML one
+            // sends JSON, and that one sends an HTML fragment.
+            request.Content = new StringContent(framed.Body, Encoding.UTF8);
+            request.Content.Headers.ContentType =
+                System.Net.Http.Headers.MediaTypeHeaderValue.Parse(framed.ContentType);
             foreach (var (name, value) in framed.Headers)
                 request.Headers.TryAddWithoutValidation(name, value);
 
