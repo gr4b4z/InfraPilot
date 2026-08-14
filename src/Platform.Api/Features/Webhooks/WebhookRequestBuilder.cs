@@ -1,6 +1,8 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using Platform.Api.Features.ReleaseNotes;
 using Platform.Api.Features.Webhooks.Models;
 
 namespace Platform.Api.Features.Webhooks;
@@ -54,7 +56,16 @@ public static class WebhookRequestBuilder
     private static readonly string[] LegacyTeamsConnectorHosts =
         ["webhook.office.com", "outlook.office.com", "outlook.office365.com"];
 
-    public sealed record WebhookHttpRequest(string Body, IReadOnlyList<(string Name, string Value)> Headers);
+    /// <param name="ContentType">
+    /// Almost every target speaks JSON, so that is the default — spelled with the charset the worker
+    /// used to append itself, so introducing this field changed nothing on the wire for the targets
+    /// that predate it. The Teams HTML target is the exception: its body is an HTML fragment rather
+    /// than a document describing one.
+    /// </param>
+    public sealed record WebhookHttpRequest(
+        string Body,
+        IReadOnlyList<(string Name, string Value)> Headers,
+        string ContentType = "application/json; charset=utf-8");
 
     /// <param name="message">
     /// The rendered notification text. Required for messaging targets, which have no envelope to send
@@ -70,6 +81,7 @@ public static class WebhookRequestBuilder
             WebhookTargetTypes.AzureDevOps => BuildAzureDevOps(sub, delivery, secret),
             WebhookTargetTypes.GitHub => BuildGitHub(sub, delivery, secret),
             WebhookTargetTypes.MicrosoftTeams => BuildMicrosoftTeams(sub, RequireMessage(sub, message)),
+            WebhookTargetTypes.MicrosoftTeamsHtml => BuildMicrosoftTeamsHtml(RequireMessage(sub, message)),
             WebhookTargetTypes.Discord => BuildDiscord(RequireMessage(sub, message)),
             _ => BuildGeneric(delivery, secret),
         };
@@ -231,6 +243,41 @@ public static class WebhookRequestBuilder
         };
         if (title.Length > 0) card["title"] = title;
         return card;
+    }
+
+    /// <summary>
+    /// Microsoft Teams through a Power Automate flow whose action is "Post message in a chat or
+    /// channel" rather than "Post card". That action takes HTML, so the body here is the rendered
+    /// message converted to an HTML fragment and POSTed raw — no JSON wrapper, matching the contract
+    /// the marketplace pipeline's send-teams-notification.ps1 has been using against the same kind of
+    /// flow.
+    /// <para>
+    /// Worth knowing why anyone would pick this over the Adaptive Card: the card renders inside a
+    /// bordered box attributed to the Workflows app and supports only a markdown subset, dropping
+    /// tables and headings. HTML posts as an ordinary message and keeps both — which for a release
+    /// note is the difference between a table and a paragraph of run-together cells.
+    /// </para>
+    /// </summary>
+    private static WebhookHttpRequest BuildMicrosoftTeamsHtml(MessageTemplateRenderer.RenderedMessage message)
+    {
+        // Trimmed as markdown, before conversion: cutting the HTML instead would sooner or later
+        // sever a tag and hand Teams a fragment it renders as literal text.
+        var text = Truncate(message.Text, TeamsTextLimit);
+
+        // Markdig passes raw HTML through untouched, so a template that already emits HTML — the way
+        // the pipeline script builds its report — reaches the channel exactly as written.
+        var html = MarkdownRenderer.Shared.ToHtml(text);
+
+        // The heading is prose, not markdown, so it is encoded rather than rendered: a service name
+        // containing an ampersand should read as one, and <h2> matches the shape the existing
+        // pipeline report opens with.
+        if (message.Title.Length > 0)
+        {
+            var heading = WebUtility.HtmlEncode(Truncate(message.Title, TeamsTextLimit));
+            html = $"<h2>{heading}</h2>\n{html}";
+        }
+
+        return new WebhookHttpRequest(html, [("Accept", "application/json")], "text/html; charset=utf-8");
     }
 
     private static bool IsLegacyTeamsConnector(string url)
