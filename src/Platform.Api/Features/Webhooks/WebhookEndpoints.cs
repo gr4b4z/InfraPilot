@@ -213,6 +213,7 @@ public static class WebhookEndpoints
                 break;
 
             case WebhookTargetTypes.MicrosoftTeams:
+            case WebhookTargetTypes.MicrosoftTeamsHtml:
             case WebhookTargetTypes.Discord:
                 if (hasSignatureHeader) return "signatureHeader applies only to azure_devops targets";
                 if (hasGitHubEventType) return "githubEventType applies only to github targets";
@@ -657,6 +658,9 @@ public static class WebhookEndpoints
             text = message.Text,
             samplePayload = payload,
             requestBody = framed.Body,
+            // The body is not always JSON — the Teams HTML target sends a fragment — so the preview
+            // says which, rather than leaving the editor to infer it from the target type.
+            contentType = framed.ContentType,
         });
     }
 
@@ -674,18 +678,18 @@ public record CreateWebhookRequest(
     string Url,
     string[] Events,
     WebhookFilterDto? Filters = null,
-    // generic (default) | azure_devops | github | msteams | discord
+    // generic (default) | azure_devops | github | msteams | msteams_html | discord
     string? TargetType = null,
-    // Required for azure_devops and github; rejected for msteams and discord, whose URL is the
+    // Required for azure_devops and github; rejected for the messaging targets, whose URL is the
     // credential; ignored for generic, which mints its own.
     string? Secret = null,
     // azure_devops only — defaults to X-Hub-Signature.
     string? SignatureHeader = null,
     // github only — defaults to the InfraPilot event type.
     string? GitHubEventType = null,
-    // msteams and discord only — blank falls back to the per-event default message.
+    // Messaging targets only — blank falls back to the per-event default message.
     string? MessageTemplate = null,
-    // msteams and discord only — omit for the per-event default heading, empty for no heading.
+    // Messaging targets only — omit for the per-event default heading, empty for no heading.
     string? MessageTitle = null);
 
 public record UpdateWebhookRequest(

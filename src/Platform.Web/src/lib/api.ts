@@ -384,6 +384,8 @@ class ApiClient {
       text: string;
       samplePayload: string;
       requestBody: string;
+      /** Not always JSON — the Teams HTML target posts an HTML fragment. */
+      contentType: string;
     }>('/webhooks/preview-message', {
       method: 'POST',
       body: JSON.stringify(data),

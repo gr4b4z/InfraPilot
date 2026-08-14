@@ -14,10 +14,20 @@ public static class WebhookTargetTypes
     public const string GitHub = "github";
     /// <summary>Microsoft Teams channel post — an Adaptive Card (or legacy MessageCard) built from the template.</summary>
     public const string MicrosoftTeams = "msteams";
+    /// <summary>
+    /// Microsoft Teams via a Power Automate flow that posts HTML: the body is the rendered message
+    /// converted to an HTML fragment and POSTed raw, not JSON. Same destination as
+    /// <see cref="MicrosoftTeams"/> and the same URL host, but a flow built around
+    /// "Post message in a chat or channel" wants the HTML itself where one built around "Post card"
+    /// wants an Adaptive Card envelope — nothing in the URL distinguishes them, so the operator says
+    /// which they have.
+    /// </summary>
+    public const string MicrosoftTeamsHtml = "msteams_html";
     /// <summary>Discord channel post — plain content or an embed built from the template.</summary>
     public const string Discord = "discord";
 
-    public static readonly string[] All = [Generic, AzureDevOps, GitHub, MicrosoftTeams, Discord];
+    public static readonly string[] All =
+        [Generic, AzureDevOps, GitHub, MicrosoftTeams, MicrosoftTeamsHtml, Discord];
 
     /// <summary>
     /// Targets that post a human-readable message into a chat channel rather than handing a machine
@@ -25,7 +35,7 @@ public static class WebhookTargetTypes
     /// there is no separate secret), and the body is rendered from a message template rather than
     /// being the envelope. Everything else — event filtering, retries, delivery history — is shared.
     /// </summary>
-    public static readonly string[] Messaging = [MicrosoftTeams, Discord];
+    public static readonly string[] Messaging = [MicrosoftTeams, MicrosoftTeamsHtml, Discord];
 
     public static bool IsValid(string? value) => value is not null && All.Contains(value);
 
