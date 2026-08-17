@@ -1189,6 +1189,16 @@ jobs:
                 <code style={{ color: 'var(--accent)' }}>{'{{data.renderedContent}}'}</code> — that is
                 the path that replaces a relay function reformatting the note on the way through.
               </p>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                Each notification also carries{' '}
+                <code style={{ color: 'var(--accent)' }}>X-Webhook-Delivery</code> and{' '}
+                <code style={{ color: 'var(--accent)' }}>X-Webhook-Event</code>. Neither Teams nor
+                Discord reads them, but a Power Automate flow in front of Teams can: chat platforms
+                have no idempotency of their own, so if the same message is posted twice, the delivery
+                id is what tells you whether InfraPilot sent it twice or the flow ran twice on one
+                send. Compare it against <strong>Recent Deliveries</strong> on the notification — one
+                delivery with one attempt means the duplicate came from the flow, not from here.
+              </p>
               <pre
                 className="rounded-lg p-4 text-[12px] leading-relaxed overflow-x-auto"
                 style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
