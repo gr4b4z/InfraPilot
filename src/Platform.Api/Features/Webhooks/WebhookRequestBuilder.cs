@@ -80,9 +80,9 @@ public static class WebhookRequestBuilder
         {
             WebhookTargetTypes.AzureDevOps => BuildAzureDevOps(sub, delivery, secret),
             WebhookTargetTypes.GitHub => BuildGitHub(sub, delivery, secret),
-            WebhookTargetTypes.MicrosoftTeams => BuildMicrosoftTeams(sub, RequireMessage(sub, message)),
-            WebhookTargetTypes.MicrosoftTeamsHtml => BuildMicrosoftTeamsHtml(RequireMessage(sub, message)),
-            WebhookTargetTypes.Discord => BuildDiscord(RequireMessage(sub, message)),
+            WebhookTargetTypes.MicrosoftTeams => BuildMicrosoftTeams(sub, delivery, RequireMessage(sub, message)),
+            WebhookTargetTypes.MicrosoftTeamsHtml => BuildMicrosoftTeamsHtml(delivery, RequireMessage(sub, message)),
+            WebhookTargetTypes.Discord => BuildDiscord(delivery, RequireMessage(sub, message)),
             _ => BuildGeneric(delivery, secret),
         };
 
@@ -161,9 +161,23 @@ public static class WebhookRequestBuilder
     }
 
     // ── Chat notifications ──────────────────────────────────────────────────
-    // These two targets are the reason a message template exists: the receiver is a channel full of
+    // These targets are the reason a message template exists: the receiver is a channel full of
     // people, not a system, so what goes on the wire is prose rather than the event envelope. No
     // signature and no token — the URL is the capability, which is why creating one demands https.
+
+    /// <summary>
+    /// Headers common to every chat target. Neither platform reads the two X- headers, but the relay
+    /// in front of them does: a Power Automate flow can dedupe on the delivery id, and a run history
+    /// that shows which delivery each run came from is the difference between diagnosing a duplicate
+    /// post and guessing at it. Chat platforms have no idempotency of their own, so if a flow retries
+    /// or is wired up twice, this id is the only thing tying the copies back to one send.
+    /// </summary>
+    private static (string Name, string Value)[] MessagingHeaders(WebhookDelivery delivery) =>
+    [
+        ("Accept", "application/json"),
+        ("X-Webhook-Event", delivery.EventType),
+        ("X-Webhook-Delivery", delivery.Id.ToString()),
+    ];
 
     /// <summary>
     /// Microsoft Teams. A Power Automate Workflows URL expects a <c>type: message</c> envelope
@@ -172,7 +186,7 @@ public static class WebhookRequestBuilder
     /// kind of Teams webhook they were given.
     /// </summary>
     private static WebhookHttpRequest BuildMicrosoftTeams(
-        WebhookSubscription sub, MessageTemplateRenderer.RenderedMessage message)
+        WebhookSubscription sub, WebhookDelivery delivery, MessageTemplateRenderer.RenderedMessage message)
     {
         var title = Truncate(message.Title, TeamsTextLimit);
         var text = Truncate(message.Text, TeamsTextLimit);
@@ -181,7 +195,7 @@ public static class WebhookRequestBuilder
             ? LegacyTeamsMessageCard(title, text)
             : TeamsAdaptiveCard(title, text);
 
-        return new WebhookHttpRequest(body.ToJsonString(), [("Accept", "application/json")]);
+        return new WebhookHttpRequest(body.ToJsonString(), MessagingHeaders(delivery));
     }
 
     private static JsonObject TeamsAdaptiveCard(string title, string text)
@@ -258,7 +272,8 @@ public static class WebhookRequestBuilder
     /// note is the difference between a table and a paragraph of run-together cells.
     /// </para>
     /// </summary>
-    private static WebhookHttpRequest BuildMicrosoftTeamsHtml(MessageTemplateRenderer.RenderedMessage message)
+    private static WebhookHttpRequest BuildMicrosoftTeamsHtml(
+        WebhookDelivery delivery, MessageTemplateRenderer.RenderedMessage message)
     {
         // Trimmed as markdown, before conversion: cutting the HTML instead would sooner or later
         // sever a tag and hand Teams a fragment it renders as literal text.
@@ -277,7 +292,7 @@ public static class WebhookRequestBuilder
             html = $"<h2>{heading}</h2>\n{html}";
         }
 
-        return new WebhookHttpRequest(html, [("Accept", "application/json")], "text/html; charset=utf-8");
+        return new WebhookHttpRequest(html, MessagingHeaders(delivery), "text/html; charset=utf-8");
     }
 
     private static bool IsLegacyTeamsConnector(string url)
@@ -291,7 +306,8 @@ public static class WebhookRequestBuilder
     /// notification should look like in a channel; with one it becomes an embed, whose description
     /// also happens to allow twice the text.
     /// </summary>
-    private static WebhookHttpRequest BuildDiscord(MessageTemplateRenderer.RenderedMessage message)
+    private static WebhookHttpRequest BuildDiscord(
+        WebhookDelivery delivery, MessageTemplateRenderer.RenderedMessage message)
     {
         JsonObject body;
         if (message.Title.Length == 0)
@@ -314,7 +330,7 @@ public static class WebhookRequestBuilder
             };
         }
 
-        return new WebhookHttpRequest(body.ToJsonString(), [("Accept", "application/json")]);
+        return new WebhookHttpRequest(body.ToJsonString(), MessagingHeaders(delivery));
     }
 
     /// <summary>
