@@ -2417,7 +2417,20 @@ public class PromotionService
     /// downstream sees is one rule, not three special cases.
     /// </summary>
     private static WebhookDispatchOptions ApprovedWebhookOptions(PromotionCandidate candidate)
-        => new(Delay: ApprovedWebhookDelay, CancelKey: ApprovedWebhookCancelKey(candidate.Id));
+    {
+        // Per-edge override (D12 of feature-branch-builds): an auto-approved edge like build → dev
+        // sets 0 — an undo window on an automatic deploy is pure latency. Read from the candidate's
+        // snapshot (not a live policy join) like every other policy field, best-effort: a candidate
+        // with no readable snapshot keeps the global default.
+        var delay = ApprovedWebhookDelay;
+        try
+        {
+            if (ReadSnapshot(candidate).ApprovedWebhookDelaySeconds is int seconds)
+                delay = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        }
+        catch (InvalidOperationException) { /* no/unreadable snapshot — keep the default */ }
+        return new(Delay: delay, CancelKey: ApprovedWebhookCancelKey(candidate.Id));
+    }
 
     /// <summary>
     /// Dispatches a webhook event for a promotion state change. Non-fatal: logs a warning on

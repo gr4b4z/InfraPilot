@@ -60,6 +60,16 @@ public record ResolvedPolicySnapshot(
     /// the original behaviour (source deploy required, drift check active).</remarks>
     public bool SourceRequiresDeploy { get; init; } = true;
 
+    /// <inheritdoc cref="PromotionPolicy.AutoCreateFromBranches"/>
+    /// <remarks>Snapshotted for auditability — the candidate records the auto-create rule it was
+    /// born under, like every other policy field. Gate evaluation never reads it.</remarks>
+    public List<string> AutoCreateFromBranches { get; init; } = new();
+
+    /// <inheritdoc cref="PromotionPolicy.ApprovedWebhookDelaySeconds"/>
+    /// <remarks>Defaults to <c>null</c> (global default delay) so old snapshot JSON keeps the
+    /// original undo window.</remarks>
+    public int? ApprovedWebhookDelaySeconds { get; init; }
+
     /// <summary>Flattened requirement set across every step — the unit of gate satisfaction.</summary>
     public IReadOnlyList<ApproverRequirement> AllRequirements =>
         ApprovalSteps.SelectMany(s => s.Requirements).ToList();

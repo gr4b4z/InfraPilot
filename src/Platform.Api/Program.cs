@@ -186,6 +186,7 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<BuildService>();
+builder.Services.AddScoped<Platform.Api.Features.Builds.IBuildIngestHook, Platform.Api.Features.Builds.BuildIngestHook>();
 builder.Services.AddScoped<DeploymentService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceDeletionService>();
 builder.Services.AddScoped<ReferenceParticipantOverrideService>();

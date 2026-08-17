@@ -401,3 +401,10 @@ export interface BuildSummary {
   createdAt: string;
   updatedAt: string | null;
 }
+
+/** A target env a registered build can be promoted to (an edge with a resolving build → * policy). */
+export interface BuildTarget {
+  targetEnv: string;
+  /** True when picking this target deploys without an approval step. */
+  autoApprove: boolean;
+}
