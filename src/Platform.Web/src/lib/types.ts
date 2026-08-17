@@ -384,3 +384,20 @@ export interface WebhookDelivery {
   deliveredAt: string | null;
   nextRetryAt: string | null;
 }
+
+/** One registered build — a row in the build registry (all published builds, any branch). */
+export interface BuildSummary {
+  id: string;
+  product: string;
+  service: string;
+  version: string;
+  /** Full git ref, e.g. `refs/heads/feature/MPT-1234-x`. */
+  branch: string;
+  commitSha: string | null;
+  buildId: string | null;
+  buildUrl: string | null;
+  artifactRef: string | null;
+  artifactDigest: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}

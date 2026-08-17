@@ -12,6 +12,7 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
     public const string SchemeName = "ApiKey";
     public const string PolicyName = "DeploymentIngestion";
     public const string AllowedProductClaim = "allowed_product";
+    public const string ScopeClaim = "api_scope";
     private const string HeaderName = "X-Api-Key";
 
     private readonly IConfiguration _config;
@@ -71,12 +72,29 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
             if (!string.IsNullOrWhiteSpace(product))
                 claims.Add(new Claim(AllowedProductClaim, product));
         }
+        foreach (var scope in match.Scopes)
+        {
+            if (!string.IsNullOrWhiteSpace(scope))
+                claims.Add(new Claim(ScopeClaim, scope));
+        }
 
         var identity = new ClaimsIdentity(claims, SchemeName);
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, SchemeName);
 
         return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    /// <summary>
+    /// True when the principal may use <paramref name="scope"/>. A principal with no scope claims
+    /// is unrestricted — that keeps every key configured before scopes existed working, mirroring
+    /// the AllowedProducts convention (empty = all). Only keys that opt into a Scopes list are
+    /// narrowed to it.
+    /// </summary>
+    public static bool HasScope(ClaimsPrincipal user, string scope)
+    {
+        var scopes = user.FindAll(ScopeClaim).Select(c => c.Value).ToList();
+        return scopes.Count == 0 || scopes.Contains(scope, StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsMatch(ApiKeyEntry entry, string providedKey, byte[] providedKeyBytes, byte[] providedKeyHash)
@@ -115,4 +133,23 @@ public class ApiKeyEntry
     public List<string> AllowedProducts { get; set; } = [];
     /// <summary>Authorization roles granted to this key (e.g. "InfraPortal.User", "InfraPortal.Admin"). Defaults to ["InfraPortal.User"] when empty.</summary>
     public List<string> Roles { get; set; } = [];
+    /// <summary>
+    /// Fine-grained permissions this key is limited to (see <see cref="ApiKeyScopes"/>).
+    /// Empty = unrestricted, so pre-existing keys keep working; set it to narrow a key to
+    /// exactly what its producer does (least privilege).
+    /// </summary>
+    public List<string> Scopes { get; set; } = [];
+}
+
+/// <summary>
+/// The scope vocabulary for API keys. Scopes separate "may report what happened" from "may make
+/// something happen": a build agent that registers builds should not be able to open gated
+/// releases, and vice versa.
+/// </summary>
+public static class ApiKeyScopes
+{
+    /// <summary>POST /api/builds — register a published build in the build registry.</summary>
+    public const string BuildRegister = "build:register";
+    /// <summary>POST /api/promotions — create a promotion candidate (D16 of external-promotion-creation).</summary>
+    public const string PromotionCreate = "promotion:create";
 }

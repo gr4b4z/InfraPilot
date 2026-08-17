@@ -142,6 +142,19 @@ class ApiClient {
     return this.request<import('./types').DeploymentStateEntry[]>(`/deployments/state${query}`);
   }
 
+  // Build registry
+  /**
+   * Registered builds, newest first. `branch` is a substring match, so "MPT-1234" finds the
+   * feature branch without spelling out the full ref.
+   */
+  listBuilds(params?: { product?: string; service?: string; branch?: string; limit?: number }) {
+    const entries = Object.entries(params ?? {})
+      .filter(([, v]) => v !== undefined && v !== '')
+      .map(([k, v]) => [k, String(v)] as [string, string]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<{ results: import('./types').BuildSummary[] }>(`/builds${query}`);
+  }
+
   /**
    * Cross-product service search — find a service without knowing which product it lives in.
    * Case-insensitive substring match on the service name; the same name under two products

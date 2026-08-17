@@ -512,12 +512,14 @@ public static class PromotionEndpoints
         // Create a promotion candidate from an external system (CI). The external computes the
         // authoritative net change set (env-to-env diff) and POSTs it; the tool records it verbatim.
         // Secured with API key + per-key rate limit + product scope — mirrors /api/deployments/events.
-        // TODO(D16): gate behind a distinct promotion:create scope so a key can be granted deploy
-        // ingestion without the ability to open gated releases. Reusing the product-scope guard for
-        // now — adding a real scope to the API-key system is out of scope for Workstream A.
+        // D16: keys that declare a Scopes list must hold promotion:create — separates "may report
+        // deploys" from "may open gated releases". Keys without a Scopes list stay unrestricted.
         group.MapPost("/", async (
             PromotionService svc, ClaimsPrincipal user, CreatePromotionDto dto, CancellationToken ct) =>
         {
+            if (!ApiKeyAuthHandler.HasScope(user, ApiKeyScopes.PromotionCreate))
+                return Results.Forbid();
+
             var errors = ValidateCreate(dto);
             if (errors.Count > 0)
                 return Results.BadRequest(new { errors });
