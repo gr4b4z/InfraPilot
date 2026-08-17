@@ -22,10 +22,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path aliases */
-    "baseUrl": ".",
+    /* Path aliases (relative — TypeScript 7 removed baseUrl) */
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]

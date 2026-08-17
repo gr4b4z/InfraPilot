@@ -125,6 +125,74 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("approval_requests", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Builds.Models.Build", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ArtifactDigest")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ArtifactRef")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Branch")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("BuildId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("BuildUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("CommitSha")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ManifestJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Branch");
+
+                    b.HasIndex("Product", "Service", "CreatedAt")
+                        .IsDescending(false, false, true);
+
+                    b.HasIndex("Product", "Service", "Version")
+                        .IsUnique();
+
+                    b.ToTable("builds", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Catalog.Models.CatalogItem", b =>
                 {
                     b.Property<Guid>("Id")

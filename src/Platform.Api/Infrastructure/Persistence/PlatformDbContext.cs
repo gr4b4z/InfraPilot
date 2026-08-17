@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals.Models;
+using Platform.Api.Features.Builds.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
@@ -31,6 +32,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
+    public DbSet<Build> Builds => Set<Build>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
     public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
@@ -201,6 +203,35 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.EntityType, x.EntityId });
             e.HasIndex(x => x.ActorId);
             e.HasIndex(x => new { x.Module, x.Action });
+        });
+
+        // Build registry — every published build (main, release, feature), one row per
+        // (product, service, version). Registered by publish pipelines via POST /api/builds.
+        modelBuilder.Entity<Build>(e =>
+        {
+            e.ToTable("builds");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            // Full git refs; feature branch names can run long.
+            e.Property(x => x.Branch).HasMaxLength(400).IsRequired();
+            e.Property(x => x.CommitSha).HasMaxLength(100);
+            e.Property(x => x.BuildId).HasMaxLength(100);
+            e.Property(x => x.BuildUrl).HasMaxLength(2000);
+            // Unbounded: the whole BuildMetadata document lives inline.
+            var buildManifestJson = e.Property(x => x.ManifestJson);
+            if (jsonType != null) buildManifestJson.HasColumnType(jsonType);
+            e.Property(x => x.ArtifactRef).HasMaxLength(500);
+            e.Property(x => x.ArtifactDigest).HasMaxLength(200);
+            // The replay-safe upsert key: a pipeline retry re-POSTs the same
+            // (product, service, version) and updates in place instead of duplicating.
+            e.HasIndex(x => new { x.Product, x.Service, x.Version }).IsUnique();
+            // The list/picker query: builds of a service, newest first.
+            e.HasIndex(x => new { x.Product, x.Service, x.CreatedAt })
+                .IsDescending(false, false, true);
+            // "Which builds came from this branch?" — the question the registry exists to answer.
+            e.HasIndex(x => x.Branch);
         });
 
         // Deploy Events
