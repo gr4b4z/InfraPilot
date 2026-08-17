@@ -8,11 +8,13 @@ namespace Platform.Api.Features.Builds;
 public class BuildService
 {
     private readonly PlatformDbContext _db;
+    private readonly IBuildIngestHook _ingestHook;
     private readonly ILogger<BuildService> _logger;
 
-    public BuildService(PlatformDbContext db, ILogger<BuildService> logger)
+    public BuildService(PlatformDbContext db, IBuildIngestHook ingestHook, ILogger<BuildService> logger)
     {
         _db = db;
+        _ingestHook = ingestHook;
         _logger = logger;
     }
 
@@ -39,6 +41,12 @@ public class BuildService
             _logger.LogInformation(
                 "Replayed build registration {Id}: {Product}/{Service} v{Version} already registered; updated in place",
                 existing.Id, existing.Product, existing.Service, existing.Version);
+
+            // A replay still runs the promotion hook — same rationale as deploy-ingest replays: the
+            // first POST could only match policies that existed then, and one stranded by a hook
+            // failure is repaired by the retry. Candidate creation is idempotent (natural-key reuse).
+            await _ingestHook.OnRegisteredAsync(existing, ct);
+
             return new RegisterResult(existing, true);
         }
 
@@ -67,12 +75,17 @@ public class BuildService
                     $"Insert of build {dto.Product}/{dto.Service} v{dto.Version} failed but no existing row was found.");
             Apply(winner, dto, manifestJson);
             await _db.SaveChangesAsync(ct);
+            await _ingestHook.OnRegisteredAsync(winner, ct);
             return new RegisterResult(winner, true);
         }
 
         _logger.LogInformation(
             "Registered build {Id}: {Product}/{Service} v{Version} from {Branch}",
             build.Id, build.Product, build.Service, build.Version, build.Branch);
+
+        // After the save, so the build row exists whatever the promotion machinery does with it.
+        await _ingestHook.OnRegisteredAsync(build, ct);
+
         return new RegisterResult(build, false);
     }
 

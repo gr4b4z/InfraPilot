@@ -22,9 +22,11 @@ import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
+import { DeployBuildDialog } from '@/components/builds/DeployBuildDialog';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import type {
+  BuildTarget,
   DeploymentStateEntry,
   ServiceDetail,
   ServicePromotion,
@@ -44,6 +46,27 @@ export function ServiceDetailPage() {
   const [detail, setDetail] = useState<ServiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+
+  // The build → * edges this service can deploy a registered build to. Empty (the default) hides
+  // the "Deploy a build" affordance entirely — a button that always 422s is worse than no button.
+  const [buildTargets, setBuildTargets] = useState<BuildTarget[]>([]);
+  const [deployBuildOpen, setDeployBuildOpen] = useState(false);
+
+  useEffect(() => {
+    if (!product || !service || !promotionsEnabled) return;
+    let cancelled = false;
+    api
+      .getBuildTargets(product, service)
+      .then((r) => {
+        if (!cancelled) setBuildTargets(r.targets);
+      })
+      .catch(() => {
+        if (!cancelled) setBuildTargets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product, service, promotionsEnabled]);
 
   useDocumentTitle([`${product}/${service}`, 'Service']);
 
@@ -161,15 +184,39 @@ export function ServiceDetailPage() {
             </Link>
           </p>
         </div>
-        <Link
-          to={`${backHref}/history`}
-          className="ml-auto inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-colors hover:opacity-80"
-          style={{ color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
-        >
-          <History size={13} />
-          Full history
-        </Link>
+        <span className="ml-auto inline-flex items-center gap-2">
+          {/* Deploy a registered build (any branch) to an enrolled env. Only rendered when a
+             build → * policy actually resolves — see the buildTargets fetch above. */}
+          {promotionsEnabled && buildTargets.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setDeployBuildOpen(true)}
+              className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+            >
+              <Rocket size={13} />
+              Deploy a build
+            </button>
+          )}
+          <Link
+            to={`${backHref}/history`}
+            className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-colors hover:opacity-80"
+            style={{ color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+          >
+            <History size={13} />
+            Full history
+          </Link>
+        </span>
       </div>
+
+      {deployBuildOpen && product && service && (
+        <DeployBuildDialog
+          product={product}
+          service={service}
+          targets={buildTargets}
+          onClose={() => setDeployBuildOpen(false)}
+        />
+      )}
 
       {/* ── Environments ── where the service runs right now, one card per environment. */}
       <section>

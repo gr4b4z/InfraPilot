@@ -146,6 +146,8 @@ public static class PromotionAdminEndpoints
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
                 AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems,
                 SourceRequiresDeploy = request.SourceRequiresDeploy,
+                AutoCreateFromBranches = MapBranchPatterns(request.AutoCreateFromBranches),
+                ApprovedWebhookDelaySeconds = request.ApprovedWebhookDelaySeconds,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
@@ -188,6 +190,8 @@ public static class PromotionAdminEndpoints
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
             policy.AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems;
             policy.SourceRequiresDeploy = request.SourceRequiresDeploy;
+            policy.AutoCreateFromBranches = MapBranchPatterns(request.AutoCreateFromBranches);
+            policy.ApprovedWebhookDelaySeconds = request.ApprovedWebhookDelaySeconds;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
 
             await db.SaveChangesAsync();
@@ -260,6 +264,9 @@ public static class PromotionAdminEndpoints
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
         autoApproveWhenNoWorkItems = p.AutoApproveWhenNoWorkItems,
         sourceRequiresDeploy = p.SourceRequiresDeploy,
+        // Branch patterns that auto-create candidates from registered builds; empty ⇒ never.
+        autoCreateFromBranches = p.AutoCreateFromBranches,
+        approvedWebhookDelaySeconds = p.ApprovedWebhookDelaySeconds,
         createdAt = p.CreatedAt,
         updatedAt = p.UpdatedAt,
         reappliedCandidates,
@@ -320,11 +327,27 @@ public static class PromotionAdminEndpoints
         return new GroupRef(id, name);
     }
 
+    /// <summary>
+    /// Normalises the auto-create branch patterns: trims, drops blanks, dedupes (ordinal — git refs
+    /// are case-sensitive) while keeping the admin's order.
+    /// </summary>
+    private static List<string> MapBranchPatterns(IReadOnlyList<string>? patterns)
+    {
+        if (patterns is null) return new();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return patterns
+            .Select(p => (p ?? "").Trim())
+            .Where(p => p.Length > 0 && seen.Add(p))
+            .ToList();
+    }
+
     private static string? ValidatePolicyRequest(UpsertPolicyRequest r)
     {
         if (string.IsNullOrWhiteSpace(r.Product)) return "Product is required";
         if (string.IsNullOrWhiteSpace(r.SourceEnv)) return "SourceEnv is required";
         if (string.IsNullOrWhiteSpace(r.TargetEnv)) return "TargetEnv is required";
+        if (r.ApprovedWebhookDelaySeconds is < 0 or > 3600)
+            return "approvedWebhookDelaySeconds must be between 0 and 3600";
 
         // An empty step tree is valid — it means auto-approve. But a requirement that lists neither
         // a group nor a user can never be satisfied, so reject it as a misconfiguration.
@@ -377,7 +400,18 @@ public record UpsertPolicyRequest(
     bool RequireAllWorkItemsApproved = false,
     bool AutoApproveOnAllWorkItemsApproved = false,
     bool AutoApproveWhenNoWorkItems = false,
-    bool SourceRequiresDeploy = true);
+    bool SourceRequiresDeploy = true,
+    /// <summary>
+    /// Branch patterns (full refs, <c>*</c> wildcards) for which registered builds auto-create a
+    /// candidate on this edge. Only meaningful when <c>SourceEnv</c> is the synthetic
+    /// <c>build</c> source. Omitted/empty ⇒ builds never auto-create here.
+    /// </summary>
+    List<string>? AutoCreateFromBranches = null,
+    /// <summary>
+    /// Per-edge override (seconds) of the approval → promotion.approved delivery delay. Null ⇒
+    /// global default; 0 ⇒ dispatch immediately (no undo window).
+    /// </summary>
+    int? ApprovedWebhookDelaySeconds = null);
 
 /// <summary>One approval step in an <see cref="UpsertPolicyRequest"/>.</summary>
 public record UpsertStepRequest(string? Name, List<UpsertRequirementRequest>? Requirements);

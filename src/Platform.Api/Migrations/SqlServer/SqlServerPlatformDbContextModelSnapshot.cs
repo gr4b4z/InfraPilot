@@ -761,6 +761,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(max)")
                         .HasDefaultValue("[]");
 
+                    b.Property<int?>("ApprovedWebhookDelaySeconds")
+                        .HasColumnType("int");
+
                     b.Property<bool>("AutoApproveOnAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
@@ -770,6 +773,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
+
+                    b.Property<string>("AutoCreateFromBranchesJson")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");

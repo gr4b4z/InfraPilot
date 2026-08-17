@@ -156,6 +156,28 @@ class ApiClient {
   }
 
   /**
+   * Target environments a registered build can be promoted to for this service — the edges with a
+   * resolving `build → *` policy. Empty means the product isn't enrolled in build promotions.
+   */
+  getBuildTargets(product: string, service: string) {
+    const query = new URLSearchParams([['product', product], ['service', service]]).toString();
+    return this.request<{ targets: import('./types').BuildTarget[] }>(
+      `/promotions/build-targets?${query}`,
+    );
+  }
+
+  /**
+   * "Deploy this build": creates a promotion candidate from a registered build. The server builds
+   * the change set from the stored manifest and stamps the caller as triggered-by.
+   */
+  createPromotionFromBuild(buildId: string, targetEnv: string) {
+    return this.request<{ id: string; status: string }>('/promotions/from-build', {
+      method: 'POST',
+      body: JSON.stringify({ buildId, targetEnv }),
+    });
+  }
+
+  /**
    * Cross-product service search — find a service without knowing which product it lives in.
    * Case-insensitive substring match on the service name; the same name under two products
    * returns two hits.

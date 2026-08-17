@@ -121,6 +121,40 @@ public class PromotionPolicy
     /// </summary>
     public bool SourceRequiresDeploy { get; set; } = true;
 
+    // ── Build-registry auto-create ────────────────────────────────────────────
+
+    /// <summary>
+    /// JSON-serialised <see cref="AutoCreateFromBranches"/>. Persisted as a plain string column,
+    /// mirroring <see cref="ApprovalStepsJson"/>. Null/empty ⇒ no auto-create.
+    /// </summary>
+    public string? AutoCreateFromBranchesJson { get; set; }
+
+    /// <summary>
+    /// Branch patterns (full git refs, <c>*</c> wildcards allowed — e.g.
+    /// <c>refs/heads/main</c>, <c>refs/heads/release/*</c>) for which a registered build
+    /// automatically opens a candidate on this edge. Meaningful only on edges whose
+    /// <see cref="SourceEnv"/> is the synthetic <c>build</c> source; inert elsewhere — the
+    /// <c>BuildIngestHook</c> is the only reader. Empty ⇒ builds never auto-create here; a person
+    /// (or the promotions API) has to ask. This is what makes main → dev automatic while feature
+    /// branches stay strictly on-demand (plan: feature-branch-builds D5).
+    /// </summary>
+    public List<string> AutoCreateFromBranches
+    {
+        get => string.IsNullOrEmpty(AutoCreateFromBranchesJson)
+            ? new()
+            : JsonSerializer.Deserialize<List<string>>(AutoCreateFromBranchesJson, JsonOpts) ?? new();
+        set => AutoCreateFromBranchesJson = value.Count == 0 ? null : JsonSerializer.Serialize(value, JsonOpts);
+    }
+
+    /// <summary>
+    /// Per-edge override of the pause between an approval and the <c>promotion.approved</c>
+    /// delivery (the "undo window"). Null ⇒ the global default
+    /// (<see cref="PromotionService.ApprovedWebhookDelay"/>). Set to 0 on auto-approved edges like
+    /// <c>build → dev</c>, where a cancellation window on an automatic deploy is pure latency
+    /// (plan: feature-branch-builds D12).
+    /// </summary>
+    public int? ApprovedWebhookDelaySeconds { get; set; }
+
     // Escalation
     public string? EscalationGroup { get; set; }
 
