@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuthStore } from '@/stores/authStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
 import { canonicaliseRoleKey } from '@/lib/roleKey';
 import {
@@ -13,7 +14,14 @@ import { AlertTriangle, Plus, Trash2, Check, Pencil, X } from 'lucide-react';
 // Directory pickers and form styling are shared with the rollback policy editor — both configure
 // approvers from the same group/user vocabulary under the same server-side matching rules.
 import { UserPicker, GroupPicker } from './approverPickers';
+import { ComboBox, type ComboOption } from './ComboBox';
 import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
+
+/** The synthetic source env for promotions straight from the build registry. */
+const BUILD_SOURCE_ENV = 'build';
+
+/** The branch patterns an admin is most likely to want on a build → dev edge. */
+const SUGGESTED_BRANCH_PATTERNS = ['refs/heads/main', 'refs/heads/master', 'refs/heads/release/*'];
 
 const emptyRequirement = (): PromotionPolicyRequirement => ({
   name: '',
@@ -40,6 +48,8 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   autoApproveOnAllWorkItemsApproved: false,
   autoApproveWhenNoWorkItems: false,
   sourceRequiresDeploy: true,
+  autoCreateFromBranches: [],
+  approvedWebhookDelaySeconds: null,
 };
 
 /** Summarise a step tree for the policy table. */
@@ -148,6 +158,89 @@ function RequiredRolesPicker({
   );
 }
 
+/**
+ * Chip editor for auto-create branch patterns. The three suggestions cover what admins actually
+ * configure (trunk + release lines); anything else is typed and added with Enter. Free text stays
+ * possible because branch layouts vary per repo — the server only normalises, never restricts.
+ */
+function BranchPatternsEditor({
+  values,
+  onChange,
+}: {
+  values: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const add = (pattern: string) => {
+    const p = pattern.trim();
+    if (!p || values.includes(p)) return;
+    onChange([...values, p]);
+    setDraft('');
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {values.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {values.map((v) => (
+            <span
+              key={v}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[12px] font-mono"
+              style={{
+                borderColor: 'var(--accent)',
+                backgroundColor: 'var(--accent-bg)',
+                color: 'var(--accent)',
+              }}
+            >
+              {v}
+              <button
+                type="button"
+                onClick={() => onChange(values.filter((x) => x !== v))}
+                aria-label={`Remove ${v}`}
+                className="transition-opacity hover:opacity-70"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add(draft);
+            }
+          }}
+          placeholder="refs/heads/… (Enter to add)"
+          aria-label="Add branch pattern"
+          className={`${inputClass} w-64`}
+          style={inputStyle}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {SUGGESTED_BRANCH_PATTERNS.filter((s) => !values.includes(s)).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => add(s)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-mono transition-colors hover:opacity-80"
+            style={{ borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}
+          >
+            <Plus size={10} />
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function PromotionSettings() {
   const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
 
@@ -169,6 +262,19 @@ export function PromotionSettings() {
   // ── Delete confirm ──
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
+  // ── Scope-field suggestions ──
+  // Values the scope combo boxes offer. Products come from the deployment overview (anything that
+  // has ever reported a deploy); services from the selected product's state matrix. Both stay free
+  // text — a policy is often created before its product's first deploy or build.
+  const [knownProducts, setKnownProducts] = useState<string[]>([]);
+  // Keyed by the product they were fetched for, so a mid-edit product change renders no stale
+  // suggestions while the refetch is in flight (and an empty product renders none at all).
+  const [knownServices, setKnownServices] = useState<{ product: string; services: string[] }>({
+    product: '',
+    services: [],
+  });
+  const environments = useSettingsStore((s) => s.environments);
+
   // ── Load data ──
   useEffect(() => {
     if (!isAdmin) return;
@@ -179,7 +285,80 @@ export function PromotionSettings() {
       .finally(() => setPolLoading(false));
   }, [isAdmin]);
 
+  useEffect(() => {
+    if (!isAdmin || !showForm) return;
+    let cancelled = false;
+    api
+      .getDeploymentProducts()
+      .then((products) => {
+        if (!cancelled) setKnownProducts(products.map((p) => p.product));
+      })
+      .catch(() => {
+        // Suggestions only — the field still takes free text.
+        if (!cancelled) setKnownProducts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, showForm]);
+
+  const formProduct = form.product.trim();
+  useEffect(() => {
+    if (!isAdmin || !showForm || !formProduct) return;
+    let cancelled = false;
+    // Debounced: the product field is typeable, and each keystroke would otherwise hit the state
+    // endpoint for a product that doesn't exist yet.
+    const timer = setTimeout(() => {
+      api
+        .getDeploymentState({ product: formProduct })
+        .then((rows) => {
+          if (cancelled) return;
+          setKnownServices({
+            product: formProduct,
+            services: Array.from(new Set(rows.map((r) => r.service))).sort(),
+          });
+        })
+        .catch(() => {
+          if (!cancelled) setKnownServices({ product: formProduct, services: [] });
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isAdmin, showForm, formProduct]);
+
   if (!isAdmin) return null;
+
+  // ── Combo-box option lists ──
+  // Union with values already used by saved policies, so anything configured before (or outside)
+  // the deploy history still shows up as a pick.
+  const productOptions: ComboOption[] = Array.from(
+    new Set([...knownProducts, ...policies.map((p) => p.product)]),
+  )
+    .sort()
+    .map((p) => ({ value: p, hint: knownProducts.includes(p) ? 'reports deployments' : 'used by an existing policy' }));
+
+  const serviceOptions: ComboOption[] =
+    knownServices.product === formProduct
+      ? knownServices.services.map((s) => ({ value: s }))
+      : [];
+
+  const envOptions: ComboOption[] = environments.map((e) => ({
+    value: e.key,
+    hint: e.displayName !== e.key ? e.displayName : undefined,
+  }));
+  // "build" first on the source side: it's the option people won't guess — the synthetic source
+  // for deploying registered builds (main auto-deploys, feature-branch deploys on demand).
+  const sourceEnvOptions: ComboOption[] = [
+    {
+      value: BUILD_SOURCE_ENV,
+      hint: 'the build registry — promote registered builds (no source deploys needed)',
+    },
+    ...envOptions.filter((o) => o.value !== BUILD_SOURCE_ENV),
+  ];
+
+  const isBuildEdge = form.sourceEnv.trim().toLowerCase() === BUILD_SOURCE_ENV;
 
   // ── Policy handlers ──
 
@@ -213,6 +392,8 @@ export function PromotionSettings() {
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
       autoApproveWhenNoWorkItems: p.autoApproveWhenNoWorkItems ?? false,
       sourceRequiresDeploy: p.sourceRequiresDeploy ?? true,
+      autoCreateFromBranches: [...(p.autoCreateFromBranches ?? [])],
+      approvedWebhookDelaySeconds: p.approvedWebhookDelaySeconds ?? null,
     });
     setStepErrors({});
     setEditingId(p.id);
@@ -276,6 +457,22 @@ export function PromotionSettings() {
     value: UpsertPromotionPolicyPayload[K],
   ) => {
     setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // Picking the synthetic "build" source also unchecks "require a source deploy": nothing is ever
+  // deployed *to* the build registry, so leaving it on would make every promotion on the edge fail.
+  // One-shot on the transition, not enforced — an admin who re-checks it keeps their choice.
+  const setSourceEnv = (value: string) => {
+    setForm((prev) => {
+      const becameBuild =
+        value.trim().toLowerCase() === BUILD_SOURCE_ENV &&
+        prev.sourceEnv.trim().toLowerCase() !== BUILD_SOURCE_ENV;
+      return {
+        ...prev,
+        sourceEnv: value,
+        sourceRequiresDeploy: becameBuild ? false : prev.sourceRequiresDeploy,
+      };
+    });
   };
 
   // ── Step / requirement mutators ──
@@ -471,20 +668,30 @@ export function PromotionSettings() {
                   {editingId ? 'Edit Policy' : 'New Policy'}
                 </h4>
 
+                <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                  A policy gates one promotion edge: who may move <em>this product</em> (optionally
+                  one service) from <em>source</em> to <em>target</em>. Names must match what
+                  pipelines report — every field suggests known values, but new ones can be typed
+                  before their first deploy or build arrives.
+                </p>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {/* Product */}
                   <div className="space-y-1">
                     <label className={labelClass} style={labelStyle}>
                       Product *
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.product}
-                      onChange={(e) => setField('product', e.target.value)}
+                      onChange={(v) => setField('product', v)}
+                      options={productOptions}
                       placeholder="e.g. my-product"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      ariaLabel="Product"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Exactly as pipelines report it in deploy events and build registrations —
+                      the suggestions are products the platform has already seen.
+                    </p>
                   </div>
 
                   {/* Service */}
@@ -492,14 +699,17 @@ export function PromotionSettings() {
                     <label className={labelClass} style={labelStyle}>
                       Service
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.service ?? ''}
-                      onChange={(e) => setField('service', e.target.value || null)}
+                      onChange={(v) => setField('service', v || null)}
+                      options={serviceOptions}
                       placeholder="empty = product-default"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      ariaLabel="Service"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Leave empty to make this the product default, covering every service that has
+                      no policy of its own. A service-specific policy always wins over the default.
+                    </p>
                   </div>
 
                   {/* Source Env */}
@@ -507,14 +717,19 @@ export function PromotionSettings() {
                     <label className={labelClass} style={labelStyle}>
                       Source Env *
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.sourceEnv}
-                      onChange={(e) => setField('sourceEnv', e.target.value)}
-                      placeholder="e.g. staging"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      onChange={setSourceEnv}
+                      options={sourceEnvOptions}
+                      placeholder="e.g. staging — or build"
+                      ariaLabel="Source environment"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Where versions are promoted <em>from</em>. Pick{' '}
+                      <code>build</code> to promote registered builds directly — that enables
+                      &ldquo;Deploy a build&rdquo; on the service page and the branch-based
+                      auto-create below.
+                    </p>
                   </div>
 
                   {/* Target Env */}
@@ -522,14 +737,17 @@ export function PromotionSettings() {
                     <label className={labelClass} style={labelStyle}>
                       Target Env *
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.targetEnv}
-                      onChange={(e) => setField('targetEnv', e.target.value)}
+                      onChange={(v) => setField('targetEnv', v)}
+                      options={envOptions}
                       placeholder="e.g. production"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      ariaLabel="Target environment"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      The environment this policy guards — promotions landing here wait for the
+                      approvals configured below. Suggestions come from Settings → Environments.
+                    </p>
                   </div>
 
                   {/* Escalation Group */}
@@ -545,8 +763,79 @@ export function PromotionSettings() {
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Optional group to notify when a pending promotion sits unapproved too long.
+                    </p>
                   </div>
                 </div>
+
+                {/* ── Build promotions ── only meaningful on a build → * edge, so only shown there.
+                    (Hidden rather than dimmed, unlike the work-item blocks: on a non-build edge these
+                    settings aren't dormant, they're meaningless — the hook never reads them.) */}
+                {isBuildEdge && (
+                  <div
+                    className="rounded-lg border p-3 space-y-2"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-secondary)',
+                    }}
+                  >
+                    <p
+                      className="text-[11px] font-semibold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Build promotions
+                    </p>
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      This edge promotes straight from the build registry. Builds from the branch
+                      patterns below open a promotion here <em>automatically</em> the moment they
+                      register (with an empty approval list that means auto-deploy — the main → dev
+                      pattern). Builds from any other branch wait until somebody picks them via
+                      &ldquo;Deploy a build&rdquo;.
+                    </p>
+
+                    <div className="space-y-1">
+                      <label className={labelClass} style={labelStyle}>
+                        Auto-create from branches
+                      </label>
+                      <BranchPatternsEditor
+                        values={form.autoCreateFromBranches}
+                        onChange={(next) => setField('autoCreateFromBranches', next)}
+                      />
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        Full git refs; <code>*</code> matches anything (e.g.{' '}
+                        <code>refs/heads/release/*</code>). Leave empty while rolling out — builds
+                        then only deploy when explicitly picked.
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className={labelClass} style={labelStyle}>
+                        Approved-webhook delay (seconds)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        value={form.approvedWebhookDelaySeconds ?? ''}
+                        onChange={(e) =>
+                          setField(
+                            'approvedWebhookDelaySeconds',
+                            e.target.value === '' ? null : Math.max(0, Number(e.target.value)),
+                          )
+                        }
+                        placeholder="default (10)"
+                        className={`${inputClass} w-32`}
+                        style={inputStyle}
+                      />
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        How long an approval can be undone before the deploy webhook fires. Set{' '}
+                        <code>0</code> on auto-approved edges — an undo window on an automatic
+                        deploy is pure latency.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* ── Approval steps ── */}
                 <div
@@ -895,9 +1184,10 @@ export function PromotionSettings() {
                         className="block text-[11px] mt-0.5"
                         style={{ color: 'var(--text-muted)' }}
                       >
-                        Uncheck for edges whose source is a CI landing zone / release track that
-                        never receives deployments (e.g. &quot;stable&quot;). Also disables the
-                        source-drift check for this edge.
+                        Uncheck for edges whose source never receives deployments — the{' '}
+                        <code>build</code> registry (unchecked automatically when you pick it) or a
+                        CI landing zone / release track. Also disables the source-drift check for
+                        this edge.
                       </span>
                     </span>
                   </label>
