@@ -11,6 +11,7 @@ import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
+import { BuildsPage } from '@/app/builds/BuildsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
@@ -55,6 +56,9 @@ function App() {
           <Route path="/approvals" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalsPage /></FeatureRoute>} />
           <Route path="/approvals/:id" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalDetailPage /></FeatureRoute>} />
           <Route path="/deployments" element={<DeploymentsPage />} />
+          {/* The build registry — all published builds, any branch. Sits beside /deployments:
+              a build is a fact about CI, not about any environment. */}
+          <Route path="/builds" element={<BuildsPage />} />
           {/* Deploy-event detail. Keyed on the event id alone — product and service are properties of
               the event, not of its identity — and ranked above /deployments/:product by the router's
               static-segment-wins rule, so "events" can't be read as a product name. */}
