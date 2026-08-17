@@ -465,6 +465,12 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
             // Default TRUE: pre-existing edges keep requiring a source deploy event.
             e.Property(x => x.SourceRequiresDeploy).IsRequired().HasDefaultValue(true);
+            // Branch patterns that auto-create candidates from registered builds. Null ⇒ never.
+            // Same JSON-string-column treatment as the other list fields; the computed
+            // AutoCreateFromBranches property is not mapped.
+            var autoCreateJson = e.Property(x => x.AutoCreateFromBranchesJson);
+            if (jsonType != null) autoCreateJson.HasColumnType(jsonType);
+            e.Ignore(x => x.AutoCreateFromBranches);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
             // Unique per (product, service?, source_env, target_env). SQL Server and Postgres both
             // treat NULL as distinct from NULL in unique indexes, which is the semantics we want:
