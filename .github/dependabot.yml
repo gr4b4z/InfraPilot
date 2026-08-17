@@ -11,6 +11,15 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint's peer range caps at typescript <6.1.0, and a bump past it makes
+      # `npm ci` fail with ERESOLVE — which broke the release image build (see the TS 7.0.2
+      # bump in PR #208). Patch bumps within 6.0.x stay allowed; drop this ignore once
+      # typescript-eslint supports the newer compiler.
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   - package-ecosystem: "npm"
     directory: "/docs"
