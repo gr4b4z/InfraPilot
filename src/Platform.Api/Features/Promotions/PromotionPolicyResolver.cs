@@ -100,6 +100,8 @@ public class PromotionPolicyResolver
             AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
             AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
             SourceRequiresDeploy = policy.SourceRequiresDeploy,
+            AutoCreateFromBranches = policy.AutoCreateFromBranches,
+            ApprovedWebhookDelaySeconds = policy.ApprovedWebhookDelaySeconds,
         };
     }
 }

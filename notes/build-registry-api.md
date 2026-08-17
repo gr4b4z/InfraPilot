@@ -85,3 +85,31 @@ GET /api/builds/{id}                                  — one build, including t
 
 Read endpoints accept the same auth as the rest of the API (signed-in user or API key).
 The web UI lists the registry under **Deployments → Builds**.
+
+## Promotions from builds (Phase C)
+
+Registered builds feed the promotion surface through the synthetic source env `build`
+(plan §3.2). Policies on `build → *` edges should set `sourceRequiresDeploy: false` (nothing
+is ever deployed *to* "build") and may set:
+
+- `autoCreateFromBranches` — branch patterns (full refs, `*` wildcards, e.g.
+  `["refs/heads/main", "refs/heads/release/*"]`). A registration whose branch matches
+  auto-creates a candidate on that edge; this is what replaces the hardwired main → DEV
+  pipeline trigger. Feature branches match nothing and sit in the registry until asked for.
+- `approvedWebhookDelaySeconds` — per-edge override of the approval → `promotion.approved`
+  delivery delay. Set `0` on auto-approved edges (an undo window on an automatic deploy is
+  pure latency); omit for the global default.
+
+The candidate carries the manifest's `references` copied through (so a gated edge gets its
+work items with no extra plumbing) plus a `build-manifest` reference whose `key` is the OCI
+ref and `revision` the digest — the deploy workflow `oras pull`s by that digest.
+
+User-facing endpoints (Bearer auth, any signed-in user — the policy gate is the control point):
+
+```
+GET  /api/promotions/build-targets?product=&service=  — { targets: [{ targetEnv, autoApprove }] }
+POST /api/promotions/from-build                        — { buildId, targetEnv } → 201 { id, status }
+```
+
+The web UI exposes this as **Deploy a build** on the Service Details page (shown only when a
+`build → *` policy resolves for the service).

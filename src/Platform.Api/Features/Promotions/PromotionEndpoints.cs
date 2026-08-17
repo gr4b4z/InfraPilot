@@ -509,6 +509,99 @@ public static class PromotionEndpoints
             return Results.Ok(new { results });
         });
 
+        // The target envs a registered build can be promoted to for this service: every edge whose
+        // source is the synthetic "build" env and whose policy resolves (service-specific row wins
+        // over product default, same as PromotionPolicyResolver). Powers the deploy-a-build picker's
+        // env selector; an empty list means the product isn't enrolled in build promotions.
+        group.MapGet("/build-targets", async (
+            PlatformDbContext db, string? product, string? service, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(service))
+                return Results.BadRequest(new { error = "'product' and 'service' are required" });
+
+            var rows = await db.PromotionPolicies.AsNoTracking()
+                .Where(p => p.Product == product
+                         && p.SourceEnv == Builds.BuildPromotions.SourceEnv
+                         && (p.Service == service || p.Service == null))
+                .ToListAsync(ct);
+
+            var targets = rows
+                .GroupBy(p => p.TargetEnv)
+                .Select(g => g.OrderBy(p => p.Service == null ? 1 : 0).First())
+                .OrderBy(p => p.TargetEnv)
+                .Select(p => new
+                {
+                    targetEnv = p.TargetEnv,
+                    // Whether picking this target deploys without further ceremony — the picker
+                    // says so up front rather than surprising people with an approval queue.
+                    autoApprove = PromotionPolicyResolver.Project(p).IsAutoApprove,
+                });
+            return Results.Ok(new { targets });
+        });
+
+        // Create a candidate from a registered build — the human path ("deploy this build"), where
+        // POST / below is the machine path. The server builds the change set from the build row
+        // (same projection the auto-create hook uses), so the browser never assembles references,
+        // and the caller is stamped as triggered-by. Any authenticated user may ask; the resolved
+        // policy's approval gate is the control point, exactly as for external creates.
+        group.MapPost("/from-build", async (
+            PromotionService svc, PlatformDbContext db, ICurrentUser user,
+            CreateFromBuildRequest req, CancellationToken ct) =>
+        {
+            if (req.BuildId == Guid.Empty || string.IsNullOrWhiteSpace(req.TargetEnv))
+                return Results.BadRequest(new { error = "'buildId' and 'targetEnv' are required" });
+
+            var build = await db.Builds.AsNoTracking().FirstOrDefaultAsync(b => b.Id == req.BuildId, ct);
+            if (build is null)
+                return Results.NotFound(new { error = $"Build {req.BuildId} is not registered" });
+
+            var dto = new CreatePromotionDto(
+                Product: build.Product,
+                Service: build.Service,
+                SourceEnv: Builds.BuildPromotions.SourceEnv,
+                TargetEnv: req.TargetEnv.Trim(),
+                Version: build.Version,
+                FromRevision: null,
+                ToRevision: build.CommitSha,
+                References: Builds.BuildPromotions.BuildReferences(build),
+                Participants: [new ParticipantDto("triggered-by", user.Name, user.Email)]);
+
+            PromotionCandidate? candidate;
+            try
+            {
+                candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            }
+            catch (SourceDeploymentNotFoundException)
+            {
+                // The policy on this edge still demands a source deploy, but nothing is ever
+                // deployed to "build" — an edge misconfiguration, not a bad request.
+                return Results.UnprocessableEntity(new
+                {
+                    code = "source_deploy_missing",
+                    error = $"The '{Builds.BuildPromotions.SourceEnv}' → '{req.TargetEnv}' policy requires a "
+                        + "source deployment, which the build source env never has. "
+                        + "Set sourceRequiresDeploy=false on that policy.",
+                });
+            }
+            catch (TargetAlreadyAtVersionException ex)
+            {
+                return Results.UnprocessableEntity(new { code = "target_already_at_version", error = ex.Message });
+            }
+            if (candidate is null)
+            {
+                return Results.UnprocessableEntity(new
+                {
+                    code = "policy_missing",
+                    error = $"No promotion policy is configured for '{build.Product}'/'{build.Service}' "
+                        + $"'{Builds.BuildPromotions.SourceEnv}' → '{req.TargetEnv}'",
+                });
+            }
+
+            return Results.Created(
+                $"/api/promotions/{candidate.Id}",
+                new { id = candidate.Id, status = candidate.Status.ToString() });
+        });
+
         // Create a promotion candidate from an external system (CI). The external computes the
         // authoritative net change set (env-to-env diff) and POSTs it; the tool records it verbatim.
         // Secured with API key + per-key rate limit + product scope — mirrors /api/deployments/events.
@@ -742,6 +835,9 @@ public record CreatePromotionDto(
     string? ToRevision,
     List<ReferenceDto>? References,
     List<ParticipantDto>? Participants);
+
+/// <summary>Body for the deploy-a-build endpoint: which registered build, to which target env.</summary>
+public record CreateFromBuildRequest(Guid BuildId, string TargetEnv);
 
 public record PromotionDecisionRequest(string? Comment, string? StepName = null, string? RequirementName = null);
 public record PromotionBulkRequest(Guid[] Ids, string? Comment);

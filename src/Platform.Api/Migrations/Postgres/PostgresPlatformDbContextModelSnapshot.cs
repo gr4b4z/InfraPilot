@@ -761,6 +761,9 @@ namespace Platform.Api.Migrations.Postgres
                         .HasColumnType("jsonb")
                         .HasDefaultValue("[]");
 
+                    b.Property<int?>("ApprovedWebhookDelaySeconds")
+                        .HasColumnType("integer");
+
                     b.Property<bool>("AutoApproveOnAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -770,6 +773,9 @@ namespace Platform.Api.Migrations.Postgres
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
+
+                    b.Property<string>("AutoCreateFromBranchesJson")
+                        .HasColumnType("jsonb");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
