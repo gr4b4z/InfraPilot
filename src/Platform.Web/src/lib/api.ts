@@ -1732,6 +1732,10 @@ export interface PromotionPolicy {
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
+  /** Branch patterns (full refs, `*` wildcards) that auto-create candidates from registered builds. */
+  autoCreateFromBranches: string[];
+  /** Per-edge override (seconds) of the approval → promotion.approved delivery delay; null = default. */
+  approvedWebhookDelaySeconds: number | null;
   createdAt: string;
   updatedAt: string;
   // Set only on create/update responses: how many pending promotions were re-gated under the saved
@@ -1754,6 +1758,8 @@ export interface UpsertPromotionPolicyPayload {
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
+  autoCreateFromBranches: string[];
+  approvedWebhookDelaySeconds: number | null;
 }
 
 export interface FeatureFlag {
