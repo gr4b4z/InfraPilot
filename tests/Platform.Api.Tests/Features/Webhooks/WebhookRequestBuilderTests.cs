@@ -425,6 +425,29 @@ public class WebhookRequestBuilderTests
     }
 
     /// <summary>
+    /// Chat platforms have no idempotency of their own, and a relay in front of one can retry or be
+    /// wired up twice. The delivery id is the only thing tying duplicate posts back to a single send,
+    /// so every chat target carries it — and carries the event, which is what makes a flow's run
+    /// history readable at all.
+    /// </summary>
+    [Fact]
+    public void Messaging_CarriesTheDeliveryIdAndEventForCorrelation()
+    {
+        foreach (var targetType in WebhookTargetTypes.Messaging)
+        {
+            var url = targetType == WebhookTargetTypes.Discord
+                ? "https://discord.com/api/webhooks/1/t"
+                : TeamsWorkflowUrl;
+            var request = WebhookRequestBuilder.Build(
+                MessagingSubscription(targetType, url), Delivery("release_note.generated.html"),
+                secret: "", Message);
+
+            Assert.Equal(DeliveryId.ToString(), Header(request, "X-Webhook-Delivery"));
+            Assert.Equal("release_note.generated.html", Header(request, "X-Webhook-Event"));
+        }
+    }
+
+    /// <summary>
     /// A messaging delivery framed without a message is a wiring bug, not a payload the receiver
     /// could make sense of — better to fail loudly than post an empty card.
     /// </summary>
