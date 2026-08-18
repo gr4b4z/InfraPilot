@@ -189,6 +189,8 @@ builder.Services.AddScoped<BuildService>();
 builder.Services.AddScoped<Platform.Api.Features.Builds.IBuildIngestHook, Platform.Api.Features.Builds.BuildIngestHook>();
 builder.Services.AddScoped<DeploymentService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceDeletionService>();
+builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceProductOverrideService>();
+builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceProductRemapService>();
 builder.Services.AddScoped<ReferenceParticipantOverrideService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();

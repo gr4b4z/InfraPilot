@@ -10,6 +10,7 @@ import {
   Undo2,
   Wrench,
   ScrollText,
+  Shuffle,
 } from 'lucide-react';
 
 interface NavItem {
@@ -61,6 +62,12 @@ const NAV: NavItem[] = [
     label: 'Rollbacks',
     icon: Undo2,
     description: 'Who can create and who must approve rollbacks, per product',
+  },
+  {
+    to: 'service-products',
+    label: 'Service Products',
+    icon: Shuffle,
+    description: 'Override which product a service’s deploys, builds and promotions belong to',
   },
   {
     to: 'maintenance',

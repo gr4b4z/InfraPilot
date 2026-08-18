@@ -38,6 +38,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
     public DbSet<ReferenceParticipantOverride> ReferenceParticipantOverrides => Set<ReferenceParticipantOverride>();
     public DbSet<DeletedService> DeletedServices => Set<DeletedService>();
+    public DbSet<ServiceProductOverride> ServiceProductOverrides => Set<ServiceProductOverride>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
@@ -353,6 +354,29 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             // One tombstone per service: retiring an already-retired service updates in place rather
             // than stacking rows, and the list queries can rely on a single match.
             e.HasIndex(x => new { x.Product, x.Service }).IsUnique();
+        });
+
+        // Service→product overrides. Keyed on the service name (plus the optional sending product)
+        // for the same reason retirements are: the names ARE the identity of a service here, and the
+        // mapping has to apply to entities that do not exist yet.
+        modelBuilder.Entity<ServiceProductOverride>(e =>
+        {
+            e.ToTable("service_product_overrides");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.FromProduct).HasMaxLength(200);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(500);
+            e.Property(x => x.UpdatedById).HasMaxLength(100).IsRequired();
+            e.Property(x => x.UpdatedByName).HasMaxLength(300).IsRequired();
+            // Lookup index only — NOT unique, even though (Service, FromProduct) is the natural key.
+            // Two provider differences make a unique index the wrong place for that invariant: SQL
+            // Server treats NULLs as equal in a unique index while Postgres treats them as distinct
+            // (so the "one catch-all per service" rule would hold on one provider and not the other),
+            // and matching here is case-insensitive while collation is not something both providers
+            // agree on. ServiceProductOverrideService.UpsertAsync enforces the key instead, the same
+            // way for both.
+            e.HasIndex(x => x.Service);
         });
 
         // Webhook Subscriptions

@@ -316,3 +316,58 @@ public record DeleteServiceResultDto(
     DeletedServiceDto Service,
     int HiddenDeployments,
     int HiddenOpenPromotions);
+
+// --- Service product overrides (admin) ---
+
+/// <summary>One configured service→product mapping as the settings list shows it.</summary>
+/// <param name="FromProduct">
+/// The sending product this row applies to; null means it applies whatever product was sent.
+/// </param>
+/// <param name="StoredEntities">
+/// How many deploy events and builds are already filed under the target product for this service —
+/// the cheap "is this row doing anything?" signal. A row that stays at zero usually spells the
+/// service differently than the sender does.
+/// </param>
+/// <param name="StrandedEntities">
+/// How many are still filed under some other product, i.e. what a remap would move. Zero means
+/// history and new traffic agree.
+/// </param>
+public record ServiceProductOverrideDto(
+    Guid Id,
+    string Service,
+    string? FromProduct,
+    string Product,
+    string? Reason,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? UpdatedAt,
+    string UpdatedByName,
+    int StoredEntities,
+    int StrandedEntities);
+
+public record SaveServiceProductOverrideRequest(
+    string Service,
+    string Product,
+    string? FromProduct = null,
+    string? Reason = null);
+
+/// <summary>
+/// What remapping one override's history involves — returned unchanged by the preview and the apply,
+/// so the admin compares like with like.
+/// </summary>
+/// <param name="FromProducts">Every product the service's rows are being pulled out of.</param>
+public record ServiceProductRemapDto(
+    Guid OverrideId,
+    string Service,
+    string Product,
+    List<string> FromProducts,
+    bool Applied,
+    int Deployments,
+    int DeployWorkItems,
+    int Builds,
+    int BuildConflicts,
+    int Promotions,
+    int OpenPromotions,
+    int PromotionWorkItems,
+    int Retirements,
+    int RetirementMerges,
+    int StrandedTicketApprovals);

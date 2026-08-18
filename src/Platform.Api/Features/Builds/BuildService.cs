@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Builds.Models;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Builds;
@@ -9,12 +10,18 @@ public class BuildService
 {
     private readonly PlatformDbContext _db;
     private readonly IBuildIngestHook _ingestHook;
+    private readonly ServiceProductOverrideService _productOverrides;
     private readonly ILogger<BuildService> _logger;
 
-    public BuildService(PlatformDbContext db, IBuildIngestHook ingestHook, ILogger<BuildService> logger)
+    public BuildService(
+        PlatformDbContext db,
+        IBuildIngestHook ingestHook,
+        ServiceProductOverrideService productOverrides,
+        ILogger<BuildService> logger)
     {
         _db = db;
         _ingestHook = ingestHook;
+        _productOverrides = productOverrides;
         _logger = logger;
     }
 
@@ -33,7 +40,13 @@ public class BuildService
     {
         var manifestJson = ExtractManifestJson(dto.Manifest);
 
-        var existing = await FindByNaturalKey(dto, ct);
+        // An admin override for the service overrules the product the publish pipeline sent — the same
+        // resolution deploy ingest performs, so a build and the deploy event for the same version cannot
+        // end up filed under different products. Resolved before the natural-key probe: it is part of
+        // that key, and a replay must find the row the first attempt wrote.
+        var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
+
+        var existing = await FindByNaturalKey(product, dto, ct);
         if (existing is not null)
         {
             Apply(existing, dto, manifestJson);
@@ -53,7 +66,7 @@ public class BuildService
         var build = new Build
         {
             Id = Guid.NewGuid(),
-            Product = dto.Product,
+            Product = product,
             Service = dto.Service,
             Version = dto.Version,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -70,9 +83,9 @@ public class BuildService
             // Concurrent duplicate lost the insert race — the unique index guarantees exactly one
             // row exists now. Treat as a replay of that row.
             _db.Entry(build).State = EntityState.Detached;
-            var winner = await FindByNaturalKey(dto, ct)
+            var winner = await FindByNaturalKey(product, dto, ct)
                 ?? throw new InvalidOperationException(
-                    $"Insert of build {dto.Product}/{dto.Service} v{dto.Version} failed but no existing row was found.");
+                    $"Insert of build {product}/{dto.Service} v{dto.Version} failed but no existing row was found.");
             Apply(winner, dto, manifestJson);
             await _db.SaveChangesAsync(ct);
             await _ingestHook.OnRegisteredAsync(winner, ct);
@@ -89,9 +102,9 @@ public class BuildService
         return new RegisterResult(build, false);
     }
 
-    private Task<Build?> FindByNaturalKey(RegisterBuildDto dto, CancellationToken ct) =>
+    private Task<Build?> FindByNaturalKey(string product, RegisterBuildDto dto, CancellationToken ct) =>
         _db.Builds.FirstOrDefaultAsync(
-            b => b.Product == dto.Product && b.Service == dto.Service && b.Version == dto.Version, ct);
+            b => b.Product == product && b.Service == dto.Service && b.Version == dto.Version, ct);
 
     // A replay overwrites provenance with the caller's latest picture. The retry is the fuller
     // report (e.g. the first attempt died before the ORAS push resolved a digest) — except the

@@ -52,7 +52,8 @@ public class PromotionServiceDispatchTests : IDisposable
             Substitute.For<ILogger<PromotionService>>(),
             _webhookDispatcher,
             TestOptions.Normalization(),
-            TestUserPreferences.For(_db));
+            TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db));
     }
 
     public void Dispose() => _db.Dispose();
