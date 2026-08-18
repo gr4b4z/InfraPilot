@@ -307,6 +307,52 @@ class ApiClient {
   }
 
   /**
+   * Service→product overrides. Product arrives as free text on every deploy, build and external
+   * promotion, and a pipeline mid-migration keeps sending the product it was configured with years
+   * ago; a row here decides where the service's entities actually land, whatever was posted.
+   * `fromProduct` narrows a row to one sending product — omit it for a catch-all.
+   */
+  listServiceProductOverrides() {
+    return this.request<ServiceProductOverride[]>('/deployments/admin/product-overrides');
+  }
+
+  saveServiceProductOverride(body: {
+    service: string;
+    product: string;
+    fromProduct?: string | null;
+    reason?: string | null;
+  }) {
+    return this.request<ServiceProductOverride>('/deployments/admin/product-overrides', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  deleteServiceProductOverride(id: string) {
+    return this.request<void>(`/deployments/admin/product-overrides/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Overrides only affect what arrives next. These two move the history that was stored before the
+   * override existed: GET counts what would move, POST moves it. Same payload from both, so the
+   * confirmation the admin approved is the report they get back.
+   */
+  previewServiceProductRemap(id: string) {
+    return this.request<ServiceProductRemap>(
+      `/deployments/admin/product-overrides/${encodeURIComponent(id)}/remap`,
+    );
+  }
+
+  applyServiceProductRemap(id: string) {
+    return this.request<ServiceProductRemap>(
+      `/deployments/admin/product-overrides/${encodeURIComponent(id)}/remap`,
+      { method: 'POST' },
+    );
+  }
+
+  /**
    * Webhook delivery maintenance: `failed` is the whole failed set (bulk-retryable), `purgeable`
    * counts settled rows (delivered or failed) older than the cutoff. Pending rows are never counted
    * or purged — they are still owed to a receiver.
@@ -1707,6 +1753,56 @@ export interface DeleteServiceResult {
   service: DeletedService;
   hiddenDeployments: number;
   hiddenOpenPromotions: number;
+}
+
+/**
+ * One configured service→product mapping. `fromProduct` null means the row applies whatever product
+ * the sender posted; a row naming a specific `fromProduct` wins over the catch-all for that sender.
+ *
+ * `storedEntities` / `strandedEntities` are the at-a-glance health of the mapping: how many deploy
+ * events and builds for this service already sit under `product`, and how many are still filed
+ * somewhere else. A row stuck at `storedEntities: 0` is usually spelling the service differently
+ * than the pipeline does.
+ */
+export interface ServiceProductOverride {
+  id: string;
+  service: string;
+  fromProduct: string | null;
+  product: string;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  updatedByName: string;
+  storedEntities: number;
+  strandedEntities: number;
+}
+
+/**
+ * What remapping an override's history involves. Identical shape from the preview and the apply —
+ * `applied` is what tells them apart.
+ *
+ * `buildConflicts` are builds left where they are because the target product already has that
+ * service+version. `strandedTicketApprovals` are recorded ticket approvals that do NOT move: they
+ * key on (ticket, product, target env) with no service, so a ticket spanning two services can't be
+ * attributed to one. Together with `openPromotions` that is the reason to prefer remapping when
+ * nothing is in flight.
+ */
+export interface ServiceProductRemap {
+  overrideId: string;
+  service: string;
+  product: string;
+  fromProducts: string[];
+  applied: boolean;
+  deployments: number;
+  deployWorkItems: number;
+  builds: number;
+  buildConflicts: number;
+  promotions: number;
+  openPromotions: number;
+  promotionWorkItems: number;
+  retirements: number;
+  retirementMerges: number;
+  strandedTicketApprovals: number;
 }
 
 export interface PromotionPolicy {

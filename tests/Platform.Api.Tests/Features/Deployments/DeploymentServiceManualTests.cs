@@ -33,6 +33,7 @@ public class DeploymentServiceManualTests : IDisposable
             TestOptions.Normalization(),
             TestUserPreferences.For(_db),
             TestServiceDeletions.For(_db),
+            TestProductOverrides.For(_db),
             Substitute.For<ILogger<DeploymentService>>());
     }
 

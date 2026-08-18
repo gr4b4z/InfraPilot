@@ -39,6 +39,7 @@ public class ServiceDeletionTests : IDisposable
             TestOptions.Normalization(),
             TestUserPreferences.For(_db),
             _deletions,
+            TestProductOverrides.For(_db),
             Substitute.For<ILogger<DeploymentService>>());
     }
 
