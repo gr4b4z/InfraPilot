@@ -118,9 +118,154 @@ public static class DeploymentAdminEndpoints
             return Results.NoContent();
         });
 
+        // ── Service product overrides ────────────────────────────────────────
+        // Which product a service's entities belong to, when the product on the payload can't be
+        // trusted. See ServiceProductOverrideService for the resolution rules; the two worth repeating
+        // here are that the most specific row wins (a row naming the sending product beats the
+        // catch-all), and that writing a row changes nothing that is already stored — the remap pair
+        // below is how history follows.
+
+        group.MapGet("/product-overrides", async (
+            ServiceProductOverrideService overrides, CancellationToken ct) =>
+        {
+            var rows = await overrides.ListWithCountsAsync(ct);
+            return Results.Ok(rows.Select(ToDto).ToList());
+        });
+
+        group.MapPost("/product-overrides", async (
+            ServiceProductOverrideService overrides, ICurrentUser user, IAuditLogger audit,
+            IPlatformEventPublisher events, SaveServiceProductOverrideRequest req, CancellationToken ct) =>
+        {
+            ServiceProductOverride row;
+            try
+            {
+                row = await overrides.UpsertAsync(req.Service, req.FromProduct, req.Product, req.Reason, ct);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
+            await audit.Log(
+                "deployments", "deployment.product-override.saved",
+                user.Id, user.Name, "user",
+                "ServiceProductOverride", row.Id, null,
+                new { row.Service, row.FromProduct, row.Product, row.Reason });
+
+            // Both products change shape: the service starts appearing under the target and stops
+            // growing under the source, so a client filtered to either one is now looking at a stale
+            // list.
+            await events.PublishEntityChanged(new EntityChangedEvent
+            {
+                Entity = "deployment", Action = "updated", Product = row.Product,
+            });
+            if (row.FromProduct is not null)
+            {
+                await events.PublishEntityChanged(new EntityChangedEvent
+                {
+                    Entity = "deployment", Action = "updated", Product = row.FromProduct,
+                });
+            }
+
+            return Results.Ok(ToDto(new ServiceProductOverrideService.OverrideWithCounts(row, 0, 0)));
+        });
+
+        group.MapDelete("/product-overrides/{id:guid}", async (
+            ServiceProductOverrideService overrides, ICurrentUser user, IAuditLogger audit,
+            IPlatformEventPublisher events, Guid id, CancellationToken ct) =>
+        {
+            var row = await overrides.DeleteAsync(id, ct);
+            if (row is null) return Results.NotFound(new { error = $"No service product override with id {id}." });
+
+            await audit.Log(
+                "deployments", "deployment.product-override.removed",
+                user.Id, user.Name, "user",
+                "ServiceProductOverride", row.Id,
+                new { row.Service, row.FromProduct, row.Product }, null);
+
+            await events.PublishEntityChanged(new EntityChangedEvent
+            {
+                Entity = "deployment", Action = "updated", Product = row.Product,
+            });
+
+            return Results.NoContent();
+        });
+
+        // Preview, then apply — the same GET/POST shape as the duplicates and log-retention pairs above.
+        // A remap moves years of deploy history between products, so the counts come first.
+        group.MapGet("/product-overrides/{id:guid}/remap", async (
+            ServiceProductRemapService remap, Guid id, CancellationToken ct) =>
+        {
+            try
+            {
+                return Results.Ok(ToDto(await remap.PreviewAsync(id, ct)));
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Results.NotFound(new { error = ex.Message });
+            }
+        });
+
+        group.MapPost("/product-overrides/{id:guid}/remap", async (
+            ServiceProductRemapService remap, ICurrentUser user, IAuditLogger audit,
+            IPlatformEventPublisher events, Guid id, CancellationToken ct) =>
+        {
+            ServiceProductRemapService.RemapPlan plan;
+            try
+            {
+                plan = await remap.ApplyAsync(id, ct);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return Results.NotFound(new { error = ex.Message });
+            }
+
+            await audit.Log(
+                "deployments", "deployment.product-override.remapped",
+                user.Id, user.Name, "user",
+                "ServiceProductOverride", plan.OverrideId, null,
+                new
+                {
+                    plan.Service,
+                    plan.TargetProduct,
+                    fromProducts = plan.FromProducts,
+                    plan.Counts.Deployments,
+                    plan.Counts.Builds,
+                    plan.Counts.BuildConflicts,
+                    plan.Counts.Promotions,
+                    plan.Counts.StrandedTicketApprovals,
+                });
+
+            await events.PublishEntityChanged(new EntityChangedEvent
+            {
+                Entity = "deployment", Action = "updated", Product = plan.TargetProduct,
+            });
+            foreach (var from in plan.FromProducts)
+            {
+                await events.PublishEntityChanged(new EntityChangedEvent
+                {
+                    Entity = "deployment", Action = "updated", Product = from,
+                });
+            }
+
+            return Results.Ok(ToDto(plan));
+        });
+
         return group;
     }
 
     private static DeletedServiceDto ToDto(DeletedService d) =>
         new(d.Id, d.Product, d.Service, d.DeletedAt, d.DeletedByName, d.Reason);
+
+    private static ServiceProductOverrideDto ToDto(ServiceProductOverrideService.OverrideWithCounts row) =>
+        new(row.Override.Id, row.Override.Service, row.Override.FromProduct, row.Override.Product,
+            row.Override.Reason, row.Override.CreatedAt, row.Override.UpdatedAt, row.Override.UpdatedByName,
+            row.Stored, row.Stranded);
+
+    private static ServiceProductRemapDto ToDto(ServiceProductRemapService.RemapPlan plan) =>
+        new(plan.OverrideId, plan.Service, plan.TargetProduct, plan.FromProducts, plan.Applied,
+            plan.Counts.Deployments, plan.Counts.DeployWorkItems, plan.Counts.Builds,
+            plan.Counts.BuildConflicts, plan.Counts.Promotions, plan.Counts.OpenPromotions,
+            plan.Counts.PromotionWorkItems, plan.Counts.Retirements, plan.Counts.RetirementMerges,
+            plan.Counts.StrandedTicketApprovals);
 }

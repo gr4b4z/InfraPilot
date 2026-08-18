@@ -21,7 +21,11 @@ public static class BuildEndpoints
             if (errors.Count > 0)
                 return Results.BadRequest(new { errors });
 
-            // Enforce product scope when the key restricts which products it can post for.
+            // Enforce product scope when the key restricts which products it can post for. Checked
+            // against the product the key SENT, not the one a ServiceProductOverride redirects it to:
+            // the claim says what this key is entitled to talk about, and the redirect is an admin
+            // decision the key neither chose nor can influence. Scoping on the resolved product would
+            // instead break every pipeline whose key still names the product it is migrating off.
             var allowedProducts = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
             if (allowedProducts.Count > 0 &&
                 !allowedProducts.Contains(dto.Product, StringComparer.OrdinalIgnoreCase))
