@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Auth;
@@ -608,7 +609,8 @@ public static class PromotionEndpoints
         // D16: keys that declare a Scopes list must hold promotion:create — separates "may report
         // deploys" from "may open gated releases". Keys without a Scopes list stay unrestricted.
         group.MapPost("/", async (
-            PromotionService svc, ClaimsPrincipal user, CreatePromotionDto dto, CancellationToken ct) =>
+            PromotionService svc, ServiceProductOverrideService productOverrides,
+            ClaimsPrincipal user, CreatePromotionDto dto, CancellationToken ct) =>
         {
             if (!ApiKeyAuthHandler.HasScope(user, ApiKeyScopes.PromotionCreate))
                 return Results.Forbid();
@@ -617,7 +619,11 @@ public static class PromotionEndpoints
             if (errors.Count > 0)
                 return Results.BadRequest(new { errors });
 
-            // Enforce product scope when the key restricts which products it can post for.
+            // Enforce product scope when the key restricts which products it can post for. Checked
+            // against the product the key SENT, not the one a ServiceProductOverride redirects it to:
+            // the claim says what this key is entitled to talk about, and the redirect is an admin
+            // decision the key neither chose nor can influence. Scoping on the resolved product would
+            // instead break every pipeline whose key still names the product it is migrating off.
             var allowedProducts = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
             if (allowedProducts.Count > 0 &&
                 !allowedProducts.Contains(dto.Product, StringComparer.OrdinalIgnoreCase))
@@ -645,11 +651,15 @@ public static class PromotionEndpoints
             }
             if (candidate is null)
             {
-                // No policy resolved for this source→target edge — the product isn't enrolled.
+                // No policy resolved for this source→target edge — the product isn't enrolled. Name the
+                // product the policy lookup actually used: when an override redirected this service,
+                // echoing the sent product sends the caller off to configure a policy on a product that
+                // was never consulted. The resolver memoises per request, so this costs nothing.
+                var resolvedProduct = await productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
                 return Results.UnprocessableEntity(new
                 {
                     code = "policy_missing",
-                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
+                    error = $"No promotion policy is configured for '{resolvedProduct}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
                 });
             }
 

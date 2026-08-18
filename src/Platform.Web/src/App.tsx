@@ -28,6 +28,7 @@ import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
 import { RollbackSettings } from '@/app/settings/RollbackSettings';
 import { MaintenanceSettings } from '@/app/settings/MaintenanceSettings';
+import { ServiceProductsSettings } from '@/app/settings/ServiceProductsSettings';
 import { ReleaseNoteTemplateSettings } from '@/app/settings/ReleaseNoteTemplateSettings';
 import { ReleaseNotesPage } from '@/app/release-notes/ReleaseNotesPage';
 import { ReleaseNotesIndexPage } from '@/app/release-notes/ReleaseNotesIndexPage';
@@ -93,6 +94,7 @@ function App() {
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
             <Route path="rollbacks" element={<RollbackSettings />} />
+            <Route path="service-products" element={<ServiceProductsSettings />} />
             <Route path="maintenance" element={<MaintenanceSettings />} />
             {/* The old name, kept as a redirect — this page is where bookmarked one-off fixes live,
                 which is exactly the kind of page that gets bookmarked. */}

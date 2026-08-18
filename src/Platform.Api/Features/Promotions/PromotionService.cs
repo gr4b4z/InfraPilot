@@ -35,6 +35,7 @@ public class PromotionService
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
     private readonly UserPreferencesService _userPrefs;
+    private readonly ServiceProductOverrideService _productOverrides;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -67,7 +68,8 @@ public class PromotionService
         ILogger<PromotionService> logger,
         IWebhookDispatcher webhookDispatcher,
         IOptionsMonitor<NormalizationOptions> normalization,
-        UserPreferencesService userPrefs)
+        UserPreferencesService userPrefs,
+        ServiceProductOverrideService productOverrides)
     {
         _db = db;
         _resolver = resolver;
@@ -77,6 +79,7 @@ public class PromotionService
         _webhookDispatcher = webhookDispatcher;
         _normalization = normalization;
         _userPrefs = userPrefs;
+        _productOverrides = productOverrides;
         _logger = logger;
     }
 
@@ -112,8 +115,12 @@ public class PromotionService
     public async Task<PromotionCandidate?> CreateExternalCandidateAsync(
         CreatePromotionDto dto, CancellationToken ct = default)
     {
-        var product = dto.Product.Trim();
         var service = dto.Service.Trim();
+        // Admin override before anything else reads the product: policy resolution, the
+        // source-deployed check and the natural key all have to run against the product this
+        // candidate will be stored under, or the candidate is validated against one product's
+        // policies and then filed under another's.
+        var product = await _productOverrides.ResolveProductAsync(dto.Product, service, ct);
         var sourceEnv = dto.SourceEnv.Trim();
         var targetEnv = dto.TargetEnv.Trim();
         var version = dto.Version.Trim();

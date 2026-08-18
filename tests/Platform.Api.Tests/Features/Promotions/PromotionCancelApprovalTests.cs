@@ -53,7 +53,8 @@ public class PromotionCancelApprovalTests : IDisposable
             Substitute.For<ILogger<PromotionService>>(),
             _webhooks,
             TestOptions.Normalization(),
-            TestUserPreferences.For(_db));
+            TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db));
     }
 
     public void Dispose() => _db.Dispose();

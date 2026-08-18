@@ -18,6 +18,7 @@ public class DeploymentService
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceDeletionService _serviceDeletions;
+    private readonly ServiceProductOverrideService _productOverrides;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -43,6 +44,7 @@ public class DeploymentService
         IOptionsMonitor<NormalizationOptions> normalization,
         UserPreferencesService userPrefs,
         ServiceDeletionService serviceDeletions,
+        ServiceProductOverrideService productOverrides,
         ILogger<DeploymentService> logger)
     {
         _db = db;
@@ -51,6 +53,7 @@ public class DeploymentService
         _normalization = normalization;
         _userPrefs = userPrefs;
         _serviceDeletions = serviceDeletions;
+        _productOverrides = productOverrides;
         _logger = logger;
     }
 
@@ -69,12 +72,17 @@ public class DeploymentService
     {
         var environment = _normalization.CurrentValue.ApplyEnvironment(req.Environment);
 
+        // Same override as CI ingest, applied before the lookup: the event this entry is based on lives
+        // under the resolved product, so asking for the requested one would report "no prior deployment"
+        // for a service that has plenty — just filed where the admin said it belongs.
+        var product = await _productOverrides.ResolveProductAsync(req.Product, req.Service, ct);
+
         var latest = await _db.DeployEvents
-            .Where(e => e.Product == req.Product && e.Service == req.Service && e.Environment == environment)
+            .Where(e => e.Product == product && e.Service == req.Service && e.Environment == environment)
             .OrderByDescending(e => e.DeployedAt)
             .FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException(
-                $"No existing deployment for {req.Product}/{req.Service} in {req.Environment} to base a manual entry on.");
+                $"No existing deployment for {product}/{req.Service} in {req.Environment} to base a manual entry on.");
 
         // Carry references/participants from the latest event verbatim (same JSON shape as the DTOs),
         // then force the attribution: drop any inherited triggered-by and set it to the actual caller.
@@ -90,7 +98,7 @@ public class DeploymentService
         metadata["note"] = req.Note;
 
         var dto = new CreateDeployEventDto(
-            Product: req.Product,
+            Product: product,
             Service: req.Service,
             Environment: environment,
             Version: req.Version,
@@ -133,11 +141,18 @@ public class DeploymentService
         // default, so senders' original casing is preserved unless an admin opts in.
         var environment = norm.ApplyEnvironment(dto.Environment);
 
+        // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
+        // so an admin override for the service wins over what was sent (ServiceProductOverride).
+        // Resolved once, before anything reads it: the revive probe, the replay key, the
+        // PreviousVersion derivation and the stored row all have to agree on which product this
+        // deploy belongs to, and resolving per-use is how they would drift apart.
+        var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
+
         // Staged, not saved: it rides along with whichever SaveChanges below commits the event.
-        await _serviceDeletions.ReviveOnDeployAsync(dto.Product, dto.Service, dto.DeployedAt, ct);
+        await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
 
         var replayed = await _db.DeployEvents
-            .Where(e => e.Product == dto.Product && e.Service == dto.Service
+            .Where(e => e.Product == product && e.Service == dto.Service
                      && e.Environment == environment && e.Version == dto.Version
                      && e.Source == dto.Source && e.DeployedAt == dto.DeployedAt)
             .OrderBy(e => e.CreatedAt)
@@ -177,7 +192,7 @@ public class DeploymentService
         if (previousVersion is null)
         {
             var previousEvent = await _db.DeployEvents
-                .Where(e => e.Product == dto.Product && e.Service == dto.Service && e.Environment == environment)
+                .Where(e => e.Product == product && e.Service == dto.Service && e.Environment == environment)
                 .OrderByDescending(e => e.DeployedAt)
                 .Select(e => new { e.Version })
                 .FirstOrDefaultAsync(ct);
@@ -188,7 +203,7 @@ public class DeploymentService
         var deployEvent = new DeployEvent
         {
             Id = Guid.NewGuid(),
-            Product = dto.Product,
+            Product = product,
             Service = dto.Service,
             Environment = environment,
             Version = dto.Version,

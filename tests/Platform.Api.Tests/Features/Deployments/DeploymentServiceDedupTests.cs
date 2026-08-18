@@ -26,6 +26,7 @@ public class DeploymentServiceDedupTests : IDisposable
         _sut = new DeploymentService(_db, webhooks, hook, TestOptions.Normalization(),
             TestUserPreferences.For(_db),
             TestServiceDeletions.For(_db),
+            TestProductOverrides.For(_db),
             Substitute.For<ILogger<DeploymentService>>());
     }
 
