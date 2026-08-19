@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { Package, Loader2, Search, X, ExternalLink } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -16,11 +17,31 @@ export function BuildsPage() {
 
   const [builds, setBuilds] = useState<BuildSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [product, setProduct] = useState('');
-  const [service, setService] = useState('');
-  const [branch, setBranch] = useState('');
+  // The filters live in the URL, not in component state, so a filtered registry is a link — which
+  // is what lets a promotion point at the one build it was cut from. `replace` keeps a burst of
+  // keystrokes from filling the back stack with half-typed filters.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const product = searchParams.get('product') ?? '';
+  const service = searchParams.get('service') ?? '';
+  const branch = searchParams.get('branch') ?? '';
+  const version = searchParams.get('version') ?? '';
 
-  const hasFilter = Boolean(product.trim() || service.trim() || branch.trim());
+  const setFilter = useCallback(
+    (key: string, value: string) => {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          if (value) next.set(key, value);
+          else next.delete(key);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const hasFilter = Boolean(product.trim() || service.trim() || branch.trim() || version.trim());
 
   useEffect(() => {
     let cancelled = false;
@@ -31,6 +52,7 @@ export function BuildsPage() {
           product: product.trim() || undefined,
           service: service.trim() || undefined,
           branch: branch.trim() || undefined,
+          version: version.trim() || undefined,
           limit: 100,
         })
         .then((r) => {
@@ -48,7 +70,7 @@ export function BuildsPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [product, service, branch]);
+  }, [product, service, branch, version]);
 
   return (
     <div className="space-y-6">
@@ -63,12 +85,13 @@ export function BuildsPage() {
         </div>
       </div>
 
-      {/* Exact-match product/service filters plus a substring branch filter — "MPT-1234" finds the
-         feature branch without spelling out the full ref. */}
+      {/* Exact-match product/service/version filters plus a substring branch filter — "MPT-1234"
+         finds the feature branch without spelling out the full ref. */}
       <div className="flex flex-wrap items-center gap-2">
-        <FilterInput value={product} onChange={setProduct} placeholder="Product" />
-        <FilterInput value={service} onChange={setService} placeholder="Service" />
-        <FilterInput value={branch} onChange={setBranch} placeholder="Branch contains…" wide />
+        <FilterInput value={product} onChange={(v) => setFilter('product', v)} placeholder="Product" />
+        <FilterInput value={service} onChange={(v) => setFilter('service', v)} placeholder="Service" />
+        <FilterInput value={version} onChange={(v) => setFilter('version', v)} placeholder="Version" />
+        <FilterInput value={branch} onChange={(v) => setFilter('branch', v)} placeholder="Branch contains…" wide />
       </div>
 
       {loading ? (
