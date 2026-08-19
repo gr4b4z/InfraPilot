@@ -128,12 +128,31 @@ public class ServiceProductRemapService
     /// explicitly, because a remap is several statements across five tables and a failure halfway
     /// through would leave one service filed under two products, which is the condition it exists to
     /// cure. Throws <see cref="KeyNotFoundException"/> when the override no longer exists.
+    ///
+    /// <para><b>Why the execution strategy wrapper.</b> Both providers are configured with
+    /// <c>EnableRetryOnFailure</c> (see Program.cs — the first deploy after an Azure serverless
+    /// auto-pause has to wait out a cold resume), and EF refuses a user-initiated transaction under a
+    /// retrying strategy unless the whole transaction is one retriable unit. Without this the endpoint
+    /// throws <see cref="InvalidOperationException"/> before touching a single row. The strategy may
+    /// re-execute the delegate, so each attempt starts from a clean change tracker and recomputes the
+    /// source products from current state — a retry after a rolled-back attempt therefore sees exactly
+    /// what a first attempt would.</para>
     /// </summary>
     public async Task<RemapPlan> ApplyAsync(Guid overrideId, CancellationToken ct = default)
     {
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        var plan = await RunAsync(overrideId, apply: true, ct);
-        await tx.CommitAsync(ct);
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var plan = await strategy.ExecuteAsync(async () =>
+        {
+            // A previous attempt may have left entities tracked as Modified (the retirement merge below
+            // works on tracked rows). Re-applying that stale state on top of a rolled-back transaction
+            // is how a retry corrupts what it was meant to repair.
+            _db.ChangeTracker.Clear();
+
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var result = await RunAsync(overrideId, apply: true, ct);
+            await tx.CommitAsync(ct);
+            return result;
+        });
 
         _logger.LogInformation(
             "Remapped {Service} from [{FromProducts}] to {Product}: {Deployments} deployment(s), "
