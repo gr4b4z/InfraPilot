@@ -41,7 +41,7 @@ import {
   Undo2,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
-import { EnvBadge } from '@/components/environments/EnvBadge';
+import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import {
   MissingRolesBadge,
@@ -273,17 +273,13 @@ export function PromotionDetailPage() {
           <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
             {candidate.product} / {candidate.service}
           </h1>
-          <div className="flex items-center gap-3 mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
-            <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
-            <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-            <EnvBadge
-              env={candidate.targetEnv}
-              suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
-              title={
-                candidate.targetCurrentVersion
-                  ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
-                  : `First deploy to ${candidate.targetEnv}`
-              }
+          <div className="mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+            <PromotionRoute
+              sourceEnv={candidate.sourceEnv}
+              targetEnv={candidate.targetEnv}
+              version={candidate.version}
+              targetCurrentVersion={candidate.targetCurrentVersion}
+              sourceBranch={candidate.sourceBranch}
             />
           </div>
         </div>

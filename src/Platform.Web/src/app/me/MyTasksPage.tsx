@@ -16,7 +16,7 @@ import type { PendingTicket, PromotionCandidate } from '@/lib/api';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
-import { EnvBadge } from '@/components/environments/EnvBadge';
+import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { workItemDetailPath } from '@/lib/workItem';
@@ -283,15 +283,13 @@ function PromotionTaskRow({ index, candidate }: { index: number; candidate: Prom
             Awaiting your approval
           </span>
         </div>
-        <div
-          className="flex items-center gap-2 text-[12px]"
-          style={{ color: 'var(--text-secondary)' }}
-        >
-          <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
-          <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
-          <EnvBadge
-            env={candidate.targetEnv}
-            suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
+        <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          <PromotionRoute
+            sourceEnv={candidate.sourceEnv}
+            targetEnv={candidate.targetEnv}
+            version={candidate.version}
+            targetCurrentVersion={candidate.targetCurrentVersion}
+            sourceBranch={candidate.sourceBranch}
           />
         </div>
         <div

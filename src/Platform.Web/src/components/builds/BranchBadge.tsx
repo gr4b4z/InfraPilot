@@ -1,10 +1,15 @@
+/** `refs/heads/feature/MPT-1234-x` → `feature/MPT-1234-x`. The full ref belongs in a tooltip. */
+export function shortBranch(branch: string) {
+  return branch.replace(/^refs\/heads\//, '');
+}
+
 /**
  * The branch a build came from, prominent by design — the build registry exists so a feature build
  * is never mistaken for main. Trunk and release refs read as the stable spine (accent); anything
  * else is a feature branch and stays visually distinct (warning).
  */
 export function BranchBadge({ branch }: { branch: string }) {
-  const short = branch.replace(/^refs\/heads\//, '');
+  const short = shortBranch(branch);
   const isTrunk = short === 'main' || short === 'master' || short.startsWith('release/');
   return (
     <span

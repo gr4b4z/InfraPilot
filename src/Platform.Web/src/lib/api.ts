@@ -1333,6 +1333,12 @@ export interface PromotionCandidate {
   version: string;
   /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
   targetCurrentVersion: string | null;
+  /**
+   * Git ref this version was built from (`refs/heads/…`). Only candidates whose source is the
+   * synthetic `build` env carry one — everywhere else the source environment is the provenance.
+   * Absent on responses from an older API.
+   */
+  sourceBranch?: string | null;
   status: PromotionStatus;
   externalRunUrl: string | null;
   createdAt: string;
