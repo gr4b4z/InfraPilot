@@ -18,6 +18,15 @@ public class WebhookDeliveryWorker : BackgroundService
 
     private static readonly int[] RetryDelaysSeconds = [30, 120, 600, 3600, 14400]; // 30s, 2m, 10m, 1h, 4h
 
+    /// <summary>
+    /// How long a claimed delivery is held before another worker may take it. Comfortably longer
+    /// than <see cref="SendTimeout"/> so an in-flight request is never raced, and short enough that
+    /// a delivery owned by a replica that died is picked up again without operator involvement.
+    /// </summary>
+    private static readonly TimeSpan ClaimLease = TimeSpan.FromMinutes(2);
+
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(10);
+
     public WebhookDeliveryWorker(
         IServiceScopeFactory scopeFactory,
         IDataProtectionProvider dataProtection,
@@ -51,7 +60,11 @@ public class WebhookDeliveryWorker : BackgroundService
         }
     }
 
-    private async Task ProcessPendingDeliveries(CancellationToken ct)
+    /// <summary>
+    /// One pass of the delivery pump. Public so a test can drive a single pass instead of waiting on
+    /// the five-second timer in <see cref="ExecuteAsync"/>.
+    /// </summary>
+    public async Task ProcessPendingDeliveries(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
@@ -67,10 +80,21 @@ public class WebhookDeliveryWorker : BackgroundService
         if (deliveries.Count == 0) return;
 
         var client = _httpClientFactory.CreateClient("webhook-delivery");
-        client.Timeout = TimeSpan.FromSeconds(10);
+        client.Timeout = SendTimeout;
+
+        // Only the rows this pass actually owns. A row another worker claimed first is left alone:
+        // not sent, not written, and not announced as changed.
+        var owned = new List<Models.WebhookDelivery>(deliveries.Count);
 
         foreach (var delivery in deliveries)
         {
+            // Claimed one at a time, immediately before its own send, and stamped with the time of
+            // the claim rather than of the batch: a batch of slow or timing-out sends can run for
+            // minutes, and a lease measured from when the batch started would already have expired
+            // by the time the later rows go out — handing them to another replica mid-flight.
+            if (!await TryClaimAsync(db, delivery, DateTimeOffset.UtcNow, ct)) continue;
+            owned.Add(delivery);
+
             if (delivery.Subscription is null || !delivery.Subscription.Active)
             {
                 delivery.Status = "failed";
@@ -81,11 +105,13 @@ public class WebhookDeliveryWorker : BackgroundService
             await AttemptDelivery(client, delivery, ct);
         }
 
+        if (owned.Count == 0) return;
+
         await db.SaveChangesAsync(ct);
 
         // Let the admin webhook screens replace their "wait a couple of seconds and refetch"
         // guesswork with an actual signal. One event per subscription touched this cycle.
-        foreach (var subscriptionId in deliveries.Select(d => d.SubscriptionId).Distinct())
+        foreach (var subscriptionId in owned.Select(d => d.SubscriptionId).Distinct())
         {
             await _events.PublishEntityChanged(new EntityChangedEvent
             {
@@ -96,9 +122,59 @@ public class WebhookDeliveryWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Takes exclusive ownership of a delivery, or reports that another worker got there first.
+    /// This is what stops a webhook going out twice.
+    /// <para>
+    /// More than one replica runs this worker — the container app scales on HTTP traffic — and each
+    /// polls the same table on its own five-second timer. Selecting the batch is not enough to own
+    /// it: the status used to change only after every send in the batch had gone out, so for the
+    /// length of a batch the row still read as pending, and a second replica polling inside that
+    /// window selected and POSTed the very same delivery. Both requests carried one delivery id, and
+    /// whichever saved last recorded a single attempt — which is why the duplicate was invisible in
+    /// the delivery history and only ever showed up at the receiver.
+    /// </para>
+    /// <para>
+    /// The guard is the <c>WHERE</c> clause, evaluated by the database and not by us: of two
+    /// concurrent UPDATEs only one can move a row out of "pending and due", so only one worker is
+    /// told it changed a row. The claim doubles as the lease — pushing <c>NextRetryAt</c> out means a
+    /// worker that dies mid-send leaves a row that simply falls due again later, so recovering it
+    /// needs no sweeper, no extra status value, and no migration.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// Virtual only so a test can stand in for the database's half of the bargain: the guarantee
+    /// here is a relational one, and neither the InMemory provider (no ExecuteUpdate) nor SQLite
+    /// (no DateTimeOffset comparison) can host it. What a test can pin down is the worker's side —
+    /// that a row it did not claim is never sent — which is the behaviour that regressed.
+    /// </remarks>
+    protected virtual async Task<bool> TryClaimAsync(
+        PlatformDbContext db, Models.WebhookDelivery delivery, DateTimeOffset now, CancellationToken ct)
+    {
+        var leaseUntil = now + ClaimLease;
+
+        var claimed = await db.WebhookDeliveries
+            .Where(d => d.Id == delivery.Id && d.Status == "pending" && d.NextRetryAt <= now)
+            .ExecuteUpdateAsync(
+                s => s
+                    .SetProperty(d => d.Attempts, d => d.Attempts + 1)
+                    .SetProperty(d => d.NextRetryAt, leaseUntil),
+                ct);
+
+        if (claimed == 0) return false;
+
+        // ExecuteUpdate writes straight past the change tracker, so mirror it onto the tracked
+        // entity. Left unmirrored, the SaveChanges at the end of the batch would write the pre-claim
+        // values back over the claim and hand the row to the next replica that polls.
+        delivery.Attempts++;
+        delivery.NextRetryAt = leaseUntil;
+        return true;
+    }
+
     private async Task AttemptDelivery(HttpClient client, Models.WebhookDelivery delivery, CancellationToken ct)
     {
-        delivery.Attempts++;
+        // Attempts is incremented by the claim, which is the only place that may touch it: the claim
+        // is what the retry schedule below counts, and counting it here too would double every step.
         var sub = delivery.Subscription!;
 
         try
