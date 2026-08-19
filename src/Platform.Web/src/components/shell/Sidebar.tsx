@@ -13,6 +13,7 @@ import {
   Rocket,
   Webhook,
   GitPullRequest,
+  History,
   Inbox,
   Package,
   ScrollText,
@@ -39,6 +40,15 @@ interface NavItem {
   badge?: number;
   /** Live counter to render as the badge. Takes precedence over the static `badge`. */
   counter?: CounterKey;
+  /**
+   * Paths below this item's own that belong to a *sibling* item instead.
+   *
+   * A NavLink is active for everything nested under it, which is what we want almost everywhere —
+   * a promotion's detail page should light up "Promotions". But a sibling nav entry living under the
+   * same prefix (`/promotions/audit`) would otherwise light up both rows at once, and two highlighted
+   * destinations is a nav that can't tell you where you are.
+   */
+  activeExcept?: string[];
   adminOnly?: boolean;
   featureFlag?: string;
 }
@@ -73,8 +83,10 @@ const navGroups: NavGroup[] = [
     label: 'Promotions',
     featureFlag: FeatureFlag.Promotions,
     items: [
-      { to: '/promotions', label: 'Promotions',    icon: GitPullRequest, counter: 'promotionsAwaitingMe' },
+      { to: '/promotions', label: 'Promotions',    icon: GitPullRequest, counter: 'promotionsAwaitingMe',
+        activeExcept: ['/promotions/audit'] },
       { to: '/me/work-items', label: 'Work items queue', icon: Inbox,   counter: 'workItemsAssignedToMe' },
+      { to: '/promotions/audit', label: 'Audit',          icon: History },
     ],
   },
   {
@@ -262,6 +274,9 @@ export function Sidebar() {
                   const countTitle = item.counter
                     ? `${item.label} — ${count} assigned to you`
                     : item.label;
+                  // A sibling entry nested under this one owns the current path (see `activeExcept`).
+                  const yielded =
+                    item.activeExcept?.some((path) => location.pathname.startsWith(path)) ?? false;
                   return (
                     <NavLink
                       key={item.to}
@@ -271,11 +286,11 @@ export function Sidebar() {
                         // under the ~44px comfortable touch target.
                         `group relative flex items-center gap-2.5 px-2.5 py-2.5 lg:py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
                           collapsed ? 'justify-center' : ''
-                        } ${isActive ? '' : 'hover:bg-[var(--accent-muted)]'}`
+                        } ${isActive && !yielded ? '' : 'hover:bg-[var(--accent-muted)]'}`
                       }
                       style={({ isActive }) => ({
-                        backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
-                        color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                        backgroundColor: isActive && !yielded ? 'var(--accent-subtle)' : undefined,
+                        color: isActive && !yielded ? 'var(--accent)' : 'var(--text-secondary)',
                       })}
                       title={collapsed ? countTitle : undefined}
                     >
