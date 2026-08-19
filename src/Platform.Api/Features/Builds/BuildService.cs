@@ -131,12 +131,15 @@ public class BuildService
     /// substring match: callers filter with "feature/MPT-1234" without spelling out the full ref.
     /// </summary>
     public async Task<List<BuildSummaryDto>> ListAsync(
-        string? product, string? service, string? branch, int limit, CancellationToken ct = default)
+        string? product, string? service, string? branch, string? version, int limit,
+        CancellationToken ct = default)
     {
         var query = _db.Builds.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(product)) query = query.Where(b => b.Product == product);
         if (!string.IsNullOrWhiteSpace(service)) query = query.Where(b => b.Service == service);
         if (!string.IsNullOrWhiteSpace(branch)) query = query.Where(b => b.Branch.Contains(branch));
+        // Exact, unlike the branch substring: a version filter exists to identify one build.
+        if (!string.IsNullOrWhiteSpace(version)) query = query.Where(b => b.Version == version);
 
         return await query
             .OrderByDescending(b => b.CreatedAt)

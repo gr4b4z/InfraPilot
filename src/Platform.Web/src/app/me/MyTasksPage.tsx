@@ -285,6 +285,8 @@ function PromotionTaskRow({ index, candidate }: { index: number; candidate: Prom
         </div>
         <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
           <PromotionRoute
+            product={candidate.product}
+            service={candidate.service}
             sourceEnv={candidate.sourceEnv}
             targetEnv={candidate.targetEnv}
             version={candidate.version}

@@ -145,9 +145,10 @@ class ApiClient {
   // Build registry
   /**
    * Registered builds, newest first. `branch` is a substring match, so "MPT-1234" finds the
-   * feature branch without spelling out the full ref.
+   * feature branch without spelling out the full ref; `version` is exact, so product + service +
+   * version identifies exactly one build.
    */
-  listBuilds(params?: { product?: string; service?: string; branch?: string; limit?: number }) {
+  listBuilds(params?: { product?: string; service?: string; branch?: string; version?: string; limit?: number }) {
     const entries = Object.entries(params ?? {})
       .filter(([, v]) => v !== undefined && v !== '')
       .map(([k, v]) => [k, String(v)] as [string, string]);

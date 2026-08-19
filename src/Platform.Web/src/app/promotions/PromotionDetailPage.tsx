@@ -275,6 +275,8 @@ export function PromotionDetailPage() {
           </h1>
           <div className="mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
             <PromotionRoute
+              product={candidate.product}
+              service={candidate.service}
               sourceEnv={candidate.sourceEnv}
               targetEnv={candidate.targetEnv}
               version={candidate.version}
