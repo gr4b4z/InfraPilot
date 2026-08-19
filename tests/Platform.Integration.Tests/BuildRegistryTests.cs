@@ -223,6 +223,22 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
     }
 
     [Fact]
+    public async Task List_FiltersByExactVersion()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-exact", "svc", "7.0.1-g1", branch: "refs/heads/main"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-exact", "svc", "7.0.10-g2", branch: "refs/heads/main"));
+
+        // Exact, not a prefix or substring — the filter exists so a link can point at ONE build,
+        // and "7.0.1" must not drag "7.0.10" along with it.
+        var filtered = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/builds?product=bld-exact&service=svc&version=7.0.1-g1");
+        var result = Assert.Single(filtered.GetProperty("results").EnumerateArray().ToList());
+        Assert.Equal("7.0.1-g1", result.GetProperty("version").GetString());
+    }
+
+    [Fact]
     public async Task GetUnknownBuild_Returns404()
     {
         var response = await _adminClient.GetAsync($"/api/builds/{Guid.NewGuid()}");

@@ -29,6 +29,7 @@ import { DeploymentLogViewer } from '@/components/deployments/DeploymentLogViewe
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
+import { deploymentHistoryPath } from '@/lib/deploymentPath';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
@@ -209,7 +210,7 @@ export function DeploymentDetailPage() {
               it's a button rather than a line in a details list. */}
           <RunLink run={evt.run} />
           <Link
-            to={`/deployments/${encodeURIComponent(evt.product)}/${encodeURIComponent(evt.service)}/history?environment=${encodeURIComponent(evt.environment)}`}
+            to={deploymentHistoryPath(evt.product, evt.service, evt.environment)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
             style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
           >

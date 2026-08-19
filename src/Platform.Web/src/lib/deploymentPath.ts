@@ -18,3 +18,20 @@ export function deploymentDetailPath(
   const params = new URLSearchParams({ from: from.path, fromLabel: from.label });
   return `${base}?${params.toString()}`;
 }
+
+/**
+ * In-app route to a service's deploy history, optionally narrowed to one environment.
+ *
+ * The environment filter lives in the URL (see DeploymentHistoryPage), which is what makes
+ * "where this version was running before it was promoted" a link rather than three clicks.
+ */
+export function deploymentHistoryPath(
+  product: string,
+  service: string,
+  environment?: string,
+): string {
+  const base = `/deployments/${encodeURIComponent(product)}/${encodeURIComponent(service)}/history`;
+  return environment
+    ? `${base}?environment=${encodeURIComponent(environment)}`
+    : base;
+}

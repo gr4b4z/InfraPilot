@@ -45,15 +45,18 @@ public static class BuildEndpoints
         .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
         .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
 
-        // List for the UI picker — newest first, branch filter is a substring match.
+        // List for the UI picker — newest first, branch filter is a substring match. `version` is
+        // exact: it is how a link points at ONE build ((product, service, version) is the registry's
+        // unique triple), which is what a promotion's "built from …" link needs.
         // Accepts both ?service= and ?serviceName= — the rest of the API says serviceName,
         // the plan's read surface says service.
         group.MapGet("/", async (
             BuildService builds, string? product, string? service, string? serviceName, string? branch,
-            int? limit, CancellationToken ct) =>
+            string? version, int? limit, CancellationToken ct) =>
         {
             var results = await builds.ListAsync(
-                product, service ?? serviceName, branch, limit is > 0 and <= 200 ? limit.Value : 50, ct);
+                product, service ?? serviceName, branch, version,
+                limit is > 0 and <= 200 ? limit.Value : 50, ct);
             return Results.Ok(new { results });
         });
 
