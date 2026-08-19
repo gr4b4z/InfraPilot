@@ -154,6 +154,28 @@ public class BuildPromotionFlowTests : IClassFixture<BuildPromotionFlowTests.Bui
     }
 
     [Fact]
+    public async Task BuildSourcedCandidate_ExposesTheBranchItWasBuiltFrom()
+    {
+        var product = "bp-branch";
+        await SeedBuildPolicyAsync(product, "dev",
+            autoCreateFromBranches: ["refs/heads/feature/*"]);
+
+        await RegisterBuildAsync(product, "api", "6.1.0-gddd", "refs/heads/feature/MPT-1234-shiny");
+
+        // "build" is a synthetic source env — the branch is the only provenance the UI can show,
+        // so both the list and the detail projection have to carry it.
+        var candidate = Assert.Single(await GetCandidatesAsync(product));
+        Assert.Equal("build", candidate.GetProperty("sourceEnv").GetString());
+        Assert.Equal("refs/heads/feature/MPT-1234-shiny", candidate.GetProperty("sourceBranch").GetString());
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            $"/api/promotions/{candidate.GetProperty("id").GetString()}");
+        Assert.Equal(
+            "refs/heads/feature/MPT-1234-shiny",
+            detail.GetProperty("candidate").GetProperty("sourceBranch").GetString());
+    }
+
+    [Fact]
     public async Task RegistrationReplay_DoesNotDuplicateCandidates()
     {
         var product = "bp-replay";

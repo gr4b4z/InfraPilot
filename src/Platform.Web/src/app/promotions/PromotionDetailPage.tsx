@@ -279,6 +279,7 @@ export function PromotionDetailPage() {
               targetEnv={candidate.targetEnv}
               version={candidate.version}
               targetCurrentVersion={candidate.targetCurrentVersion}
+              sourceBranch={candidate.sourceBranch}
             />
           </div>
         </div>
