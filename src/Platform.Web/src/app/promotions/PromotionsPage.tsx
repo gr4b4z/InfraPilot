@@ -15,7 +15,7 @@ import {
   PROMOTIONS_TARGET_ENV_FILTER_PREF,
   PROMOTIONS_REFERENCE_FILTER_PREF,
 } from '@/lib/prefs';
-import { EnvBadge } from '@/components/environments/EnvBadge';
+import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
 import {
@@ -1025,22 +1025,14 @@ function CandidateCard({
             roles={distinctMissingRoles}
           />
         </div>
-        {/* Source → target. Wraps on a narrow viewport so the target pill drops to its own line
-           instead of running off the edge of the screen. */}
-        <div
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]"
-          style={{ color: 'var(--text-secondary)' }}
-        >
-          <EnvBadge env={candidate.sourceEnv} suffix={`(${candidate.version})`} />
-          <ArrowRight size={12} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
-          <EnvBadge
-            env={candidate.targetEnv}
-            suffix={`(${candidate.targetCurrentVersion ?? 'new'})`}
-            title={
-              candidate.targetCurrentVersion
-                ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
-                : `First deploy to ${candidate.targetEnv}`
-            }
+        {/* Where it lands and how that environment's version moves. Wraps on a narrow viewport
+           so the pieces drop to their own line instead of running off the edge of the screen. */}
+        <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          <PromotionRoute
+            sourceEnv={candidate.sourceEnv}
+            targetEnv={candidate.targetEnv}
+            version={candidate.version}
+            targetCurrentVersion={candidate.targetCurrentVersion}
           />
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
