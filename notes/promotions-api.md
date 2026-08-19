@@ -132,6 +132,65 @@ Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, ap
 }
 ```
 
+### `GET /api/promotions/audit` — activity feed
+Every recorded action on a promotion, newest first. This is what the **Promotions audit** page
+(`/promotions/audit` in the web UI) is built on, and it answers the questions that arrive as
+questions: what was approved today, what was created today, what went to prod last week and who
+signed it off.
+
+Auth is the group's `CanApprove` policy, not the admin-only `AuditViewer` that guards
+`GET /api/audit` — every row is already visible one promotion at a time on the detail pages, and
+"who approved this" is a question approvers ask about their own work. The row's `sourceIp` is
+deliberately **not** returned, unlike on `/api/audit`.
+
+Query params (all optional):
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | Absolute instants bounding the window. A *calendar* day is the caller's, not the server's, so the UI resolves its own midnight and sends `from`. |
+| `days` | Convenience for a URL written by hand: `?days=7`. Ignored when `from` is given. |
+| `category` | Comma-separated kinds of action: `approved`, `approval-step`, `rejected`, `cancelled`, `created`, `updated`, `deployed`, `work-item`, `comment`, `people`, `other`. A category is just a named set of actions (`PromotionAuditCategories`); `other` resolves against the actions actually present, so it holds anything the map hasn't been taught. |
+| `action` | Comma-separated raw action names, e.g. `promotion.bypassed`. Unioned with `category`. |
+| `actor` | Exact actor id, or a case-insensitive fragment of an actor name. |
+| `product`, `service`, `targetEnv` | Scope to a promotion. `service` is a substring match, as on the list. |
+| `page`, `pageSize` | `pageSize` defaults to 50, capped at 200. |
+
+```jsonc
+{
+  "entries": [
+    { "id": "…", "timestamp": "2026-08-19T09:14:02Z", "correlationId": "…",
+      "action": "promotion.approved", "category": "approved",
+      "actorId": "…", "actorName": "System (gate satisfied)", "actorType": "system",
+      "candidateId": "…", "product": "acme", "service": "api",
+      "sourceEnv": "staging", "targetEnv": "prod", "version": "v1.4.0",
+      "candidateStatus": "Deployed",        // status NOW, not at the time of the action
+      "comment": null, "reason": null, "workItemKey": null,
+      "role": null, "referenceKey": null, "trigger": "gate-evaluator",
+      "approvedBy": [ { "id": "…", "name": "Maja Nowak" } ],
+      "details": { "trigger": "gate-evaluator" } }
+  ],
+  "total": 137,                             // rows matching every filter, not this page
+  "page": 1, "pageSize": 50,
+  "range": { "from": "2026-08-12T09:00:00Z", "to": null },
+  "actions": [ { "action": "promotion.approved", "category": "approved", "count": 12 } ],
+  "actors":  [ { "id": "…", "name": "Maja Nowak", "type": "user", "count": 31 } ]
+}
+```
+
+- **`approvedBy`** — on a gate-opening row, the people whose approvals opened it. The row itself is
+  written by the evaluator with the system as its actor, so this is where "who approved it" lives.
+  Read from the trail (the sibling `promotion.approval.recorded` rows sharing the correlation id),
+  not from the candidate's current approval rows: cancelling an approval deletes those, and a
+  historical line has to keep saying what happened. `null` for an auto-approval — nobody decided it.
+- **`actions`** / **`actors`** are facet counts, computed under every filter **except** the one they
+  feed. That is what lets the page's tab badges say what selecting them would show. `total` is
+  derived from the same counts, so a badge and its own list can never disagree.
+- The feed is **candidate-anchored**: rows are inner-joined to a promotion the caller may see, which
+  is what applies hidden products and retired services here. Two consequences — the module's audit
+  rows that hang off other entities (`work-item.approved`/`work-item.blocked`, which duplicate a
+  sign-off already recorded against the candidate as `promotion.ticket.*`, and `work-item.comment.*`)
+  are not in the feed, and neither is a sign-off recorded with no live candidate.
+
 ---
 
 ## Act

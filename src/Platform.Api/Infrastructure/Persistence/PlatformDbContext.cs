@@ -204,6 +204,11 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.EntityType, x.EntityId });
             e.HasIndex(x => x.ActorId);
             e.HasIndex(x => new { x.Module, x.Action });
+            // One module's rows, newest first, over a date window — the promotions activity feed
+            // (/api/promotions/audit) and any other "what happened lately in X" query. The
+            // (Module, Action) index above can satisfy the module predicate but leaves the ordering
+            // to a sort over every row it matches, which is the whole table for the busiest module.
+            e.HasIndex(x => new { x.Module, x.Timestamp });
         });
 
         // Build registry — every published build (main, release, feature), one row per

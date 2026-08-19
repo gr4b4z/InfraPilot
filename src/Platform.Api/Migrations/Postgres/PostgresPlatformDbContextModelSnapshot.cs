@@ -1719,6 +1719,8 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.HasIndex("Module", "Action");
 
+                    b.HasIndex("Module", "Timestamp");
+
                     b.ToTable("audit_log", (string)null);
                 });
 

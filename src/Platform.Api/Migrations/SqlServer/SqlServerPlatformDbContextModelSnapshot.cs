@@ -1721,6 +1721,8 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasIndex("Module", "Action");
 
+                    b.HasIndex("Module", "Timestamp");
+
                     b.ToTable("audit_log", (string)null);
                 });
 

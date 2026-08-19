@@ -1060,6 +1060,34 @@ class ApiClient {
     return this.request<{ products: string[]; targetEnvs: string[] }>(`/promotions/filter-options`);
   }
 
+  /**
+   * The promotions activity feed — one request backs the whole audit page: the rows, the counts its
+   * tabs are badged with, and the actors its dropdown offers.
+   *
+   * `from`/`to` are absolute instants. A calendar day is the reader's, not the server's, so the page
+   * resolves its own midnight before calling (see `promotionAuditFilterParams`).
+   */
+  getPromotionAudit(params: {
+    from?: string;
+    to?: string;
+    category?: string;
+    action?: string;
+    actor?: string;
+    product?: string;
+    service?: string;
+    targetEnv?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === '') continue;
+      query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return this.request<PromotionAuditResponse>(`/promotions/audit${suffix ? `?${suffix}` : ''}`);
+  }
+
   getMyPreferences() {
     return this.request<UserPreferencesPayload>(`/me/preferences`);
   }
@@ -1333,6 +1361,94 @@ export interface PromotionCandidate {
    * when a work item is attached later, someone is reassigned, or the policy changes.
    */
   workItemRoleGaps?: WorkItemRoleGap[];
+}
+
+// ── Promotions audit ──────────────────────────────────────────────────────
+/**
+ * The kind of action an audit row records, as the server groups them. Categories rather than raw
+ * action names because that grouping is domain knowledge the API owns (see
+ * `PromotionAuditCategories`): the same fact decides what a tab shows and what a saved link means.
+ *
+ * `other` is what an action the server's map hasn't heard of falls back to, so a new audit action
+ * appears in the feed the day it ships rather than silently vanishing.
+ */
+export type PromotionAuditCategory =
+  | 'approved'
+  | 'approval-step'
+  | 'rejected'
+  | 'cancelled'
+  | 'created'
+  | 'updated'
+  | 'deployed'
+  | 'work-item'
+  | 'comment'
+  | 'people'
+  | 'other';
+
+/** Somebody named on a row other than as its actor — see {@link PromotionAuditEntry.approvedBy}. */
+export interface PromotionAuditActor {
+  id: string;
+  name: string;
+}
+
+/** One recorded action on one promotion. */
+export interface PromotionAuditEntry {
+  id: string;
+  timestamp: string;
+  /** Groups the rows one request wrote — an approval and the gate it opened share one. */
+  correlationId: string;
+  /** The raw audit action, e.g. `promotion.approved`. */
+  action: string;
+  category: PromotionAuditCategory;
+  actorId: string;
+  actorName: string;
+  /** `user` or `system`. Gate evaluation, ingest and auto-approval are the system's. */
+  actorType: string;
+
+  // The promotion this happened to. Always present: the feed only carries rows it could join.
+  candidateId: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  /** The promotion's status **now**, not at the time of the action. */
+  candidateStatus: PromotionStatus;
+
+  /** What the actor typed, on the actions that take a comment. */
+  comment: string | null;
+  /** Required on a bypass — why the gate was skipped. */
+  reason: string | null;
+  /** The ticket a work-item action was about. */
+  workItemKey: string | null;
+  role: string | null;
+  referenceKey: string | null;
+  /** How an approval came about, e.g. `gate-evaluator`, `administrator-bypass`. */
+  trigger: string | null;
+  /**
+   * On a gate-opening row: the people whose approvals opened it. The row's own actor is the evaluator
+   * that noticed, so this is where "who approved it" actually lives. Null for an auto-approval, which
+   * nobody decided.
+   */
+  approvedBy: PromotionAuditActor[] | null;
+  /** The action's whole recorded payload, for the row's details expansion. Shape varies by action. */
+  details: Record<string, unknown> | null;
+}
+
+export interface PromotionAuditResponse {
+  entries: PromotionAuditEntry[];
+  /** Rows matching every filter — not the page. */
+  total: number;
+  page: number;
+  pageSize: number;
+  range: { from: string | null; to: string | null };
+  /**
+   * Per-action counts under every filter **except** the action/category one, so a tab badge says what
+   * selecting it would show rather than what is already selected.
+   */
+  actions: { action: string; category: PromotionAuditCategory; count: number }[];
+  /** Likewise for actors: counted under every filter except the actor filter itself. */
+  actors: { id: string; name: string; type: string; count: number }[];
 }
 
 /** One work item that has nobody in a role its promotion policy requires. */

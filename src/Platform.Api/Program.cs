@@ -409,6 +409,10 @@ app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(A
 app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// The promotions activity feed. CanApprove, not AuditViewer: "what was approved for prod today, and
+// by whom" is a question the people doing the approving ask about their own work, and every row of it
+// is already visible one promotion at a time on the detail pages.
+app.MapGroup("/api/promotions/audit").MapPromotionAuditEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/rollbacks").MapRollbackEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
