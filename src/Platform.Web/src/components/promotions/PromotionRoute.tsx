@@ -1,6 +1,9 @@
+import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 import { shortBranch } from '@/components/builds/BranchBadge';
+import { buildRegistryPath } from '@/lib/buildPath';
+import { deploymentHistoryPath } from '@/lib/deploymentPath';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 /**
@@ -25,6 +28,8 @@ const BUILD_SOURCE_ENV = 'build';
  * pill. Where the build comes from is context, not the headline, so it trails in muted text.
  */
 export function PromotionRoute({
+  product,
+  service,
   sourceEnv,
   targetEnv,
   version,
@@ -33,6 +38,8 @@ export function PromotionRoute({
   size = 'sm',
   className = '',
 }: {
+  product: string;
+  service: string;
   sourceEnv: string;
   targetEnv: string;
   /** The version being promoted — what `targetEnv` ends up on. */
@@ -60,8 +67,15 @@ export function PromotionRoute({
   const fromBuild = sourceEnv === BUILD_SOURCE_ENV;
   const branch = sourceBranch?.trim() ? shortBranch(sourceBranch.trim()) : null;
   const origin = fromBuild ? branch : sourceName;
-  // The full ref is worth keeping reachable — a shortened branch can still be ellipsised.
-  const originTitle = fromBuild && sourceBranch ? sourceBranch : undefined;
+  // …and it links to that origin: the registry row this exact build is (product + service +
+  // version is the registry's unique triple), or the source environment's deploy history, which is
+  // where a reader goes to see the version that is being promoted actually running.
+  const originHref = fromBuild
+    ? buildRegistryPath({ product, service, version })
+    : deploymentHistoryPath(product, service, sourceEnv);
+  const originTitle = fromBuild
+    ? `${sourceBranch ?? branch} — open this build in the registry`
+    : `Open ${sourceName} deploy history for ${service}`;
 
   // One tooltip for the whole line — the versions ellipsise on a narrow viewport, and the sentence
   // is what makes the direction unambiguous even when nothing is clipped.
@@ -102,12 +116,19 @@ export function PromotionRoute({
         </span>
       </span>
       {origin && (
-        <span
-          className="truncate"
-          style={{ fontSize: dims.source, color: 'var(--text-muted)' }}
-          title={originTitle}
-        >
-          from {origin}
+        <span className="truncate" style={{ fontSize: dims.source, color: 'var(--text-muted)' }}>
+          from{' '}
+          <Link
+            to={originHref}
+            // The line often sits inside a row that navigates to the promotion on click; without
+            // this, following the link would also fire the row's own handler.
+            onClick={(e) => e.stopPropagation()}
+            className="hover:underline"
+            style={{ color: 'inherit' }}
+            title={originTitle}
+          >
+            {origin}
+          </Link>
         </span>
       )}
     </span>
