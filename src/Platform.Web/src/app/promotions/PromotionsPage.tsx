@@ -47,6 +47,7 @@ import {
   ArrowRight,
   Clock,
   CheckCircle,
+  History,
   XCircle,
   Rocket,
   GitPullRequest,
@@ -345,6 +346,20 @@ export function PromotionsPage() {
       reference: referenceFilter,
       ...next,
     });
+
+  /**
+   * The filters this page has set, in the audit page's own parameter names — so "the checkout-api
+   * promotions on prod" becomes "what happened to the checkout-api promotions on prod". The tab and
+   * window aren't carried: this list's tabs are states (pending, resolved) and the audit page's are
+   * kinds of action, so there is nothing to map them onto. It picks its own default window.
+   */
+  const auditLinkParams = (): URLSearchParams => {
+    const params = new URLSearchParams();
+    if (productFilter) params.set('product', productFilter);
+    if (serviceFilter) params.set('service', serviceFilter);
+    if (targetEnvFilter) params.set('targetEnv', targetEnvFilter);
+    return params;
+  };
 
   const syncUrl = (next: Partial<PromotionParams>) => {
     const params = currentParams(next);
@@ -727,11 +742,30 @@ export function PromotionsPage() {
             Review and approve version promotions across environments
           </p>
         </div>
-        {/* The point of putting the filters in the URL was so this view could be handed to someone,
-            and nobody thinks to look in the address bar for that. Built from the state rather than
-            read back off `location`, so it's exact even before the first filter change has written
-            the parameters there. */}
-        <CopyViewLinkButton params={currentParams()} />
+        <div className="flex shrink-0 items-center gap-2">
+          {/* The audit page answers the questions this list can't: what already happened, and who did
+              it. Linked from here because that is where somebody stands when they think to ask — and
+              it carries the current product/service/env narrowing across, so the question stays
+              scoped to whatever they were already looking at. */}
+          <Link
+            to={`/promotions/audit?${auditLinkParams().toString()}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--text-secondary)',
+            }}
+            title="Recent actions taken on promotions — approvals, rejections, sign-offs and deploys"
+          >
+            <History size={12} />
+            Audit
+          </Link>
+          {/* The point of putting the filters in the URL was so this view could be handed to someone,
+              and nobody thinks to look in the address bar for that. Built from the state rather than
+              read back off `location`, so it's exact even before the first filter change has written
+              the parameters there. */}
+          <CopyViewLinkButton params={currentParams()} />
+        </div>
       </div>
 
       {/* Secondary filters */}
