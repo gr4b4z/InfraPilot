@@ -1033,6 +1033,7 @@ function CandidateCard({
             targetEnv={candidate.targetEnv}
             version={candidate.version}
             targetCurrentVersion={candidate.targetCurrentVersion}
+            sourceBranch={candidate.sourceBranch}
           />
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>

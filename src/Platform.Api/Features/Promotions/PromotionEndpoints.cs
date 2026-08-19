@@ -80,18 +80,21 @@ public static class PromotionEndpoints
 
             var capability = await svc.CanUserApproveManyAsync(candidates);
             var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
+            var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
 
             return Results.Ok(new
             {
                 candidates = candidates.Select(c =>
                 {
                     targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
+                    sourceBranches.TryGetValue((c.Product, c.Service, c.Version), out var sourceBranch);
                     // sourceEventReferences carries the candidate's own net change set so the list
                     // card keeps rendering refs without a deploy-event join (D14 dropped the link).
                     return ToDto(c, capability.GetValueOrDefault(c.Id),
                         sourceEventParticipants: Array.Empty<ParticipantDto>(),
                         sourceEventReferences: c.References,
-                        targetCurrentVersion: targetCurrent);
+                        targetCurrentVersion: targetCurrent,
+                        sourceBranch: sourceBranch);
                 }),
             });
         });
@@ -121,6 +124,15 @@ public static class PromotionEndpoints
                 .OrderByDescending(e => e.DeployedAt)
                 .Select(e => e.Version)
                 .FirstOrDefaultAsync();
+
+            // Build-sourced candidates only — see the `sourceBranch` note on ToDto.
+            var sourceBranch = c.SourceEnv == Builds.BuildPromotions.SourceEnv
+                ? await db.Builds
+                    .AsNoTracking()
+                    .Where(b => b.Product == c.Product && b.Service == c.Service && b.Version == c.Version)
+                    .Select(b => b.Branch)
+                    .FirstOrDefaultAsync()
+                : null;
 
             var comments = await svc.GetCommentsAsync(id);
 
@@ -165,7 +177,8 @@ public static class PromotionEndpoints
                 candidate = ToDto(c, canApprove,
                     sourceEventParticipants: Array.Empty<ParticipantDto>(),
                     sourceEventReferences: c.References,
-                    targetCurrentVersion: targetCurrent),
+                    targetCurrentVersion: targetCurrent,
+                    sourceBranch: sourceBranch),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -722,7 +735,8 @@ public static class PromotionEndpoints
         bool canApprove,
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
         IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
-        string? targetCurrentVersion = null) => new
+        string? targetCurrentVersion = null,
+        string? sourceBranch = null) => new
     {
         id = c.Id,
         product = c.Product,
@@ -736,6 +750,11 @@ public static class PromotionEndpoints
         // Version currently deployed in the target environment (what this promotion
         // would replace). Null when the target has no prior deploy for this service.
         targetCurrentVersion,
+        // Git ref the promoted build was produced from. Only build-sourced candidates have one:
+        // "build" is a synthetic source env — nothing runs there — so the branch is the only thing
+        // that says where the version actually came from. Null on every other edge, and on a
+        // build-sourced candidate whose registry row has since been removed.
+        sourceBranch,
         status = c.Status.ToString(),
         externalRunUrl = c.ExternalRunUrl,
         createdAt = c.CreatedAt,
@@ -793,6 +812,45 @@ public static class PromotionEndpoints
             .Where(e => wanted.Contains((e.Product, e.Service, e.Environment)))
             .GroupBy(e => (e.Product, e.Service, e.Environment))
             .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.DeployedAt).First().Version);
+    }
+
+    // Batch-looks up the branch each build-sourced candidate's version was built from, keyed by
+    // (product, service, version) — the build registry's own unique triple. Candidates promoted
+    // from a real environment are skipped: their provenance is the source env, not a git ref.
+    // One query, and none at all for a candidate set with no build-sourced rows in it.
+    private static async Task<Dictionary<(string Product, string Service, string Version), string>> LoadSourceBranchesAsync(
+        PlatformDbContext db,
+        IReadOnlyCollection<PromotionCandidate> candidates,
+        CancellationToken ct = default)
+    {
+        var triples = candidates
+            .Where(c => c.SourceEnv == Builds.BuildPromotions.SourceEnv)
+            .Select(c => new { c.Product, c.Service, c.Version })
+            .Distinct()
+            .ToList();
+        if (triples.Count == 0) return new();
+
+        var products = triples.Select(t => t.Product).Distinct().ToList();
+        var services = triples.Select(t => t.Service).Distinct().ToList();
+        var versions = triples.Select(t => t.Version).Distinct().ToList();
+
+        // Same shape as LoadTargetCurrentVersionsAsync: a coarse IN filter, then the exact triples
+        // reduced in memory — the extra rows a coarse filter drags in are cheap next to a query
+        // per candidate.
+        var builds = await db.Builds
+            .AsNoTracking()
+            .Where(b => products.Contains(b.Product)
+                     && services.Contains(b.Service)
+                     && versions.Contains(b.Version))
+            .Select(b => new { b.Product, b.Service, b.Version, b.Branch })
+            .ToListAsync(ct);
+
+        var wanted = triples.Select(t => (t.Product, t.Service, t.Version)).ToHashSet();
+        return builds
+            .Where(b => wanted.Contains((b.Product, b.Service, b.Version))
+                     && !string.IsNullOrWhiteSpace(b.Branch))
+            .GroupBy(b => (b.Product, b.Service, b.Version))
+            .ToDictionary(g => g.Key, g => g.First().Branch);
     }
 
     private static bool ContainsIgnoreCase(string? haystack, string needle)

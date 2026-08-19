@@ -1,6 +1,14 @@
 import { ArrowRight } from 'lucide-react';
 import { EnvBadge } from '@/components/environments/EnvBadge';
+import { shortBranch } from '@/components/builds/BranchBadge';
 import { useSettingsStore } from '@/stores/settingsStore';
+
+/**
+ * The synthetic source environment of candidates created from the build registry. Nothing is ever
+ * deployed to it, so "from build" says nothing a reader can act on — the branch does. Kept in step
+ * with `BuildPromotions.SourceEnv` on the API side.
+ */
+const BUILD_SOURCE_ENV = 'build';
 
 /**
  * What a promotion actually does, in one line: the environment it lands in, and how that
@@ -14,14 +22,14 @@ import { useSettingsStore } from '@/stores/settingsStore';
  * to one progression. People already read the version flow the other way round in their deploy
  * notifications ("service: (5.23.108 → 5.23.113)"), so the arrow here means the same thing it does
  * there — old version on the left, new version on the right, both for the environment named by the
- * pill. The source environment is where the build comes from; it's context, not the headline, so it
- * trails in muted text.
+ * pill. Where the build comes from is context, not the headline, so it trails in muted text.
  */
 export function PromotionRoute({
   sourceEnv,
   targetEnv,
   version,
   targetCurrentVersion,
+  sourceBranch,
   size = 'sm',
   className = '',
 }: {
@@ -31,6 +39,8 @@ export function PromotionRoute({
   version: string;
   /** What `targetEnv` runs today, or null for a first deploy there. */
   targetCurrentVersion: string | null;
+  /** Full git ref, for candidates promoted straight from the build registry. */
+  sourceBranch?: string | null;
   /** `xs` for dense rows, `sm` (default) for cards and page headers. */
   size?: 'xs' | 'sm';
   className?: string;
@@ -43,11 +53,26 @@ export function PromotionRoute({
       ? { version: 11, source: 10, arrow: 11 }
       : { version: 12, source: 11, arrow: 12 };
 
+  // Where the build came from. A real source environment names itself; the build registry's
+  // synthetic env doesn't, so a build-sourced candidate shows its branch — and shows nothing at
+  // all when the branch is unknown (a registry row removed since, or an older API), because
+  // "from build" is the one answer that tells a reader nothing.
+  const fromBuild = sourceEnv === BUILD_SOURCE_ENV;
+  const branch = sourceBranch?.trim() ? shortBranch(sourceBranch.trim()) : null;
+  const origin = fromBuild ? branch : sourceName;
+  // The full ref is worth keeping reachable — a shortened branch can still be ellipsised.
+  const originTitle = fromBuild && sourceBranch ? sourceBranch : undefined;
+
   // One tooltip for the whole line — the versions ellipsise on a narrow viewport, and the sentence
   // is what makes the direction unambiguous even when nothing is clipped.
+  const provenance = fromBuild
+    ? branch
+      ? ` Built from ${branch}.`
+      : ''
+    : ` Build comes from ${sourceName}.`;
   const title = targetCurrentVersion
-    ? `Promotes ${version} into ${targetName}, replacing ${targetCurrentVersion}. Build comes from ${sourceName}.`
-    : `Promotes ${version} into ${targetName} — first deploy there. Build comes from ${sourceName}.`;
+    ? `Promotes ${version} into ${targetName}, replacing ${targetCurrentVersion}.${provenance}`
+    : `Promotes ${version} into ${targetName} — first deploy there.${provenance}`;
 
   return (
     <span
@@ -76,12 +101,15 @@ export function PromotionRoute({
           {version}
         </span>
       </span>
-      <span
-        className="whitespace-nowrap"
-        style={{ fontSize: dims.source, color: 'var(--text-muted)' }}
-      >
-        from {sourceName}
-      </span>
+      {origin && (
+        <span
+          className="truncate"
+          style={{ fontSize: dims.source, color: 'var(--text-muted)' }}
+          title={originTitle}
+        >
+          from {origin}
+        </span>
+      )}
     </span>
   );
 }

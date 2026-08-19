@@ -289,6 +289,7 @@ function PromotionTaskRow({ index, candidate }: { index: number; candidate: Prom
             targetEnv={candidate.targetEnv}
             version={candidate.version}
             targetCurrentVersion={candidate.targetCurrentVersion}
+            sourceBranch={candidate.sourceBranch}
           />
         </div>
         <div
