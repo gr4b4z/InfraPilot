@@ -97,10 +97,38 @@ export function shortHash(hash: string): string {
 }
 
 /**
+ * A trailing "one specific thing" locator on a repository URL — `/commit/<sha>`, `/pull/<n>`,
+ * GitLab's `/-/commit/<sha>`, and the tree/blob browsers. Producers vary on whether a `repository`
+ * reference points at the repository or at the exact revision it shipped, and both are legitimate
+ * as a link; only the repository root can be extended into a compare URL.
+ */
+const REPOSITORY_LOCATOR_SUFFIX =
+  /\/(?:-\/)?(?:commit|commits|pull|pullrequest|pullrequests|pull-requests|merge_requests|tree|blob|branchCompare)(?:\/[^/]*)?\/?$/i;
+
+/**
+ * The repository root behind a `repository` reference's URL: the same URL with any trailing
+ * revision/PR locator and `.git` suffix removed.
+ */
+function repositoryRootUrl(repositoryUrl: string | null | undefined): string {
+  let base = (repositoryUrl ?? '').trim().replace(/\/+$/, '');
+  // Loop, not a single replace: `/commit/<sha>` on a URL that already ended in `/tree/main` would
+  // otherwise leave half a locator behind. Bounded so a pathological URL can't spin.
+  for (let i = 0; i < 4 && REPOSITORY_LOCATOR_SUFFIX.test(base); i += 1) {
+    base = base.replace(REPOSITORY_LOCATOR_SUFFIX, '');
+  }
+  if (base.endsWith('.git')) base = base.slice(0, -4);
+  return base;
+}
+
+/**
  * Web link to the provider's commit-diff view between two revisions — "what exactly is being
  * promoted", one click from the promotion page. Built from the repository reference's URL and the
  * candidate's fromRevision/toRevision. Returns null when the provider's compare URL shape is
  * unknown or either input is missing: a wrong guess renders a 404 link, which is worse than none.
+ *
+ * The URL is reduced to the repository root first: a `repository` reference pinned to the revision
+ * it shipped (`.../_git/svc/commit/<sha>`) is common, and appending a compare path to that produced
+ * a link to nowhere.
  */
 export function commitCompareUrl(
   repositoryUrl: string | null | undefined,
@@ -110,8 +138,7 @@ export function commitCompareUrl(
 ): string | null {
   const from = (fromRevision ?? '').trim();
   const to = (toRevision ?? '').trim();
-  let base = (repositoryUrl ?? '').trim().replace(/\/+$/, '');
-  if (base.endsWith('.git')) base = base.slice(0, -4);
+  const base = repositoryRootUrl(repositoryUrl);
   // All-zero revisions are onboarding placeholders, not commits a compare view could resolve.
   if (!base || !from || !to || /^0+$/.test(from) || /^0+$/.test(to)) return null;
 
