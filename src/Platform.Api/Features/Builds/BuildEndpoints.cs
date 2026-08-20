@@ -45,19 +45,37 @@ public static class BuildEndpoints
         .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
         .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
 
-        // List for the UI picker — newest first, branch filter is a substring match. `version` is
-        // exact: it is how a link points at ONE build ((product, service, version) is the registry's
-        // unique triple), which is what a promotion's "built from …" link needs.
+        // List for the UI picker and the registry page. Newest first. `q` is the free-text search
+        // (case-insensitive substring across product, service, version, branch, commit and CI build
+        // id — "aws" finds swo-extension-aws); the named fields identify instead of search, so
+        // product/service match exactly and `version` pins ONE build, which is what a promotion's
+        // "built from …" link needs. `branch` stays a substring match. `since`/`until` window the
+        // registration time (since inclusive, until exclusive).
         // Accepts both ?service= and ?serviceName= — the rest of the API says serviceName,
         // the plan's read surface says service.
         group.MapGet("/", async (
             BuildService builds, string? product, string? service, string? serviceName, string? branch,
-            string? version, int? limit, CancellationToken ct) =>
+            string? version, string? q, DateTimeOffset? since, DateTimeOffset? until, int? limit,
+            CancellationToken ct) =>
         {
             var results = await builds.ListAsync(
-                product, service ?? serviceName, branch, version,
+                new BuildQuery(product, service ?? serviceName, branch, version, q, since, until),
                 limit is > 0 and <= 200 ? limit.Value : 50, ct);
             return Results.Ok(new { results });
+        });
+
+        // Pick lists for the page's filter combo boxes, counted against the same filters the list
+        // applies (each facet minus its own field). Takes the identical query string as the list
+        // above, so the page can send one filter state to both.
+        group.MapGet("/facets", async (
+            BuildService builds, string? product, string? service, string? serviceName, string? branch,
+            string? version, string? q, DateTimeOffset? since, DateTimeOffset? until, int? limit,
+            CancellationToken ct) =>
+        {
+            var facets = await builds.FacetsAsync(
+                new BuildQuery(product, service ?? serviceName, branch, version, q, since, until),
+                limit is > 0 and <= 500 ? limit.Value : 200, ct);
+            return Results.Ok(facets);
         });
 
         // Single build including its manifest.

@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Builds.Models;
@@ -127,27 +128,101 @@ public class BuildService
             : null;
 
     /// <summary>
-    /// Newest-first list for the UI picker and the read API. <paramref name="branch"/> is a
-    /// substring match: callers filter with "feature/MPT-1234" without spelling out the full ref.
+    /// Newest-first list for the UI picker and the read API. Every narrowing lives in
+    /// <see cref="BuildQuery"/>, which documents why each field matches the way it does.
     /// </summary>
     public async Task<List<BuildSummaryDto>> ListAsync(
-        string? product, string? service, string? branch, string? version, int limit,
-        CancellationToken ct = default)
-    {
-        var query = _db.Builds.AsNoTracking();
-        if (!string.IsNullOrWhiteSpace(product)) query = query.Where(b => b.Product == product);
-        if (!string.IsNullOrWhiteSpace(service)) query = query.Where(b => b.Service == service);
-        if (!string.IsNullOrWhiteSpace(branch)) query = query.Where(b => b.Branch.Contains(branch));
-        // Exact, unlike the branch substring: a version filter exists to identify one build.
-        if (!string.IsNullOrWhiteSpace(version)) query = query.Where(b => b.Version == version);
-
-        return await query
+        BuildQuery query, int limit, CancellationToken ct = default) =>
+        await Filter(_db.Builds.AsNoTracking(), query)
             .OrderByDescending(b => b.CreatedAt)
             .Take(limit)
             .Select(b => new BuildSummaryDto(
                 b.Id, b.Product, b.Service, b.Version, b.Branch, b.CommitSha, b.BuildId, b.BuildUrl,
                 b.ArtifactRef, b.ArtifactDigest, b.CreatedAt, b.UpdatedAt))
             .ToListAsync(ct);
+
+    /// <summary>
+    /// The pick lists behind the registry's filter combo boxes: which products, services and
+    /// branches actually have builds in the current view, and how many each would show. Counting
+    /// server-side (rather than deriving the lists from the returned page) is what makes the
+    /// filters honest — the page is capped, so a value whose builds fall past the cap would
+    /// otherwise be un-pickable.
+    /// </summary>
+    public async Task<BuildFacetsDto> FacetsAsync(
+        BuildQuery query, int limit, CancellationToken ct = default) =>
+        new(
+            // Each facet is counted with its OWN field dropped: a combo box has to keep offering
+            // the values you could switch to, or picking one product leaves the product list
+            // holding that single product and no route back.
+            await CountBy(query with { Product = null }, b => b.Product, limit, ct),
+            await CountBy(query with { Service = null }, b => b.Service, limit, ct),
+            await CountBy(query with { Branch = null }, b => b.Branch, limit, ct));
+
+    private async Task<List<BuildFacetValueDto>> CountBy(
+        BuildQuery query, Expression<Func<Build, string>> field, int limit, CancellationToken ct)
+    {
+        var rows = await Filter(_db.Builds.AsNoTracking(), query)
+            .GroupBy(field)
+            .Select(g => new { Value = g.Key, Count = g.Count() })
+            // Busiest first, ties alphabetical: `limit` has to cut something on a registry with
+            // thousands of feature branches, and the value a reader wants is usually the one with
+            // the most builds behind it.
+            .OrderByDescending(x => x.Count)
+            .ThenBy(x => x.Value)
+            .Take(limit)
+            .ToListAsync(ct);
+        return rows.Select(r => new BuildFacetValueDto(r.Value, r.Count)).ToList();
+    }
+
+    /// <summary>
+    /// Applies a <see cref="BuildQuery"/> to a build queryable. Shared by the list and the facet
+    /// counts so the counts always describe the list the same filters would return.
+    /// </summary>
+    private static IQueryable<Build> Filter(IQueryable<Build> builds, BuildQuery query)
+    {
+        // Identity fields, case-insensitively exact: they are filled from a facet pick or a link,
+        // and "the product named X" must not also mean "the product whose name contains X".
+        if (!string.IsNullOrWhiteSpace(query.Product))
+        {
+            var product = query.Product.Trim().ToLower();
+            builds = builds.Where(b => b.Product.ToLower() == product);
+        }
+        if (!string.IsNullOrWhiteSpace(query.Service))
+        {
+            var service = query.Service.Trim().ToLower();
+            builds = builds.Where(b => b.Service.ToLower() == service);
+        }
+        if (!string.IsNullOrWhiteSpace(query.Branch))
+        {
+            var branch = query.Branch.Trim().ToLower();
+            builds = builds.Where(b => b.Branch.ToLower().Contains(branch));
+        }
+        // Exact, unlike the branch substring: a version filter exists to identify one build, so
+        // "7.0.1" must not drag "7.0.10" along with it.
+        if (!string.IsNullOrWhiteSpace(query.Version))
+            builds = builds.Where(b => b.Version == query.Version);
+
+        // The free-text box. One needle across every column a person might half-remember, so
+        // searching "aws" finds swo-extension-aws whether the word sits in the product, the
+        // service or the branch, and a commit sha off a PR finds the build it came from.
+        if (!string.IsNullOrWhiteSpace(query.Query))
+        {
+            var needle = query.Query.Trim().ToLower();
+            builds = builds.Where(b =>
+                b.Product.ToLower().Contains(needle) ||
+                b.Service.ToLower().Contains(needle) ||
+                b.Version.ToLower().Contains(needle) ||
+                b.Branch.ToLower().Contains(needle) ||
+                (b.CommitSha != null && b.CommitSha.ToLower().Contains(needle)) ||
+                (b.BuildId != null && b.BuildId.ToLower().Contains(needle)));
+        }
+
+        // Registration window: Since inclusive, Until exclusive, so "the 14th" is
+        // [14th 00:00, 15th 00:00) and two adjacent days never both claim the same build.
+        if (query.Since is { } since) builds = builds.Where(b => b.CreatedAt >= since);
+        if (query.Until is { } until) builds = builds.Where(b => b.CreatedAt < until);
+
+        return builds;
     }
 
     public async Task<BuildDetailDto?> GetAsync(Guid id, CancellationToken ct = default)
