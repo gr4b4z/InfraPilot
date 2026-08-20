@@ -52,8 +52,13 @@ candidate; it does **not** recompute or infer the bundle.
   "toRevision":   "f9e8d7c",           // optional — SHA being promoted (display/traceability)
   "references": [                       // optional — the authoritative net change set
     { "type": "work-item",    "provider": "jira",   "key": "CHK-451",
-      "title": "Add express checkout", "url": "https://jira/CHK-451",
+      "title": "Add one-tap express checkout for saved cards",   // commit subject — what changed
+      "subTitle": "Add express checkout",                        // the Jira ticket's own summary
+      "url": "https://jira/CHK-451",
+      "commits": ["f9e8d7c"],                                    // the commit(s) that mentioned the ticket
       "content": "One-tap checkout for saved cards.\n\nOut of scope: guest checkout." },
+    { "type": "commit",       "provider": "github", "key": "f9e8d7c", "revision": "f9e8d7c",
+      "title": "Add one-tap express checkout for saved cards", "url": "https://github.com/o/r/commit/f9e8d7c" },
     { "type": "pull-request", "provider": "github", "key": "2087", "url": "https://github.com/o/r/pull/2087" },
     { "type": "repository",   "provider": "github", "revision": "f9e8d7c", "url": "https://github.com/o/r" }
   ],
@@ -63,8 +68,8 @@ candidate; it does **not** recompute or infer the bundle.
 }
 ```
 
-- A `reference` is `{ type, url?, provider?, key?, revision?, title?, content?, participants?,
-  commits?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
+- A `reference` is `{ type, url?, provider?, key?, revision?, title?, subTitle?, content?,
+  participants?, commits?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
   become the candidate's work items); `pull-request` / `repository` etc. are stored for display
   and traceability. `occurredAt` has the same per-type meaning as on deploy ingest
   (`notes/deployment-ingest-api.md`) and is resolved into the work item's `CommittedAt` for
@@ -75,6 +80,15 @@ candidate; it does **not** recompute or infer the bundle.
   description, commit message body) — `title` is the summary line, `content` is the prose under
   it. On a work item it becomes the **Content** section of the detail page, between People and
   Sign-off, and is omitted entirely when absent. Shown as plain text; markup is not interpreted.
+- On a work-item reference, `title` should carry the **commit subject line** (it usually
+  describes the change better than the tracker's summary) and `subTitle` the tracker's own
+  summary (the Jira ticket title), so a reviewer sees what changed and can still recognise the
+  ticket by name. Omit `subTitle` when it would repeat `title`.
+- Every work-item reference should declare `commits` — the hashes of the commits whose messages
+  mentioned it — alongside a `commit` reference per hash: that is what lets the work-item detail
+  page link the ticket to the actual change. `fromRevision`/`toRevision` plus a `repository`
+  reference let the promotion page link to the provider's commit-diff view for the whole
+  candidate ("what exactly is being promoted").
 
 **Responses**
 

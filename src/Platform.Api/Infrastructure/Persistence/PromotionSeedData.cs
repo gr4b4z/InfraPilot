@@ -130,6 +130,18 @@ public static class PromotionSeedData
             : JsonSerializer.Deserialize<List<ReferenceDto>>(source.ReferencesJson, JsonOptions) ?? new();
         candidate.References = refs;
 
+        // Commit-level provenance: real producers send the target env's current SHA and the SHA
+        // being promoted, and the detail page renders them as a compare link off the repository
+        // reference. Mirror that here (toRevision from the source event's repository reference,
+        // fromRevision synthesized) so the revision row shows up on a fresh database.
+        var repositoryRevision = refs.FirstOrDefault(r =>
+            string.Equals(r.Type, "repository", StringComparison.OrdinalIgnoreCase))?.Revision;
+        if (!string.IsNullOrWhiteSpace(repositoryRevision))
+        {
+            candidate.ToRevision = repositoryRevision;
+            candidate.FromRevision = Guid.NewGuid().ToString("N")[..12];
+        }
+
         if (!tracksWorkItems) return;
 
         var workItems = refs
@@ -150,6 +162,7 @@ public static class PromotionSeedData
                 Provider = r.Provider,
                 Url = r.Url,
                 Title = r.Title,
+                SubTitle = r.SubTitle,
                 Content = r.Content,
                 Revision = r.Revision,
                 CreatedAt = candidate.CreatedAt,

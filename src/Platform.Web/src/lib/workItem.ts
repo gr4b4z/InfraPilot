@@ -97,6 +97,39 @@ export function shortHash(hash: string): string {
 }
 
 /**
+ * Web link to the provider's commit-diff view between two revisions — "what exactly is being
+ * promoted", one click from the promotion page. Built from the repository reference's URL and the
+ * candidate's fromRevision/toRevision. Returns null when the provider's compare URL shape is
+ * unknown or either input is missing: a wrong guess renders a 404 link, which is worse than none.
+ */
+export function commitCompareUrl(
+  repositoryUrl: string | null | undefined,
+  provider: string | null | undefined,
+  fromRevision: string | null | undefined,
+  toRevision: string | null | undefined,
+): string | null {
+  const from = (fromRevision ?? '').trim();
+  const to = (toRevision ?? '').trim();
+  let base = (repositoryUrl ?? '').trim().replace(/\/+$/, '');
+  if (base.endsWith('.git')) base = base.slice(0, -4);
+  // All-zero revisions are onboarding placeholders, not commits a compare view could resolve.
+  if (!base || !from || !to || /^0+$/.test(from) || /^0+$/.test(to)) return null;
+
+  switch ((provider ?? '').trim().toLowerCase()) {
+    case 'github':
+      return `${base}/compare/${from}...${to}`;
+    case 'gitlab':
+      return `${base}/-/compare/${from}...${to}`;
+    case 'azure-devops':
+    case 'azuredevops':
+    case 'ado':
+      return `${base}/branchCompare?baseVersion=GC${from}&targetVersion=GC${to}&_a=commits`;
+    default:
+      return null;
+  }
+}
+
+/**
  * Presentation for a work-item decision. One source of truth so the queue, the promotion row, and
  * the detail page can't drift on what a decision looks like or reads as.
  *

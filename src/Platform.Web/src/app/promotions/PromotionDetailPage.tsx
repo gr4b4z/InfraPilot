@@ -27,6 +27,7 @@ import {
   XCircle,
   Rocket,
   ExternalLink,
+  GitCompareArrows,
   GitPullRequest,
   GitBranch,
   Ticket,
@@ -54,7 +55,7 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { resolveReferenceHref } from '@/lib/refUrl';
-import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
+import { commitCompareUrl, decisionStyle, shortHash, workItemDetailPath } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
@@ -255,6 +256,18 @@ export function PromotionDetailPage() {
   const bundleWorkItems = buildBundleWorkItems(sourceEvent);
   const isReadOnly = TERMINAL_STATUSES.includes(candidate.status);
 
+  // The provider's commit-diff view between what the target runs and what is being promoted — the
+  // exact change set the work items below were derived from. Needs both revisions plus the
+  // candidate's repository reference for the URL shape; absent any of them the row shows what it
+  // can (bare revisions) or nothing.
+  const repositoryRef = candidate.sourceEventReferences.find((r) => r.type === 'repository');
+  const compareUrl = commitCompareUrl(
+    repositoryRef?.url,
+    repositoryRef?.provider,
+    candidate.fromRevision,
+    candidate.toRevision,
+  );
+
   return (
     <PromoReadOnlyCtx.Provider value={isReadOnly}>
     <div className="max-w-3xl mx-auto space-y-6">
@@ -284,6 +297,37 @@ export function PromotionDetailPage() {
               sourceBranch={candidate.sourceBranch}
             />
           </div>
+          {/* Commit-level provenance: the revision span this promotion ships, linking to the
+              provider's diff so "what exactly is in this?" is one click, not an archaeology dig. */}
+          {(candidate.fromRevision || candidate.toRevision) && (
+            <div
+              className="mt-1.5 flex items-center gap-1.5 text-[12px] font-mono"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <GitCompareArrows size={13} style={{ flexShrink: 0 }} />
+              {candidate.fromRevision && candidate.toRevision ? (
+                compareUrl ? (
+                  <a
+                    href={compareUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 transition-colors hover:text-[var(--accent)]"
+                    style={{ color: 'var(--text-secondary)' }}
+                    title="Open the commit diff this promotion ships"
+                  >
+                    {shortHash(candidate.fromRevision)} → {shortHash(candidate.toRevision)}
+                    <ExternalLink size={11} />
+                  </a>
+                ) : (
+                  <span>
+                    {shortHash(candidate.fromRevision)} → {shortHash(candidate.toRevision)}
+                  </span>
+                )
+              ) : (
+                <span>{shortHash(candidate.toRevision ?? candidate.fromRevision ?? '')}</span>
+              )}
+            </div>
+          )}
         </div>
         <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
           <StatusIcon size={10} />
@@ -2052,6 +2096,18 @@ function TicketRow({
                 column, so a reviewer scanning the bundle sees which item is missing an owner. */}
             <MissingRolesBadge roles={missingRoles} />
           </div>
+
+          {/* The tracker's own summary when the title above carries the commit subject — the ticket
+              name a reviewer would recognise from Jira, without displacing what actually changed. */}
+          {reference.subTitle && reference.subTitle !== reference.title && (
+            <p
+              className="text-[11px] truncate"
+              style={{ color: 'var(--text-muted)' }}
+              title={reference.subTitle}
+            >
+              {reference.subTitle}
+            </p>
+          )}
 
           {/* Reference-level participants (e.g. QA on a ticket). Editable in place: writes go to
               PATCH /api/promotions/{id}/references/{key}/participants. The wrapper keeps assignment

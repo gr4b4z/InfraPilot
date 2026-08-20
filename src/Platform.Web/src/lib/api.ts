@@ -1332,6 +1332,13 @@ export interface PromotionCandidate {
   sourceEnv: string;
   targetEnv: string;
   version: string;
+  /**
+   * Display/traceability revisions: the SHA the target env currently runs and the SHA being
+   * promoted. Supplied by the external creator; either may be null. Together with the candidate's
+   * `repository` reference they let the UI link to the provider's commit-diff view.
+   */
+  fromRevision?: string | null;
+  toRevision?: string | null;
   /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
   targetCurrentVersion: string | null;
   /**
@@ -1559,6 +1566,11 @@ export interface WorkItemDetail {
   environments: WorkItemEnvironment[];
   title: string | null;
   /**
+   * Secondary display line: the tracker's own summary (e.g. the Jira ticket title) when `title`
+   * carries the commit subject. Null when the producer sent a single name.
+   */
+  subTitle: string | null;
+  /**
    * The work item's body, copied verbatim from the source system — a Jira description, a PR
    * description, a commit message body. Where `title` is the one-line summary, this is the prose
    * under it. Null when the producer sent none; the server blanks-to-null, so a non-null value
@@ -1622,6 +1634,8 @@ export interface PendingTicket {
   provider: string | null;
   url: string | null;
   title: string | null;
+  /** Secondary display line — see `WorkItemDetail.subTitle`. */
+  subTitle?: string | null;
   candidateId: string;
   service: string;
   version: string;
@@ -1700,6 +1714,12 @@ export interface PromotionSourceEventReference {
   key?: string | null;
   revision?: string | null;
   title?: string | null;
+  /**
+   * Secondary display line under `title`. Set on `work-item` references when the title carries the
+   * commit subject and the tracker has its own summary (e.g. the Jira ticket title). Absent when
+   * the producer has only one name for the thing.
+   */
+  subTitle?: string | null;
   /**
    * Commit hashes this reference was derived from — set by the producer on `work-item` references
    * to record which commit messages mentioned the ticket. The server uses it to resolve the
