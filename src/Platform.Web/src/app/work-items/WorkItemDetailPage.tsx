@@ -213,6 +213,13 @@ export function WorkItemDetailPage() {
               {detail.title}
             </p>
           )}
+          {/* The tracker's own summary, when the title above carries the commit subject. Quieter
+              than the title: it names the ticket, the title names the change. */}
+          {detail.subTitle && detail.subTitle !== detail.title && (
+            <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {detail.subTitle}
+            </p>
+          )}
           <div
             className="flex items-center gap-2 flex-wrap mt-2 text-[12px]"
             style={{ color: 'var(--text-secondary)' }}

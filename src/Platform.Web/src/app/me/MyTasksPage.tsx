@@ -388,7 +388,8 @@ function WorkItemTaskRow({
             <span
               className="text-[12px] truncate"
               style={{ color: 'var(--text-secondary)' }}
-              title={ticket.title}
+              // Tooltip carries the tracker summary too when the visible title is the commit subject.
+              title={ticket.subTitle ? `${ticket.title}\n${ticket.subTitle}` : ticket.title}
             >
               {ticket.title}
             </span>

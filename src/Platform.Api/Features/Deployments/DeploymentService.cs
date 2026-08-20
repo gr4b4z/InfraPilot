@@ -220,6 +220,7 @@ public class DeploymentService
                     Key: r.Key,
                     Revision: r.Revision,
                     Title: r.Title,
+                    SubTitle: r.SubTitle,
                     // Apply the same role canonicalisation to nested participants so
                     // reference-level roles are stored in the same shape as event-level.
                     Participants: r.Participants is null
@@ -470,7 +471,7 @@ public class DeploymentService
         var workItemRows = await _db.DeployEventWorkItems.AsNoTracking()
             .Where(w => w.DeployEventId == id)
             .OrderBy(w => w.WorkItemKey)
-            .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title })
+            .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle })
             .ToListAsync(ct);
 
         // Sign-off is keyed on (key, product, targetEnv), so a link needs a target env. Take them
@@ -481,7 +482,7 @@ public class DeploymentService
             .ToList();
 
         var workItemDtos = workItemRows
-            .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, signOffEnvs))
+            .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, signOffEnvs))
             .ToList();
 
         return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);

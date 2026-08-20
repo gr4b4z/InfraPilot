@@ -25,6 +25,11 @@ public class DeployEventWorkItem
     public string? Url { get; set; }
     public string? Title { get; set; }
 
+    // Secondary display line: when the producer names the change by its commit subject (Title),
+    // this carries the tracker's own summary — e.g. the Jira ticket title. Null when the producer
+    // sent a single name.
+    public string? SubTitle { get; set; }
+
     // The ticket body as the producer sent it — Jira description, PR description, commit message
     // body. Unbounded: a description is prose, not a label.
     public string? Content { get; set; }

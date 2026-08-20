@@ -304,6 +304,34 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
+    /// Producers title a work item by the commit subject (what actually changed) and carry the
+    /// tracker's own summary as subTitle. Both must survive the create → projection → detail round
+    /// trip, so a reviewer sees the change description and can still recognise the Jira name.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithSubTitledWorkItem_ReturnsBothLinesOnDetail()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "MPT-24001",
+                  url = "https://example.atlassian.net/browse/MPT-24001",
+                  title = "Merged PR 150001: Reject duplicate offboarding requests",
+                  subTitle = "Duplicate offboarding requests" },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.2.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-24001/detail?product=acme&targetEnv=prod");
+        Assert.Equal("Merged PR 150001: Reject duplicate offboarding requests",
+            detail.GetProperty("title").GetString());
+        Assert.Equal("Duplicate offboarding requests", detail.GetProperty("subTitle").GetString());
+    }
+
+    /// <summary>
     /// A declared hash with no matching <c>commit</c> reference still renders — the producer saw that
     /// commit, and dropping it would understate the change set. Abbreviated hashes match the full
     /// reference, because commit messages and version strings routinely carry the short form.

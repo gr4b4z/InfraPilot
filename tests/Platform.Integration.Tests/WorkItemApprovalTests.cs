@@ -772,6 +772,43 @@ public class WorkItemApprovalTests
         }
     }
 
+    /// <summary>
+    /// The two-line naming reaches the detail page: title carries the commit subject, subTitle the
+    /// tracker's own summary. A subtitle that merely repeats the title is dropped server-side — a
+    /// second line saying the same thing is noise, not information.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_ReturnsSubTitle_AndDropsItWhenItRepeatsTheTitle()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                title: "Retry checkout submits with an idempotency key", subTitle: "Fix retry");
+            await SeedPolicyEventCandidateAsync(db, "BAR-1", approverGroup: "ReleaseApprovers",
+                title: "Fix retry", subTitle: "Fix retry");
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal("Retry checkout submits with an idempotency key", detail!.Title);
+            Assert.Equal("Fix retry", detail.SubTitle);
+
+            var duplicate = await svc.GetDetailAsync("BAR-1", "acme", "prod", default);
+            Assert.NotNull(duplicate);
+            Assert.Equal("Fix retry", duplicate!.Title);
+            Assert.Null(duplicate.SubTitle);
+        }
+    }
+
     [Fact]
     public async Task GetTicketContext_CannotApprove_WhenTicketIsUnknown()
     {
@@ -1345,7 +1382,9 @@ public class WorkItemApprovalTests
             string sourceEnv = "staging",
             string targetEnv = "prod",
             DateTimeOffset? createdAt = null,
-            string? content = null)
+            string? content = null,
+            string? title = null,
+            string? subTitle = null)
     {
         var ev = NewDeployEvent(participants, product, service, sourceEnv);
         db.DeployEvents.Add(ev);
@@ -1363,6 +1402,8 @@ public class WorkItemApprovalTests
             WorkItemKey = workItemKey,
             Product = product,
             TargetEnv = targetEnv,
+            Title = title,
+            SubTitle = subTitle,
             Content = content,
             CreatedAt = DateTimeOffset.UtcNow,
         };
