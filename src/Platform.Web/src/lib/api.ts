@@ -3,6 +3,32 @@ import { buildApiUrl } from './runtimeConfig';
 import { isLocalAuthEnabled } from './authConfig';
 import { getStoredToken } from './localAuth';
 
+/**
+ * Everything the build registry read surface filters on. Shared by the list and the facet counts,
+ * which take the identical query string — the counts describe the list, so they must be asked the
+ * same question.
+ */
+export interface BuildQueryParams {
+  product?: string;
+  service?: string;
+  branch?: string;
+  version?: string;
+  /** Free-text search — substring across product, service, version, branch, commit, CI build id. */
+  q?: string;
+  /** ISO instant; inclusive lower bound on registration time. */
+  since?: string;
+  /** ISO instant; exclusive upper bound on registration time. */
+  until?: string;
+}
+
+/** Serialises build filters, dropping the ones that aren't set, into a leading-`?` query string. */
+function buildQuery(params?: BuildQueryParams & { limit?: number }): string {
+  const entries = Object.entries(params ?? {})
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => [k, String(v)] as [string, string]);
+  return entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+}
+
 class ApiClient {
   private token: string | null = null;
 
@@ -144,16 +170,22 @@ class ApiClient {
 
   // Build registry
   /**
-   * Registered builds, newest first. `branch` is a substring match, so "MPT-1234" finds the
-   * feature branch without spelling out the full ref; `version` is exact, so product + service +
-   * version identifies exactly one build.
+   * Registered builds, newest first. `q` is the free-text search (substring across product, service,
+   * version, branch, commit and CI build id); `product`/`service` match exactly, `version` pins one
+   * build, `branch` is a substring, and `since`/`until` are ISO instants windowing the registration
+   * time.
    */
-  listBuilds(params?: { product?: string; service?: string; branch?: string; version?: string; limit?: number }) {
-    const entries = Object.entries(params ?? {})
-      .filter(([, v]) => v !== undefined && v !== '')
-      .map(([k, v]) => [k, String(v)] as [string, string]);
-    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
-    return this.request<{ results: import('./types').BuildSummary[] }>(`/builds${query}`);
+  listBuilds(params?: BuildQueryParams & { limit?: number }) {
+    return this.request<{ results: import('./types').BuildSummary[] }>(`/builds${buildQuery(params)}`);
+  }
+
+  /**
+   * Which products, services and branches have builds under the given filters, and how many each
+   * holds — the pick lists behind the registry page's filter combo boxes. Each facet ignores its
+   * own field, so the list a filter came from still offers the alternatives to the current pick.
+   */
+  getBuildFacets(params?: BuildQueryParams) {
+    return this.request<import('./types').BuildFacets>(`/builds/facets${buildQuery(params)}`);
   }
 
   /**

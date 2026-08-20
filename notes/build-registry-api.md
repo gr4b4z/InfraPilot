@@ -79,9 +79,25 @@ failure and a re-run of the whole stage repeats the POST harmlessly.
 ## Read surface
 
 ```
-GET /api/builds?product=&service=&branch=&limit=     — newest first; `branch` is a substring match
+GET /api/builds?q=&product=&service=&branch=&version=&since=&until=&limit=   — newest first
+GET /api/builds/facets?<same filters>                 — pick lists with counts, for the UI filters
 GET /api/builds/{id}                                  — one build, including the inline manifest
 ```
+
+How each filter matches:
+
+| Param | Match |
+| --- | --- |
+| `q` | case-insensitive substring across product, service, version, branch, commit sha and CI build id — `q=aws` finds `swo-extension-aws` |
+| `product`, `service` | exact, case-insensitive — they identify rather than search |
+| `version` | exact — `(product, service, version)` is the registry's unique triple, so it names ONE build |
+| `branch` | case-insensitive substring — `branch=MPT-1234` without the `refs/heads/` prefix |
+| `since`, `until` | registration-time window, ISO instants; `since` inclusive, `until` exclusive |
+| `limit` | 1–200, default 50 (facets: 1–500 values per list, default 200) |
+
+`/facets` returns `{ products: [{ value, count }], services: […], branches: […] }`, busiest
+value first. Each list is counted with every filter applied *except its own field*, so picking a
+product narrows the service and branch lists while the product list still offers the alternatives.
 
 Read endpoints accept the same auth as the rest of the API (signed-in user or API key).
 The web UI lists the registry under **Deployments → Builds**.

@@ -14,7 +14,7 @@ import { AlertTriangle, Plus, Trash2, Check, Pencil, X } from 'lucide-react';
 // Directory pickers and form styling are shared with the rollback policy editor — both configure
 // approvers from the same group/user vocabulary under the same server-side matching rules.
 import { UserPicker, GroupPicker } from './approverPickers';
-import { ComboBox, type ComboOption } from './ComboBox';
+import { ComboBox, type ComboOption } from '@/components/ui/ComboBox';
 import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
 
 /** The synthetic source env for promotions straight from the build registry. */

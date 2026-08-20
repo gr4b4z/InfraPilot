@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Integration.Tests;
 
@@ -243,5 +245,155 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
     {
         var response = await _adminClient.GetAsync($"/api/builds/{Guid.NewGuid()}");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // ── Free-text search ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Search_MatchesAnyNameColumn_CaseInsensitively()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("swo-extension-aws", "provisioner", "1.0.0-gsearch"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-search", "aws-connector", "1.0.1-gsearch"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-search", "billing", "1.0.2-gsearch", branch: "refs/heads/feature/aws-migration"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-search", "gcp-connector", "1.0.3-gsearch"));
+
+        // The point of the search box: a word the reader half-remembers, found wherever it lives —
+        // "aws" reaches swo-extension-aws (product), aws-connector (service) and the feature branch,
+        // and casing is not something anyone should have to get right.
+        var hits = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?q=AWS");
+        var versions = hits.GetProperty("results").EnumerateArray()
+            .Select(r => r.GetProperty("version").GetString()).ToList();
+        Assert.Contains("1.0.0-gsearch", versions);
+        Assert.Contains("1.0.1-gsearch", versions);
+        Assert.Contains("1.0.2-gsearch", versions);
+        Assert.DoesNotContain("1.0.3-gsearch", versions);
+    }
+
+    [Fact]
+    public async Task Search_MatchesCommitSha()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-sha", "svc", "2.0.0-gsha"));
+
+        // A sha pasted off a pull request is the other thing people arrive with.
+        var hits = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?q=495d92f0");
+        Assert.Contains("2.0.0-gsha", hits.GetProperty("results").EnumerateArray()
+            .Select(r => r.GetProperty("version").GetString()));
+    }
+
+    [Fact]
+    public async Task ProductFilter_StaysExact_WhileSearchIsSubstring()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("swo-extension-exact", "svc", "3.0.0-gexact"));
+
+        // product= identifies rather than searches: it is filled from a facet pick or a link, and
+        // the build picker relies on "the product named X" not also meaning "contains X".
+        var exact = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?product=extension");
+        Assert.Empty(exact.GetProperty("results").EnumerateArray());
+
+        // Casing still shouldn't matter — a link typed by hand is not a different product.
+        var cased = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?product=SWO-Extension-Exact");
+        Assert.Single(cased.GetProperty("results").EnumerateArray());
+    }
+
+    // ── Registration-time window ────────────────────────────────────────────
+
+    [Fact]
+    public async Task List_FiltersByRegistrationWindow()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-when", "svc", "4.0.0-gold"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-when", "svc", "4.0.1-gnew"));
+        // Only a backdated row can prove the window is applied rather than ignored.
+        var cutoff = Backdate("bld-when", "4.0.0-gold", TimeSpan.FromDays(10));
+
+        var since = Uri.EscapeDataString(cutoff.AddDays(1).ToString("O"));
+        var recent = await _adminClient.GetFromJsonAsync<JsonElement>(
+            $"/api/builds?product=bld-when&since={since}");
+        Assert.Equal("4.0.1-gnew",
+            Assert.Single(recent.GetProperty("results").EnumerateArray().ToList())
+                .GetProperty("version").GetString());
+
+        // A closed window is what answers "what did we build that day" — `until` is exclusive, so
+        // the day after the backdated build excludes today's.
+        var until = Uri.EscapeDataString(cutoff.AddDays(1).ToString("O"));
+        var thatDay = await _adminClient.GetFromJsonAsync<JsonElement>(
+            $"/api/builds?product=bld-when&since={Uri.EscapeDataString(cutoff.AddDays(-1).ToString("O"))}&until={until}");
+        Assert.Equal("4.0.0-gold",
+            Assert.Single(thatDay.GetProperty("results").EnumerateArray().ToList())
+                .GetProperty("version").GetString());
+    }
+
+    // ── Facets ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Facets_CountValues_AndNarrowOnTheOtherFilters()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-facet", "api", "5.0.0-gf", branch: "refs/heads/main"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-facet", "api", "5.0.1-gf", branch: "refs/heads/feature/MPT-9001"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-facet", "web", "5.0.2-gf", branch: "refs/heads/main"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-facet-other", "api", "5.0.3-gf", branch: "refs/heads/main"));
+
+        var scoped = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds/facets?product=bld-facet");
+
+        // The service and branch lists narrow to the picked product — that is what makes the combo
+        // boxes usable on a registry holding every product's branches.
+        Assert.Equal(2, FacetCount(scoped, "services", "api"));
+        Assert.Equal(1, FacetCount(scoped, "services", "web"));
+
+        // …but the product list keeps offering the products you could switch to, or picking one
+        // would leave the field holding that product and no route back.
+        Assert.Equal(3, FacetCount(scoped, "products", "bld-facet"));
+        Assert.Equal(1, FacetCount(scoped, "products", "bld-facet-other"));
+
+        Assert.Equal(2, FacetCount(scoped, "branches", "refs/heads/main"));
+        Assert.Equal(1, FacetCount(scoped, "branches", "refs/heads/feature/MPT-9001"));
+    }
+
+    [Fact]
+    public async Task Facets_FollowTheSearchBox()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-facetq-keep", "svc", "6.0.0-gfq"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds",
+            MakePayload("bld-facetq-drop", "svc", "6.0.1-gfq"));
+
+        // The pick lists describe the searched view, not the whole registry — a suggestion that
+        // yields nothing under the search in effect is a dead end.
+        var facets = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds/facets?q=bld-facetq-keep");
+        Assert.Equal(1, FacetCount(facets, "products", "bld-facetq-keep"));
+        Assert.Equal(0, FacetCount(facets, "products", "bld-facetq-drop"));
+    }
+
+    /// <summary>The count a facet reports for one value, or 0 when it isn't in the list at all.</summary>
+    private static int FacetCount(JsonElement facets, string facet, string value) =>
+        facets.GetProperty(facet).EnumerateArray()
+            .Where(f => f.GetProperty("value").GetString() == value)
+            .Select(f => f.GetProperty("count").GetInt32())
+            .FirstOrDefault();
+
+    /// <summary>
+    /// Moves one build's registration time into the past and returns its new instant. The API
+    /// stamps <c>CreatedAt</c> itself (the registry records when it heard about a build, not what
+    /// the caller claims), so a window test has to reach past it to the row.
+    /// </summary>
+    private DateTimeOffset Backdate(string product, string version, TimeSpan age)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var build = db.Builds.Single(b => b.Product == product && b.Version == version);
+        build.CreatedAt = DateTimeOffset.UtcNow - age;
+        db.SaveChanges();
+        return build.CreatedAt;
     }
 }

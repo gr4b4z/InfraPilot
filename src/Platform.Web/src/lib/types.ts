@@ -404,6 +404,23 @@ export interface BuildSummary {
   updatedAt: string | null;
 }
 
+/** One value a build filter can take, with how many builds the current view holds for it. */
+export interface BuildFacetValue {
+  value: string;
+  count: number;
+}
+
+/**
+ * Pick lists for the build registry's filter combo boxes. Each list is counted with every other
+ * filter applied but not its own, so a selected product still shows the products you could switch
+ * to while narrowing the services and branches below it.
+ */
+export interface BuildFacets {
+  products: BuildFacetValue[];
+  services: BuildFacetValue[];
+  branches: BuildFacetValue[];
+}
+
 /** A target env a registered build can be promoted to (an edge with a resolving build → * policy). */
 export interface BuildTarget {
   targetEnv: string;
