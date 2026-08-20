@@ -260,6 +260,11 @@ export function PromotionDetailPage() {
   const bundleWorkItems = buildBundleWorkItems(sourceEvent);
   const isReadOnly = TERMINAL_STATUSES.includes(candidate.status);
 
+  // Where every "Deployed" on this page points: the status badge, the read-only banner and the
+  // timestamp all name the same fact, so they all link to the deploy that shipped it. Null while
+  // the promotion is open, or when no matching deploy event can be found.
+  const deploymentHref = deploymentEventId ? `/deployments/events/${deploymentEventId}` : null;
+
   // The provider's commit-diff view between what the target runs and what is being promoted — the
   // exact change set the work items below were derived from. Needs both revisions plus the
   // candidate's repository reference for the URL shape; absent any of them the row shows what it
@@ -335,10 +340,22 @@ export function PromotionDetailPage() {
             </div>
           )}
         </div>
-        <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
-          <StatusIcon size={10} />
-          {candidate.status}
-        </span>
+        {deploymentHref ? (
+          <Link
+            to={deploymentHref}
+            className="badge transition-opacity hover:opacity-80 hover:underline"
+            style={{ backgroundColor: cfg.bg, color: cfg.color }}
+            title="View the deployment that shipped this version"
+          >
+            <StatusIcon size={10} />
+            {candidate.status}
+          </Link>
+        ) : (
+          <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
+            <StatusIcon size={10} />
+            {candidate.status}
+          </span>
+        )}
       </div>
 
       {/* Success banner. Approved and Bypassed are both positive outcomes (the candidate advanced);
@@ -415,7 +432,19 @@ export function PromotionDetailPage() {
           }}
         >
           <CheckCircle size={13} style={{ color: cfg.color, flexShrink: 0 }} />
-          This promotion is <strong style={{ color: cfg.color }}>{candidate.status}</strong> — the page is read-only.
+          This promotion is{' '}
+          {deploymentHref ? (
+            <Link
+              to={deploymentHref}
+              className="hover:underline"
+              title="View the deployment that shipped this version"
+            >
+              <strong style={{ color: cfg.color }}>{candidate.status}</strong>
+            </Link>
+          ) : (
+            <strong style={{ color: cfg.color }}>{candidate.status}</strong>
+          )}{' '}
+          — the page is read-only.
         </div>
       )}
 
@@ -636,9 +665,9 @@ export function PromotionDetailPage() {
                   {/* "Deployed" links to the deploy event that put this version live, when we can
                       resolve it — the promotion says the change shipped, and this is where to go to
                       see what actually landed. Plain text when there is no event to point at. */}
-                  {deploymentEventId ? (
+                  {deploymentHref ? (
                     <Link
-                      to={`/deployments/events/${deploymentEventId}`}
+                      to={deploymentHref}
                       className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider hover:underline"
                       style={{ color: 'var(--accent)' }}
                       title="View the deployment that shipped this version"
