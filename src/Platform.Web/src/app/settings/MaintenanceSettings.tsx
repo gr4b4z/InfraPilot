@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Trash2, Check, ArrowRight, RotateCcw, Undo2 } from 'lucide-react';
+import { Trash2, Check, ArrowRight, RotateCcw, Undo2, Unlink } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { DeletedService, PromotionReconcileResult } from '@/lib/api';
+import type {
+  DeletedService,
+  OrphanedWorkItem,
+  OrphanedWorkItemSweepResult,
+  PromotionReconcileResult,
+} from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 
 /**
@@ -25,6 +30,7 @@ export function MaintenanceSettings() {
       />
       <LogRetentionCard />
       <PromotionReconcileCard />
+      <OrphanedWorkItemsCard />
       <DuplicateScanCard
         title="Duplicate promotion candidates"
         description="An earlier create path minted a new promotion per external request instead of
@@ -627,6 +633,191 @@ function ReconcileTable({ result }: { result: PromotionReconcileResult }) {
                 ) : (
                   <span style={{ color: 'var(--text-muted)' }}>
                     Superseded — target moved to <span className="font-mono">{c.landedVersion}</span>
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Stranded work items ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The work-item counterpart of {@link PromotionReconcileCard}: signs off the queue rows flagged
+ * "No live promotion". Same preview-then-apply contract, and the preview is the same scan the apply
+ * runs, so the reviewed list is the list acted on — bar anything decided between the two clicks,
+ * which comes back as a per-row error rather than a silent skip.
+ */
+function OrphanedWorkItemsCard() {
+  const [preview, setPreview] = useState<OrphanedWorkItemSweepResult | null>(null);
+  const [applied, setApplied] = useState<OrphanedWorkItemSweepResult | null>(null);
+  const [running, setRunning] = useState<'preview' | 'apply' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (dryRun: boolean) => {
+    setRunning(dryRun ? 'preview' : 'apply');
+    setError(null);
+    try {
+      const result = await api.approveOrphanedWorkItems(dryRun);
+      if (dryRun) {
+        setApplied(null);
+        setPreview(result);
+      } else {
+        setPreview(null);
+        setApplied(result);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sweep failed');
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  const shown = preview ?? applied;
+
+  return (
+    <section
+      className="rounded-xl border p-5 space-y-4"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div>
+        <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Stranded work items
+        </h2>
+        <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          A work item whose promotions were all superseded or rejected — the “No live promotion” rows
+          in the work-item queue — has no gate left to feed and no deploy that will ever retire it, so
+          it stays pending forever. This approves them in bulk, on your name, with a note saying it
+          was a maintenance sweep. Items a live promotion still carries are ordinary pending work and
+          are left alone, and so is anything somebody already decided: an issue or a block is a
+          deliberate hold, not a leftover.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        {!preview && (
+          <button
+            onClick={() => void run(true)}
+            disabled={running !== null}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
+            style={{ backgroundColor: 'var(--accent)' }}
+          >
+            {running === 'preview' ? 'Scanning…' : 'Scan for stranded items'}
+          </button>
+        )}
+
+        {preview && preview.examined === 0 && (
+          <>
+            <span className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+              Nothing stranded — every undecided work item is still carried by a live promotion.
+            </span>
+            <button
+              onClick={() => setPreview(null)}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Dismiss
+            </button>
+          </>
+        )}
+
+        {preview && preview.examined > 0 && (
+          <>
+            <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+              <strong>{preview.examined}</strong> stranded{' '}
+              {preview.examined === 1 ? 'work item' : 'work items'} awaiting sign-off.
+            </span>
+            <button
+              onClick={() => void run(false)}
+              disabled={running !== null}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
+              style={{ backgroundColor: 'var(--accent)' }}
+            >
+              <Check size={14} />
+              {running === 'apply' ? 'Approving…' : `Approve ${preview.examined}`}
+            </button>
+            <button
+              onClick={() => setPreview(null)}
+              disabled={running !== null}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Cancel
+            </button>
+          </>
+        )}
+
+        {applied && (
+          <span className="inline-flex items-center gap-1.5 text-[13px]" style={{ color: 'var(--success)' }}>
+            <Check size={14} />
+            Approved {applied.approved} of {applied.examined}{' '}
+            {applied.examined === 1 ? 'work item' : 'work items'}
+            {applied.failed > 0 && (
+              <span style={{ color: 'var(--text-muted)' }}>
+                {' '}
+                — {applied.failed} could not be signed off (see below).
+              </span>
+            )}
+          </span>
+        )}
+      </div>
+
+      {/* The reviewed list is the point of the preview step, so it renders in full rather than as a
+          bare count — and after an apply it carries the per-row failures. */}
+      {shown && shown.items.length > 0 && <OrphanedWorkItemsTable items={shown.items} />}
+
+      {error && <CardError message={error} />}
+    </section>
+  );
+}
+
+function OrphanedWorkItemsTable({ items }: { items: OrphanedWorkItem[] }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr
+            className="text-left text-[11px] uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <th className="px-3 py-2 font-semibold">Work item</th>
+            <th className="px-3 py-2 font-semibold">Product / service</th>
+            <th className="px-3 py-2 font-semibold">Target</th>
+            <th className="px-3 py-2 font-semibold">Version</th>
+            <th className="px-3 py-2 font-semibold">Stranded by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr
+              key={`${item.product}/${item.targetEnv}/${item.workItemKey}`}
+              className="border-t"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+            >
+              <td className="px-3 py-2">
+                <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {item.workItemKey}
+                </span>
+                {item.title && <span className="ml-1.5">{item.title}</span>}
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {item.product} / {item.service}
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                <EnvBadge env={item.targetEnv} />
+              </td>
+              <td className="px-3 py-2 font-mono whitespace-nowrap">{item.version}</td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {item.error ? (
+                  <span style={{ color: 'var(--danger, #dc2626)' }}>{item.error}</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                    <Unlink size={10} />
+                    {item.candidateStatus}
                   </span>
                 )}
               </td>

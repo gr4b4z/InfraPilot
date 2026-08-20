@@ -73,7 +73,8 @@ const NAV: NavItem[] = [
     to: 'maintenance',
     label: 'Maintenance',
     icon: Wrench,
-    description: 'Data repair: duplicates, stranded promotions, log retention, webhook deliveries',
+    description:
+      'Data repair: duplicates, stranded promotions and work items, log retention, webhook deliveries',
   },
   {
     to: 'release-notes-template',
