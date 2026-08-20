@@ -1348,6 +1348,304 @@ public class WorkItemApprovalTests
         Assert.Equal("FOO-2", tickets[0].GetProperty("workItemKey").GetString());
     }
 
+    // ── Maintenance: the "No live promotion" sweep ──────────────────────────
+
+    /// <summary>
+    /// The dry run is a report: it lists what the apply would sign off and writes nothing at all.
+    /// </summary>
+    [Fact]
+    public async Task ApproveOrphaned_DryRun_ListsStrandedItems_AndWritesNothing()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "admin@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.Admin" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, dead) = await SeedPolicyEventCandidateAsync(db, "ORPH-1",
+                approverGroup: "ReleaseApprovers", title: "Stranded ticket");
+            dead.Status = PromotionStatus.Superseded;
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var result = await svc.ApproveOrphanedWorkItemsAsync(dryRun: true);
+
+            Assert.True(result.DryRun);
+            Assert.Equal(1, result.Examined);
+            Assert.Equal(0, result.Approved);
+            Assert.Equal(0, result.Failed);
+            var item = Assert.Single(result.Items);
+            Assert.Equal("ORPH-1", item.WorkItemKey);
+            Assert.Equal("Stranded ticket", item.Title);
+            Assert.Equal("acme", item.Product);
+            Assert.Equal("prod", item.TargetEnv);
+            Assert.Equal("api", item.Service);
+            Assert.Equal("Superseded", item.CandidateStatus);
+            Assert.Null(item.Error);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Empty(await db.WorkItemApprovals.AsNoTracking().ToListAsync());
+            Assert.Empty(await db.WorkItemComments.AsNoTracking().ToListAsync());
+        }
+    }
+
+    /// <summary>
+    /// The apply signs each item off on the caller's name, through the ordinary decision path — so
+    /// the approval row, the audit entry and the comment-thread entry all appear.
+    /// </summary>
+    [Fact]
+    public async Task ApproveOrphaned_SignsOffStrandedItems()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "sweeper@example.com";
+        factory.Current.Name = "Sweeper";
+        factory.Current.RolesList = new() { "InfraPortal.Admin" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, superseded) = await SeedPolicyEventCandidateAsync(db, "ORPH-1",
+                approverGroup: "ReleaseApprovers", service: "api");
+            var (_, _, rejected) = await SeedPolicyEventCandidateAsync(db, "ORPH-2",
+                approverGroup: "ReleaseApprovers", service: "web");
+            superseded.Status = PromotionStatus.Superseded;
+            rejected.Status = PromotionStatus.Rejected;
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var result = await svc.ApproveOrphanedWorkItemsAsync(dryRun: false);
+
+            Assert.False(result.DryRun);
+            Assert.Equal(2, result.Examined);
+            Assert.Equal(2, result.Approved);
+            Assert.Equal(0, result.Failed);
+            Assert.All(result.Items, i => Assert.Null(i.Error));
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var rows = await db.WorkItemApprovals.AsNoTracking()
+                .OrderBy(a => a.WorkItemKey).ToListAsync();
+            Assert.Equal(new[] { "ORPH-1", "ORPH-2" }, rows.Select(r => r.WorkItemKey));
+            Assert.All(rows, r =>
+            {
+                Assert.Equal(WorkItemDecision.Approved, r.Decision);
+                Assert.Equal("sweeper@example.com", r.ApproverEmail);
+                Assert.Contains("maintenance sweep", r.Comment);
+            });
+
+            // The decision is mirrored into each thread, exactly as a clicked sign-off would be.
+            var comments = await db.WorkItemComments.AsNoTracking().ToListAsync();
+            Assert.Equal(2, comments.Count);
+            Assert.All(comments, c => Assert.Equal(WorkItemDecision.Approved, c.Decision));
+
+            // Per-item audit plus one entry for the sweep itself.
+            var actions = await db.AuditLog.AsNoTracking().Select(a => a.Action).ToListAsync();
+            Assert.Equal(2, actions.Count(a => a == "work-item.approved"));
+            Assert.Single(actions, a => a == "work-item.orphans-swept");
+        }
+    }
+
+    /// <summary>
+    /// The sweep is for stranded items only. A ticket a live promotion still carries is ordinary
+    /// pending work; a ticket somebody already decided is either resolved or deliberately held, and
+    /// an issue or a block is not something a bulk repair gets to overrule.
+    /// </summary>
+    [Fact]
+    public async Task ApproveOrphaned_LeavesLiveAndDecidedItemsAlone()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "admin@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.Admin" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+
+            // Stranded and undecided — the only one the sweep should touch.
+            var (_, _, stranded) = await SeedPolicyEventCandidateAsync(db, "SWEEP-ME",
+                approverGroup: "ReleaseApprovers", service: "api");
+            stranded.Status = PromotionStatus.Superseded;
+
+            // Same ticket on a dead AND a live candidate: still live work, so hands off.
+            var (_, _, deadCopy) = await SeedPolicyEventCandidateAsync(db, "ALSO-LIVE",
+                approverGroup: "ReleaseApprovers", service: "old");
+            deadCopy.Status = PromotionStatus.Superseded;
+            await SeedPolicyEventCandidateAsync(db, "ALSO-LIVE",
+                approverGroup: "ReleaseApprovers", service: "new");
+
+            // Stranded, but somebody raised an issue on it — a deliberate hold.
+            var (_, _, held) = await SeedPolicyEventCandidateAsync(db, "ON-HOLD",
+                approverGroup: "ReleaseApprovers", service: "held");
+            held.Status = PromotionStatus.Rejected;
+            db.WorkItemApprovals.Add(
+                Approval("ON-HOLD", "qa@example.com", "QA", WorkItemDecision.Issue));
+
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var result = await svc.ApproveOrphanedWorkItemsAsync(dryRun: false);
+
+            Assert.Equal(1, result.Examined);
+            Assert.Equal(1, result.Approved);
+            var item = Assert.Single(result.Items);
+            Assert.Equal("SWEEP-ME", item.WorkItemKey);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var approved = await db.WorkItemApprovals.AsNoTracking()
+                .Where(a => a.Decision == WorkItemDecision.Approved)
+                .Select(a => a.WorkItemKey)
+                .ToListAsync();
+            Assert.Equal(new[] { "SWEEP-ME" }, approved);
+
+            // The held item keeps its issue — untouched, not flipped.
+            var hold = await db.WorkItemApprovals.AsNoTracking()
+                .SingleAsync(a => a.WorkItemKey == "ON-HOLD");
+            Assert.Equal(WorkItemDecision.Issue, hold.Decision);
+        }
+    }
+
+    /// <summary>
+    /// An auto-approve promotion has no human gate, so its tickets were never sign-off work — they
+    /// never show as "No live promotion" in the queue, and the sweep must not invent decisions for
+    /// them either.
+    /// </summary>
+    [Fact]
+    public async Task ApproveOrphaned_SkipsAutoApproveCandidates()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "admin@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.Admin" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, auto) = await SeedPolicyEventCandidateAsync(db, "AUTO-1",
+                approverGroup: null);
+            auto.Status = PromotionStatus.Superseded;
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var result = await svc.ApproveOrphanedWorkItemsAsync(dryRun: false);
+            Assert.Equal(0, result.Examined);
+            Assert.Empty(result.Items);
+        }
+    }
+
+    /// <summary>
+    /// Retired services drop out on the queue's principle: nobody signs off tickets for a component
+    /// that has been migrated away, and those rows are in nobody's queue to begin with.
+    /// </summary>
+    [Fact]
+    public async Task ApproveOrphaned_SkipsRetiredServices()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "admin@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.Admin" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, dead) = await SeedPolicyEventCandidateAsync(db, "GONE-1",
+                approverGroup: "ReleaseApprovers", service: "retired");
+            dead.Status = PromotionStatus.Superseded;
+            db.DeletedServices.Add(new DeletedService
+            {
+                Id = Guid.NewGuid(),
+                Product = "acme",
+                Service = "retired",
+                DeletedAt = DateTimeOffset.UtcNow,
+                DeletedById = "admin",
+                DeletedByName = "Admin",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var result = await svc.ApproveOrphanedWorkItemsAsync(dryRun: true);
+            Assert.Equal(0, result.Examined);
+        }
+    }
+
+    /// <summary>Same jurisdiction as a single sign-off, refused up front rather than per row.</summary>
+    [Fact]
+    public async Task ApproveOrphaned_RequiresQaOrAdmin()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "nobody@example.com";
+        factory.Current.RolesList = new();
+
+        using var scope = factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => svc.ApproveOrphanedWorkItemsAsync(dryRun: true));
+    }
+
+    /// <summary>The admin route the Maintenance card calls, end to end.</summary>
+    [Fact]
+    public async Task POST_ApproveOrphaned_SweepsViaAdminRoute()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "admin@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.Admin" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, dead) = await SeedPolicyEventCandidateAsync(db, "ORPH-9",
+                approverGroup: "ReleaseApprovers");
+            dead.Status = PromotionStatus.Superseded;
+            await db.SaveChangesAsync();
+        }
+
+        var client = factory.CreateAdminClient();
+
+        var previewResponse = await client.PostAsJsonAsync(
+            "/api/promotions/admin/work-items/approve-orphaned", new { dryRun = true });
+        Assert.Equal(HttpStatusCode.OK, previewResponse.StatusCode);
+        var previewBody = await Deserialize(previewResponse);
+        Assert.True(previewBody.GetProperty("dryRun").GetBoolean());
+        Assert.Equal(1, previewBody.GetProperty("examined").GetInt32());
+        Assert.Equal(0, previewBody.GetProperty("approved").GetInt32());
+        Assert.Equal("ORPH-9",
+            previewBody.GetProperty("items")[0].GetProperty("workItemKey").GetString());
+
+        var applyResponse = await client.PostAsJsonAsync(
+            "/api/promotions/admin/work-items/approve-orphaned", new { dryRun = false });
+        Assert.Equal(HttpStatusCode.OK, applyResponse.StatusCode);
+        var applyBody = await Deserialize(applyResponse);
+        Assert.Equal(1, applyBody.GetProperty("approved").GetInt32());
+        Assert.Equal(0, applyBody.GetProperty("failed").GetInt32());
+
+        // Second apply finds nothing — the sweep is self-clearing, not repeatable damage.
+        var againResponse = await client.PostAsJsonAsync(
+            "/api/promotions/admin/work-items/approve-orphaned", new { dryRun = false });
+        var againBody = await Deserialize(againResponse);
+        Assert.Equal(0, againBody.GetProperty("examined").GetInt32());
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// <summary>

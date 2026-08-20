@@ -739,6 +739,20 @@ class ApiClient {
     });
   }
 
+  /**
+   * Signs off every work item stranded in the "No live promotion" state — its promotions were all
+   * superseded or rejected, so nothing will ever consume the sign-off and the row sits in the
+   * work-item queue as pending work forever. Items a live promotion still carries are untouched, and
+   * so is anything somebody already decided (an Issue or a Block is a deliberate hold). Admin-only;
+   * `dryRun` reports the list without writing, which the Maintenance card always does first.
+   */
+  approveOrphanedWorkItems(dryRun: boolean) {
+    return this.request<OrphanedWorkItemSweepResult>(
+      `/promotions/admin/work-items/approve-orphaned`,
+      { method: 'POST', body: JSON.stringify({ dryRun }) },
+    );
+  }
+
   bulkApprovePromotions(ids: string[], comment?: string) {
     return this.request<{ results: Array<{ id: string; ok: boolean; status?: string; error?: string }> }>(
       `/promotions/bulk/approve`,
@@ -1913,6 +1927,33 @@ export interface PromotionReconcileCandidate {
   at: string;
   /** For a supersede, the newer version now in the target. Null for a close. */
   landedVersion: string | null;
+}
+
+/**
+ * Result of the stranded work-item sweep. `examined` is what the scan found; on a dry run nothing
+ * else moves. On an apply `approved + failed === examined`, and each failed row carries its own
+ * `error` — a row that raced into a decided state between the preview and the apply.
+ */
+export interface OrphanedWorkItemSweepResult {
+  examined: number;
+  approved: number;
+  failed: number;
+  dryRun: boolean;
+  items: OrphanedWorkItem[];
+}
+
+/** One work item the sweep found: the ticket, plus the dead promotion it was last riding. */
+export interface OrphanedWorkItem {
+  workItemKey: string;
+  title: string | null;
+  product: string;
+  targetEnv: string;
+  service: string;
+  version: string;
+  /** "Superseded" or "Rejected" — the terminal state that stranded the item. */
+  candidateStatus: string;
+  /** Why this row was not signed off. Null on a preview and on every successful row. */
+  error: string | null;
 }
 
 /** A service an admin retired. See {@link ApiClient.listDeletedServices}. */

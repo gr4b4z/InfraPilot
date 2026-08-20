@@ -1017,6 +1017,162 @@ public class WorkItemApprovalService
     }
 
     // ---------------------------------------------------------------------
+    // Maintenance: stranded work items ("No live promotion")
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Signs off every work item stranded in the "No live promotion" state — the queue rows whose
+    /// only promotions were superseded or rejected without a replacement picking the ticket up.
+    /// Nothing resolves them on its own (no future gate needs them, and no deploy retires them), so
+    /// they accumulate as permanently pending work; this is the sweep that clears them.
+    ///
+    /// <para>The scan mirrors the orphan branch of <see cref="GetPendingForCurrentUserAsync"/> —
+    /// dead candidate, live service, human gate — with two deliberate differences. It is
+    /// <b>global</b>, not narrowed by the caller's hidden products: a maintenance pass repairs the
+    /// install, and one admin's view preference is not a scope. And it skips any item that already
+    /// carries <i>any</i> decision by anyone, not just an approval: an Issue or a Block is a
+    /// deliberate human hold, and a bulk sweep has no business overruling one.</para>
+    ///
+    /// <para>Each item is signed off through the ordinary <see cref="ApproveAsync"/> path, so every
+    /// one gets its audit row, its <c>promotion.ticket.approved</c> webhook and its entry in the
+    /// work item's comment thread — a bulk repair should leave the same trail as the clicks it
+    /// replaces. Gate re-evaluation is a no-op by construction: nothing Pending carries these items.
+    /// A single failure is recorded on its row and the sweep continues.</para>
+    ///
+    /// <para><paramref name="dryRun"/> reports the list without writing. The scan is capped at
+    /// <see cref="OrphanScanLimit"/> dead candidates, the same ceiling the queue reads.</para>
+    /// </summary>
+    public async Task<OrphanedWorkItemSweepResult> ApproveOrphanedWorkItemsAsync(
+        bool dryRun, CancellationToken ct = default)
+    {
+        // Same jurisdiction as a single sign-off. Checked up front rather than per item so an
+        // unauthorized caller gets one clear refusal instead of N identical row-level failures.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
+
+        var items = await FindOrphanedWorkItemsAsync(ct);
+        if (dryRun || items.Count == 0)
+            return new OrphanedWorkItemSweepResult(items.Count, 0, 0, DryRun: dryRun, Items: items);
+
+        var results = new List<OrphanedWorkItemView>(items.Count);
+        var approved = 0;
+        var failed = 0;
+        foreach (var item in items)
+        {
+            try
+            {
+                await ApproveAsync(item.WorkItemKey, item.Product, item.TargetEnv, SweepComment, ct);
+                approved++;
+                results.Add(item);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                // Row-level refusal — the item raced into a state the sign-off will not accept
+                // (someone decided it, a new promotion picked it up). Reported, not fatal.
+                failed++;
+                results.Add(item with { Error = ex.Message });
+                _logger.LogWarning(ex,
+                    "Orphan sweep could not sign off {Key} ({Product}/{Env})",
+                    item.WorkItemKey, item.Product, item.TargetEnv);
+            }
+        }
+
+        await _audit.Log(
+            "promotions", "work-item.orphans-swept",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemApproval", null, null,
+            new { examined = items.Count, approved, failed });
+
+        _logger.LogInformation(
+            "Orphaned work-item sweep by {Email}: {Approved} approved, {Failed} failed of {Examined}",
+            _currentUser.Email, approved, failed, items.Count);
+
+        return new OrphanedWorkItemSweepResult(items.Count, approved, failed, DryRun: false, Items: results);
+    }
+
+    /// <summary>The note attached to a swept sign-off, in the approval row and the comment thread.</summary>
+    private const string SweepComment =
+        "Approved by maintenance sweep — no live promotion carries this work item.";
+
+    /// <summary>
+    /// The undecided work items whose only promotions are dead. Shared by the preview and the apply
+    /// halves of <see cref="ApproveOrphanedWorkItemsAsync"/> so the reviewed list is the applied one.
+    /// Ordered newest dead candidate first, matching the queue.
+    /// </summary>
+    private async Task<List<OrphanedWorkItemView>> FindOrphanedWorkItemsAsync(CancellationToken ct)
+    {
+        // Dead candidates, newest first — the newest one owns the row when several carry the ticket.
+        // Retired services drop out on the queue's principle: nobody signs off tickets for a
+        // component that has been migrated away, and those rows are in nobody's queue to begin with.
+        var stranded = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status == PromotionStatus.Superseded || c.Status == PromotionStatus.Rejected)
+            .ExcludingDeletedServices(_db)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(OrphanScanLimit)
+            .ToListAsync(ct);
+        if (stranded.Count == 0) return new();
+
+        var strandedIds = stranded.Select(c => c.Id).ToList();
+        var workItems = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => strandedIds.Contains(w.CandidateId))
+            .ToListAsync(ct);
+        if (workItems.Count == 0) return new();
+
+        // Tuples a live promotion still carries. Those items are ordinary pending work — a sweep
+        // must not touch them, and signing one off would feed a gate that could auto-promote.
+        var liveIds = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        var live = (await _db.PromotionWorkItems.AsNoTracking()
+                .Where(w => liveIds.Contains(w.CandidateId))
+                .Select(w => new { w.WorkItemKey, w.Product, w.TargetEnv })
+                .ToListAsync(ct))
+            .Select(w => (w.WorkItemKey, w.Product, w.TargetEnv))
+            .ToHashSet();
+
+        // Any decision at all — an approval means resolved, an Issue or Block means someone is
+        // deliberately holding the item. Both are left alone.
+        var decided = (await _db.WorkItemApprovals.AsNoTracking()
+                .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv })
+                .ToListAsync(ct))
+            .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
+            .ToHashSet();
+
+        var workItemsByCandidate = workItems
+            .GroupBy(w => w.CandidateId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var emitted = new HashSet<(string Key, string Product, string Env)>();
+        var result = new List<OrphanedWorkItemView>();
+        foreach (var c in stranded)
+        {
+            // Auto-approve has no human gate, so its tickets are not sign-off work — the queue
+            // skips them and they never show as "No live promotion".
+            if (ReadSnapshot(c).IsAutoApprove) continue;
+
+            foreach (var w in workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
+            {
+                var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
+                if (live.Contains(tup)) continue;
+                if (decided.Contains(tup)) continue;
+                if (!emitted.Add(tup)) continue;
+
+                result.Add(new OrphanedWorkItemView(
+                    WorkItemKey: w.WorkItemKey,
+                    Title: w.Title,
+                    Product: c.Product,
+                    TargetEnv: c.TargetEnv,
+                    Service: c.Service,
+                    Version: c.Version,
+                    CandidateStatus: c.Status.ToString()));
+            }
+        }
+
+        return result;
+    }
+
+    // ---------------------------------------------------------------------
     // Comments
     //
     // Keyed by (workItemKey, product, targetEnv) — the same grain as the decision rows — so the
@@ -1647,3 +1803,34 @@ public record PendingQueueResult(
     /// <summary>Unfiltered (email, required-role) rollup — the person dropdown's contents. On the
     /// decided path this is the decider rollup instead (role is empty there).</summary>
     List<PendingAssigneeView> Assignees);
+
+/// <summary>
+/// One work item the "No live promotion" sweep found, or acted on. Carries the dead promotion's
+/// coordinates because that is what the queue row shows the reviewer — the service and version the
+/// item was last riding, and which terminal state stranded it.
+/// </summary>
+public record OrphanedWorkItemView(
+    string WorkItemKey,
+    string? Title,
+    string Product,
+    /// <summary>The promotion edge the sign-off is keyed to. See <see cref="WorkItemDetail.TargetEnv"/>.</summary>
+    string TargetEnv,
+    string Service,
+    string Version,
+    /// <summary>"Superseded" or "Rejected" — the terminal state of the promotion that left it stranded.</summary>
+    string CandidateStatus,
+    /// <summary>Why this row was not signed off. Null on a preview and on every successful sweep row.</summary>
+    string? Error = null);
+
+/// <summary>
+/// Outcome of <see cref="WorkItemApprovalService.ApproveOrphanedWorkItemsAsync"/>.
+/// <see cref="Examined"/> is what the scan found; on a dry run nothing else moves. On an apply,
+/// <c>Approved + Failed == Examined</c>, and the per-row <see cref="OrphanedWorkItemView.Error"/>
+/// says what went wrong on each of the failures.
+/// </summary>
+public record OrphanedWorkItemSweepResult(
+    int Examined,
+    int Approved,
+    int Failed,
+    bool DryRun,
+    List<OrphanedWorkItemView> Items);
