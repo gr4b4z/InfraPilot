@@ -558,6 +558,12 @@ class ApiClient {
       bypass: { byName: string; at: string; reason: string | null } | null;
       /** Whether the current user may undo this promotion's approval right now. */
       canCancelApproval: boolean;
+      /**
+       * The deploy event that put this version live in the target environment — what the promotion's
+       * `Deployed` state actually refers to. Null unless the candidate is Deployed, and null too when
+       * the matching event has since been pruned from deploy history.
+       */
+      deploymentEventId: string | null;
     }>(`/promotions/${id}`);
   }
 
