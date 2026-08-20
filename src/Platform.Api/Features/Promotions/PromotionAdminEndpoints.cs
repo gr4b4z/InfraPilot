@@ -78,6 +78,46 @@ public static class PromotionAdminEndpoints
             });
         });
 
+        // ── Stranded work items (Settings → Maintenance) ─────────────────────
+        // Signs off every work item in the "No live promotion" state: its promotions were all
+        // superseded or rejected, so no gate will ever consume the sign-off and no deploy will ever
+        // retire the row — it sits in the work-item queue as pending work forever.
+        //
+        // Items a live promotion still carries are ordinary pending work and are never touched, and
+        // neither is an item somebody already decided (an Issue or a Block is a deliberate hold).
+        // See WorkItemApprovalService.ApproveOrphanedWorkItemsAsync. `dryRun=true` reports the list
+        // without writing — the Maintenance card always previews first.
+        group.MapPost("/work-items/approve-orphaned", async (
+            WorkItemApprovalService service, ApproveOrphanedWorkItemsRequest? request, CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await service.ApproveOrphanedWorkItemsAsync(request?.DryRun ?? false, ct);
+                return Results.Ok(new
+                {
+                    examined = result.Examined,
+                    approved = result.Approved,
+                    failed = result.Failed,
+                    dryRun = result.DryRun,
+                    items = result.Items.Select(i => new
+                    {
+                        i.WorkItemKey,
+                        i.Title,
+                        i.Product,
+                        i.TargetEnv,
+                        i.Service,
+                        i.Version,
+                        i.CandidateStatus,
+                        i.Error,
+                    }),
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+            }
+        });
+
         // ── Duplicate candidates (Settings → Maintenance) ────────────────────
         // Residue of a pre-D15 create path that minted a new row per external POST instead of
         // reusing the natural key — production carries groups of up to six copies of one promotion.
@@ -431,3 +471,9 @@ public record BypassPromotionRequest(string? Reason);
 /// everything, and pass <c>DryRun</c> to see what would close without writing.
 /// </summary>
 public record ReconcileCompletionsRequest(string? Product, string? TargetEnv, bool? DryRun);
+
+/// <summary>
+/// Body for the stranded work-item sweep. <c>DryRun</c> reports what would be signed off without
+/// writing; omitted means apply.
+/// </summary>
+public record ApproveOrphanedWorkItemsRequest(bool? DryRun);
