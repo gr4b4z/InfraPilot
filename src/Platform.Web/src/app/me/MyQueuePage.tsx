@@ -325,7 +325,7 @@ export function MyQueuePage() {
         const needle = query.toLowerCase();
         return filteredTickets
           .filter((t) =>
-            [t.workItemKey, t.title ?? '', t.product, t.service]
+            [t.workItemKey, t.title ?? '', t.subTitle ?? '', t.product, t.service]
               .some((field) => field.toLowerCase().includes(needle)),
           )
           .slice(0, 25)
@@ -1059,7 +1059,9 @@ function TicketRow({
               <span
                 className="text-[12px] truncate"
                 style={{ color: 'var(--text-secondary)' }}
-                title={ticket.title}
+                // The tooltip carries the tracker's own summary too (when the visible title is the
+                // commit subject) — the row stays one line but hovering answers "which ticket?".
+                title={ticket.subTitle ? `${ticket.title}\n${ticket.subTitle}` : ticket.title}
               >
                 {ticket.title}
               </span>

@@ -728,6 +728,7 @@ public class WorkItemApprovalService
                     Provider: w.Provider,
                     Url: w.Url,
                     Title: w.Title,
+                    SubTitle: w.SubTitle,
                     CandidateId: c.Id,
                     Service: c.Service,
                     Version: c.Version,
@@ -879,6 +880,7 @@ public class WorkItemApprovalService
                 Provider: wi?.Provider,
                 Url: wi?.Url,
                 Title: wi?.Title,
+                SubTitle: wi?.SubTitle,
                 CandidateId: c2?.Id ?? Guid.Empty,
                 Service: c2?.Service ?? "",
                 Version: c2?.Version ?? "",
@@ -945,6 +947,7 @@ public class WorkItemApprovalService
         // an older candidate may carry a title the newest ingest omitted.
         var primaryRow = rows.FirstOrDefault(w => w.CandidateId == primary.Id);
         var title = primaryRow?.Title ?? rows.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t));
+        var subTitle = primaryRow?.SubTitle ?? rows.Select(w => w.SubTitle).FirstOrDefault(s => !string.IsNullOrEmpty(s));
         var content = primaryRow?.Content ?? rows.Select(w => w.Content).FirstOrDefault(c => !string.IsNullOrEmpty(c));
         var url = primaryRow?.Url ?? rows.Select(w => w.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
         var provider = primaryRow?.Provider ?? rows.Select(w => w.Provider).FirstOrDefault(p => !string.IsNullOrEmpty(p));
@@ -985,6 +988,9 @@ public class WorkItemApprovalService
             TargetEnv: env,
             Environments: environments,
             Title: title,
+            // Same duplicate guard the producers apply: a subtitle that repeats the title says
+            // nothing worth a second line.
+            SubTitle: string.Equals(subTitle, title, StringComparison.Ordinal) ? null : subTitle,
             // Blank-to-null so the client has one emptiness check ("no content") rather than two.
             Content: string.IsNullOrWhiteSpace(content) ? null : content,
             Url: url,
@@ -1486,6 +1492,12 @@ public record WorkItemDetail(
     IReadOnlyList<WorkItemEnvironmentView> Environments,
     string? Title,
     /// <summary>
+    /// Secondary display line under <see cref="Title"/>: when the producer titles the item by its
+    /// commit subject, this is the tracker's own summary (e.g. the Jira ticket title). Null when
+    /// the producer sent a single name.
+    /// </summary>
+    string? SubTitle,
+    /// <summary>
     /// The work item's body as the producer sent it — the Jira description, PR description, or
     /// commit message body. Null (or blank) when the payload carried none, in which case the
     /// detail page shows no Content section at all rather than an empty one.
@@ -1580,6 +1592,8 @@ public record PendingTicketView(
     string? Provider,
     string? Url,
     string? Title,
+    /// <summary>Secondary display line — see <see cref="WorkItemDetail.SubTitle"/>.</summary>
+    string? SubTitle,
     Guid CandidateId,
     string Service,
     string Version,

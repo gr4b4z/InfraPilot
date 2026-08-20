@@ -305,6 +305,9 @@ public static class WorkItemEndpoints
             deployedAt = e.DeployedAt,
         }),
         title = d.Title,
+        // Secondary display line: the tracker's own summary when the title carries the commit
+        // subject. Null when the producer sent a single name.
+        subTitle = d.SubTitle,
         // The work item's body, verbatim from the source system. Null when the producer sent none —
         // the page renders no Content section at all in that case.
         content = d.Content,

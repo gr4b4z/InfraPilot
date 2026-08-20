@@ -870,7 +870,13 @@ function WorkItemsCard({ workItems, product, environment }: {
                   >
                     <span className="font-mono font-medium shrink-0">{wi.key}</span>
                     {wi.title && (
-                      <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{wi.title}</span>
+                      <span
+                        className="truncate"
+                        style={{ color: 'var(--text-secondary)' }}
+                        title={wi.subTitle ? `${wi.title}\n${wi.subTitle}` : wi.title}
+                      >
+                        {wi.title}
+                      </span>
                     )}
                   </Link>
                 ) : (
@@ -892,7 +898,13 @@ function WorkItemsCard({ workItems, product, environment }: {
                       </span>
                     )}
                     {wi.title && (
-                      <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{wi.title}</span>
+                      <span
+                        className="truncate"
+                        style={{ color: 'var(--text-secondary)' }}
+                        title={wi.subTitle ? `${wi.title}\n${wi.subTitle}` : wi.title}
+                      >
+                        {wi.title}
+                      </span>
                     )}
                   </div>
                 )}

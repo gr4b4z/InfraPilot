@@ -100,7 +100,8 @@ public static class BuildPromotions
         Provider: GetString(obj, "provider"),
         Key: GetString(obj, "key", "id", "name"),
         Revision: GetString(obj, "revision", "commit", "sha"),
-        Title: GetString(obj, "title", "summary") ?? GetString(obj, "branch"));
+        Title: GetString(obj, "title", "summary") ?? GetString(obj, "branch"),
+        SubTitle: GetString(obj, "subTitle", "subtitle"));
 
     private static string? GetString(JsonElement obj, params string[] names)
     {
