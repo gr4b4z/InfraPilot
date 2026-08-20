@@ -169,6 +169,31 @@ public static class PromotionEndpoints
                 bypass = new { byName = bypassEntry.ActorName, at = bypassEntry.Timestamp, reason };
             }
 
+            // The deploy event that put this version live in the target environment. Nothing in
+            // storage links a candidate to the deploy that closed it — completion is matched on
+            // (product, service, targetEnv, version), see PromotionIngestHook.MatchCompletionAsync —
+            // so the read path resolves it with that same rule. Only for a closed candidate: while one
+            // is still open there is no landing to point at.
+            Guid? deploymentEventId = null;
+            if (c.Status == PromotionStatus.Deployed && c.DeployedAt is { } landedAt)
+            {
+                deploymentEventId = await db.DeployEvents
+                    .AsNoTracking()
+                    .Where(e => e.Product == c.Product
+                             && e.Service == c.Service
+                             && e.Environment == c.TargetEnv
+                             && e.Version == c.Version
+                             && e.Status == "succeeded")
+                    // The landing whose timestamp the close stamped on the candidate is the one that
+                    // closed it. Failing that (a candidate closed with no event timestamp to hand) the
+                    // earliest succeeded landing — the same "when did this version go live" answer
+                    // AssessAgainstDeployHistoryAsync gives.
+                    .OrderByDescending(e => e.DeployedAt == landedAt)
+                    .ThenBy(e => e.DeployedAt)
+                    .Select(e => (Guid?)e.Id)
+                    .FirstOrDefaultAsync();
+            }
+
             // The candidate is self-contained (D14): no source deploy event. The change set lives
             // on the candidate's own References, surfaced as `sourceEvent` so the detail view keeps
             // rendering work items / PRs without a join.
@@ -208,6 +233,7 @@ public static class PromotionEndpoints
                 approvalProgress = progress,
                 bypass,
                 canCancelApproval,
+                deploymentEventId,
             });
         });
 
