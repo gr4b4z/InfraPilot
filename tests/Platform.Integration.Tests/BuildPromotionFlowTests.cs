@@ -201,14 +201,20 @@ public class BuildPromotionFlowTests : IClassFixture<BuildPromotionFlowTests.Bui
             tracksWorkItems: true,
             steps: [new { name = "QA", requirements = new[] { new { name = "qa", users = new[] { "qa@localhost" }, minApprovers = 1 } } }]);
 
+        // The real BuildMetadata document nests references under spec — the shape prod pipelines post.
         var manifest = new
         {
             apiVersion = "v1-beta",
-            spec = new { service = "api", version = "2.0.0-gddd" },
-            references = new Dictionary<string, object>
+            kind = "BuildMetadata",
+            spec = new
             {
-                ["repository"] = new { branch = "refs/heads/feature/MPT-77-x", revision = "abc123", url = "https://dev.azure.com/org/repo" },
-                ["work-item"] = new { key = "MPT-77", url = "https://jira.example.com/browse/MPT-77", title = "Shiny widget" },
+                service = "api",
+                version = "2.0.0-gddd",
+                references = new Dictionary<string, object>
+                {
+                    ["repository"] = new { branch = "refs/heads/feature/MPT-77-x", revision = "abc123", url = "https://dev.azure.com/org/repo" },
+                    ["work-item"] = new { key = "MPT-77", url = "https://jira.example.com/browse/MPT-77", title = "Shiny widget" },
+                },
             },
         };
         var register = await RegisterBuildAsync(
@@ -244,6 +250,38 @@ public class BuildPromotionFlowTests : IClassFixture<BuildPromotionFlowTests.Bui
         // The caller is stamped as triggered-by.
         var participants = candidate.GetProperty("participants").EnumerateArray().ToList();
         Assert.Contains(participants, p => p.GetProperty("role").GetString() == "triggered-by");
+    }
+
+    [Fact]
+    public async Task FromBuild_ManifestWithRootLevelReferences_StillCopiesThem()
+    {
+        var product = "bp-rootrefs";
+        await SeedBuildPolicyAsync(product, "test",
+            steps: [new { name = "QA", requirements = new[] { new { name = "qa", users = new[] { "qa@localhost" }, minApprovers = 1 } } }]);
+
+        // Fallback shape: references at the manifest root, no spec envelope.
+        var manifest = new
+        {
+            references = new Dictionary<string, object>
+            {
+                ["work-item"] = new { key = "MPT-88", url = "https://jira.example.com/browse/MPT-88" },
+            },
+        };
+        var register = await RegisterBuildAsync(
+            product, "api", "2.1.0-geee", "refs/heads/feature/MPT-88-y", manifest);
+        var buildId = (await Deserialize(register)).GetProperty("id").GetString();
+
+        var create = await _adminClient.PostAsJsonAsync("/api/promotions/from-build",
+            new { buildId, targetEnv = "test" });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        var created = await Deserialize(create);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            $"/api/promotions/{created.GetProperty("id").GetString()}");
+        var references = detail.GetProperty("candidate")
+            .GetProperty("sourceEventReferences").EnumerateArray().ToList();
+        Assert.Contains(references, r =>
+            r.GetProperty("type").GetString() == "work-item" && r.GetProperty("key").GetString() == "MPT-88");
     }
 
     [Fact]
