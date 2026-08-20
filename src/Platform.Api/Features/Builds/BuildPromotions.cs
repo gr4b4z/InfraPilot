@@ -58,9 +58,7 @@ public static class BuildPromotions
             try
             {
                 using var doc = JsonDocument.Parse(build.ManifestJson);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object
-                    && doc.RootElement.TryGetProperty("references", out var refs)
-                    && refs.ValueKind == JsonValueKind.Object)
+                if (TryGetManifestReferences(doc.RootElement, out var refs))
                 {
                     foreach (var property in refs.EnumerateObject())
                     {
@@ -92,6 +90,27 @@ public static class BuildPromotions
         }
 
         return references;
+    }
+
+    /// <summary>
+    /// Locates the manifest's <c>references</c> object. The BuildMetadata document nests it under
+    /// <c>spec</c> ({ apiVersion, kind, metadata, spec: { references: ... } }); a root-level
+    /// <c>references</c> is accepted as a fallback for manifests posted without the envelope.
+    /// </summary>
+    private static bool TryGetManifestReferences(JsonElement root, out JsonElement refs)
+    {
+        refs = default;
+        if (root.ValueKind != JsonValueKind.Object) return false;
+
+        if (root.TryGetProperty("spec", out var spec)
+            && spec.ValueKind == JsonValueKind.Object
+            && spec.TryGetProperty("references", out refs)
+            && refs.ValueKind == JsonValueKind.Object)
+        {
+            return true;
+        }
+
+        return root.TryGetProperty("references", out refs) && refs.ValueKind == JsonValueKind.Object;
     }
 
     private static ReferenceDto MapManifestReference(string type, JsonElement obj) => new(
