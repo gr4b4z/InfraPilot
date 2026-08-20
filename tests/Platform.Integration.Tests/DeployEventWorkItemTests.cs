@@ -111,6 +111,62 @@ public class DeployEventWorkItemTests
         }
     }
 
+    /// <summary>
+    /// The secondary display line rides the same pipeline as title: persisted on the projection at
+    /// sync time and re-synced in place. A producer that titles the item by its commit subject and
+    /// carries the Jira summary as subTitle should see both on the row.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_PersistsAndUpdatesWorkItemSubTitle()
+    {
+        await using var factory = new TestFactory();
+
+        Guid eventId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var dto = NewDto(references: new List<ReferenceDto>
+            {
+                new("work-item", Key: "FOO-1",
+                    Title: "Retry checkout submits with an idempotency key",
+                    SubTitle: "Fix retry"),
+            });
+
+            var ev = await service.IngestEvent(dto);
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+            eventId = ev.Id;
+
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+            Assert.Equal("Retry checkout submits with an idempotency key", row.Title);
+            Assert.Equal("Fix retry", row.SubTitle);
+        }
+
+        // Re-sync the same event with the subtitle removed — the row follows the payload.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
+            ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
+                new List<ReferenceDto> { new("work-item", Key: "FOO-1", Title: "Fix retry") },
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                });
+
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Null(row.SubTitle);
+        }
+    }
+
     [Fact]
     public async Task Ingest_IsIdempotent_OnReingestOfSameEvent()
     {

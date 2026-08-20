@@ -308,6 +308,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Provider).HasMaxLength(50);
             e.Property(x => x.Url).HasMaxLength(2000);
             e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.SubTitle).HasMaxLength(500);
             // No length cap: this is the ticket/PR/commit body, not a label.
             e.Property(x => x.Content);
             e.Property(x => x.Revision).HasMaxLength(200);
@@ -555,6 +556,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Provider).HasMaxLength(50);
             e.Property(x => x.Url).HasMaxLength(2000);
             e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.SubTitle).HasMaxLength(500);
             // No length cap: this is the ticket/PR/commit body, not a label.
             e.Property(x => x.Content);
             e.Property(x => x.Revision).HasMaxLength(200);

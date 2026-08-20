@@ -484,6 +484,7 @@ public class PromotionService
                 Provider = r.Provider,
                 Url = r.Url,
                 Title = r.Title,
+                SubTitle = r.SubTitle,
                 Content = r.Content,
                 Revision = r.Revision,
                 CommittedAt = Deployments.WorkItemCommitTime.Resolve(r, allRefs),

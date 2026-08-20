@@ -431,9 +431,15 @@ public static class DeploymentSeedData
                 // Content section entirely when there's none, and that path should show up locally too.
                 var wiContent = rand.NextDouble() < 0.75 ? WorkItemBody(wiTitle, service, rand) : null;
 
+                // Most producers title the item by its commit subject and carry the tracker's own
+                // summary as subTitle; some (older senders) still send a single name. Seed both so
+                // the one-line and two-line renderings both show up locally.
+                var commitTitled = rand.NextDouble() < 0.6;
+
                 refs.Add(new ReferenceDto("work-item",
                     $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
-                    Title: wiTitle,
+                    Title: commitTitled ? $"Merged PR {rand.Next(1000, 9999)}: [{wiKey.ToLowerInvariant()}] {wiTitle}" : wiTitle,
+                    SubTitle: commitTitled ? wiTitle : null,
                     Participants: wiParticipants,
                     Content: wiContent));
             }
