@@ -627,6 +627,51 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
+    /// A closed candidate says the change shipped; <c>deploymentEventId</c> says <i>where</i> — the
+    /// deploy event that put the version live in the target environment, which the detail page links
+    /// "Deployed" to. Nothing stores that link (completion is matched on product/service/env/version),
+    /// so the read path re-derives it; this pins that it resolves to the real event.
+    /// </summary>
+    [Fact]
+    public async Task DeployedPromotion_ExposesTheDeployEventThatClosedIt()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"depev-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.9.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.9.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        // Still open — there is no landing to point at yet.
+        var openDetail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal(JsonValueKind.Null, openDetail.GetProperty("deploymentEventId").ValueKind);
+
+        // The version lands in prod, closing the candidate.
+        var ingest = await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.9.0", service: service));
+        ingest.EnsureSuccessStatusCode();
+
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Deployed", detail.GetProperty("candidate").GetProperty("status").GetString());
+
+        var eventId = detail.GetProperty("deploymentEventId").GetString();
+        Assert.False(string.IsNullOrEmpty(eventId));
+
+        // …and it is the prod landing of this exact version, not just any event.
+        var eventDetail = await Deserialize(await _adminClient.GetAsync($"/api/deployments/events/{eventId}"));
+        var evt = eventDetail.GetProperty("event");
+        Assert.Equal(service, evt.GetProperty("service").GetString());
+        Assert.Equal("prod", evt.GetProperty("environment").GetString());
+        Assert.Equal("v7.9.0", evt.GetProperty("version").GetString());
+    }
+
+    /// <summary>
     /// A rejection says the version should not ship. If it ships anyway, the candidate has to record
     /// that — it closes as Deployed, the rejection stays in the approval trail, and the thread
     /// explains the contradiction rather than leaving someone to puzzle it out.

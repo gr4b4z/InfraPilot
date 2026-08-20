@@ -123,6 +123,9 @@ export function PromotionDetailPage() {
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
   const [canCancelApproval, setCanCancelApproval] = useState(false);
+  // The deploy event that put this version live in the target env — set only once the
+  // promotion is Deployed, and the link the "Deployed" timestamp points at.
+  const [deploymentEventId, setDeploymentEventId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -144,6 +147,7 @@ export function PromotionDetailPage() {
         setEligibleRequirements(data.eligibleRequirements || []);
         setBypass(data.bypass ?? null);
         setCanCancelApproval(data.canCancelApproval ?? false);
+        setDeploymentEventId(data.deploymentEventId ?? null);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -627,9 +631,24 @@ export function PromotionDetailPage() {
               )}
               {candidate.deployedAt && (
                 <div>
-                  <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                    Deployed
-                  </span>
+                  {/* "Deployed" links to the deploy event that put this version live, when we can
+                      resolve it — the promotion says the change shipped, and this is where to go to
+                      see what actually landed. Plain text when there is no event to point at. */}
+                  {deploymentEventId ? (
+                    <Link
+                      to={`/deployments/events/${deploymentEventId}`}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider hover:underline"
+                      style={{ color: 'var(--accent)' }}
+                      title="View the deployment that shipped this version"
+                    >
+                      Deployed
+                      <ArrowRight size={11} />
+                    </Link>
+                  ) : (
+                    <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      Deployed
+                    </span>
+                  )}
                   <p className="font-medium mt-0.5" style={{ color: 'var(--text-primary)' }}>
                     {format(new Date(candidate.deployedAt), 'MMM d, yyyy HH:mm')}
                   </p>
