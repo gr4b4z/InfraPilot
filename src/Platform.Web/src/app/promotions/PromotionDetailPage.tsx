@@ -230,7 +230,7 @@ export function PromotionDetailPage() {
 
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto space-y-4">
+      <div className="max-w-6xl mx-auto space-y-4">
         <div className="skeleton h-8 w-48" />
         <div className="skeleton h-64" />
       </div>
@@ -270,7 +270,9 @@ export function PromotionDetailPage() {
 
   return (
     <PromoReadOnlyCtx.Provider value={isReadOnly}>
-    <div className="max-w-3xl mx-auto space-y-6">
+    {/* Wider than the usual reading width: the left column carries the work-item bundle, whose
+        titles truncate on a single line. At a narrower cap most of them were cut off. */}
+    <div className="max-w-6xl mx-auto space-y-6">
       {/* Breadcrumb */}
       <Link
         to="/promotions"
