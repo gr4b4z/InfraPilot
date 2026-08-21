@@ -90,6 +90,25 @@ export function providerLabel(provider: string | null | undefined, fallback = 't
   }
 }
 
+/**
+ * The separator the server joins a work item's commit messages with (see the API's
+ * `WorkItemDisplay`). Lives next to the split that undoes it so the two can't drift apart.
+ */
+const COMMIT_MESSAGE_SEPARATOR = ' • ';
+
+/**
+ * A work item's `subTitle` read back as the individual commit messages it was built from — one
+ * entry per commit. A ticket that rode in on three commits has three things to say, and running
+ * them together makes one long sentence out of them, so every surface that shows the second line
+ * renders these as separate lines. Empty when there is nothing to show.
+ */
+export function commitMessageLines(subTitle: string | null | undefined): string[] {
+  return (subTitle ?? '')
+    .split(COMMIT_MESSAGE_SEPARATOR)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 /** Abbreviated commit hash for display. Git's own 7-character convention. */
 export function shortHash(hash: string): string {
   const trimmed = (hash ?? '').trim();

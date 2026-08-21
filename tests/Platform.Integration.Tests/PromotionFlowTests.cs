@@ -374,16 +374,25 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         var candidateId = (await created.Content.ReadFromJsonAsync<JsonElement>())
             .GetProperty("id").GetString();
 
-        var candidate = (await _adminClient.GetFromJsonAsync<JsonElement>($"/api/promotions/{candidateId}"))
-            .GetProperty("candidate");
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>($"/api/promotions/{candidateId}");
+        var candidate = detail.GetProperty("candidate");
+        var expectedSubTitle =
+            "fix: reject the second offboarding request"
+            + " • test: cover a second offboarding request for the same account";
+
         var workItem = candidate.GetProperty("sourceEventReferences").EnumerateArray()
             .Single(r => r.GetProperty("type").GetString() == "work-item");
 
         Assert.Equal("Duplicate offboarding requests", workItem.GetProperty("title").GetString());
-        Assert.Equal(
-            "fix: reject the second offboarding request"
-            + " • test: cover a second offboarding request for the same account",
-            workItem.GetProperty("subTitle").GetString());
+        Assert.Equal(expectedSubTitle, workItem.GetProperty("subTitle").GetString());
+
+        // The same list again under `sourceEvent` — a second copy of the change set, and the one the
+        // detail page's work-item and reference cards actually render, so it has to agree.
+        var onSourceEvent = detail.GetProperty("sourceEvent").GetProperty("references").EnumerateArray()
+            .Single(r => r.GetProperty("type").GetString() == "work-item");
+
+        Assert.Equal("Duplicate offboarding requests", onSourceEvent.GetProperty("title").GetString());
+        Assert.Equal(expectedSubTitle, onSourceEvent.GetProperty("subTitle").GetString());
 
         // Other reference types are passed through untouched.
         var commit = candidate.GetProperty("sourceEventReferences").EnumerateArray()
