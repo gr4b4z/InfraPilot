@@ -213,8 +213,8 @@ export function WorkItemDetailPage() {
               {detail.title}
             </p>
           )}
-          {/* The tracker's own summary, when the title above carries the commit subject. Quieter
-              than the title: it names the ticket, the title names the change. */}
+          {/* The messages of the commits this item was carried by, joined by the API. Quieter than
+              the title: the title names the ticket, this says what changed under it. */}
           {detail.subTitle && detail.subTitle !== detail.title && (
             <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
               {detail.subTitle}

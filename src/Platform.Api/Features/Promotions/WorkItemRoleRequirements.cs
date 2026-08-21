@@ -200,7 +200,9 @@ public static class WorkItemRoleRequirements
             var participants = ResolveParticipants(references, promotionParticipants, key);
             var missing = MissingRoles(participants, required);
             if (missing.Count == 0) continue;
-            gaps.Add(new WorkItemRoleGap(key, reference.Title, missing));
+            // One line only here, so it's the ticket's name — not the commit subjects underneath it.
+            gaps.Add(new WorkItemRoleGap(
+                key, Deployments.WorkItemDisplay.Resolve(reference, references).Title, missing));
         }
         return gaps;
     }

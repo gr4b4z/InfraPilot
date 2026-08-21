@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
@@ -180,11 +181,11 @@ public class DeployEventWorkItemBackfillService : BackgroundService
 
         if (refs.Count == 0) return 0;
 
-        // Title source: mirrors the live ingest path (WorkItemSyncService.SyncAsync).
-        // Prefer caller-supplied per-reference Title; otherwise fall back to a single
-        // enrichment.Labels["workItemTitle"] when there's exactly one work-item on the
-        // event (the Enrichment shape is flat, so applying one label to multiple
-        // work-items would be misleading). Otherwise leave Title null.
+        // Display lines: mirrors the live ingest path (WorkItemSyncService.SyncAsync) by going
+        // through WorkItemDisplay, so a backfilled row names its ticket exactly like an ingested
+        // one. The enrichment label is the last-resort title source, and only when there's exactly
+        // one work-item on the event (the Enrichment shape is flat, so applying one label to
+        // multiple work-items would be misleading).
         var enrichment = string.IsNullOrEmpty(ev.EnrichmentJson)
             ? null
             : Deserialize<EnrichmentDto>(ev.EnrichmentJson);
@@ -204,7 +205,7 @@ public class DeployEventWorkItemBackfillService : BackgroundService
             if (existingSet.Contains(lookupKey))
                 continue;
 
-            var title = !string.IsNullOrWhiteSpace(r.Title) ? r.Title : singleEnrichedTitle;
+            var (title, subTitle) = WorkItemDisplay.Resolve(r, rawRefs, singleEnrichedTitle);
 
             db.DeployEventWorkItems.Add(new DeployEventWorkItem
             {
@@ -215,6 +216,7 @@ public class DeployEventWorkItemBackfillService : BackgroundService
                 Provider = r.Provider,
                 Url = r.Url,
                 Title = title,
+                SubTitle = subTitle,
                 Content = r.Content,
                 Revision = r.Revision,
                 CreatedAt = DateTimeOffset.UtcNow,

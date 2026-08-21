@@ -304,12 +304,16 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
-    /// Producers title a work item by the commit subject (what actually changed) and carry the
-    /// tracker's own summary as subTitle. Both must survive the create → projection → detail round
-    /// trip, so a reviewer sees the change description and can still recognise the Jira name.
+    /// A work item is named by its tracker and described by its commits: the Jira summary is the
+    /// title, and the messages of <b>every</b> commit that mentioned the ticket make up the second
+    /// line, with the squash-merge bookkeeping Azure DevOps prepends ("Merged PR 150001: ") dropped —
+    /// the PR is a reference of its own, and in front of the sentence it is noise. All of it must
+    /// survive the create → projection → detail round trip. The payload here uses the older two-line
+    /// producer shape (commit subject on `title`, Jira summary on `subTitle`), which resolves to the
+    /// same display as a producer sending the summary as the title.
     /// </summary>
     [Fact]
-    public async Task Create_WithSubTitledWorkItem_ReturnsBothLinesOnDetail()
+    public async Task Create_WithWorkItemOnSeveralCommits_TitlesItByTrackerAndListsEveryCommitMessage()
     {
         await SeedPoliciesAsync();
 
@@ -318,7 +322,14 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             new { type = "work-item", provider = "jira", key = "MPT-24001",
                   url = "https://example.atlassian.net/browse/MPT-24001",
                   title = "Merged PR 150001: Reject duplicate offboarding requests",
-                  subTitle = "Duplicate offboarding requests" },
+                  subTitle = "Duplicate offboarding requests",
+                  commits = new[] { "aa11bb22cc33", "dd44ee55ff66" } },
+            new { type = "commit", provider = "github", key = "aa11bb22cc33",
+                  url = "https://github.com/o/r/commit/aa11bb22cc33",
+                  title = "Merged PR 150001: Reject duplicate offboarding requests" },
+            new { type = "commit", provider = "github", key = "dd44ee55ff66",
+                  url = "https://github.com/o/r/commit/dd44ee55ff66",
+                  title = "test: cover a second offboarding request for the same account" },
         };
 
         var created = await CreatePromotionAsync("staging", "prod", "v7.2.0", references: references);
@@ -326,9 +337,58 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
             "/api/work-items/MPT-24001/detail?product=acme&targetEnv=prod");
-        Assert.Equal("Merged PR 150001: Reject duplicate offboarding requests",
-            detail.GetProperty("title").GetString());
-        Assert.Equal("Duplicate offboarding requests", detail.GetProperty("subTitle").GetString());
+        Assert.Equal("Duplicate offboarding requests", detail.GetProperty("title").GetString());
+        // "Merged PR 150001: " is gone; the commit's own subject is not.
+        Assert.Equal(
+            "Reject duplicate offboarding requests"
+            + " • test: cover a second offboarding request for the same account",
+            detail.GetProperty("subTitle").GetString());
+    }
+
+    /// <summary>
+    /// The same two lines on the promotion page. It renders the candidate's own references
+    /// (<c>sourceEventReferences</c>) rather than the work-item projection, so the read path resolves
+    /// them there too — otherwise a reviewer would see one name for a ticket on the promotion and a
+    /// different one on the ticket's own page.
+    /// </summary>
+    [Fact]
+    public async Task GetCandidate_ResolvesWorkItemReferenceDisplayLines()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "MPT-24002",
+                  url = "https://example.atlassian.net/browse/MPT-24002",
+                  title = "fix: reject the second offboarding request",
+                  subTitle = "Duplicate offboarding requests",
+                  commits = new[] { "aa11bb22cc33", "dd44ee55ff66" } },
+            new { type = "commit", provider = "github", key = "aa11bb22cc33",
+                  title = "fix: reject the second offboarding request" },
+            new { type = "commit", provider = "github", key = "dd44ee55ff66",
+                  title = "test: cover a second offboarding request for the same account" },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.3.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var candidateId = (await created.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString();
+
+        var candidate = (await _adminClient.GetFromJsonAsync<JsonElement>($"/api/promotions/{candidateId}"))
+            .GetProperty("candidate");
+        var workItem = candidate.GetProperty("sourceEventReferences").EnumerateArray()
+            .Single(r => r.GetProperty("type").GetString() == "work-item");
+
+        Assert.Equal("Duplicate offboarding requests", workItem.GetProperty("title").GetString());
+        Assert.Equal(
+            "fix: reject the second offboarding request"
+            + " • test: cover a second offboarding request for the same account",
+            workItem.GetProperty("subTitle").GetString());
+
+        // Other reference types are passed through untouched.
+        var commit = candidate.GetProperty("sourceEventReferences").EnumerateArray()
+            .First(r => r.GetProperty("type").GetString() == "commit");
+        Assert.Equal("fix: reject the second offboarding request", commit.GetProperty("title").GetString());
     }
 
     /// <summary>

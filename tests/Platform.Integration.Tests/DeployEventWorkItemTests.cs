@@ -112,12 +112,13 @@ public class DeployEventWorkItemTests
     }
 
     /// <summary>
-    /// The secondary display line rides the same pipeline as title: persisted on the projection at
-    /// sync time and re-synced in place. A producer that titles the item by its commit subject and
-    /// carries the Jira summary as subTitle should see both on the row.
+    /// The two display lines are resolved at sync time and re-synced in place: the ticket's own name
+    /// on <c>Title</c>, the messages of every commit it rode in on underneath. A producer that titles
+    /// the item by a commit subject and carries the Jira summary as subTitle gets the same answer as
+    /// one that sends the summary as the title — the tracker's name is never the second line.
     /// </summary>
     [Fact]
-    public async Task Ingest_PersistsAndUpdatesWorkItemSubTitle()
+    public async Task Ingest_TitlesWorkItemByTracker_AndSubTitlesItWithEveryCommitMessage()
     {
         await using var factory = new TestFactory();
 
@@ -129,8 +130,11 @@ public class DeployEventWorkItemTests
             var dto = NewDto(references: new List<ReferenceDto>
             {
                 new("work-item", Key: "FOO-1",
-                    Title: "Retry checkout submits with an idempotency key",
-                    SubTitle: "Fix retry"),
+                    Title: "fix: send an idempotency key with the retry",
+                    SubTitle: "Fix retry",
+                    Commits: new[] { "aaaaaaa1111", "bbbbbbb2222" }),
+                new("commit", Key: "aaaaaaa1111", Title: "fix: send an idempotency key with the retry"),
+                new("commit", Key: "bbbbbbb2222", Title: "test: cover the duplicate submit"),
             });
 
             var ev = await service.IngestEvent(dto);
@@ -139,17 +143,24 @@ public class DeployEventWorkItemTests
             eventId = ev.Id;
 
             var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
-            Assert.Equal("Retry checkout submits with an idempotency key", row.Title);
-            Assert.Equal("Fix retry", row.SubTitle);
+            Assert.Equal("Fix retry", row.Title);
+            Assert.Equal(
+                "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+                row.SubTitle);
         }
 
-        // Re-sync the same event with the subtitle removed — the row follows the payload.
+        // Re-sync the same event with a single-commit ticket named the same thing as its commit —
+        // the row follows the payload, and a second line repeating the first is dropped.
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
             ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
-                new List<ReferenceDto> { new("work-item", Key: "FOO-1", Title: "Fix retry") },
+                new List<ReferenceDto>
+                {
+                    new("work-item", Key: "FOO-1", Title: "Fix retry", Commits: new[] { "aaaaaaa1111" }),
+                    new("commit", Key: "aaaaaaa1111", Title: "Fix retry"),
+                },
                 new System.Text.Json.JsonSerializerOptions
                 {
                     PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
@@ -163,8 +174,40 @@ public class DeployEventWorkItemTests
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Equal("Fix retry", row.Title);
             Assert.Null(row.SubTitle);
         }
+    }
+
+    /// <summary>
+    /// A payload whose `commit` references were trimmed away (workflow_dispatch inputs are capped, and
+    /// the commits are the first thing dropped) still gets a second line: the producer's own commit
+    /// subject, which is what `title` carries in the two-line shape. Losing the commit list should
+    /// cost the list of messages, not the fact that a change is described.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_FallsBackToTheProducersCommitSubject_WhenCommitReferencesAreMissing()
+    {
+        await using var factory = new TestFactory();
+        using var scope = factory.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+
+        var dto = NewDto(references: new List<ReferenceDto>
+        {
+            new("work-item", Key: "FOO-1",
+                Title: "fix: send an idempotency key with the retry",
+                SubTitle: "Fix retry",
+                Commits: new[] { "aaaaaaa1111" }),
+        });
+
+        var ev = await service.IngestEvent(dto);
+        await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+        await db.SaveChangesAsync();
+
+        var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+        Assert.Equal("Fix retry", row.Title);
+        Assert.Equal("fix: send an idempotency key with the retry", row.SubTitle);
     }
 
     [Fact]
