@@ -55,7 +55,13 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { resolveReferenceHref } from '@/lib/refUrl';
-import { commitCompareUrl, decisionStyle, shortHash, workItemDetailPath } from '@/lib/workItem';
+import {
+  commitCompareUrl,
+  commitMessageLines,
+  decisionStyle,
+  shortHash,
+  workItemDetailPath,
+} from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
@@ -2093,6 +2099,13 @@ function TicketRow({
     label: `${key || 'Work item'} — ${stateLabel}${detailPath ? '. Open work item.' : ''}`,
   });
 
+  // The second line, back in its parts — one per commit. The server already drops a subtitle that
+  // repeats the title; the guard here is for a candidate stored before it did.
+  const commitLines =
+    reference.subTitle && reference.subTitle !== reference.title
+      ? commitMessageLines(reference.subTitle)
+      : [];
+
   return (
     <div
       {...rowProps}
@@ -2147,17 +2160,26 @@ function TicketRow({
             <MissingRolesBadge roles={missingRoles} />
           </div>
 
-          {/* Every commit message behind the ticket, joined by the API (see WorkItemDisplay). The
-              line above is the ticket's own name; this is what actually changed under it, which is
-              a list whenever the ticket rode in on more than one commit. */}
-          {reference.subTitle && reference.subTitle !== reference.title && (
-            <p
-              className="text-[11px] truncate"
-              style={{ color: 'var(--text-muted)' }}
-              title={reference.subTitle}
-            >
-              {reference.subTitle}
-            </p>
+          {/* Every commit message behind the ticket, one per line. The line above is the ticket's
+              own name; these are what actually changed under it — a list whenever it rode in on
+              more than one commit, so they get a line each rather than one running sentence. Each
+              line truncates on its own, with the full message in its tooltip, so a verbose commit
+              subject can't widen the row. */}
+          {commitLines.length > 0 && (
+            <div className="min-w-0">
+              {commitLines.map((line, i) => (
+                <p
+                  key={i}
+                  className="text-[11px] truncate"
+                  style={{ color: 'var(--text-muted)' }}
+                  title={line}
+                >
+                  {/* Marker only when there is more than one: a lone message is a sentence, not a
+                      list of one. */}
+                  {commitLines.length > 1 ? `• ${line}` : line}
+                </p>
+              ))}
+            </div>
           )}
 
           {/* Reference-level participants (e.g. QA on a ticket). Editable in place: writes go to
