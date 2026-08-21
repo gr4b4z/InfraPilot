@@ -789,7 +789,12 @@ public static class PromotionEndpoints
         supersededById = c.SupersededById,
         participants = c.Participants,
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
-        sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
+        // Work-item references go out with their display lines resolved (tracker name on top, the
+        // messages of the ticket's commits underneath — see Deployments.WorkItemDisplay), so the
+        // promotion page names a ticket the same way the work-item queue and detail page do. Every
+        // other reference is passed through untouched.
+        sourceEventReferences = Deployments.WorkItemDisplay.ApplyToReferences(
+            sourceEventReferences ?? Array.Empty<ReferenceDto>()),
         canApprove,
         // False ⇒ this edge creates no work items, so the UI drops the whole work-item affordance
         // (sign-off links, counts, completeness) and shows the references as change-set history only.

@@ -1618,8 +1618,9 @@ export interface WorkItemDetail {
   environments: WorkItemEnvironment[];
   title: string | null;
   /**
-   * Secondary display line: the tracker's own summary (e.g. the Jira ticket title) when `title`
-   * carries the commit subject. Null when the producer sent a single name.
+   * Secondary display line: the messages of every commit this item was carried by, joined by the
+   * server. `title` names the ticket, this says what changed under it. Null when no commit message
+   * is known, or when the item's one commit is named the same thing as the ticket.
    */
   subTitle: string | null;
   /**
@@ -1767,9 +1768,9 @@ export interface PromotionSourceEventReference {
   revision?: string | null;
   title?: string | null;
   /**
-   * Secondary display line under `title`. Set on `work-item` references when the title carries the
-   * commit subject and the tracker has its own summary (e.g. the Jira ticket title). Absent when
-   * the producer has only one name for the thing.
+   * Secondary display line under `title` on a `work-item` reference: the messages of the commits
+   * the ticket declares, joined by the server. Absent when there are none to show. (Producers send
+   * the tracker's own summary on this field; the read path replaces it — see WorkItemDisplay.)
    */
   subTitle?: string | null;
   /**

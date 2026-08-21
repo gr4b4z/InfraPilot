@@ -72,9 +72,10 @@ public class WorkItemSyncService
             changed++;
         }
 
-        // Title: prefer per-reference Title; fall back to enrichment label when there is
-        // exactly one work-item (the enrichment shape is flat so applying a single label to
-        // multiple tickets would be misleading).
+        // Display lines come from WorkItemDisplay (the tracker's name on top, the messages of the
+        // ticket's commits underneath). The enrichment label is its last-resort title source, and
+        // only when there is exactly one work-item on the event: the enrichment shape is flat, so
+        // applying a single label to multiple tickets would be misleading.
         var enrichment = string.IsNullOrEmpty(ev.EnrichmentJson)
             ? null
             : Deserialize<EnrichmentDto>(ev.EnrichmentJson);
@@ -88,7 +89,7 @@ public class WorkItemSyncService
 
         foreach (var r in refs)
         {
-            var title = !string.IsNullOrWhiteSpace(r.Title) ? r.Title : singleEnrichedTitle;
+            var (title, subTitle) = WorkItemDisplay.Resolve(r, rawRefs, singleEnrichedTitle);
             var committedAt = WorkItemCommitTime.Resolve(r, rawRefs);
 
             if (existingByKey.TryGetValue(r.Key!, out var row))
@@ -97,7 +98,7 @@ public class WorkItemSyncService
                 row.Provider = r.Provider;
                 row.Url = r.Url;
                 row.Title = title;
-                row.SubTitle = r.SubTitle;
+                row.SubTitle = subTitle;
                 row.Content = r.Content;
                 row.Revision = r.Revision;
                 row.Product = ev.Product;
@@ -116,7 +117,7 @@ public class WorkItemSyncService
                     Provider = r.Provider,
                     Url = r.Url,
                     Title = title,
-                    SubTitle = r.SubTitle,
+                    SubTitle = subTitle,
                     Content = r.Content,
                     Revision = r.Revision,
                     CommittedAt = committedAt,
