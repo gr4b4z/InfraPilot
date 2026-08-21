@@ -183,6 +183,50 @@ public class WorkItemDisplayTests
     }
 
     [Fact]
+    public void ResolvingIsIdempotent_WhenTheReadPathsOwnOutputComesBackAsSubTitle()
+    {
+        // What a replay posts back: the tracker name on Title and this resolver's own commit line on
+        // SubTitle, because that is how the API reported the candidate (mpt-release's refresh echoes a
+        // candidate's work-item references when its own rebuild resolves none). Reading the line as a
+        // ticket name would rename the ticket to its list of commits.
+        var workItem = new ReferenceDto("work-item", Key: "FOO-1",
+            Title: "Fix retry",
+            SubTitle: "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+            Commits: ["aaaaaaa1111", "bbbbbbb2222"]);
+        var refs = new List<ReferenceDto>
+        {
+            workItem,
+            new("commit", Key: "aaaaaaa1111", Title: "fix: send an idempotency key with the retry"),
+            new("commit", Key: "bbbbbbb2222", Title: "test: cover the duplicate submit"),
+        };
+
+        var (title, subTitle) = WorkItemDisplay.Resolve(workItem, refs);
+
+        Assert.Equal("Fix retry", title);
+        Assert.Equal(
+            "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+            subTitle);
+    }
+
+    [Fact]
+    public void EchoedCommitLineSurvives_WhenItsCommitReferencesAreNoLongerThere()
+    {
+        // Same replay, with the `commit` references trimmed out: there is nothing to recompute the
+        // line from, and the echoed line is the only record of it left.
+        var workItem = new ReferenceDto("work-item", Key: "FOO-1",
+            Title: "Fix retry",
+            SubTitle: "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+            Commits: ["aaaaaaa1111", "bbbbbbb2222"]);
+
+        var (title, subTitle) = WorkItemDisplay.Resolve(workItem, [workItem]);
+
+        Assert.Equal("Fix retry", title);
+        Assert.Equal(
+            "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+            subTitle);
+    }
+
+    [Fact]
     public void ApplyToReferences_RewritesWorkItemsAndLeavesEverythingElseAlone()
     {
         var refs = new List<ReferenceDto>

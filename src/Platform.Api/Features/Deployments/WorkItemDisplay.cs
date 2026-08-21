@@ -52,13 +52,25 @@ public static class WorkItemDisplay
         IReadOnlyList<ReferenceDto> allReferences,
         string? trackerTitleFallback = null)
     {
-        var title = FirstNonBlank(workItem.SubTitle, workItem.Title, trackerTitleFallback);
+        var commitMessages = CommitMessages(workItem, allReferences);
 
-        // The commit messages, when the ticket declares hashes we can hydrate. Falling back to the
-        // producer's own commit subject — which is what Title holds in the two-line shape — keeps a
-        // trimmed payload (one whose `commit` references were dropped) from losing the line entirely.
-        var subTitle = CommitMessages(workItem, allReferences)
-            ?? (string.IsNullOrWhiteSpace(workItem.SubTitle) ? null : StripMergeNoise(workItem.Title));
+        // SubTitle is the tracker's own summary by contract — but this resolver also *writes* the
+        // commit line into that field on the read path, and a payload read out of the API can come
+        // straight back in on an upsert (mpt-release's refresh echoes a candidate's work-item
+        // references verbatim whenever its own rebuild resolves none). Our own output is not a
+        // ticket name and must never become the title, or one replay would rename every ticket to
+        // its list of commits.
+        var echoed = IsOwnCommitLine(workItem.SubTitle, commitMessages);
+
+        var title = FirstNonBlank(echoed ? null : workItem.SubTitle, workItem.Title, trackerTitleFallback);
+
+        // The commit messages, when the ticket declares hashes we can hydrate. Failing that: an
+        // echoed line is already the answer, and otherwise the producer's own commit subject — which
+        // is what Title holds in the two-line shape — keeps a trimmed payload (one whose `commit`
+        // references were dropped) from losing the line entirely.
+        var subTitle = commitMessages
+            ?? (echoed ? workItem.SubTitle
+                       : string.IsNullOrWhiteSpace(workItem.SubTitle) ? null : StripMergeNoise(workItem.Title));
 
         // A second line repeating the first says nothing worth the space — the single-commit case,
         // where the ticket and its one commit are named the same thing.
@@ -83,6 +95,18 @@ public static class WorkItemDisplay
                 return r with { Title = title, SubTitle = subTitle };
             })
             .ToList();
+
+    /// <summary>
+    /// Whether <paramref name="subTitle"/> is this resolver's own commit line coming back in rather
+    /// than a name from the tracker: it either matches what the same references resolve to now, or it
+    /// carries the separator nothing but this resolver writes. A ticket summary containing " • " would
+    /// be misread as ours, which costs nothing — the title falls back to the reference's own
+    /// <see cref="ReferenceDto.Title"/>, exactly as it does for a producer that sends one name.
+    /// </summary>
+    private static bool IsOwnCommitLine(string? subTitle, string? commitMessages)
+        => !string.IsNullOrWhiteSpace(subTitle)
+           && (string.Equals(subTitle, commitMessages, StringComparison.Ordinal)
+               || subTitle.Contains(CommitSeparator, StringComparison.Ordinal));
 
     /// <summary>
     /// The messages of the commits the ticket declares, in declared order, deduped on both hash and
