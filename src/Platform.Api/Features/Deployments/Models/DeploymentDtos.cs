@@ -82,6 +82,12 @@ public record ReferenceDto(
     // Unbounded by design (a ticket description can run long); stored as-is and rendered as
     // plain text, never interpreted as markup.
     string? Content = null,
+    // The referenced thing's state in its source system, as the producer found it. Set on
+    // `work-item` references: a tracker that already reports the item finished means nobody needs to
+    // sign it off again here, so the promotion records the sign-off itself and names whoever closed
+    // it upstream. Null (the common case) means "no idea" — the item is signed off in InfraPortal as
+    // usual. Meaningless on other reference types; ignored there.
+    ReferenceResolutionDto? Resolution = null,
     // When the referenced thing happened in its source system. Meaning follows Type:
     // `pull-request` → merge/completion time, `commit` → committer date, `work-item` →
     // created in the tracker, `pipeline` → build finish. Producers should send the committer
@@ -101,6 +107,28 @@ public record ParticipantDto(
     // on a given reference, so the UI can render an "(overridden by …)" hint.
     bool IsOverride = false,
     string? AssignedBy = null);
+
+/// <summary>
+/// What the source system says about a reference's own lifecycle — today only whether it is finished.
+/// A work item already closed in its tracker has been reviewed there; asking for a second sign-off in
+/// InfraPortal adds a click, not assurance, so the promotion records the sign-off on the producer's
+/// word and keeps <see cref="By"/> and <see cref="At"/> as the trail for who actually closed it.
+/// </summary>
+/// <param name="Resolved">
+/// True when the tracker reports the item finished. Only true does anything: false and null are both
+/// "still open", because a producer that cannot read a status should not be able to un-approve.
+/// </param>
+/// <param name="Status">The tracker's own word for the state ("Done", "Closed") — display only.</param>
+/// <param name="At">When it was closed there, if the tracker exposes it.</param>
+/// <param name="By">Who closed it there, if the tracker exposes it.</param>
+public record ReferenceResolutionDto(
+    bool Resolved,
+    string? Status = null,
+    DateTimeOffset? At = null,
+    ResolutionActorDto? By = null);
+
+/// <summary>Whoever closed a work item in its source system. Not a platform user — either half may be absent.</summary>
+public record ResolutionActorDto(string? DisplayName = null, string? Email = null);
 
 // --- Output DTOs ---
 
