@@ -595,6 +595,9 @@ public class PromotionService
         var allRefs = candidate.References;
         foreach (var r in workItemRefs)
         {
+            // Display lines through the shared resolver: the tracker's name for the item, and the
+            // messages of the commits it rode in on. See Deployments.WorkItemDisplay.
+            var (title, subTitle) = Deployments.WorkItemDisplay.Resolve(r, allRefs);
             _db.PromotionWorkItems.Add(new PromotionWorkItem
             {
                 Id = Guid.NewGuid(),
@@ -604,8 +607,8 @@ public class PromotionService
                 TargetEnv = candidate.TargetEnv,
                 Provider = r.Provider,
                 Url = r.Url,
-                Title = r.Title,
-                SubTitle = r.SubTitle,
+                Title = title,
+                SubTitle = subTitle,
                 Content = r.Content,
                 Revision = r.Revision,
                 CommittedAt = Deployments.WorkItemCommitTime.Resolve(r, allRefs),

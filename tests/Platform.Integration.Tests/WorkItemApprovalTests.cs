@@ -773,9 +773,9 @@ public class WorkItemApprovalTests
     }
 
     /// <summary>
-    /// The two-line naming reaches the detail page: title carries the commit subject, subTitle the
-    /// tracker's own summary. A subtitle that merely repeats the title is dropped server-side — a
-    /// second line saying the same thing is noise, not information.
+    /// Both display lines reach the detail page as the projection resolved them: the ticket's own name
+    /// as the title, its commit messages underneath. A subtitle that merely repeats the title is
+    /// dropped server-side — a second line saying the same thing is noise, not information.
     /// </summary>
     [Fact]
     public async Task GetDetail_ReturnsSubTitle_AndDropsItWhenItRepeatsTheTitle()
@@ -788,7 +788,8 @@ public class WorkItemApprovalTests
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
-                title: "Retry checkout submits with an idempotency key", subTitle: "Fix retry");
+                title: "Fix retry",
+                subTitle: "fix: send an idempotency key with the retry • test: cover the duplicate submit");
             await SeedPolicyEventCandidateAsync(db, "BAR-1", approverGroup: "ReleaseApprovers",
                 title: "Fix retry", subTitle: "Fix retry");
         }
@@ -799,8 +800,10 @@ public class WorkItemApprovalTests
 
             var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
             Assert.NotNull(detail);
-            Assert.Equal("Retry checkout submits with an idempotency key", detail!.Title);
-            Assert.Equal("Fix retry", detail.SubTitle);
+            Assert.Equal("Fix retry", detail!.Title);
+            Assert.Equal(
+                "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+                detail.SubTitle);
 
             var duplicate = await svc.GetDetailAsync("BAR-1", "acme", "prod", default);
             Assert.NotNull(duplicate);

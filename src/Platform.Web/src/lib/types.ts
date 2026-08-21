@@ -271,7 +271,7 @@ export interface RelatedWorkItem {
   provider?: string | null;
   url?: string | null;
   title?: string | null;
-  /** Tracker summary shown under `title` when the title carries the commit subject. */
+  /** The messages of the commits behind the ticket, joined — shown under `title`. */
   subTitle?: string | null;
   /** Environments the ticket is gated for; a work-item link needs one of them. */
   signOffTargetEnvs: string[];

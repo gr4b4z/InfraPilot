@@ -152,6 +152,8 @@ public static class PromotionSeedData
 
         foreach (var r in workItems)
         {
+            // Same resolver the ingest path uses, so a seeded row is named like a real one.
+            var (title, subTitle) = Platform.Api.Features.Deployments.WorkItemDisplay.Resolve(r, refs);
             db.PromotionWorkItems.Add(new PromotionWorkItem
             {
                 Id = Guid.NewGuid(),
@@ -161,8 +163,8 @@ public static class PromotionSeedData
                 TargetEnv = candidate.TargetEnv,
                 Provider = r.Provider,
                 Url = r.Url,
-                Title = r.Title,
-                SubTitle = r.SubTitle,
+                Title = title,
+                SubTitle = subTitle,
                 Content = r.Content,
                 Revision = r.Revision,
                 CreatedAt = candidate.CreatedAt,
