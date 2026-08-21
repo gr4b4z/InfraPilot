@@ -234,8 +234,10 @@ public class DeploymentService
                     Content: r.Content,
                     // Carried through untouched: Commits links a work item to its commit/PR
                     // references, OccurredAt is the lead-time clock start — both are consumed
-                    // by WorkItemCommitTime when the work-item projection is synced.
+                    // by WorkItemCommitTime when the work-item projection is synced. Resolution is
+                    // the tracker's own verdict on the item, which nothing here is entitled to edit.
                     Commits: r.Commits,
+                    Resolution: r.Resolution,
                     OccurredAt: r.OccurredAt)).ToList(),
                 JsonOptions),
             ParticipantsJson = JsonSerializer.Serialize(

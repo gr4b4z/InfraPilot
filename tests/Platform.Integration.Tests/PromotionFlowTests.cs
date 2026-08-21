@@ -332,6 +332,139 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
+    /// A work item the producer reports as closed in its tracker gets that fact on its thread — the
+    /// status, the date, and who closed it — and stays <b>pending</b>. A ticket closed in Jira says
+    /// the work is finished; it does not say this release is fit to ship, which is what the gate asks.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemClosedUpstream_NotesItOnTheThreadAndStaysPending()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "DONE-1",
+                  title = "Merged PR 150103: order the answer parameters",
+                  subTitle = "Answers should display ordered parameters",
+                  resolution = new
+                  {
+                      resolved = true,
+                      status = "Done",
+                      at = "2026-08-14T09:12:00Z",
+                      by = new { displayName = "Farkas, Dariusz", email = "dariusz.farkas@example.com" },
+                  } },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.5.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/DONE-1/detail?product=acme&targetEnv=prod");
+
+        // Still somebody's to sign off: nothing was decided on their behalf.
+        Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
+        Assert.True(detail.GetProperty("canApprove").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, detail.GetProperty("myDecision").ValueKind);
+
+        // ...but the tracker's verdict is on the thread, as context rather than as a decision.
+        var note = Assert.Single(detail.GetProperty("comments").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, note.GetProperty("decision").ValueKind);
+        var body = note.GetProperty("body").GetString();
+        Assert.Contains("Done", body);
+        Assert.Contains("Farkas, Dariusz", body);
+        Assert.Contains("14 Aug 2026", body);
+        Assert.Contains("still outstanding", body);
+    }
+
+    /// <summary>
+    /// Re-posting the same closed work item does not fill its thread with copies: the source system
+    /// re-pushes a change set on every refresh.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemClosedUpstream_NotesItOnceAcrossRefreshes()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "IDEM-1", title = "Closed twice",
+                  resolution = new { resolved = true, status = "Done" } },
+        };
+
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(HttpStatusCode.Created,
+                (await CreatePromotionAsync("staging", "prod", "v7.7.0", references: references)).StatusCode);
+        }
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/IDEM-1/detail?product=acme&targetEnv=prod");
+        Assert.Single(detail.GetProperty("comments").EnumerateArray());
+        Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
+    }
+
+    /// <summary>
+    /// A decision somebody already recorded is not disturbed by the tracker closing the ticket
+    /// afterwards: a blocked item stays blocked, and the close is added as context beneath it.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemClosedUpstream_LeavesAnExistingDecisionAlone()
+    {
+        await SeedPoliciesAsync();
+
+        var open = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "HELD-1", title = "Held item" },
+        };
+        Assert.Equal(HttpStatusCode.Created,
+            (await CreatePromotionAsync("staging", "prod", "v7.6.0", references: open)).StatusCode);
+
+        var block = await _adminClient.PostAsJsonAsync("/api/work-items/HELD-1/blocks",
+            new { product = "acme", targetEnv = "prod", comment = "not going out" });
+        Assert.Equal(HttpStatusCode.OK, block.StatusCode);
+
+        // Same version re-posted, now reported closed upstream. Re-posting the same version is an
+        // update, so the block is not cleared by a version change either.
+        var closed = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "HELD-1", title = "Held item",
+                  resolution = new { resolved = true, status = "Done" } },
+        };
+        Assert.Equal(HttpStatusCode.Created,
+            (await CreatePromotionAsync("staging", "prod", "v7.6.0", references: closed)).StatusCode);
+
+        var ctx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/HELD-1?product=acme&targetEnv=prod");
+        var decision = Assert.Single(ctx.GetProperty("approvals").EnumerateArray());
+        Assert.Equal("Blocked", decision.GetProperty("decision").GetString());
+        Assert.Equal("admin@localhost", decision.GetProperty("approverEmail").GetString());
+    }
+
+    /// <summary>
+    /// <c>resolved: false</c> is "still open": nothing is noted, and the item is signed off as usual.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemOpenUpstream_NotesNothing()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "OPEN-1", title = "Still open",
+                  resolution = new { resolved = false, status = "In Progress" } },
+        };
+
+        Assert.Equal(HttpStatusCode.Created,
+            (await CreatePromotionAsync("staging", "prod", "v7.8.0", references: references)).StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/OPEN-1/detail?product=acme&targetEnv=prod");
+        Assert.Empty(detail.GetProperty("comments").EnumerateArray());
+        Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
+        Assert.True(detail.GetProperty("canApprove").GetBoolean());
+    }
+
+    /// <summary>
     /// A declared hash with no matching <c>commit</c> reference still renders — the producer saw that
     /// commit, and dropping it would understate the change set. Abbreviated hashes match the full
     /// reference, because commit messages and version strings routinely carry the short form.

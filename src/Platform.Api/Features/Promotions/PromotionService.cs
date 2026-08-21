@@ -287,6 +287,11 @@ public class PromotionService
         // A new build invalidates the "held back" verdicts made against the old one.
         await ResetHeldWorkItemDecisionsAsync(candidate, payloadWorkItems, ct);
 
+        // Then note which of them the tracker already considers finished. Context for whoever signs
+        // off, not a sign-off: the gate is untouched, so nothing needs re-evaluating here.
+        if (snapshot.TracksWorkItems)
+            await RecordUpstreamResolutionsAsync(candidate, payloadWorkItems, ct);
+
         // If born Approved, kick off execution right away — after the initial save so the candidate
         // is visible to queries even if dispatch transiently fails.
         if (candidate.Status == PromotionStatus.Approved)
@@ -349,6 +354,11 @@ public class PromotionService
         await DispatchWebhookAsync(existing, "promotion.updated", ct,
             new { source = "external", refCount = references.Count });
 
+        // A refreshed change set can carry work items the tracker has closed since — including ones
+        // this candidate never listed before. Note those on their threads.
+        if (ReadSnapshot(existing).TracksWorkItems)
+            await RecordUpstreamResolutionsAsync(existing, ExtractWorkItemReferences(references), ct);
+
         if (existing.Status == PromotionStatus.Pending) return await ReevaluateAsync(existing.Id, ct);
         return existing;
     }
@@ -389,6 +399,117 @@ public class PromotionService
             _logger.LogInformation(
                 "Superseded {Count} pending candidate(s) in favour of {CandidateId}",
                 stale.Count, fresh.Id);
+    }
+
+    /// <summary>
+    /// Notes, on the work item's own thread, that its tracker already reports it finished — the
+    /// status, when it was closed, and who performed the closing transition
+    /// (<see cref="ReferenceResolutionDto"/>).
+    ///
+    /// <para>Deliberately <b>not</b> a sign-off. A ticket closed in Jira says the work is done; it
+    /// does not say this release is fit to go out, which is the question the promotion gate asks. So
+    /// the item stays pending and a human still signs it off — they just no longer have to open Jira
+    /// to find out where the ticket stands, or who closed it.</para>
+    ///
+    /// <para>Idempotent by content: the source system re-posts its change set on every refresh, so a
+    /// note identical to one already on the thread is not written again. A ticket closed by somebody
+    /// else, or re-closed on a later date, produces a different sentence and is recorded as the new
+    /// fact it is.</para>
+    /// </summary>
+    private async Task<int> RecordUpstreamResolutionsAsync(
+        PromotionCandidate candidate, IReadOnlyList<ReferenceDto> workItemRefs, CancellationToken ct)
+    {
+        var resolved = workItemRefs
+            .Where(r => r.Resolution?.Resolved == true && !string.IsNullOrWhiteSpace(r.Key))
+            .GroupBy(r => r.Key!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+        if (resolved.Count == 0) return 0;
+
+        var keys = resolved.Select(r => r.Key!).ToList();
+        var alreadyNoted = (await _db.WorkItemComments.AsNoTracking()
+                .Where(c => keys.Contains(c.WorkItemKey)
+                         && c.Product == candidate.Product
+                         && c.TargetEnv == candidate.TargetEnv
+                         && c.AuthorEmail == WorkItemComment.SystemAuthor)
+                .Select(c => new { c.WorkItemKey, c.Body })
+                .ToListAsync(ct))
+            .Select(c => $"{c.WorkItemKey}\n{c.Body}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var now = DateTimeOffset.UtcNow;
+        var recorded = new List<string>();
+        foreach (var r in resolved)
+        {
+            var note = DescribeUpstreamResolution(r);
+            if (!alreadyNoted.Add($"{r.Key}\n{note}")) continue;
+
+            // Decision stays null: this is context on the thread, not a verdict. Authored by the
+            // system, which the read paths already treat as immutable.
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = r.Key!,
+                Product = candidate.Product,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = WorkItemComment.SystemAuthor,
+                AuthorName = "System",
+                Body = note,
+                CreatedAt = now,
+            });
+            recorded.Add(r.Key!);
+        }
+
+        if (recorded.Count == 0) return 0;
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.closed-upstream",
+            "system", "System", "system",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                candidate.Product,
+                candidate.TargetEnv,
+                candidate.Version,
+                workItemKeys = recorded,
+            });
+
+        _logger.LogInformation(
+            "Noted {Count} work item(s) already closed upstream for candidate {CandidateId} ({Product}/{Env} {Version})",
+            recorded.Count, candidate.Id, LogSanitizer.Clean(candidate.Product),
+            LogSanitizer.Clean(candidate.TargetEnv), LogSanitizer.Clean(candidate.Version));
+
+        return recorded.Count;
+    }
+
+    /// <summary>
+    /// The sentence written to the work item's thread. Names the status, the person and the date the
+    /// tracker reported, omitting whichever of those the producer could not resolve, and says plainly
+    /// that a sign-off here is still outstanding — a reader who sees only "Done" would reasonably
+    /// assume otherwise.
+    /// </summary>
+    private static string DescribeUpstreamResolution(ReferenceDto reference)
+    {
+        var resolution = reference.Resolution!;
+        var tracker = string.IsNullOrWhiteSpace(reference.Provider) ? "The tracker" : reference.Provider;
+        var status = string.IsNullOrWhiteSpace(resolution.Status) ? "closed" : resolution.Status;
+
+        var who = (resolution.By?.DisplayName ?? "").Trim();
+        if (who.Length == 0) who = (resolution.By?.Email ?? "").Trim();
+        var when = resolution.At?.ToUniversalTime()
+            // Invariant: this sentence is a record, and a server culture change must not silently
+            // restyle dates already written into old threads.
+            .ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
+
+        var attribution = who.Length > 0 && when is not null ? $" by {who} on {when}"
+            : who.Length > 0 ? $" by {who}"
+            : when is not null ? $" on {when}"
+            : "";
+
+        return $"{tracker} reports this work item as {status}{attribution}. "
+             + "Sign-off for this promotion is still outstanding.";
     }
 
     /// <summary>
