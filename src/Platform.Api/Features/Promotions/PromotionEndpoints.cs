@@ -225,7 +225,11 @@ public static class PromotionEndpoints
                     id = (Guid?)null,
                     deployedAt = c.CreatedAt,
                     source = "external",
-                    references = c.References,
+                    // The same list as the candidate's `sourceEventReferences`, and resolved the same
+                    // way (see ToDto): this is what the detail page's work-item and reference cards
+                    // actually render, so an unresolved copy here would name a ticket by its commit
+                    // subject on the page that matters most.
+                    references = Deployments.WorkItemDisplay.ApplyToReferences(c.References),
                     participants = c.Participants,
                     enrichment = (object?)null,
                 },

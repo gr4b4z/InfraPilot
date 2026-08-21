@@ -9,7 +9,13 @@ import type {
   WorkItemDetail,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
-import { decisionStyle, providerLabel, referringCandidateId, shortHash } from '@/lib/workItem';
+import {
+  commitMessageLines,
+  decisionStyle,
+  providerLabel,
+  referringCandidateId,
+  shortHash,
+} from '@/lib/workItem';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { Linkified } from '@/lib/linkify';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
@@ -147,6 +153,10 @@ export function WorkItemDetailPage() {
   const referrer = fromCandidateId
     ? (detail.candidates.find((c) => c.id === fromCandidateId) ?? null)
     : null;
+  // The second line, back in its parts. The server already drops a subtitle that repeats the title;
+  // the guard here is for a payload projected before it did.
+  const commitLines =
+    detail.subTitle && detail.subTitle !== detail.title ? commitMessageLines(detail.subTitle) : [];
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -213,12 +223,24 @@ export function WorkItemDetailPage() {
               {detail.title}
             </p>
           )}
-          {/* The messages of the commits this item was carried by, joined by the API. Quieter than
-              the title: the title names the ticket, this says what changed under it. */}
-          {detail.subTitle && detail.subTitle !== detail.title && (
-            <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {detail.subTitle}
-            </p>
+          {/* The messages of the commits this item was carried by — one per line. Quieter than the
+              title: the title names the ticket, these say what changed under it. Separate lines
+              because they are separate commits; run together they read as one long sentence. */}
+          {commitLines.length > 0 && (
+            <div className="mt-0.5 space-y-0.5">
+              {commitLines.map((line, i) => (
+                <p
+                  key={i}
+                  className="text-[13px] flex gap-1.5"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {/* Marker only when there is more than one: a lone message is a sentence, not a
+                      list of one. */}
+                  {commitLines.length > 1 && <span aria-hidden="true">&bull;</span>}
+                  <span>{line}</span>
+                </p>
+              ))}
+            </div>
           )}
           <div
             className="flex items-center gap-2 flex-wrap mt-2 text-[12px]"
