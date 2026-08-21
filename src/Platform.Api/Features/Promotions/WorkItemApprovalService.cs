@@ -988,8 +988,8 @@ public class WorkItemApprovalService
             TargetEnv: env,
             Environments: environments,
             Title: title,
-            // Same duplicate guard the producers apply: a subtitle that repeats the title says
-            // nothing worth a second line.
+            // The rows already went through WorkItemDisplay, which drops a repeat — but the two
+            // values can come from different rows here, so the guard is re-applied.
             SubTitle: string.Equals(subTitle, title, StringComparison.Ordinal) ? null : subTitle,
             // Blank-to-null so the client has one emptiness check ("no content") rather than two.
             Content: string.IsNullOrWhiteSpace(content) ? null : content,
@@ -1417,7 +1417,7 @@ public class WorkItemApprovalService
 
             var commitRef = references.FirstOrDefault(r =>
                 string.Equals(r.Type, "commit", StringComparison.OrdinalIgnoreCase)
-                && HashesMatch(r.Key, hash));
+                && GitHash.Matches(r.Key, hash));
 
             commits.Add(new WorkItemCommitRef(
                 Hash: hash,
@@ -1428,7 +1428,7 @@ public class WorkItemApprovalService
 
             foreach (var pr in references.Where(r =>
                 string.Equals(r.Type, "pull-request", StringComparison.OrdinalIgnoreCase)
-                && HashesMatch(r.Revision, hash)))
+                && GitHash.Matches(r.Revision, hash)))
             {
                 // Key is a PR number and the natural identity; fall back to the URL for a producer
                 // that omitted it, so an unkeyed PR still renders once instead of on every commit.
@@ -1445,27 +1445,6 @@ public class WorkItemApprovalService
         }
 
         return (commits, pullRequests);
-    }
-
-    /// <summary>
-    /// Git hash comparison, case-insensitive, tolerating abbreviation on either side: commit messages
-    /// and build metadata routinely carry a short SHA where the reference carries the full one (the
-    /// version string in the sample payload does exactly this). A prefix match needs at least
-    /// <c>MinAbbreviatedHashLength</c> characters so a stray short token can't match everything.
-    /// </summary>
-    private const int MinAbbreviatedHashLength = 7;
-
-    private static bool HashesMatch(string? a, string? b)
-    {
-        var left = (a ?? "").Trim();
-        var right = (b ?? "").Trim();
-        if (left.Length == 0 || right.Length == 0) return false;
-        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return true;
-
-        var shorter = left.Length <= right.Length ? left : right;
-        var longer = left.Length <= right.Length ? right : left;
-        return shorter.Length >= MinAbbreviatedHashLength
-            && longer.StartsWith(shorter, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -1648,9 +1627,10 @@ public record WorkItemDetail(
     IReadOnlyList<WorkItemEnvironmentView> Environments,
     string? Title,
     /// <summary>
-    /// Secondary display line under <see cref="Title"/>: when the producer titles the item by its
-    /// commit subject, this is the tracker's own summary (e.g. the Jira ticket title). Null when
-    /// the producer sent a single name.
+    /// Secondary display line under <see cref="Title"/>: the messages of every commit this item was
+    /// carried by, joined (see <c>Deployments.WorkItemDisplay</c>). <see cref="Title"/> names the
+    /// ticket, this says what changed. Null when no commit message is known, or when the item's one
+    /// commit is named the same thing as the ticket.
     /// </summary>
     string? SubTitle,
     /// <summary>

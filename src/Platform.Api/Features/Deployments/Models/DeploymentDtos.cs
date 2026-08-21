@@ -59,10 +59,10 @@ public record ReferenceDto(
     string? Key = null,
     string? Revision = null,
     string? Title = null,
-    // Secondary display line under Title. Set by producers on `work-item` references when the two
-    // naming systems disagree: Title carries the commit subject (what actually changed), SubTitle
-    // carries the tracker's own summary (e.g. the Jira ticket title). Null when the producer has
-    // only one name for the thing — the UI renders a single line then.
+    // The tracker's own summary of a `work-item`, for producers whose Title carries a commit
+    // subject instead (older marketplace payloads do). Whenever it is set it is the ticket's real
+    // name, which is why WorkItemDisplay reads it as the title and puts the ticket's commit
+    // messages on the second line. Producers with a single name for the thing send Title alone.
     string? SubTitle = null,
     // Optional reference-scoped participants. A PR has its author/reviewer; a ticket has
     // its QA/assignee. When present these are persisted nested under the reference in
@@ -247,7 +247,8 @@ public record RelatedWorkItemDto(
     string? Provider,
     string? Url,
     string? Title,
-    // Secondary display line — the tracker's own summary when Title carries the commit subject.
+    // Secondary display line — the messages of the commits behind the ticket (see
+    // DeployEventWorkItem.SubTitle). Null when there are none to show.
     string? SubTitle,
     List<string> SignOffTargetEnvs);
 

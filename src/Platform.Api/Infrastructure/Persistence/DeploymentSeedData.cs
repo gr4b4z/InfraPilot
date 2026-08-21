@@ -95,6 +95,24 @@ public static class DeploymentSeedData
         "Add soft-delete to customer records", "Introduce per-tenant quotas for API usage",
     ];
 
+    // Commit subjects, in the shape a producer sends them: the ticket key in the message is how the
+    // work item was discovered in the first place, so it's appended when one is seeded.
+    private static readonly string[] CommitSubjects =
+    [
+        "fix: guard against a null tenant on the fast path",
+        "feat: accept the new payload shape behind a flag",
+        "refactor: pull the retry policy out of the handler",
+        "test: cover the rollback branch",
+        "fix: stop double-counting retried deliveries",
+        "chore: drop the unused legacy column",
+        "perf: batch the lookup instead of one call per row",
+        "fix: keep the cancellation token flowing through",
+        "feat: emit the new metric per environment",
+        "fix: respect the tenant timezone when formatting",
+        "refactor: move the mapping into its own type",
+        "fix: release the lease when the worker restarts",
+    ];
+
     private static readonly string[] PrTitles =
     [
         "fix: correct currency rounding for EUR/PLN pair",
@@ -431,16 +449,52 @@ public static class DeploymentSeedData
                 // Content section entirely when there's none, and that path should show up locally too.
                 var wiContent = rand.NextDouble() < 0.75 ? WorkItemBody(wiTitle, service, rand) : null;
 
-                // Most producers title the item by its commit subject and carry the tracker's own
-                // summary as subTitle; some (older senders) still send a single name. Seed both so
-                // the one-line and two-line renderings both show up locally.
+                // The commits the ticket rode in on. Producers send one `commit` reference per commit
+                // in the deployed range and list the hashes that mentioned the ticket on the work
+                // item itself; that linkage is what puts every commit message on the ticket's second
+                // display line. Seed a mix of one and several, because a multi-commit ticket is the
+                // case one commit subject can't name — and the reason the ticket's own title is what
+                // goes on the first line.
+                var commitCount = rand.NextDouble() switch
+                {
+                    < 0.45 => 1,
+                    < 0.80 => 2,
+                    _ => 3,
+                };
+                var wiCommits = new List<string>(commitCount);
+                var firstCommitSubject = "";
+                for (var c = 0; c < commitCount; c++)
+                {
+                    // A git sha is 40 hex characters and "N" only yields 32.
+                    var sha = (Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"))[..40];
+                    var subject = $"{CommitSubjects[rand.Next(CommitSubjects.Length)]} ({wiKey})";
+                    if (c == 0) firstCommitSubject = subject;
+                    wiCommits.Add(sha);
+
+                    var commitAuthor = shuffled[rand.Next(shuffled.Length)];
+                    refs.Add(new ReferenceDto("commit",
+                        product.SourceStyle == SourceStyle.AzureDevOps
+                            ? $"{product.BaseUrl}/_git/{service}/commit/{sha}"
+                            : $"{product.BaseUrl}/{service}/commit/{sha}",
+                        product.SourceStyle == SourceStyle.AzureDevOps ? "azure-devops" : "github",
+                        sha,
+                        sha,
+                        Title: subject,
+                        Participants: [new("author", commitAuthor.Name, commitAuthor.Email)]));
+                }
+
+                // Producers disagree about which name goes on `title`: some send the tracker's
+                // summary, others the commit subject with the summary on `subTitle`. Seed both
+                // shapes — either way the ticket is displayed by its own name, with the commit
+                // messages underneath.
                 var commitTitled = rand.NextDouble() < 0.6;
 
                 refs.Add(new ReferenceDto("work-item",
                     $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
-                    Title: commitTitled ? $"Merged PR {rand.Next(1000, 9999)}: [{wiKey.ToLowerInvariant()}] {wiTitle}" : wiTitle,
+                    Title: commitTitled ? firstCommitSubject : wiTitle,
                     SubTitle: commitTitled ? wiTitle : null,
                     Participants: wiParticipants,
+                    Commits: wiCommits,
                     Content: wiContent));
             }
         }

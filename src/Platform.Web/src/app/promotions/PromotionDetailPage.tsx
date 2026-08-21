@@ -2147,8 +2147,9 @@ function TicketRow({
             <MissingRolesBadge roles={missingRoles} />
           </div>
 
-          {/* The tracker's own summary when the title above carries the commit subject — the ticket
-              name a reviewer would recognise from Jira, without displacing what actually changed. */}
+          {/* Every commit message behind the ticket, joined by the API (see WorkItemDisplay). The
+              line above is the ticket's own name; this is what actually changed under it, which is
+              a list whenever the ticket rode in on more than one commit. */}
           {reference.subTitle && reference.subTitle !== reference.title && (
             <p
               className="text-[11px] truncate"

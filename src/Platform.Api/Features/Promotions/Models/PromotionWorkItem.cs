@@ -30,9 +30,10 @@ public class PromotionWorkItem
     public string? Url { get; set; }
     public string? Title { get; set; }
 
-    // Secondary display line: when the producer names the change by its commit subject (Title),
-    // this carries the tracker's own summary — e.g. the Jira ticket title. Null when the producer
-    // sent a single name.
+    // Secondary display line: the messages of the commits this ticket rode in on, joined — one
+    // ticket routinely carries several. Title is the tracker's own name for the item, this is what
+    // actually changed. Resolved at sync time by WorkItemDisplay; null when the payload linked no
+    // commits, or when the one commit is named the same thing as the ticket.
     public string? SubTitle { get; set; }
 
     // The ticket body as the producer sent it — Jira description, PR description, commit message

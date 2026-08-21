@@ -52,10 +52,9 @@ candidate; it does **not** recompute or infer the bundle.
   "toRevision":   "f9e8d7c",           // optional — SHA being promoted (display/traceability)
   "references": [                       // optional — the authoritative net change set
     { "type": "work-item",    "provider": "jira",   "key": "CHK-451",
-      "title": "Add one-tap express checkout for saved cards",   // commit subject — what changed
-      "subTitle": "Add express checkout",                        // the Jira ticket's own summary
+      "title": "Add express checkout",                           // the Jira ticket's own summary
       "url": "https://jira/CHK-451",
-      "commits": ["f9e8d7c"],                                    // the commit(s) that mentioned the ticket
+      "commits": ["f9e8d7c", "b41c0aa"],                         // the commit(s) that mentioned the ticket
       "content": "One-tap checkout for saved cards.\n\nOut of scope: guest checkout." },
     { "type": "commit",       "provider": "github", "key": "f9e8d7c", "revision": "f9e8d7c",
       "title": "Add one-tap express checkout for saved cards", "url": "https://github.com/o/r/commit/f9e8d7c" },
@@ -80,10 +79,14 @@ candidate; it does **not** recompute or infer the bundle.
   description, commit message body) — `title` is the summary line, `content` is the prose under
   it. On a work item it becomes the **Content** section of the detail page, between People and
   Sign-off, and is omitted entirely when absent. Shown as plain text; markup is not interpreted.
-- On a work-item reference, `title` should carry the **commit subject line** (it usually
-  describes the change better than the tracker's summary) and `subTitle` the tracker's own
-  summary (the Jira ticket title), so a reviewer sees what changed and can still recognise the
-  ticket by name. Omit `subTitle` when it would repeat `title`.
+- On a work-item reference, `title` should carry the **tracker's own summary** (the Jira ticket
+  title). A ticket routinely rides several commits, so no single commit subject can name it —
+  InfraPortal shows the messages of *all* the commits listed in `commits` as a second line under
+  the title, resolved from the `commit` references in the same payload. Send those commit
+  references (`type: "commit"`, `key` = hash, `title` = subject) or the second line has nothing to
+  show. `subTitle` exists for producers that put a commit subject on `title` instead: whenever it
+  is present it is read as the item's real name and displayed as the title. Never put commit
+  messages in `subTitle`.
 - A work-item reference may carry `resolution` — what its tracker says about the item:
   ```jsonc
   "resolution": {
