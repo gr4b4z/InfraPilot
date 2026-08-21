@@ -69,7 +69,7 @@ candidate; it does **not** recompute or infer the bundle.
 ```
 
 - A `reference` is `{ type, url?, provider?, key?, revision?, title?, subTitle?, content?,
-  participants?, commits?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
+  participants?, commits?, resolution?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
   become the candidate's work items); `pull-request` / `repository` etc. are stored for display
   and traceability. `occurredAt` has the same per-type meaning as on deploy ingest
   (`notes/deployment-ingest-api.md`) and is resolved into the work item's `CommittedAt` for
@@ -84,6 +84,26 @@ candidate; it does **not** recompute or infer the bundle.
   describes the change better than the tracker's summary) and `subTitle` the tracker's own
   summary (the Jira ticket title), so a reviewer sees what changed and can still recognise the
   ticket by name. Omit `subTitle` when it would repeat `title`.
+- A work-item reference may carry `resolution` — what its tracker says about the item:
+  ```jsonc
+  "resolution": {
+    "resolved": true,                 // the tracker reports it finished
+    "status":   "Done",               // the tracker's own word, display only
+    "at":       "2026-08-14T09:12:00Z",
+    "by":       { "displayName": "Farkas, Dariusz", "email": "dariusz.farkas@example.com" }
+  }
+  ```
+  `resolved: true` makes InfraPortal note on the work item's thread that its tracker already
+  considers it finished, naming the status, the date, and whoever performed the closing transition —
+  so a reviewer can see where the ticket stands without opening Jira. It is **not** a sign-off: a
+  closed ticket says the work is done, not that this release is fit to ship, which is the question
+  the gate asks, so the work item stays pending and a human still signs it off. Only `true` is
+  meaningful (`false` and an absent `resolution` are both "still open"), any decision already
+  recorded on the item is left untouched, and notes are deduplicated by content so a producer
+  re-posting the same change set does not repeat them.
+
+  Report closed tickets rather than dropping them: a producer that omits them makes a release whose
+  tickets are all finished look like it shipped nothing.
 - Every work-item reference should declare `commits` — the hashes of the commits whose messages
   mentioned it — alongside a `commit` reference per hash: that is what lets the work-item detail
   page link the ticket to the actual change. `fromRevision`/`toRevision` plus a `repository`
