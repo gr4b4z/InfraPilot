@@ -1,4 +1,5 @@
-import { Link, useNavigate } from 'react-router-dom';
+import { useMemo } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowRight,
@@ -13,6 +14,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { PendingTicket, PromotionCandidate } from '@/lib/api';
+import { ComboBox, type ComboOption } from '@/components/ui/ComboBox';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
@@ -46,6 +48,46 @@ export function MyTasksPage() {
   const refresh = useMyTasksStore((s) => s.refresh);
   const total = promotions.length + workItems.length + unassignedWorkItems.length;
 
+  // Environment filter, kept in the URL (`?env=`) so a filtered view survives a refresh and can be
+  // handed to somebody as a link. Filters on each task's *target* environment — the env the pending
+  // decision gates — not on where a work item's version happens to be deployed already.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const envFilter = searchParams.get('env') ?? '';
+  const setEnvFilter = (next: string) =>
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next) params.set('env', next);
+        else params.delete('env');
+        return params;
+      },
+      { replace: true },
+    );
+
+  // Built from the unfiltered lists, so picking an environment never removes the others from the
+  // dropdown — the field keeps working as a browser of what's actually waiting.
+  const envOptions = useMemo<ComboOption[]>(() => {
+    const counts = new Map<string, number>();
+    for (const env of [
+      ...promotions.map((c) => c.targetEnv),
+      ...workItems.map((t) => t.targetEnv),
+      ...unassignedWorkItems.map((t) => t.targetEnv),
+    ]) {
+      counts.set(env, (counts.get(env) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([value, count]) => ({ value, hint: `${count} task${count === 1 ? '' : 's'}` }));
+  }, [promotions, workItems, unassignedWorkItems]);
+
+  // Case-insensitive substring, matching how the ComboBox narrows its own dropdown — a half-typed
+  // "pro" already shows the production rows instead of blanking the page until Enter.
+  const needle = envFilter.trim().toLowerCase();
+  const matchesEnv = (env: string) => !needle || env.toLowerCase().includes(needle);
+  const visiblePromotions = promotions.filter((c) => matchesEnv(c.targetEnv));
+  const visibleWorkItems = workItems.filter((t) => matchesEnv(t.targetEnv));
+  const visibleUnassigned = unassignedWorkItems.filter((t) => matchesEnv(t.targetEnv));
+
   // No count in the title: this page is per-viewer, so a number here would be the sender's inbox
   // depth, not the recipient's. The bell badge is where a live count belongs.
   useDocumentTitle(['My tasks']);
@@ -64,21 +106,32 @@ export function MyTasksPage() {
             Promotions and work items awaiting your action.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          disabled={loading}
-          className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-secondary)',
-            opacity: loading ? 0.6 : 1,
-          }}
-        >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} />
-          Refresh
-        </button>
+        <div className="shrink-0 flex items-center gap-2">
+          <ComboBox
+            value={envFilter}
+            onChange={setEnvFilter}
+            options={envOptions}
+            placeholder="Any environment"
+            ariaLabel="Environment"
+            clearable
+            className="w-44"
+          />
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={loading}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--text-secondary)',
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -110,10 +163,10 @@ export function MyTasksPage() {
           <Section
             icon={GitPullRequest}
             title="Promotions awaiting your approval"
-            count={promotions.length}
+            count={visiblePromotions.length}
             allLink={{ to: '/promotions', label: 'Open promotions' }}
           >
-            {promotions.map((c, index) => (
+            {visiblePromotions.map((c, index) => (
               <PromotionTaskRow key={c.id} index={index} candidate={c} />
             ))}
           </Section>
@@ -121,10 +174,10 @@ export function MyTasksPage() {
           <Section
             icon={Ticket}
             title="Work items assigned to you"
-            count={workItems.length}
+            count={visibleWorkItems.length}
             allLink={{ to: '/me/work-items', label: 'Open work items queue' }}
           >
-            {workItems.map((t, index) => (
+            {visibleWorkItems.map((t, index) => (
               <WorkItemTaskRow
                 key={`${t.workItemKey}-${t.candidateId}`}
                 index={index}
@@ -139,10 +192,10 @@ export function MyTasksPage() {
           <Section
             icon={UserPlus}
             title="Work items with nobody assigned"
-            count={unassignedWorkItems.length}
+            count={visibleUnassigned.length}
             allLink={{ to: '/me/work-items', label: 'Open work items queue' }}
           >
-            {unassignedWorkItems.map((t, index) => (
+            {visibleUnassigned.map((t, index) => (
               <WorkItemTaskRow
                 key={`${t.workItemKey}-${t.candidateId}`}
                 index={index}
