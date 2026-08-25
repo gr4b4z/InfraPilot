@@ -46,7 +46,9 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
-          <Route path="/" element={<Navigate to="/catalog" replace />} />
+          {/* Land on "My tasks": it's the one page every user has (not feature-gated), and it
+              answers the question a returning user actually has — "is anything waiting on me?" */}
+          <Route path="/" element={<Navigate to="/my-tasks" replace />} />
           {/* "My tasks" — the topbar bell's destination: everything awaiting the signed-in user,
               across promotions and work items. Not feature-gated: it degrades to an empty page
               when Promotions is off, and it's the target of a permanent shell affordance. */}
