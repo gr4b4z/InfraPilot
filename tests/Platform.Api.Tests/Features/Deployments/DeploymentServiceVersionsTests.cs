@@ -25,7 +25,7 @@ public class DeploymentServiceVersionsTests : IDisposable
             _db,
             Substitute.For<IWebhookDispatcher>(),
             Substitute.For<IPromotionIngestHook>(),
-            TestOptions.Normalization(),
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
             TestServiceDeletions.For(_db),
             TestProductOverrides.For(_db),

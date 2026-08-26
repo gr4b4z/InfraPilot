@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 
@@ -114,10 +115,17 @@ public static class DeploymentEndpoints
             return Results.Ok(await service.GetProductSummaries(ct));
         });
 
-        // Current state matrix
-        group.MapGet("/state", async (DeploymentService service, string? product, string? environment, string? serviceName, CancellationToken ct) =>
+        // Current state matrix.
+        //
+        // The environment filter is alias-resolved, here and on every read below: a pipeline that
+        // posts to "prod" queries for "prod" too, and it has to get back the rows it just wrote â€”
+        // which are stored under whatever canonical key the alias points at.
+        group.MapGet("/state", async (
+            DeploymentService service, EnvironmentAliasResolver environments,
+            string? product, string? environment, string? serviceName, CancellationToken ct) =>
         {
-            return Results.Ok(await service.GetState(product, environment, serviceName, ct));
+            var env = await environments.ResolveFilterAsync(environment, ct);
+            return Results.Ok(await service.GetState(product, env, serviceName, ct));
         });
 
         // Cross-product service search — the deployments page's "find a service without knowing
@@ -148,10 +156,12 @@ public static class DeploymentEndpoints
 
         // Deployment history for a specific service
         group.MapGet("/history/{product}/{serviceName}", async (
-            DeploymentService service, string product, string serviceName,
+            DeploymentService service, EnvironmentAliasResolver environments,
+            string product, string serviceName,
             string? environment, int? limit, CancellationToken ct) =>
         {
-            return Results.Ok(await service.GetHistory(product, serviceName, environment, limit ?? 50, ct));
+            var env = await environments.ResolveFilterAsync(environment, ct);
+            return Results.Ok(await service.GetHistory(product, serviceName, env, limit ?? 50, ct));
         });
 
         // Recent deployments across all environments for a product
@@ -165,24 +175,27 @@ public static class DeploymentEndpoints
 
         // Recent deployments for an environment
         group.MapGet("/recent/{product}/{environment}", async (
-            DeploymentService service, string product, string environment,
+            DeploymentService service, EnvironmentAliasResolver environments,
+            string product, string environment,
             DateTimeOffset? since, CancellationToken ct) =>
         {
             var sinceDate = since ?? DateTimeOffset.UtcNow.Date;
-            return Results.Ok(await service.GetRecentByEnvironment(product, environment, sinceDate, ct));
+            var env = await environments.ResolveAsync(environment, ct);
+            return Results.Ok(await service.GetRecentByEnvironment(product, env, sinceDate, ct));
         });
 
         // Versions deployed to a given (product, environment[, service]) — powers the rollback
         // picker's "source: deployments/versions" catalog input.
         group.MapGet("/versions", async (
-            DeploymentService service,
+            DeploymentService service, EnvironmentAliasResolver environments,
             string product, string environment, string? serviceName, int? limit,
             CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(environment))
                 return Results.BadRequest(new { error = "'product' and 'environment' are required" });
 
-            var versions = await service.GetVersions(product, environment, serviceName, limit ?? 50, ct);
+            var env = await environments.ResolveAsync(environment, ct);
+            var versions = await service.GetVersions(product, env, serviceName, limit ?? 50, ct);
             return Results.Ok(new { versions });
         });
 

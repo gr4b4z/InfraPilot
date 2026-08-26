@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
@@ -37,12 +38,15 @@ public static class RollbackAdminEndpoints
 
         group.MapPost("/policies", async (
             PlatformDbContext db, ICurrentUser user, IAuditLogger audit,
+            EnvironmentAliasResolver environments,
             UpsertRollbackPolicyRequest request, CancellationToken ct) =>
         {
             var error = Validate(request);
             if (error is not null) return Results.BadRequest(new { error });
 
-            var targetEnv = Blank(request.TargetEnv) ? null : request.TargetEnv!.Trim();
+            // Stored against the canonical environment so the policy governs every name the
+            // environment answers to â€” CanCreateAsync resolves the same way before looking it up.
+            var targetEnv = await environments.ResolveFilterAsync(request.TargetEnv, ct);
 
             // Pre-check for a friendly 409. The unique index covers env-specific rows; product-default
             // rows have a NULL TargetEnv, which no provider treats as duplicable, so this check is the
@@ -81,6 +85,7 @@ public static class RollbackAdminEndpoints
 
         group.MapPut("/policies/{id:guid}", async (
             PlatformDbContext db, ICurrentUser user, IAuditLogger audit, Guid id,
+            EnvironmentAliasResolver environments,
             UpsertRollbackPolicyRequest request, CancellationToken ct) =>
         {
             var error = Validate(request);
@@ -89,7 +94,7 @@ public static class RollbackAdminEndpoints
             var policy = await db.RollbackPolicies.FirstOrDefaultAsync(p => p.Id == id, ct);
             if (policy is null) return Results.NotFound();
 
-            var targetEnv = Blank(request.TargetEnv) ? null : request.TargetEnv!.Trim();
+            var targetEnv = await environments.ResolveFilterAsync(request.TargetEnv, ct);
             var clash = await db.RollbackPolicies
                 .AnyAsync(p => p.Id != id && p.Product == request.Product && p.TargetEnv == targetEnv, ct);
             if (clash)

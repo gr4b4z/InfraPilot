@@ -56,6 +56,7 @@ public class PromotionApproverGroupTests : IDisposable
             Substitute.For<ILogger<PromotionService>>(),
             Substitute.For<IWebhookDispatcher>(),
             TestOptions.Normalization(),
+            TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
             TestProductOverrides.For(_db));
     }

@@ -5,6 +5,7 @@ using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Users;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
@@ -34,6 +35,7 @@ public class PromotionService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
+    private readonly EnvironmentAliasResolver _environments;
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceProductOverrideService _productOverrides;
     private readonly ILogger<PromotionService> _logger;
@@ -68,6 +70,7 @@ public class PromotionService
         ILogger<PromotionService> logger,
         IWebhookDispatcher webhookDispatcher,
         IOptionsMonitor<NormalizationOptions> normalization,
+        EnvironmentAliasResolver environments,
         UserPreferencesService userPrefs,
         ServiceProductOverrideService productOverrides)
     {
@@ -78,6 +81,7 @@ public class PromotionService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _normalization = normalization;
+        _environments = environments;
         _userPrefs = userPrefs;
         _productOverrides = productOverrides;
         _logger = logger;
@@ -121,8 +125,11 @@ public class PromotionService
         // candidate will be stored under, or the candidate is validated against one product's
         // policies and then filed under another's.
         var product = await _productOverrides.ResolveProductAsync(dto.Product, service, ct);
-        var sourceEnv = dto.SourceEnv.Trim();
-        var targetEnv = dto.TargetEnv.Trim();
+        // Alias-resolved before policy resolution, not after: a caller that names the target
+        // "prod" has to reach the policy an admin wrote for "production", or the create is rejected
+        // as un-enrolled for an edge that is in fact configured.
+        var sourceEnv = await _environments.ResolveAsync(dto.SourceEnv, ct);
+        var targetEnv = await _environments.ResolveAsync(dto.TargetEnv, ct);
         var version = dto.Version.Trim();
         var references = dto.References ?? new List<ReferenceDto>();
         var participants = CanonicaliseParticipants(dto.Participants);

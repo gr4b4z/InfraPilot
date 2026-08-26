@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.ReleaseNotes.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Persistence;
@@ -19,7 +20,7 @@ public static class ReleaseNoteEndpoints
     {
         // --- Phase 1: raw preview ---
         group.MapGet("/preview/raw", async (
-            ReleaseNoteService service,
+            ReleaseNoteService service, EnvironmentAliasResolver environments,
             string? product, string? environment,
             DateTimeOffset? from, DateTimeOffset? to,
             CancellationToken ct) =>
@@ -27,7 +28,11 @@ public static class ReleaseNoteEndpoints
             var validation = ValidatePreviewQuery(product, environment, from, to);
             if (validation is not null) return validation;
 
-            var raw = await service.GetRawPreview(product!, environment!, from!.Value, to!.Value, ct);
+            // Alias-resolved, here and everywhere else a caller names an environment: the deploy
+            // events a note is built from are stored under the canonical key, so a pipeline asking
+            // for "prod" has to be pointed at the same rows its deploys landed in.
+            var env = await environments.ResolveAsync(environment, ct);
+            var raw = await service.GetRawPreview(product!, env, from!.Value, to!.Value, ct);
             return Results.Ok(raw);
         });
 
@@ -36,6 +41,7 @@ public static class ReleaseNoteEndpoints
             ReleaseNoteService service,
             ReleaseNoteTemplateService templates,
             TemplateEngine engine,
+            EnvironmentAliasResolver environments,
             string? product, string? environment,
             DateTimeOffset? from, DateTimeOffset? to,
             CancellationToken ct) =>
@@ -43,8 +49,9 @@ public static class ReleaseNoteEndpoints
             var validation = ValidatePreviewQuery(product, environment, from, to);
             if (validation is not null) return validation;
 
-            var raw = await service.GetRawPreview(product!, environment!, from!.Value, to!.Value, ct);
-            var template = await templates.GetTemplate(product, environment, ct: ct);
+            var env = await environments.ResolveAsync(environment, ct);
+            var raw = await service.GetRawPreview(product!, env, from!.Value, to!.Value, ct);
+            var template = await templates.GetTemplate(product, env, ct: ct);
             try
             {
                 var rendered = engine.Render(template, raw);
@@ -57,27 +64,31 @@ public static class ReleaseNoteEndpoints
         });
 
         group.MapGet("/template", async (
-            ReleaseNoteTemplateService templates,
+            ReleaseNoteTemplateService templates, EnvironmentAliasResolver environments,
             string? product, string? environment, bool? exact,
             CancellationToken ct) =>
         {
-            var template = await templates.GetTemplate(product, environment, exact ?? false, ct);
+            // Templates are stored under the canonical environment, so the scope an alias names is
+            // the same scope the generate path will read back.
+            var env = await environments.ResolveFilterAsync(environment, ct);
+            var template = await templates.GetTemplate(product, env, exact ?? false, ct);
             return Results.Ok(new
             {
                 product = product ?? "",
-                environment = environment ?? "",
+                environment = env ?? "",
                 template,
             });
         });
 
         group.MapPut("/template", async (
-            ReleaseNoteTemplateService templates,
+            ReleaseNoteTemplateService templates, EnvironmentAliasResolver environments,
             SaveTemplateRequest body,
             CancellationToken ct) =>
         {
             if (body is null || string.IsNullOrEmpty(body.Template))
                 return Results.BadRequest(new { error = "'template' is required" });
-            await templates.SaveTemplate(body.Product, body.Environment, body.Template, ct);
+            var env = await environments.ResolveFilterAsync(body.Environment, ct);
+            await templates.SaveTemplate(body.Product, env, body.Template, ct);
             return Results.NoContent();
         });
 
@@ -89,11 +100,17 @@ public static class ReleaseNoteEndpoints
             TemplateEngine engine,
             MarkdownRenderer markdown,
             IWebhookDispatcher webhooks,
+            EnvironmentAliasResolver environments,
             GenerateReleaseNoteRequest body,
             CancellationToken ct) =>
         {
             if (body is null || string.IsNullOrWhiteSpace(body.Product) || string.IsNullOrWhiteSpace(body.Environment))
                 return Results.BadRequest(new { error = "'product' and 'environment' are required" });
+
+            // Resolved once, at the top: the "since the last note" window, the deploy-event query,
+            // the template scope, the stored row and the webhook filter all have to name the same
+            // environment, and resolving per-use is how they would drift apart.
+            body = body with { Environment = await environments.ResolveAsync(body.Environment, ct) };
 
             // Auto-derive window from last published note when not provided.
             var to = body.To ?? DateTimeOffset.UtcNow;
@@ -215,9 +232,11 @@ public static class ReleaseNoteEndpoints
         });
 
         group.MapGet("/", async (
-            PlatformDbContext db, UserPreferencesService prefs, string? product, string? environment,
+            PlatformDbContext db, UserPreferencesService prefs, EnvironmentAliasResolver environments,
+            string? product, string? environment,
             int? page, int? pageSize, CancellationToken ct) =>
         {
+            environment = await environments.ResolveFilterAsync(environment, ct);
             var query = db.ReleaseNotes.AsNoTracking().AsQueryable();
 
             // Ahead of the Count below, so `total` and the page count agree with the rows returned.
