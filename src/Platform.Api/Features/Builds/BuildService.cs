@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Builds.Models;
 using Platform.Api.Features.Deployments;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Builds;
@@ -54,7 +55,8 @@ public class BuildService
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation(
                 "Replayed build registration {Id}: {Product}/{Service} v{Version} already registered; updated in place",
-                existing.Id, existing.Product, existing.Service, existing.Version);
+                existing.Id, LogSanitizer.Clean(existing.Product), LogSanitizer.Clean(existing.Service),
+                LogSanitizer.Clean(existing.Version));
 
             // A replay still runs the promotion hook — same rationale as deploy-ingest replays: the
             // first POST could only match policies that existed then, and one stranded by a hook
@@ -95,7 +97,8 @@ public class BuildService
 
         _logger.LogInformation(
             "Registered build {Id}: {Product}/{Service} v{Version} from {Branch}",
-            build.Id, build.Product, build.Service, build.Version, build.Branch);
+            build.Id, LogSanitizer.Clean(build.Product), LogSanitizer.Clean(build.Service),
+            LogSanitizer.Clean(build.Version), LogSanitizer.Clean(build.Branch));
 
         // After the save, so the build row exists whatever the promotion machinery does with it.
         await _ingestHook.OnRegisteredAsync(build, ct);
