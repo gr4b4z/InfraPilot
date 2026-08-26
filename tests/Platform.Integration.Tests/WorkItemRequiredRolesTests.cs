@@ -121,6 +121,125 @@ public class WorkItemRequiredRolesTests
         Assert.Equal(new[] { QaOwnerRole }, gap.MissingRoles);
     }
 
+    // ── Decided items are settled: no gap, no warning, not "unassigned" ───
+
+    [Fact]
+    public async Task PromotionList_ReportsNoGapOnceTheWorkItemHasBeenSignedOff()
+    {
+        // The gap asks for somebody to be put on the item. Once a reviewer has ruled on it there is
+        // nothing left to assign, so the promotion stops reporting it as needing attention.
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+        var candidateId = await CreatePromotionAsync(
+            product, "svc-decided-list", "DECIDED-1", referenceParticipants: null);
+
+        var gap = Assert.Single(RoleGaps((await ListCandidatesAsync(product))[candidateId]));
+        Assert.Equal("DECIDED-1", gap.WorkItemKey);
+
+        await SignOffAsync("DECIDED-1", product);
+
+        Assert.Empty(RoleGaps((await ListCandidatesAsync(product))[candidateId]));
+    }
+
+    [Fact]
+    public async Task PromotionDetail_ReportsNoGapOnceTheWorkItemHasBeenSignedOff()
+    {
+        // Same rule on the promotion page, which reads its own endpoint rather than the list.
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+        var candidateId = await CreatePromotionAsync(
+            product, "svc-decided-detail", "DECIDEDDETAIL-1", referenceParticipants: null);
+
+        Assert.Single(RoleGaps(await GetCandidateAsync(candidateId)));
+
+        await SignOffAsync("DECIDEDDETAIL-1", product);
+
+        Assert.Empty(RoleGaps(await GetCandidateAsync(candidateId)));
+    }
+
+    [Fact]
+    public async Task RoleRequirementMissing_DropsItemsThatSomebodyElseHasDecided()
+    {
+        // "Not assigned" is a work list. An item another reviewer has already signed off needs no
+        // assignment, so it leaves the tab even though its required role is still empty.
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+        await CreatePromotionAsync(product, "svc-q-decided", "QDECIDED-1", referenceParticipants: null);
+
+        Assert.Contains("QDECIDED-1", await GetPendingAsync(roleRequirement: "missing"));
+
+        // A different reviewer decides, so the row isn't dropped by the "I already decided this"
+        // rule the pending queue has always applied.
+        using var qa = CreateAuthenticatedClient("qa@localhost", "qa123");
+        await SignOffAsync("QDECIDED-1", product, client: qa);
+
+        Assert.DoesNotContain("QDECIDED-1", await GetPendingAsync(roleRequirement: "missing"));
+        // Still in the queue at large — somebody else's sign-off doesn't retire the row, it just
+        // stops it reading as incomplete.
+        var row = Assert.Single(
+            await GetPendingRowsAsync(roleRequirement: null),
+            r => r.GetProperty("workItemKey").GetString() == "QDECIDED-1");
+        Assert.Empty(Strings(row, "missingRoles"));
+        Assert.Equal(new[] { QaOwnerRole }, Strings(row, "requiredRoles"));
+    }
+
+    [Fact]
+    public async Task RoleRequirementMissing_DropsItemsWithAnIssueOrABlockToo()
+    {
+        // Any decision settles the question of who is answerable: the reviewer who raised the issue
+        // did. Neither issues nor blocks are "still waiting for an owner".
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+        await CreatePromotionAsync(product, "svc-q-issue", "QISSUE-1", referenceParticipants: null);
+        await CreatePromotionAsync(product, "svc-q-block", "QBLOCK-1", referenceParticipants: null);
+
+        using var qa = CreateAuthenticatedClient("qa@localhost", "qa123");
+        await DecideAsync(qa, "QISSUE-1", product, "issues");
+        await DecideAsync(qa, "QBLOCK-1", product, "blocks");
+
+        var missing = await GetPendingAsync(roleRequirement: "missing");
+        Assert.DoesNotContain("QISSUE-1", missing);
+        Assert.DoesNotContain("QBLOCK-1", missing);
+    }
+
+    [Fact]
+    public async Task WorkItemDetail_StopsAskingForTheRoleOnceTheItemIsDecided()
+    {
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+        await CreatePromotionAsync(
+            product, "svc-decided-page", "DECIDEDPAGE-1", referenceParticipants: null);
+
+        Assert.Equal(
+            new[] { QaOwnerRole },
+            Strings(await GetDetailAsync("DECIDEDPAGE-1", product), "missingRoles"));
+
+        await SignOffAsync("DECIDEDPAGE-1", product);
+
+        var after = await GetDetailAsync("DECIDEDPAGE-1", product);
+        Assert.Empty(Strings(after, "missingRoles"));
+        // The requirement itself is unchanged — the page still names the role, it just stops warning.
+        Assert.Equal(new[] { QaOwnerRole }, Strings(after, "requiredRoles"));
+    }
+
+    [Fact]
+    public async Task DecidedQueueRows_CarryNoMissingRoles()
+    {
+        // The "Decided" tab is history. A row there IS a decision, so it never asks for an assignment.
+        var product = NewProduct();
+        await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
+        await CreatePromotionAsync(product, "svc-history", "HISTORY-1", referenceParticipants: null);
+
+        await SignOffAsync("HISTORY-1", product);
+
+        var resp = await _adminClient.GetAsync("/api/work-items/me/pending?status=decided");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var row = Assert.Single(
+            (await Deserialize(resp)).GetProperty("tickets").EnumerateArray(),
+            r => r.GetProperty("workItemKey").GetString() == "HISTORY-1");
+        Assert.Empty(Strings(row, "missingRoles"));
+    }
+
     // ── The queue filters ────────────────────────────────────────────────────
 
     [Fact]
@@ -412,6 +531,31 @@ public class WorkItemRequiredRolesTests
             + $"?product={Uri.EscapeDataString(product)}&targetEnv=prod");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         return await Deserialize(resp);
+    }
+
+    /// <summary>The single promotion, as the promotion page reads it (its own endpoint, not the list).</summary>
+    private async Task<JsonElement> GetCandidateAsync(string candidateId)
+    {
+        var resp = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        return (await Deserialize(resp)).GetProperty("candidate");
+    }
+
+    /// <summary>Records an approval on a work item — the sign-off the UI's Approve performs.</summary>
+    private Task SignOffAsync(string key, string product, HttpClient? client = null)
+        => DecideAsync(client ?? _adminClient, key, product, "approvals");
+
+    /// <summary>
+    /// Records one work-item decision. <paramref name="route"/> is the decision kind:
+    /// <c>approvals</c>, <c>issues</c> or <c>blocks</c>.
+    /// </summary>
+    private static async Task DecideAsync(
+        HttpClient client, string key, string product, string route)
+    {
+        var resp = await client.PostAsJsonAsync(
+            $"/api/work-items/{Uri.EscapeDataString(key)}/{route}",
+            new { product, targetEnv = "prod", comment = "decided in test" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     private async Task<List<JsonElement>> GetPendingRowsAsync(

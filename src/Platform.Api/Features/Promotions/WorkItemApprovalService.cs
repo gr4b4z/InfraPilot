@@ -551,13 +551,21 @@ public class WorkItemApprovalService
             .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
             .ToHashSet();
 
-        // Approved-by-anyone tuples. Only used to retire orphans: an item whose promotion is dead
-        // but which someone already signed off is finished, not stranded. Rows still carried by a
-        // Pending candidate keep the existing behaviour (visible until *this* user decides).
-        var approvedByAnyone = (await _db.WorkItemApprovals.AsNoTracking()
-                .Where(a => a.Decision == WorkItemDecision.Approved)
-                .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv })
-                .ToListAsync(ct))
+        // Every decision anyone has recorded, and the approvals among them. Two uses:
+        //  - approved-by-anyone retires orphans: an item whose promotion is dead but which someone
+        //    already signed off is finished, not stranded. Rows still carried by a Pending candidate
+        //    keep the existing behaviour (visible until *this* user decides).
+        //  - decided-by-anyone suppresses role completeness (see WorkItemRoleRequirements): a ruled-on
+        //    item isn't waiting for an assignment, so it reports no missing roles and drops out of the
+        //    "Not assigned" narrowing below.
+        var allDecisions = await _db.WorkItemApprovals.AsNoTracking()
+            .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv, a.Decision })
+            .ToListAsync(ct);
+        var approvedByAnyone = allDecisions
+            .Where(a => a.Decision == WorkItemDecision.Approved)
+            .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
+            .ToHashSet();
+        var decidedByAnyone = allDecisions
             .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
             .ToHashSet();
 
@@ -674,9 +682,13 @@ public class WorkItemApprovalService
 
                 // Policy-required roles nobody holds on this item — what makes it "incomplete". Always
                 // computed (the row reports it), and the basis of the two roleRequirement narrowings.
-                var missingRoles = WorkItemRoleRequirements.MissingRoles(ticketParticipants, requiredRoles);
+                // An item somebody has already ruled on reports none: the warning asks for an
+                // assignment, and the sign-off it was waiting for has happened.
+                var missingRoles = WorkItemRoleRequirements.MissingRoles(
+                    ticketParticipants, requiredRoles, decided: decidedByAnyone.Contains(tup));
 
-                // "Not assigned": at least one role the policy requires has nobody in it.
+                // "Not assigned": at least one role the policy requires has nobody in it. Decided
+                // items are excluded by the empty missingRoles above.
                 if (roleRequirement == WorkItemRoleRequirementFilter.Missing && missingRoles.Count == 0)
                     continue;
 
@@ -869,8 +881,9 @@ public class WorkItemApprovalService
                 ? Array.Empty<ParticipantDto>()
                 : GetWorkItemParticipants(c2, a.WorkItemKey);
 
-            // Role completeness, same as on the pending path. History rows report it too: a decided
-            // item can still be missing an owner, and the row is where a reader would notice.
+            // The roles the item's policy asks for, for the row's own reporting. No missing ones are
+            // reported on this path: every row here IS a decision, and a ruled-on item is not waiting
+            // for anybody to be assigned (see WorkItemRoleRequirements).
             var requiredRoles = c2 is null
                 ? Array.Empty<string>()
                 : WorkItemRoleRequirements.RequiredRoles(c2);
@@ -894,7 +907,8 @@ public class WorkItemApprovalService
                 Participants: ticketParticipants,
                 CandidateStatus: c2?.Status.ToString() ?? "Unknown",
                 RequiredRoles: requiredRoles,
-                MissingRoles: WorkItemRoleRequirements.MissingRoles(ticketParticipants, requiredRoles),
+                MissingRoles: WorkItemRoleRequirements.MissingRoles(
+                    ticketParticipants, requiredRoles, decided: true),
                 Decision: a.Decision.ToString(),
                 DecidedAt: a.CreatedAt,
                 DecidedByEmail: a.ApproverEmail,
@@ -980,9 +994,12 @@ public class WorkItemApprovalService
 
         // Role completeness is judged against the primary candidate — the same one whose reference
         // supplies the display fields and receives participant writes, so what the page asks for is
-        // what the assign control can actually fill.
+        // what the assign control can actually fill. Once anybody has ruled on the item there is
+        // nothing to ask for: the page keeps its Assign controls but stops warning
+        // (see WorkItemRoleRequirements).
         var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key);
         var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary);
+        var decided = ctx.Approvals.Count > 0;
 
         return new WorkItemDetail(
             WorkItemKey: key,
@@ -1005,7 +1022,7 @@ public class WorkItemApprovalService
             MyDecision: ctx.MyDecision,
             Participants: participants,
             RequiredRoles: requiredRoles,
-            MissingRoles: WorkItemRoleRequirements.MissingRoles(participants, requiredRoles),
+            MissingRoles: WorkItemRoleRequirements.MissingRoles(participants, requiredRoles, decided),
             Approvals: ctx.Approvals,
             Comments: comments,
             Commits: commits,
