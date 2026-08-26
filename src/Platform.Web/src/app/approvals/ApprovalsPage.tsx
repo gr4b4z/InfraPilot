@@ -2,20 +2,26 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { ApprovalRequest } from '@/lib/types';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import { Clock, CheckCircle, XCircle, AlertTriangle, Shield, ArrowUpRight } from 'lucide-react';
 
 export function ApprovalsPage() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+
+  useDocumentTitle(['Approvals']);
+
+  // New approvals appear and colleagues' decisions resolve rows while the page is open.
+  const approvalsTick = useEntityRefresh(['approval', 'request']);
 
   useEffect(() => {
     api.getApprovals()
       .then((data) => setApprovals(data.items || []))
       .catch(() => setApprovals([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [approvalsTick]);
 
   const pending = approvals.filter((a) => a.status === 'Pending');
   const resolved = approvals.filter((a) => a.status !== 'Pending');
@@ -33,7 +39,7 @@ export function ApprovalsPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: 'Pending', value: pending.length, icon: Clock, color: 'var(--warning)', bg: 'var(--warning-bg)' },
           { label: 'Approved', value: approvals.filter(a => a.status === 'Approved').length, icon: CheckCircle, color: 'var(--success)', bg: 'var(--success-bg)' },

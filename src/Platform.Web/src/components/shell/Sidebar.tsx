@@ -1,196 +1,378 @@
-import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useEffect } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutGrid,
   FileText,
   CheckCircle,
+  ChartColumn,
   ChevronLeft,
   ChevronRight,
   Settings,
+  X,
   Zap,
   Rocket,
   Webhook,
+  GitPullRequest,
+  History,
+  Inbox,
+  ListTodo,
+  Package,
+  ScrollText,
+  Undo2,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { getAppName, getAppSubtitle } from '@/lib/runtimeConfig';
+import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
+import { useMyTasksStore } from '@/stores/myTasksStore';
+import { useUiStore } from '@/stores/uiStore';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
+import { getAppName, getAppSubtitle, getEnvironmentLabel } from '@/lib/runtimeConfig';
+import { KeyboardHints } from './KeyboardHints';
+
+/**
+ * Live "assigned to me" counters, resolved at render from the shared My-tasks rollup rather than
+ * baked into {@link navGroups}. Same numbers the topbar bell and the My Tasks page show.
+ */
+type CounterKey = 'promotionsAwaitingMe' | 'workItemsAssignedToMe' | 'myTasksTotal';
 
 interface NavItem {
   to: string;
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
   badge?: number;
-  section?: string;
+  /** Live counter to render as the badge. Takes precedence over the static `badge`. */
+  counter?: CounterKey;
+  /**
+   * Paths below this item's own that belong to a *sibling* item instead.
+   *
+   * A NavLink is active for everything nested under it, which is what we want almost everywhere —
+   * a promotion's detail page should light up "Promotions". But a sibling nav entry living under the
+   * same prefix (`/promotions/audit`) would otherwise light up both rows at once, and two highlighted
+   * destinations is a nav that can't tell you where you are.
+   */
+  activeExcept?: string[];
   adminOnly?: boolean;
+  featureFlag?: string;
 }
 
-const navItems: NavItem[] = [
-  { to: '/catalog', label: 'Service Catalog', icon: LayoutGrid, section: 'main' },
-  { to: '/requests', label: 'My Requests', icon: FileText, section: 'main' },
-  { to: '/approvals', label: 'Approvals', icon: CheckCircle, badge: 0, section: 'main' },
-  { to: '/deployments', label: 'Deployments', icon: Rocket, section: 'main' },
-  { to: '/webhooks', label: 'Webhooks', icon: Webhook, section: 'main', adminOnly: true },
-  { to: '/settings', label: 'Settings', icon: Settings, section: 'main', adminOnly: true },
+interface NavGroup {
+  label: string;
+  featureFlag?: string;
+  adminOnly?: boolean;
+  items: NavItem[];
+}
+
+const navGroups: NavGroup[] = [
+  {
+    // No header: this is the "everything waiting on you" entry above the product areas, not an
+    // area of its own. Not feature-gated for the same reason the /my-tasks route isn't — it
+    // degrades to an empty page when Promotions is off.
+    label: '',
+    items: [
+      { to: '/my-tasks', label: 'My Tasks', icon: ListTodo, counter: 'myTasksTotal' },
+    ],
+  },
+  {
+    label: 'Catalog',
+    featureFlag: FeatureFlag.ServiceCatalog,
+    items: [
+      { to: '/catalog',   label: 'Service Catalog', icon: LayoutGrid  },
+      { to: '/requests',  label: 'My Requests',     icon: FileText    },
+      { to: '/approvals', label: 'Approvals',        icon: CheckCircle, badge: 0, featureFlag: FeatureFlag.Approvals },
+    ],
+  },
+  {
+    label: 'Deployments',
+    items: [
+      { to: '/deployments', label: 'Deployments', icon: Rocket },
+      { to: '/builds', label: 'Builds', icon: Package },
+      { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
+      { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
+    ],
+  },
+  {
+    label: 'Promotions',
+    featureFlag: FeatureFlag.Promotions,
+    items: [
+      { to: '/promotions', label: 'Promotions',    icon: GitPullRequest, counter: 'promotionsAwaitingMe',
+        activeExcept: ['/promotions/audit'] },
+      { to: '/me/work-items', label: 'Work items queue', icon: Inbox,   counter: 'workItemsAssignedToMe' },
+      { to: '/promotions/audit', label: 'Audit',          icon: History },
+    ],
+  },
+  {
+    label: 'Rollbacks',
+    featureFlag: FeatureFlag.Rollbacks,
+    items: [
+      { to: '/rollbacks', label: 'Rollbacks', icon: Undo2 },
+    ],
+  },
+  {
+    label: 'System',
+    adminOnly: true,
+    items: [
+      { to: '/webhooks', label: 'Webhooks', icon: Webhook  },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ];
 
 export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+  const isDesktop = useIsDesktop();
+  const { navDrawerOpen, navCollapsed, setNavDrawerOpen, toggleNavCollapsed } = useUiStore();
+  const location = useLocation();
+  // The icons-only rail is a desktop affordance. In the drawer there is no width to save — it
+  // overlays the content either way — so a collapsed drawer would just be a worse drawer.
+  const collapsed = isDesktop && navCollapsed;
   const user = useAuthStore((s) => s.user);
   const appName = getAppName();
   const appSubtitle = getAppSubtitle();
   const isAdmin = user?.isAdmin ?? false;
+  const flags = useFeatureFlagsStore((s) => s.flags);
+  const promotionsAwaitingMe = useMyTasksStore((s) => s.promotions.length);
+  // Both attention slices of the work-items queue: the items this user is answerable for, plus the
+  // ones nobody has been put on. Summed so the badge matches the bell, and because the queue page
+  // surfaces the two as sibling tabs — a badge counting only one of them would send people to the
+  // wrong tab.
+  const workItemsAssignedToMe = useMyTasksStore(
+    (s) => s.workItems.length + s.unassignedWorkItems.length,
+  );
+  const counters: Record<CounterKey, number> = {
+    promotionsAwaitingMe,
+    workItemsAssignedToMe,
+    // Everything awaiting the user — same sum the topbar bell shows, and what /my-tasks lists.
+    myTasksTotal: promotionsAwaitingMe + workItemsAssignedToMe,
+  };
 
-  const visibleNavItems = navItems.filter((item) => !item.adminOnly || isAdmin);
+  const visibleGroups = navGroups
+    .filter((g) => {
+      if (g.adminOnly && !isAdmin) return false;
+      if (g.featureFlag && flags[g.featureFlag] === false) return false;
+      return true;
+    })
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((item) => {
+        if (item.adminOnly && !isAdmin) return false;
+        if (item.featureFlag && flags[item.featureFlag] === false) return false;
+        return true;
+      }),
+    }))
+    .filter((g) => g.items.length > 0);
+
+  // A navigation drawer that survives the navigation is a drawer covering the page you just asked
+  // for. Closing on pathname change also covers the in-page links further down the tree.
+  useEffect(() => {
+    setNavDrawerOpen(false);
+  }, [location.pathname, setNavDrawerOpen]);
+
+  useEffect(() => {
+    if (!navDrawerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNavDrawerOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [navDrawerOpen, setNavDrawerOpen]);
 
   return (
-    <aside
-      className={`flex flex-col border-r transition-all duration-200 shrink-0 ${
-        collapsed ? 'w-[60px]' : 'w-[240px]'
-      }`}
-      style={{
-        borderColor: 'var(--border-color)',
-        backgroundColor: 'var(--bg-secondary)',
-      }}
-    >
-      {/* Logo area */}
-      <div
-        className="flex items-center h-14 px-4 border-b shrink-0"
-        style={{ borderColor: 'var(--border-color)' }}
+    <>
+      {/* Scrim behind the drawer. Below `lg` only — at `lg` the sidebar is part of the layout and
+          there is nothing to dim. */}
+      {navDrawerOpen && (
+        <div
+          className="fixed inset-0 z-40 lg:hidden"
+          style={{ backgroundColor: 'var(--bg-overlay)' }}
+          onClick={() => setNavDrawerOpen(false)}
+          aria-hidden
+        />
+      )}
+
+      <aside
+        aria-label="Main navigation"
+        // Off-canvas overlay below `lg`, an ordinary flex child at `lg` and up. `inert` while
+        // parked off-screen so tabbing from the topbar doesn't land in an invisible drawer.
+        inert={!isDesktop && !navDrawerOpen}
+        className={`flex flex-col border-r shrink-0 z-50 fixed inset-y-0 left-0 w-[260px] max-w-[85vw] transition-transform duration-200 lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transition-all ${
+          navDrawerOpen ? 'translate-x-0' : '-translate-x-full'
+        } ${collapsed ? 'lg:w-[60px]' : 'lg:w-[240px]'}`}
+        style={{
+          borderColor: 'var(--border-color)',
+          backgroundColor: 'var(--bg-secondary)',
+        }}
       >
-        {!collapsed ? (
-          <div className="flex items-center gap-2.5">
+        {/* Logo area */}
+        <div
+          className="flex items-center h-14 px-4 border-b shrink-0"
+          style={{ borderColor: 'var(--border-color)' }}
+        >
+          {!collapsed ? (
+            <div className="flex items-center gap-2.5">
+              <div
+                className="w-7 h-7 rounded-lg flex items-center justify-center"
+                style={{ background: 'linear-gradient(135deg, var(--color-swo-purple), var(--color-swo-cyan))' }}
+              >
+                <Zap size={14} className="text-white" />
+              </div>
+              <div className="flex flex-col">
+                <span
+                  className="font-semibold text-[13px] leading-tight tracking-tight"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {appName}
+                </span>
+                <span className="text-[10px] leading-tight" style={{ color: 'var(--text-muted)' }}>
+                  {appSubtitle}
+                </span>
+              </div>
+            </div>
+          ) : (
             <div
-              className="w-7 h-7 rounded-lg flex items-center justify-center"
+              className="w-7 h-7 rounded-lg flex items-center justify-center mx-auto"
               style={{ background: 'linear-gradient(135deg, var(--color-swo-purple), var(--color-swo-cyan))' }}
             >
               <Zap size={14} className="text-white" />
             </div>
-            <div className="flex flex-col">
-              <span
-                className="font-semibold text-[13px] leading-tight tracking-tight"
-                style={{ color: 'var(--text-primary)' }}
-              >
-                {appName}
-              </span>
-              <span className="text-[10px] leading-tight" style={{ color: 'var(--text-muted)' }}>
-                {appSubtitle}
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center mx-auto"
-            style={{ background: 'linear-gradient(135deg, var(--color-swo-purple), var(--color-swo-cyan))' }}
-          >
-            <Zap size={14} className="text-white" />
-          </div>
-        )}
-      </div>
+          )}
 
-      {/* Environment badge */}
-      {!collapsed && (
-        <div className="px-3 pt-3 pb-1">
-          <div
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium"
-            style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+          {/* Dismiss for the drawer. Tapping a nav item closes it too, but a drawer opened by
+              accident needs a way out that isn't "navigate somewhere". */}
+          <button
+            type="button"
+            onClick={() => setNavDrawerOpen(false)}
+            className="ml-auto p-1.5 -mr-1.5 rounded-lg transition-colors hover:bg-[var(--accent-muted)] lg:hidden"
+            style={{ color: 'var(--text-muted)' }}
+            aria-label="Close navigation"
           >
-            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--warning)' }} />
-            Development
-          </div>
+            <X size={18} />
+          </button>
         </div>
-      )}
 
-      {/* Navigation */}
-      <nav className="flex-1 py-2 px-2">
-        {!collapsed && (
-          <div className="px-2 pt-2 pb-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              Platform
-            </span>
-          </div>
-        )}
-        <div className="space-y-0.5">
-          {visibleNavItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  `group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
-                    collapsed ? 'justify-center' : ''
-                  } ${
-                    isActive
-                      ? ''
-                      : 'hover:bg-[var(--accent-muted)]'
-                  }`
-                }
-                style={({ isActive }) => ({
-                  backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
-                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-                })}
-                title={collapsed ? item.label : undefined}
-              >
-                <Icon size={18} className="shrink-0" />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1">{item.label}</span>
-                    {item.badge !== undefined && item.badge > 0 && (
-                      <span
-                        className="badge text-white"
-                        style={{ backgroundColor: 'var(--accent)' }}
-                      >
-                        {item.badge}
-                      </span>
-                    )}
-                  </>
-                )}
-              </NavLink>
-            );
-          })}
-        </div>
-      </nav>
-
-      {/* Bottom section */}
-      <div className="border-t px-2 py-2" style={{ borderColor: 'var(--border-color)' }}>
-        {!collapsed && (
-          <div
-            className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg mb-1"
-            style={{ backgroundColor: 'var(--accent-muted)' }}
-          >
+        {/* Environment badge */}
+        {!collapsed && getEnvironmentLabel() && (
+          <div className="px-3 pt-3 pb-1">
             <div
-              className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-              style={{ backgroundColor: 'var(--accent)' }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium"
+              style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
             >
-              {user?.initials ?? 'DU'}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <p className="text-[12px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                  {user?.name ?? 'Dev User'}
-                </p>
-                {user?.isAdmin && (
-                  <span
-                    className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full uppercase"
-                    style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
-                  >
-                    Admin
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
-                {user?.email ?? ''}
-              </p>
+              <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--warning)' }} />
+              {getEnvironmentLabel()}
             </div>
           </div>
         )}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="w-full flex items-center justify-center h-8 rounded-lg transition-colors hover:bg-[var(--accent-muted)]"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-        </button>
-      </div>
-    </aside>
+
+        {/* Navigation */}
+        <nav className="flex-1 py-2 px-2 overflow-y-auto">
+          {visibleGroups.map((group, groupIdx) => (
+            <div
+              key={group.label || group.items[0]?.to}
+              className={groupIdx > 0 ? 'mt-1 pt-1 border-t' : ''}
+              style={groupIdx > 0 ? { borderColor: 'var(--border-color)' } : undefined}
+            >
+              {/* Group label — hidden when collapsed, absent for the headerless top group */}
+              {!collapsed && group.label && (
+                <div className="px-2 pt-2 pb-1">
+                  <span
+                    className="text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    {group.label}
+                  </span>
+                </div>
+              )}
+
+              <div className="space-y-0.5">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const count = item.counter ? counters[item.counter] : (item.badge ?? 0);
+                  // Counter items say what the number means; a bare digit next to "Promotions"
+                  // could just as easily be a total.
+                  const countTitle = item.counter
+                    ? `${item.label} — ${count} assigned to you`
+                    : item.label;
+                  // A sibling entry nested under this one owns the current path (see `activeExcept`).
+                  const yielded =
+                    item.activeExcept?.some((path) => location.pathname.startsWith(path)) ?? false;
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      className={({ isActive }) =>
+                        // py-2.5 below `lg`: the drawer is driven by thumbs, and a 34px row is
+                        // under the ~44px comfortable touch target.
+                        `group relative flex items-center gap-2.5 px-2.5 py-2.5 lg:py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${
+                          collapsed ? 'justify-center' : ''
+                        } ${isActive && !yielded ? '' : 'hover:bg-[var(--accent-muted)]'}`
+                      }
+                      style={({ isActive }) => ({
+                        backgroundColor: isActive && !yielded ? 'var(--accent-subtle)' : undefined,
+                        color: isActive && !yielded ? 'var(--accent)' : 'var(--text-secondary)',
+                      })}
+                      title={collapsed ? countTitle : undefined}
+                    >
+                      <Icon size={18} className="shrink-0" />
+                      {/* Collapsed rail has no room for the number — keep a dot so a non-zero
+                          count is still visible without expanding. */}
+                      {collapsed && count > 0 && (
+                        <span
+                          aria-hidden
+                          className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+                          style={{ backgroundColor: 'var(--accent)' }}
+                        />
+                      )}
+                      {!collapsed && (
+                        <>
+                          <span className="flex-1">{item.label}</span>
+                          {count > 0 && (
+                            <span
+                              className="badge text-white"
+                              style={{ backgroundColor: 'var(--accent)' }}
+                              title={countTitle}
+                            >
+                              {count > 99 ? '99+' : count}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        {/* Bottom section */}
+        <div className="border-t px-2 py-2" style={{ borderColor: 'var(--border-color)' }}>
+          {/* Rail toggle is desktop-only — see `collapsed` above. */}
+          <button
+            onClick={toggleNavCollapsed}
+            className="w-full hidden lg:flex items-center justify-center h-8 rounded-lg transition-colors hover:bg-[var(--accent-muted)]"
+            style={{ color: 'var(--text-muted)' }}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
+          {/* Hints only in the expanded sidebar — the 60px rail has no room for them, and they are a
+              desktop affordance anyway. */}
+          {!collapsed && (
+            <>
+              <div
+                className="hidden lg:block mt-1 pt-2 border-t"
+                style={{ borderColor: 'var(--border-color)' }}
+              >
+                <KeyboardHints />
+              </div>
+              <p
+                className="text-[10px] text-center mt-1 font-mono"
+                style={{ color: 'var(--text-muted)' }}
+                title="Build version"
+              >
+                {__APP_VERSION__}
+              </p>
+            </>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }

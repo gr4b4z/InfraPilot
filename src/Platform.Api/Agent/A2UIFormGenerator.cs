@@ -37,6 +37,7 @@ public class A2UIFormGenerator
 
         var surface = new
         {
+            slug = definition.Id,
             serviceName = definition.Name,
             serviceDescription = definition.Description,
             components,

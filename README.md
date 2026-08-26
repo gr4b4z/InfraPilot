@@ -36,6 +36,57 @@ If you also want to remove the local Postgres volume:
 docker compose down -v
 ```
 
+### Developing Against A Local Stack (Windows, PowerShell)
+
+`docker compose up` runs everything in containers, which is fine for a look around but slow to
+iterate on. For development there are three scripts that keep Postgres in Docker and run the API and
+the web dev server natively, so both reload on save:
+
+```bash
+./scripts/start.ps1
+```
+
+Starts Postgres, applies migrations, seeds demo data into an empty database, and prints the URLs and
+the dev sign-in accounts. Safe to re-run — anything already listening on its port is left alone.
+`-DbOnly` starts just the database, for when the servers are launched from an IDE.
+
+```bash
+./scripts/reseed.ps1
+```
+
+Drops the local database and rebuilds it: migrate, re-seed, then report the row counts. Seeding only
+happens on an empty database, so this is the way back to a clean demo dataset. Destructive — it
+prompts unless given `-Force`.
+
+```bash
+./scripts/stop.ps1
+```
+
+Stops the servers and the database, keeping the volume. `-KeepDb` leaves Postgres up; `-RemoveData`
+deletes the volume as well.
+
+Logs and pid files go to `.local/` (gitignored).
+
+### Syncing MPT Versions
+
+```bash
+./scripts/sync-mpt-versions.ps1 -ApiKey $env:INFRAPILOT_API_KEY -WhatIf
+```
+
+Reads the version manifests MPT publishes for
+[staging](https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json) and
+[production](https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json), diffs them
+against what InfraPilot already believes is deployed, and records a manual deployment for every
+component whose version has moved. Components InfraPilot has never seen are seeded through the
+ingest endpoint first, since a manual entry is built from its predecessor and needs one to exist.
+
+Only the drift is written, so re-running it changes nothing. `-WhatIf` prints what it would record,
+`-Target staging|production` limits it to one environment, and `-Service 'mpt-web-*'` to a subset of
+components. Unlike the scripts above this one talks to any InfraPilot instance — pass `-ApiBaseUrl`
+— and needs credentials: an API key (`-ApiKey`, or `INFRAPILOT_API_KEY`) or an admin
+`-BearerToken`, which can update but not seed. `Get-Help ./scripts/sync-mpt-versions.ps1 -Full` has
+the rest.
+
 ## What Runs Locally
 
 `docker compose` starts three services:
@@ -82,7 +133,8 @@ These are the most important environment variables for a real deployment.
 
 | Variable | Required | Default | Why it is needed |
 |---|---|---|---|
-| `ConnectionStrings__Platform` | Yes | none | Tells the API how to connect to PostgreSQL. The app cannot start correctly without a database connection. |
+| `ConnectionStrings__Platform` | Yes | none | Tells the API how to connect to the database. The app cannot start correctly without a database connection. Format depends on `Database__Provider` (see below). |
+| `Database__Provider` | No | `Postgres` | Selects the EF Core provider. Accepted values: `Postgres`, `SqlServer`. Must match the format of `ConnectionStrings__Platform`. |
 | `ASPNETCORE_ENVIRONMENT` | Recommended | `Production` in the container image | Controls ASP.NET runtime behavior and environment-specific configuration. |
 | `CatalogPath` | No | `/app/catalog` | Tells the API where to load catalog YAML definitions from. |
 
@@ -97,6 +149,10 @@ These variables are used to generate `config.json` inside the container at start
 | `APP_SUBTITLE` | No | `Infrastructure Portal` | Sets the smaller subtitle shown in the sidebar. |
 | `ASSISTANT_NAME` | No | `InfraPilot Assistant` | Sets the label used in the assistant/chat area. |
 | `PAGE_TITLE` | No | `InfraPilot \| Infrastructure Portal` | Sets the browser tab title. |
+| `AZURE_CLIENT_ID` | No | empty | Entra app (client) ID for SPA sign-in. Empty disables MSAL and falls back to a local dev user — use that for local runs only. |
+| `AZURE_TENANT_ID` | No | empty | Entra tenant ID that hosts the SPA app registration. Required when `AZURE_CLIENT_ID` is set. |
+
+MSAL config is read from `/config.json` at page load, so the same container image can be pointed at a different tenant by changing env vars at deploy time (no rebuild).
 
 ### Example Production Configuration
 
@@ -111,6 +167,20 @@ ASSISTANT_NAME="Contoso Assistant"
 PAGE_TITLE="Contoso Platform | Operations Portal"
 BACKEND_BASE_URL=""
 ```
+
+### Using Azure SQL instead of Postgres
+
+InfraPilot supports Azure SQL Database as an alternative to PostgreSQL. Switch by setting `Database__Provider=SqlServer` and using a SQL Server-format connection string. Both providers share the same schema — migrations for each set live under `Migrations/Postgres` and `Migrations/SqlServer` and are applied automatically on startup in Development.
+
+```bash
+Database__Provider=SqlServer
+ConnectionStrings__Platform="Server=tcp:<server>.database.windows.net,1433;Database=infrapilot;Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;"
+```
+
+Notes:
+- Azure SQL requires `Encrypt=True`.
+- Azure AD authentication (`Authentication=Active Directory Default`) is recommended over SQL auth when running on Container Apps with managed identity.
+- On SQL Server, JSON payload columns are stored as `nvarchar(max)` (on Postgres they use `jsonb`). The application serialises JSON itself so there is no behavioural difference.
 
 ## Optional Integrations
 
@@ -286,6 +356,174 @@ When a request needs approval, the backend calls `IIdentityService.GetGroupMembe
 | InfraPilot Graph | Backend only | Resolve group members via Graph API | Approval routing |
 
 Without either registration configured, the app runs fully functional in open development mode.
+
+## Deployment Ingestion API Keys
+
+Pipelines post deployment events to `POST /api/deployments/events` with the header `X-Api-Key: <key>`. Keys are configured via `Deployments:ApiKeys`:
+
+```bash
+# Minimum — plaintext key (fine for dev, OK for prod if secrets are in a vault)
+Deployments__ApiKeys__0__Name=azure-devops-pipeline
+Deployments__ApiKeys__0__Key=dpk-a1b2c3d4e5f6g7h8i9j0-ado
+
+# Production — hashed key; restricted to specific products; revocable
+Deployments__ApiKeys__1__Name=github-actions-platform
+Deployments__ApiKeys__1__KeyHash=9a86f1a7e8c6... # lowercase SHA-256 hex of the real key
+Deployments__ApiKeys__1__AllowedProducts__0=platform
+Deployments__ApiKeys__1__AllowedProducts__1=billing
+Deployments__ApiKeys__1__Revoked=false
+```
+
+Hardening:
+
+- **`KeyHash`** (preferred for prod) — store `sha256(key)` instead of the raw key. Generate with `printf '%s' 'dpk-...' | shasum -a 256`. If `KeyHash` is set, `Key` is ignored.
+- **`AllowedProducts`** — restrict a key so it can only post events for specific products. Empty list = any product. Requests for other products get `403 Forbidden`.
+- **`Revoked`** — set to `true` to instantly kill a key without removing the entry (keeps audit history aligned).
+- **Rate limit** — each authenticated key is limited to 120 requests/minute (sliding window). Unauthenticated callers get a stricter shared 10/min bucket. Excess returns `429`.
+- **Constant-time compare** — both plaintext and hash comparisons use `CryptographicOperations.FixedTimeEquals` to resist timing attacks.
+- **HTTPS** — keys travel in a header, so always terminate TLS before the API. Never expose `/api/deployments/events` over plain HTTP.
+
+### Event Payload Shape
+
+A deployment event is a small JSON document. Only `product`, `service`, `environment`, `version`, `source`, and `deployedAt` are required; everything else is optional enrichment that the UI uses to render richer cards and links.
+
+```jsonc
+{
+  "product": "platform",
+  "service": "platform-api",
+  "environment": "production",
+  "version": "2.4.1",
+  "source": "azure-devops",              // free-form tag (e.g. pipeline name)
+  "deployedAt": "2026-04-15T09:12:00Z",
+  "status": "succeeded",                  // "succeeded" | "failed" | "in_progress"
+  "isRollback": false,                    // set true when this deploy reverted to a prior version
+  "references": [
+    { "type": "pull-request", "url": "https://github.com/acme/platform-api/pull/482", "provider": "github", "key": "482", "title": "Add idempotency key to checkout" },
+    { "type": "work-item",    "url": "https://acme.atlassian.net/browse/PLAT-1234",   "provider": "jira",   "key": "PLAT-1234", "title": "Add idempotency key to checkout endpoint" },
+    { "type": "repository",   "url": "https://github.com/acme/platform-api",           "provider": "github", "key": "acme/platform-api", "revision": "a1b2c3d4" },
+    { "type": "pipeline",     "url": "https://dev.azure.com/acme/_build/results?buildId=98765", "provider": "azure-devops", "key": "98765" }
+  ],
+  "participants": [
+    { "role": "PR Author",   "displayName": "Sylwester Grabowski", "email": "sg@acme.com" },
+    { "role": "PR Reviewer", "displayName": "Alex Kim",             "email": "ak@acme.com" },
+    { "role": "QA",          "displayName": "Jordan Lee",           "email": "jl@acme.com" }
+  ],
+  "metadata": { "runId": "20260415.1", "releaseNotes": "hotfix for auth cache" }
+}
+```
+
+Reference types the UI recognises with a dedicated icon and label:
+
+| `type` | Icon | Label preference |
+|---|---|---|
+| `work-item` | work item | `key` (e.g. `PLAT-1234`) — shows the inbound `title` when supplied, otherwise the Jira title fetched server-side |
+| `pull-request` | PR | `labels.prTitle` → `key` |
+| `repository` | branch | `key` (e.g. `acme/platform-api`) → parsed from `url` → short `revision` |
+| `pipeline` | workflow | `key` → `provider` |
+
+Unknown types render with a generic external-link icon. Always include `url` when you have it — the UI turns the label into a link.
+
+**Commit deep-linking.** A `repository` reference that includes both `url` and `revision` is rendered as a link directly to that commit, derived from the `provider`:
+
+| Provider | Resolved URL |
+|---|---|
+| `github`, `azure-devops` | `{url}/commit/{revision}` |
+| `gitlab` | `{url}/-/commit/{revision}` |
+| `bitbucket` | `{url}/commits/{revision}` |
+| _other / omitted_ | falls back to `url` |
+
+So a payload like `{ "type": "repository", "provider": "github", "url": "https://github.com/acme/platform-api", "revision": "a1b2c3d4" }` deep-links to `https://github.com/acme/platform-api/commit/a1b2c3d4`. No org/repo names are hardcoded — the URL is derived purely from the inbound `url`.
+
+**Minimal curl example:**
+
+```bash
+curl -X POST "$PLATFORM_URL/api/deployments/events" \
+  -H "X-Api-Key: $DEPLOY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product": "platform",
+    "service": "platform-api",
+    "environment": "production",
+    "version": "2.4.1",
+    "source": "github-actions",
+    "deployedAt": "2026-04-15T09:12:00Z",
+    "references": [
+      { "type": "repository", "url": "https://github.com/acme/platform-api", "provider": "github", "key": "acme/platform-api", "revision": "a1b2c3d4" }
+    ]
+  }'
+```
+
+`previousVersion` is computed automatically by the server from the last event for the same `(product, service, environment)` tuple — publishers never send it. Set `isRollback: true` when the new `version` is a re-deploy of a prior version (the UI then renders an `Undo2` icon next to the version with a `Rolled back from v{previousVersion}` tooltip).
+
+## Release Notes
+
+Release Notes turn a stream of `DeployEvents` into structured, human-readable summaries — one note per `(product, environment, window)` — and broadcast them as a webhook so downstream consumers (Teams, Confluence, an email blast) can publish without a second call back to InfraPilot.
+
+The feature is gated by the `features.releaseNotes` flag and is **off by default**. Flip it on per environment from Settings → Feature Flags.
+
+### Workflow
+
+| Step | Endpoint | Persists | Webhook |
+|---|---|---|---|
+| 1. Raw aggregation | `GET /api/release-notes/preview/raw` | no | no |
+| 2. Templated preview | `GET /api/release-notes/preview` | no | no |
+| 3. Publish | `POST /api/release-notes/generate` | yes | yes (`release_note.generated`) |
+| 4. List | `GET /api/release-notes` | — | — |
+| 5. Detail | `GET /api/release-notes/{id}` | — | — |
+
+In the UI, the list page (`/release-notes/:product`) shows the form for picking environment + window. The "Preview" button navigates to a dedicated draft route (`/release-notes/:product/new?env=…&from=…&to=…`) where the rendered markdown can be edited side-by-side with a live HTML preview. "Publish" persists the (possibly edited) markdown and redirects to the permanent detail URL.
+
+### Templates
+
+Release notes are rendered with [Handlebars.Net](https://github.com/Handlebars-Net/Handlebars.Net) against the aggregated services. Templates are stored in `platform_settings` at one of three scopes; resolution picks the most-specific row that exists:
+
+| Scope | `platform_settings.Key` |
+|---|---|
+| Per (product, environment) | `release-notes.template.{product}.{environment}` |
+| Per product | `release-notes.template.{product}` |
+| Global default | `release-notes.template.default` |
+
+Edit via Settings → Release Notes Template (admin only). The editor loads the *exact* row for the chosen scope; if nothing is saved there yet it shows the inherited template so you can fork it.
+
+#### Available template fields
+
+Top level: `product`, `environment`, `date`, `from`, `to`, `services` (array).
+
+Per service (inside `{{#each services}}`): `service`, `previousVersion`, `currentVersion`, `isRollback`, `deployedAt`, `workItems[]`, `pullRequests[]`, `pipelines[]`, `participants[]`, plus the first-match shortcuts `pullRequest`, `pipeline`, `author`, `qa`, `triggeredBy` (each `{ displayName, email }`).
+
+Use `{{{name}}}` (triple-mustache) for content that should not be HTML-escaped (e.g. display names with diacritics).
+
+### Webhook payload
+
+The `release_note.generated` event fires once a note is persisted and is subject to the standard webhook subscription filters (`Product`, `Environment`):
+
+```jsonc
+{
+  "id": "ae1fa7ef-...",
+  "product": "identity-platform",
+  "environment": "production",
+  "from": "2026-05-06T21:12:17Z",
+  "to":   "2026-05-07T14:00:00Z",
+  "generatedAt": "2026-05-07T14:05:00Z",
+  "renderedContent": "# 🛠️ Release: identity-platform — production\n...",
+  "services": [
+    {
+      "service": "auth-api",
+      "previousVersion": "1.8.5",
+      "currentVersion": "1.10.0",
+      "isRollback": false,
+      "workItems":    [{ "key": "IDP-2946", "title": "...", "url": "..." }],
+      "pullRequests": [{ "key": "888",      "title": "...", "url": "..." }],
+      "pipelines":    [{ "key": "build-79588", "url": "..." }],
+      "participants": [{ "role": "author", "displayName": "...", "email": "..." }]
+    }
+  ]
+}
+```
+
+Because `renderedContent` is included, a Logic App or Azure Pipeline can post directly to Teams without calling back to InfraPilot.
+
+A parallel event `release_note.generated.html` fires with the same payload **plus** a `renderedHtml` field (rendered server-side by [Markdig](https://github.com/xoofx/markdig)). Subscribe to whichever event suits the downstream — markdown subscribers (Teams, Slack) stay on `release_note.generated`; HTML consumers (Confluence storage format, HTML email templates, SharePoint pages) subscribe to `release_note.generated.html`. Markdown subscribers don't pay the size cost of the HTML payload.
 
 ## Secrets
 

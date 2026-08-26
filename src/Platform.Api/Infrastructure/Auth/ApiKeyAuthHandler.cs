@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
@@ -9,6 +11,8 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
 {
     public const string SchemeName = "ApiKey";
     public const string PolicyName = "DeploymentIngestion";
+    public const string AllowedProductClaim = "allowed_product";
+    public const string ScopeClaim = "api_scope";
     private const string HeaderName = "X-Api-Key";
 
     private readonly IConfiguration _config;
@@ -32,17 +36,47 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
             return Task.FromResult(AuthenticateResult.Fail("API key is empty"));
 
         var apiKeys = _config.GetSection("Deployments:ApiKeys").Get<List<ApiKeyEntry>>() ?? [];
-        var match = apiKeys.FirstOrDefault(k => k.Key == providedKey);
+        var providedKeyBytes = Encoding.UTF8.GetBytes(providedKey);
+        var providedKeyHash = SHA256.HashData(providedKeyBytes);
+
+        ApiKeyEntry? match = null;
+        foreach (var entry in apiKeys)
+        {
+            if (entry.Revoked) continue;
+            if (IsMatch(entry, providedKey, providedKeyBytes, providedKeyHash))
+            {
+                match = entry;
+                break;
+            }
+        }
 
         if (match is null)
             return Task.FromResult(AuthenticateResult.Fail("Invalid API key"));
 
-        var claims = new[]
+        // Resolve effective roles: explicit list, or default to User so existing
+        // keys that only pushed deploy events keep working without config changes.
+        var roles = match.Roles is { Count: > 0 }
+            ? match.Roles
+            : ["InfraPortal.User"];
+
+        var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, $"apikey:{match.Name}"),
-            new Claim(ClaimTypes.Name, match.Name),
-            new Claim("auth_method", "api_key"),
+            new(ClaimTypes.NameIdentifier, $"apikey:{match.Name}"),
+            new(ClaimTypes.Name, match.Name),
+            new("auth_method", "api_key"),
         };
+        foreach (var role in roles)
+            claims.Add(new Claim("roles", role));
+        foreach (var product in match.AllowedProducts)
+        {
+            if (!string.IsNullOrWhiteSpace(product))
+                claims.Add(new Claim(AllowedProductClaim, product));
+        }
+        foreach (var scope in match.Scopes)
+        {
+            if (!string.IsNullOrWhiteSpace(scope))
+                claims.Add(new Claim(ScopeClaim, scope));
+        }
 
         var identity = new ClaimsIdentity(claims, SchemeName);
         var principal = new ClaimsPrincipal(identity);
@@ -50,10 +84,72 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
 
         return Task.FromResult(AuthenticateResult.Success(ticket));
     }
+
+    /// <summary>
+    /// True when the principal may use <paramref name="scope"/>. A principal with no scope claims
+    /// is unrestricted — that keeps every key configured before scopes existed working, mirroring
+    /// the AllowedProducts convention (empty = all). Only keys that opt into a Scopes list are
+    /// narrowed to it.
+    /// </summary>
+    public static bool HasScope(ClaimsPrincipal user, string scope)
+    {
+        var scopes = user.FindAll(ScopeClaim).Select(c => c.Value).ToList();
+        return scopes.Count == 0 || scopes.Contains(scope, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsMatch(ApiKeyEntry entry, string providedKey, byte[] providedKeyBytes, byte[] providedKeyHash)
+    {
+        // Prefer KeyHash (production); fall back to plaintext Key (dev convenience).
+        if (!string.IsNullOrEmpty(entry.KeyHash))
+        {
+            if (!TryFromHex(entry.KeyHash, out var expectedHash)) return false;
+            return CryptographicOperations.FixedTimeEquals(providedKeyHash, expectedHash);
+        }
+        if (!string.IsNullOrEmpty(entry.Key))
+        {
+            var expectedBytes = Encoding.UTF8.GetBytes(entry.Key);
+            return CryptographicOperations.FixedTimeEquals(providedKeyBytes, expectedBytes);
+        }
+        return false;
+    }
+
+    private static bool TryFromHex(string hex, out byte[] bytes)
+    {
+        try { bytes = Convert.FromHexString(hex); return true; }
+        catch { bytes = []; return false; }
+    }
 }
 
 public class ApiKeyEntry
 {
     public string Name { get; set; } = "";
+    /// <summary>Plaintext key — use for local/dev. For production, prefer KeyHash.</summary>
     public string Key { get; set; } = "";
+    /// <summary>Lowercase SHA-256 hex of the key. If set, takes precedence over Key.</summary>
+    public string KeyHash { get; set; } = "";
+    /// <summary>When true, the entry is rejected even if the key matches.</summary>
+    public bool Revoked { get; set; }
+    /// <summary>Product slugs this key is allowed to post events for. Empty = all products.</summary>
+    public List<string> AllowedProducts { get; set; } = [];
+    /// <summary>Authorization roles granted to this key (e.g. "InfraPortal.User", "InfraPortal.Admin"). Defaults to ["InfraPortal.User"] when empty.</summary>
+    public List<string> Roles { get; set; } = [];
+    /// <summary>
+    /// Fine-grained permissions this key is limited to (see <see cref="ApiKeyScopes"/>).
+    /// Empty = unrestricted, so pre-existing keys keep working; set it to narrow a key to
+    /// exactly what its producer does (least privilege).
+    /// </summary>
+    public List<string> Scopes { get; set; } = [];
+}
+
+/// <summary>
+/// The scope vocabulary for API keys. Scopes separate "may report what happened" from "may make
+/// something happen": a build agent that registers builds should not be able to open gated
+/// releases, and vice versa.
+/// </summary>
+public static class ApiKeyScopes
+{
+    /// <summary>POST /api/builds — register a published build in the build registry.</summary>
+    public const string BuildRegister = "build:register";
+    /// <summary>POST /api/promotions — create a promotion candidate (D16 of external-promotion-creation).</summary>
+    public const string PromotionCreate = "promotion:create";
 }

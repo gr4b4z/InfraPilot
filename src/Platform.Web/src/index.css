@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* SoftwareOne Brand Design Tokens */
+/* Acmetrix Brand Design Tokens */
 @theme {
   /* Primary Colors */
   --color-swo-black: #000000;
@@ -106,12 +106,21 @@ body {
   --accent-hover: #4A38CD;
   --accent-muted: rgba(91, 73, 222, 0.08);
   --accent-subtle: rgba(91, 73, 222, 0.12);
+  /* Tinted fill behind accent-coloured text (active tabs, badges). Sibling of --success-bg etc. */
+  --accent-bg: rgba(91, 73, 222, 0.1);
   --success: #059669;
   --success-bg: #ECFDF5;
+  /* Solid fill for buttons carrying white text (Approve/Reject, destructive confirm). Equal to
+     --success/--danger in light mode; dark mode gets its own deeper shade below because the
+     bright --success/--danger there is tuned for text-on-dark and fails contrast as a white-on-
+     fill button (~2:1 — see --success-solid override). */
+  --success-solid: var(--success);
   --warning: #D97706;
+  --warning-solid: var(--warning);
   --warning-bg: #FFFBEB;
   --danger: #DC2626;
   --danger-bg: #FEF2F2;
+  --danger-solid: var(--danger);
   --info: #2563EB;
   --info-bg: #EFF6FF;
 }
@@ -119,55 +128,69 @@ body {
 /* Dark mode */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg-primary: #09090B;
-    --bg-secondary: #111113;
-    --bg-tertiary: #18181B;
-    --bg-elevated: #1E1E21;
-    --bg-overlay: rgba(0, 0, 0, 0.7);
-    --text-primary: #FAFAFA;
-    --text-secondary: #A1A1AA;
-    --text-muted: #52525B;
-    --border-color: #27272A;
-    --border-strong: #3F3F46;
-    --accent: #7C6EF0;
-    --accent-hover: #9B8FFF;
-    --accent-muted: rgba(124, 110, 240, 0.1);
-    --accent-subtle: rgba(124, 110, 240, 0.15);
-    --success: #34D399;
-    --success-bg: rgba(52, 211, 153, 0.1);
-    --warning: #FBBF24;
-    --warning-bg: rgba(251, 191, 36, 0.1);
-    --danger: #F87171;
-    --danger-bg: rgba(248, 113, 113, 0.1);
-    --info: #60A5FA;
-    --info-bg: rgba(96, 165, 250, 0.1);
+    /* Azure DevOps-style greys: a soft charcoal canvas with surfaces raised above it, rather than
+       near-black. Note the ordering matches light mode — --bg-primary (cards, topbar) sits ABOVE
+       --bg-secondary (page canvas, sidebar, recessed wells) — so depth reads the same either way. */
+    --bg-primary: #252526;
+    --bg-secondary: #1B1B1C;
+    --bg-tertiary: #2D2D30;
+    --bg-elevated: #333337;
+    --bg-overlay: rgba(0, 0, 0, 0.6);
+    --text-primary: #E9E9E9;
+    --text-secondary: #B4B4B4;
+    --text-muted: #8A8A8A;
+    --border-color: #3F3F41;
+    --border-strong: #565658;
+    --accent: #8C80F5;
+    --accent-hover: #A79DFF;
+    --accent-muted: rgba(140, 128, 245, 0.12);
+    --accent-subtle: rgba(140, 128, 245, 0.18);
+    --accent-bg: rgba(140, 128, 245, 0.16);
+    --success: #4EC994;
+    --success-bg: rgba(78, 201, 148, 0.14);
+    --success-solid: #107C55;
+    --warning: #E5B84B;
+    --warning-solid: #A16207;
+    --warning-bg: rgba(229, 184, 75, 0.14);
+    --danger: #F08A8A;
+    --danger-bg: rgba(240, 138, 138, 0.14);
+    --danger-solid: #B3261E;
+    --info: #6BA8F5;
+    --info-bg: rgba(107, 168, 245, 0.14);
   }
 }
 
 /* Dark mode class toggle */
 .dark {
-  --bg-primary: #09090B;
-  --bg-secondary: #111113;
-  --bg-tertiary: #18181B;
-  --bg-elevated: #1E1E21;
-  --bg-overlay: rgba(0, 0, 0, 0.7);
-  --text-primary: #FAFAFA;
-  --text-secondary: #A1A1AA;
-  --text-muted: #52525B;
-  --border-color: #27272A;
-  --border-strong: #3F3F46;
-  --accent: #7C6EF0;
-  --accent-hover: #9B8FFF;
-  --accent-muted: rgba(124, 110, 240, 0.1);
-  --accent-subtle: rgba(124, 110, 240, 0.15);
-  --success: #34D399;
-  --success-bg: rgba(52, 211, 153, 0.1);
-  --warning: #FBBF24;
-  --warning-bg: rgba(251, 191, 36, 0.1);
-  --danger: #F87171;
-  --danger-bg: rgba(248, 113, 113, 0.1);
-  --info: #60A5FA;
-  --info-bg: rgba(96, 165, 250, 0.1);
+  /* Azure DevOps-style greys: a soft charcoal canvas with surfaces raised above it, rather than
+     near-black. Note the ordering matches light mode — --bg-primary (cards, topbar) sits ABOVE
+     --bg-secondary (page canvas, sidebar, recessed wells) — so depth reads the same either way. */
+  --bg-primary: #252526;
+  --bg-secondary: #1B1B1C;
+  --bg-tertiary: #2D2D30;
+  --bg-elevated: #333337;
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --text-primary: #E9E9E9;
+  --text-secondary: #B4B4B4;
+  --text-muted: #8A8A8A;
+  --border-color: #3F3F41;
+  --border-strong: #565658;
+  --accent: #8C80F5;
+  --accent-hover: #A79DFF;
+  --accent-muted: rgba(140, 128, 245, 0.12);
+  --accent-subtle: rgba(140, 128, 245, 0.18);
+  --accent-bg: rgba(140, 128, 245, 0.16);
+  --success: #4EC994;
+  --success-bg: rgba(78, 201, 148, 0.14);
+  --success-solid: #107C55;
+  --warning: #E5B84B;
+  --warning-solid: #A16207;
+  --warning-bg: rgba(229, 184, 75, 0.14);
+  --danger: #F08A8A;
+  --danger-bg: rgba(240, 138, 138, 0.14);
+  --danger-solid: #B3261E;
+  --info: #6BA8F5;
+  --info-bg: rgba(107, 168, 245, 0.14);
 }
 
 /* Explicit light mode override */
@@ -186,12 +209,16 @@ body {
   --accent-hover: #4A38CD;
   --accent-muted: rgba(91, 73, 222, 0.08);
   --accent-subtle: rgba(91, 73, 222, 0.12);
+  --accent-bg: rgba(91, 73, 222, 0.1);
   --success: #059669;
   --success-bg: #ECFDF5;
+  --success-solid: var(--success);
   --warning: #D97706;
+  --warning-solid: var(--warning);
   --warning-bg: #FFFBEB;
   --danger: #DC2626;
   --danger-bg: #FEF2F2;
+  --danger-solid: var(--danger);
   --info: #2563EB;
   --info-bg: #EFF6FF;
 }
@@ -252,4 +279,40 @@ body {
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 18px;
+}
+
+/* Markdown rendering for release notes detail page. Kept narrow in scope
+   so the rest of the app isn't affected by tag-level resets. */
+.release-notes-prose h1 { font-size: 1.4em; font-weight: 700; margin: 0 0 0.4em; }
+.release-notes-prose h2 { font-size: 1.2em; font-weight: 700; margin: 1em 0 0.4em; }
+.release-notes-prose h3 { font-size: 1.05em; font-weight: 600; margin: 0.8em 0 0.3em; }
+.release-notes-prose p { margin: 0.4em 0; }
+.release-notes-prose ul, .release-notes-prose ol { padding-left: 1.4em; margin: 0.4em 0; }
+.release-notes-prose ul { list-style: disc; }
+.release-notes-prose ol { list-style: decimal; }
+.release-notes-prose li { margin: 0.15em 0; }
+.release-notes-prose li > ul, .release-notes-prose li > ol { margin: 0.15em 0; }
+.release-notes-prose a { color: var(--accent); text-decoration: underline; }
+.release-notes-prose a:hover { text-decoration: none; }
+.release-notes-prose code {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+  font-size: 0.9em;
+}
+.release-notes-prose pre {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.7em 1em;
+  overflow-x: auto;
+}
+.release-notes-prose pre code { background: none; border: 0; padding: 0; }
+.release-notes-prose strong { font-weight: 600; }
+.release-notes-prose blockquote {
+  border-left: 3px solid var(--border-color);
+  padding-left: 0.8em;
+  color: var(--text-muted);
+  margin: 0.5em 0;
 }

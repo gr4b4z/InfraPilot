@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Infrastructure.Jira;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.BackgroundServices;
 
@@ -10,6 +12,7 @@ public class DeploymentEnrichmentService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _config;
+    private readonly IPlatformEventPublisher _events;
     private readonly ILogger<DeploymentEnrichmentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -21,10 +24,12 @@ public class DeploymentEnrichmentService : BackgroundService
     public DeploymentEnrichmentService(
         IServiceScopeFactory scopeFactory,
         IConfiguration config,
+        IPlatformEventPublisher events,
         ILogger<DeploymentEnrichmentService> logger)
     {
         _scopeFactory = scopeFactory;
         _config = config;
+        _events = events;
         _logger = logger;
     }
 
@@ -63,6 +68,7 @@ public class DeploymentEnrichmentService : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
         var jira = scope.ServiceProvider.GetRequiredService<JiraClient>();
+        var workItemSync = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-lookbackHours);
 
@@ -81,7 +87,22 @@ public class DeploymentEnrichmentService : BackgroundService
             try
             {
                 await EnrichEvent(evt, jira, ct);
+                // Re-sync work-items so any titles enrichment just discovered (e.g. Jira
+                // summary) make it into the relational projection. Idempotent — safe to
+                // call even when enrichment found nothing.
+                await workItemSync.SyncAsync(evt, ct);
                 await db.SaveChangesAsync(ct);
+
+                // Enrichment fills in work-item titles/statuses that deployment and work-item
+                // views already rendered without — nudge them to pick the labels up.
+                await _events.PublishEntityChanged(new EntityChangedEvent
+                {
+                    Entity = "deployment",
+                    Action = "enriched",
+                    Id = evt.Id.ToString(),
+                    Product = evt.Product,
+                    Environment = evt.Environment,
+                });
             }
             catch (Exception ex)
             {
@@ -100,6 +121,13 @@ public class DeploymentEnrichmentService : BackgroundService
         {
             try
             {
+                // Caller-supplied title wins — skip the remote lookup.
+                if (reference.Type == "work-item" && !string.IsNullOrEmpty(reference.Title))
+                {
+                    labels["workItemTitle"] = reference.Title;
+                    continue;
+                }
+
                 if (reference.Type == "work-item" && reference.Provider == "jira" && !string.IsNullOrEmpty(reference.Key))
                 {
                     await EnrichFromJira(jira, reference.Key, labels, ct);

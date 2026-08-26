@@ -1,6 +1,7 @@
 using NSubstitute;
 using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Realtime;
 
@@ -10,11 +11,12 @@ public class RequestStateMachineTests
 {
     private readonly IAuditLogger _auditLogger = Substitute.For<IAuditLogger>();
     private readonly IPlatformEventPublisher _eventPublisher = Substitute.For<IPlatformEventPublisher>();
+    private readonly IWebhookDispatcher _webhookDispatcher = Substitute.For<IWebhookDispatcher>();
     private readonly RequestStateMachine _sut;
 
     public RequestStateMachineTests()
     {
-        _sut = new RequestStateMachine(_auditLogger, _eventPublisher);
+        _sut = new RequestStateMachine(_auditLogger, _eventPublisher, _webhookDispatcher);
     }
 
     private static ServiceRequest CreateRequest(RequestStatus status = RequestStatus.Draft) =>

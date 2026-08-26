@@ -3,309 +3,617 @@ using Platform.Api.Features.Deployments.Models;
 
 namespace Platform.Api.Infrastructure.Persistence;
 
+/// <summary>
+/// Generates deterministic demo deployment data: three products of differing size, whose services
+/// each get somewhere between <see cref="MinEventsPerService"/> and <see cref="MaxEventsPerService"/>
+/// deployment events stretched over the last 90 days. Regenerating against a clean database always
+/// produces the same output (seeded Random), so dev screenshots stay consistent.
+/// </summary>
 public static class DeploymentSeedData
 {
+    // Per-service event count is rolled rather than fixed: a uniform 30-per-service made every
+    // service look equally busy, which flattens exactly the thing the deployment views are for —
+    // spotting the service that ships ten times a week next to the one that shipped twice.
+    private const int MinEventsPerService = 8;
+    private const int MaxEventsPerService = 42;
+    private const int HistoryDays = 90;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
+    // Three products of deliberately different size — a big one, a satellite, and a small
+    // odd-one-out — so the product filters and the per-product rollups have something to
+    // distinguish. Two are Azure DevOps-shaped and one GitHub-shaped, which is what decides how
+    // references are built further down.
+    private static readonly ProductCatalog[] Catalog =
+    [
+        new("mpt", "https://dev.azure.com/acmetrix-pc/MPT", SourceStyle.AzureDevOps,
+            [
+                "orders", "schedule", "billing", "checkout", "inventory",
+                "pricing", "notifications", "search",
+            ]),
+        new("mpt-extentions", "https://dev.azure.com/acmetrix-pc/MPT-EXT", SourceStyle.AzureDevOps,
+            [
+                "reviews", "loyalty", "gift-cards", "partner-api", "webhooks",
+            ]),
+        new("extra", "https://github.com/acmetrix", SourceStyle.GitHub,
+            [
+                "reports", "admin-console", "cost-tracker",
+            ]),
+    ];
+
+    private static readonly string[] Environments = ["development", "staging", "production"];
+
+    // Weighted environment pick — dev deploys happen most often, prod least.
+    private static readonly (string env, int weight)[] EnvWeights =
+    [
+        ("development", 5),
+        ("staging", 3),
+        ("production", 2),
+    ];
+
+    private static readonly Person[] People =
+    [
+        new("Jan Kowalski", "jan.kowalski@acmetrix.com"),
+        new("Anna Kowalska", "anna.kowalska@acmetrix.com"),
+        new("Piotr Nowak", "piotr.nowak@acmetrix.com"),
+        new("Marta Wiśniewska", "marta.wisniewska@acmetrix.com"),
+        new("Sylwester Grabowski", "sylwester.grabowski@acmetrix.com"),
+        new("Tomasz Wójcik", "tomasz.wojcik@acmetrix.com"),
+        new("Katarzyna Lewandowska", "katarzyna.lewandowska@acmetrix.com"),
+        new("Michał Zieliński", "michal.zielinski@acmetrix.com"),
+        new("Agnieszka Kamińska", "agnieszka.kaminska@acmetrix.com"),
+        new("Paweł Szymański", "pawel.szymanski@acmetrix.com"),
+    ];
+
+    /// <summary>
+    /// The seeded local sign-in accounts (see <see cref="SeedData.SeedLocalUsers"/>). Work items name
+    /// one of these as their <c>qa-owner</c> a good part of the time, so signing in locally lands on a
+    /// work-items queue with rows in it — with a pool of fictional people only, every seeded item
+    /// belongs to somebody who can never log in, and every queue reads empty.
+    /// </summary>
+    private static readonly Person[] LocalTesters =
+    [
+        new("Regular User", "user@localhost"),
+        new("Admin User", "admin@localhost"),
+        new("QA Engineer", "qa@localhost"),
+    ];
+
+    private static readonly string[] WorkItemTitles =
+    [
+        "Fix flaky integration test for checkout", "Add pagination to history endpoint",
+        "Implement rate-limit headers on public API", "Migrate cron jobs off legacy scheduler",
+        "Switch to System.Text.Json for performance", "Reduce memory footprint on long polling worker",
+        "Patch CVE-2026-0432 in upstream dependency", "Harden CSP on public dashboard",
+        "Add webhook retry with exponential backoff", "Fix timezone handling in recurring schedules",
+        "Wire OpenTelemetry through background jobs", "Rebuild search index pipeline for incremental updates",
+        "Add dark mode support", "Introduce feature flag for new onboarding flow",
+        "Fix N+1 query on invoice list page", "Ingest vendor catalog in chunks to avoid OOM",
+        "Enable HTTP/2 on edge proxy", "Audit data retention policy for analytics exports",
+        "Add soft-delete to customer records", "Introduce per-tenant quotas for API usage",
+    ];
+
+    // Commit subjects, in the shape a producer sends them: the ticket key in the message is how the
+    // work item was discovered in the first place, so it's appended when one is seeded.
+    private static readonly string[] CommitSubjects =
+    [
+        "fix: guard against a null tenant on the fast path",
+        "feat: accept the new payload shape behind a flag",
+        "refactor: pull the retry policy out of the handler",
+        "test: cover the rollback branch",
+        "fix: stop double-counting retried deliveries",
+        "chore: drop the unused legacy column",
+        "perf: batch the lookup instead of one call per row",
+        "fix: keep the cancellation token flowing through",
+        "feat: emit the new metric per environment",
+        "fix: respect the tenant timezone when formatting",
+        "refactor: move the mapping into its own type",
+        "fix: release the lease when the worker restarts",
+    ];
+
+    private static readonly string[] PrTitles =
+    [
+        "fix: correct currency rounding for EUR/PLN pair",
+        "feat: bulk import endpoint for catalog items",
+        "chore: bump dotnet sdk to 10.0.3",
+        "perf: stream large result sets instead of buffering",
+        "refactor: split auth middleware into request + policy",
+        "fix: swallow cancellation exceptions in worker",
+        "feat: add structured logging with Serilog",
+        "fix: race condition on concurrent webhook delivery",
+        "feat: expose health endpoint for ready/live probes",
+        "docs: README section on local container run",
+        "test: integration tests for rollback path",
+        "ci: publish OCI image on main branch",
+        "fix: handle null vendor in report generator",
+        "feat: rolling deployment window configuration",
+        "refactor: pull DTO mapping into extension methods",
+    ];
+
     public static async Task Seed(PlatformDbContext db)
     {
         if (db.DeployEvents.Any()) return;
 
+        var rand = new Random(20260415); // deterministic
         var now = DateTimeOffset.UtcNow;
-        var events = new List<DeployEvent>();
+        var events = new List<DeployEvent>(
+            capacity: Catalog.Sum(p => p.Services.Length) * MaxEventsPerService);
 
-        // ──────────────────────────────────────────────
-        // ticketing-platform: orders
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("ticketing-platform", "orders", "production", "2.3.0", "2.2.8",
-            "webhook", now.AddDays(-7),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/somedomain-pc/MPT/_build/results?buildId=12300"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1234", "jira", "PLAT-1234"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/orders/pullrequest/542")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Anna Kowalska", "anna.kowalska@somedomain.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
+        foreach (var product in Catalog)
+        {
+            foreach (var service in product.Services)
             {
-                ["workItemTitle"] = "Fix order total calculation for multi-currency baskets",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: correct currency conversion in order totals",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "orders", "staging", "2.3.1", "2.3.0",
-            "webhook", now.AddDays(-4),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/somedomain-pc/MPT/_build/results?buildId=12335"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1280", "jira", "PLAT-1280"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/orders/pullrequest/558")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add pagination to order history endpoint",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: paginated order history with cursor-based navigation",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "orders", "development", "2.4.0", "2.3.1",
-            "webhook", now.AddDays(-2),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/somedomain-pc/MPT/_build/results?buildId=12340"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1301", "jira", "PLAT-1301"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/orders/pullrequest/563")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@somedomain.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement order cancellation with refund workflow",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: order cancellation API with automatic refund trigger",
-            }, [])));
-
-        // orders — deployed today to dev
-        events.Add(MakeEvent("ticketing-platform", "orders", "development", "2.4.1", "2.4.0",
-            "webhook", now.AddHours(-3),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/somedomain-pc/MPT/_build/results?buildId=12380"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/orders/pullrequest/567"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1315", "jira", "PLAT-1315")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Jan Kowalski", "jan.kowalski@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add webhook retry with exponential backoff for payment notifications",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: exponential backoff for payment webhook retries",
-            }, [])));
-
-        // orders — promoted to staging today
-        events.Add(MakeEvent("ticketing-platform", "orders", "staging", "2.4.0", "2.3.1",
-            "webhook", now.AddHours(-1),
-            [new ReferenceDto("pipeline", "https://dev.azure.com/somedomain-pc/MPT/_build/results?buildId=12385"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1301", "jira", "PLAT-1301"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/orders/pullrequest/563")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@somedomain.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement order cancellation with refund workflow",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: order cancellation API with automatic refund trigger",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // ticketing-platform: schedule
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("ticketing-platform", "schedule", "production", "1.7.1", "1.7.0",
-            "k8s-observer", now.AddDays(-6),
-            [new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1190", "jira", "PLAT-1190"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/schedule/pullrequest/320")],
-            [new ParticipantDto("PR Author", "Marta Wiśniewska", "marta.wisniewska@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Jan Kowalski", "jan.kowalski@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix timezone handling in recurring event schedules",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: use UTC offset for recurring schedule calculations",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "schedule", "staging", "1.7.2", "1.7.1",
-            "k8s-observer", now.AddDays(-3),
-            [new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1245", "jira", "PLAT-1245"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/schedule/pullrequest/331")],
-            [new ParticipantDto("PR Author", "Anna Kowalska", "anna.kowalska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add bulk schedule import from CSV",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: CSV import endpoint for bulk schedule creation",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "schedule", "development", "1.8.0", "1.7.2",
-            "k8s-observer", now.AddDays(-1),
-            [new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1298", "jira", "PLAT-1298"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/schedule/pullrequest/345"),
-             new ReferenceDto("repository", "https://dev.azure.com/somedomain-pc/MPT/_git/schedule", Revision: "f8e2a1c9d4b7")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Marta Wiśniewska", "marta.wisniewska@somedomain.com"),
-             new ParticipantDto("QA", "Anna Kowalska", "anna.kowalska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement schedule conflict detection and resolution",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: conflict detection engine for overlapping schedules",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // ticketing-platform: billing
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("ticketing-platform", "billing", "production", "3.0.4", "3.0.3",
-            "webhook", now.AddDays(-8),
-            [new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1150", "jira", "PLAT-1150"),
-             new ReferenceDto("pipeline", "https://dev.azure.com/somedomain-pc/MPT/_build/results?buildId=12210"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/billing/pullrequest/410")],
-            [new ParticipantDto("PR Author", "Anna Kowalska", "anna.kowalska@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com"),
-             new ParticipantDto("QA", "Jan Kowalski", "jan.kowalski@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix invoice PDF generation for VAT-exempt transactions",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: skip VAT line items in PDF when tax-exempt flag is set",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "billing", "staging", "3.0.5", "3.0.4",
-            "webhook", now.AddDays(-3),
-            [new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1220", "jira", "PLAT-1220"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/billing/pullrequest/425")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Anna Kowalska", "anna.kowalska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add Stripe Connect integration for marketplace payouts",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: Stripe Connect payout flow for seller accounts",
-            }, [])));
-
-        events.Add(MakeEvent("ticketing-platform", "billing", "development", "3.1.0", "3.0.5",
-            "webhook", now.AddHours(-5),
-            [new ReferenceDto("repository", "https://dev.azure.com/somedomain-pc/MPT/_git/billing", Revision: "a1b2c3d4e5f6"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/PLAT-1310", "jira", "PLAT-1310"),
-             new ReferenceDto("pull-request", "https://dev.azure.com/somedomain-pc/MPT/_git/billing/pullrequest/440")],
-            [new ParticipantDto("PR Author", "Anna Kowalska", "anna.kowalska@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement usage-based billing metering API",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: metering endpoint for tracking API usage per subscription",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // marketplace: marketplace-api
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("marketplace", "marketplace-api", "production", "5.1.2", "5.1.1",
-            "github-actions", now.AddDays(-10),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-api/actions/runs/97200"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-389", "jira", "MKT-389"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-api/pull/201")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix product search returning stale results after catalog update",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: invalidate search index cache on catalog write",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-api", "staging", "5.1.3", "5.1.2",
-            "github-actions", now.AddDays(-3),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-api/actions/runs/98100"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-420", "jira", "MKT-420"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-api/pull/215")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement vendor onboarding API with document verification",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: vendor registration flow with KYC document upload",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-api", "development", "5.2.0", "5.1.3",
-            "github-actions", now.AddHours(-2),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-api/actions/runs/98765"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-456", "jira", "MKT-456"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-api/pull/230")],
-            [new ParticipantDto("PR Author", "Piotr Nowak", "piotr.nowak@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Anna Kowalska", "anna.kowalska@somedomain.com"),
-             new ParticipantDto("QA", "Jan Kowalski", "jan.kowalski@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add product comparison API with feature matrix",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: comparison endpoint returning normalized feature matrix",
-            }, [])));
-
-        // marketplace-api — promoted to production today
-        events.Add(MakeEvent("marketplace", "marketplace-api", "production", "5.1.3", "5.1.2",
-            "github-actions", now.AddMinutes(-45),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-api/actions/runs/98900"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-420", "jira", "MKT-420"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-api/pull/215")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com"),
-             new ParticipantDto("QA", "Marta Wiśniewska", "marta.wisniewska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Implement vendor onboarding API with document verification",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "feat: vendor registration flow with KYC document upload",
-            }, [])));
-
-        // ──────────────────────────────────────────────
-        // marketplace: marketplace-ui
-        // ──────────────────────────────────────────────
-
-        events.Add(MakeEvent("marketplace", "marketplace-ui", "production", "1.9.7", "1.9.6",
-            "github-actions", now.AddDays(-12),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-ui/actions/runs/45100"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-370", "jira", "MKT-370"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-ui/pull/180")],
-            [new ParticipantDto("PR Author", "Marta Wiśniewska", "marta.wisniewska@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Fix mobile layout breakpoints on product detail page",
-                ["workItemStatus"] = "Done",
-                ["prTitle"] = "fix: responsive grid breakpoints for product detail cards",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-ui", "staging", "1.9.8", "1.9.7",
-            "github-actions", now.AddDays(-5),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-ui/actions/runs/46200"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-410", "jira", "MKT-410"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-ui/pull/195")],
-            [new ParticipantDto("PR Author", "Jan Kowalski", "jan.kowalski@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Marta Wiśniewska", "marta.wisniewska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Add dark mode support with system preference detection",
-                ["workItemStatus"] = "In Review",
-                ["prTitle"] = "feat: dark mode toggle with prefers-color-scheme sync",
-            }, [])));
-
-        events.Add(MakeEvent("marketplace", "marketplace-ui", "development", "2.0.0-beta.3", "2.0.0-beta.2",
-            "github-actions", now.AddHours(-4),
-            [new ReferenceDto("pipeline", "https://github.com/somedomain/marketplace-ui/actions/runs/47500"),
-             new ReferenceDto("work-item", "https://somedomain.atlassian.net/browse/MKT-460", "jira", "MKT-460"),
-             new ReferenceDto("pull-request", "https://github.com/somedomain/marketplace-ui/pull/210"),
-             new ReferenceDto("repository", "https://github.com/somedomain/marketplace-ui", Revision: "b3c4d5e6f7a8")],
-            [new ParticipantDto("PR Author", "Sylwester Grabowski", "sylwester.grabowski@somedomain.com"),
-             new ParticipantDto("PR Reviewer", "Piotr Nowak", "piotr.nowak@somedomain.com"),
-             new ParticipantDto("QA", "Anna Kowalska", "anna.kowalska@somedomain.com")],
-            new EnrichmentData(new Dictionary<string, string>
-            {
-                ["workItemTitle"] = "Rebuild checkout flow with multi-step wizard and validation",
-                ["workItemStatus"] = "In Progress",
-                ["prTitle"] = "feat: multi-step checkout wizard with real-time validation",
-            }, [])));
+                events.AddRange(GenerateServiceHistory(product, service, now, rand));
+            }
+        }
 
         db.DeployEvents.AddRange(events);
+
+        // Captured pipeline output, so the detail page's log viewer and its error highlighting have
+        // something to show locally. Only a slice of events carry it — a real portal has plenty of
+        // deployments whose producer never sent logs, and the empty state should be visible too.
+        foreach (var ev in events)
+        {
+            db.DeployEventLogs.AddRange(BuildLogs(ev, rand));
+        }
+
         await db.SaveChangesAsync();
     }
+
+    /// <summary>
+    /// Synthesises the log blocks a Helm-style deploy would have printed. Failed events get the
+    /// diagnostics block too, ending on the same message their <c>run.failureReason</c> carries — the
+    /// point being that the highlighted error and the log agree, which is what makes the page useful.
+    /// </summary>
+    private static IEnumerable<DeployEventLog> BuildLogs(DeployEvent ev, Random rand)
+    {
+        // Every failure gets logs (that's when they matter); successes only sometimes.
+        var failed = ev.Status == "failed";
+        if (!failed && rand.NextDouble() > 0.6) yield break;
+
+        var releaseOutput =
+            $"Release \"{ev.Service}\" has been upgraded. Happy Helming!\n" +
+            $"NAME: {ev.Service}\n" +
+            $"LAST DEPLOYED: {ev.DeployedAt:ddd MMM d HH:mm:ss yyyy}\n" +
+            $"NAMESPACE: {ev.Environment}\n" +
+            $"STATUS: {(failed ? "failed" : "deployed")}\n" +
+            $"REVISION: {rand.Next(2, 60)}\n" +
+            $"CHART: {ev.Service}-{ev.Version}\n\n" +
+            "=== Deployments Status ===\n" +
+            $"NAME{new string(' ', 4)}READY   UP-TO-DATE   AVAILABLE\n" +
+            $"{ev.Service}    {(failed ? "0/2" : "2/2")}     {(failed ? "1" : "2")}            {(failed ? "0" : "2")}\n";
+
+        yield return MakeLog(ev, "helm upgrade output", "helm", 0, releaseOutput);
+
+        if (!failed) yield break;
+
+        // Read the cause off the run rather than re-rolling one: the highlighted error and the log
+        // have to say the same thing, or the page teaches the reader to distrust both.
+        var reason = ev.Run?.FailureReason ?? "release workloads did not become ready";
+        yield return MakeLog(ev, "failure diagnostics", "kubectl", 1,
+            "=== Pods Status ===\n" +
+            $"NAME                        READY   STATUS             RESTARTS\n" +
+            $"{ev.Service}-7d9c8b5f4-x2klm   0/1     CrashLoopBackOff   4\n\n" +
+            $"--- Logs for pod: {ev.Service}-7d9c8b5f4-x2klm ---\n" +
+            "info: Starting host\n" +
+            "warn: Configuration key 'ConnectionStrings:Default' not found, falling back\n" +
+            "fail: Microsoft.Extensions.Hosting.Internal.Host[11]\n" +
+            "      Hosting failed to start\n" +
+            "Unhandled exception. System.InvalidOperationException: Unable to resolve service\n" +
+            "   at Microsoft.Extensions.DependencyInjection.ActivatorUtilities.GetService(...)\n\n" +
+            "=== Events ===\n" +
+            $"Warning   BackOff   Back-off restarting failed container in pod/{ev.Service}\n\n" +
+            $"##[error]Helm deployment failed for {ev.Service} - {reason}\n");
+    }
+
+    private static DeployEventLog MakeLog(DeployEvent ev, string name, string source, int sequence, string content) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            DeployEventId = ev.Id,
+            Name = name,
+            Source = source,
+            Sequence = sequence,
+            Content = content,
+            Truncated = false,
+            ByteCount = System.Text.Encoding.UTF8.GetByteCount(content),
+            LineCount = content.Count(c => c == '\n') + 1,
+            OriginalByteCount = System.Text.Encoding.UTF8.GetByteCount(content),
+            CreatedAt = ev.DeployedAt,
+        };
+
+    /// <summary>
+    /// The CI run that performed the deployment: where to click, and — when it failed — the one-line
+    /// cause the pipeline identified. Modelled on the release repository's GitHub Actions workflow,
+    /// which is what deploys in practice, so <c>jobUrl</c> deep-links to the matrix leg for this
+    /// component rather than to the run as a whole.
+    /// </summary>
+    private static DeployRun BuildRun(
+        ProductCatalog product, string service, string environment, string version,
+        string status, DateTimeOffset deployedAt, Random rand, Person triggeredBy)
+    {
+        var runId = rand.NextInt64(30_000_000_000, 31_000_000_000);
+        var jobId = rand.NextInt64(90_000_000_000, 91_000_000_000);
+        var runUrl = $"https://github.com/acmetrix/release/actions/runs/{runId}";
+
+        return new DeployRun(
+            Provider: "github-actions",
+            RunId: runId.ToString(),
+            RunNumber: rand.Next(100, 999).ToString(),
+            Attempt: 1,
+            WorkflowName: $"Reconcile {environment}",
+            JobName: $"Deploy {(product.SourceStyle == SourceStyle.GitHub ? "Web" : "Helm")} ({service}, {version})",
+            RunUrl: runUrl,
+            JobUrl: $"{runUrl}/job/{jobId}",
+            TriggeredBy: triggeredBy.Name,
+            StartedAt: deployedAt.AddMinutes(-rand.Next(2, 12)),
+            CompletedAt: deployedAt,
+            FailureReason: status != "failed" ? null : rand.Next(3) switch
+            {
+                0 => $"pod {service}-7d9c8b5f4-x2klm keeps crash-looping (restartCount=4)",
+                1 => $"pod {service}-7d9c8b5f4-x2klm cannot start (container waiting reason=ImagePullBackOff)",
+                _ => "release workloads did not become ready within 1800 seconds",
+            });
+    }
+
+    private static IEnumerable<DeployEvent> GenerateServiceHistory(
+        ProductCatalog product, string service, DateTimeOffset now, Random rand)
+    {
+        // How busy this particular service is. Rolled per service, so the history is lopsided the way
+        // a real estate of services is.
+        var eventCount = rand.Next(MinEventsPerService, MaxEventsPerService + 1);
+
+        // Evenly-but-jittered timestamps across the last HistoryDays.
+        var totalHours = HistoryDays * 24;
+        var slot = totalHours / (double)eventCount;
+        var timestamps = new DateTimeOffset[eventCount];
+        for (var i = 0; i < eventCount; i++)
+        {
+            // Place each event inside its slot with a little noise so it looks organic.
+            var baseOffset = i * slot;
+            var jitter = (rand.NextDouble() - 0.5) * slot * 0.6;
+            timestamps[i] = now.AddHours(-(totalHours - (baseOffset + jitter)));
+        }
+
+        // Start each service at a different semver base so they don't all look identical.
+        var major = rand.Next(1, 5);
+        var minor = rand.Next(0, 6);
+        var patch = rand.Next(0, 9);
+
+        // Track last version per environment for realistic previousVersion + rollback.
+        var lastPerEnv = new Dictionary<string, string>();
+
+        for (var i = 0; i < eventCount; i++)
+        {
+            var environment = PickEnvironment(rand);
+
+            // Version progression: 60% patch bump, 30% minor bump, 10% major bump.
+            var bump = rand.NextDouble();
+            if (bump < 0.1) { major++; minor = 0; patch = 0; }
+            else if (bump < 0.4) { minor++; patch = 0; }
+            else { patch++; }
+
+            var version = $"{major}.{minor}.{patch}";
+            lastPerEnv.TryGetValue(environment, out var previousVersion);
+
+            // 5% rollbacks — re-deploy the previous version and flag it.
+            var isRollback = previousVersion is not null && rand.NextDouble() < 0.05;
+            if (isRollback) version = previousVersion!;
+
+            // 5% failed, 3% in_progress, rest succeeded.
+            var statusRoll = rand.NextDouble();
+            var status = statusRoll < 0.05 ? "failed" : statusRoll < 0.08 ? "in_progress" : "succeeded";
+
+            var shuffled = People.OrderBy(_ => rand.Next()).ToArray();
+            var references = BuildReferences(product, service, environment, rand, shuffled);
+            var enrichment = BuildEnrichment(rand);
+            var run = BuildRun(product, service, environment, version, status, timestamps[i], rand, shuffled[0]);
+
+            yield return MakeEvent(
+                product.Name, service, environment, version, previousVersion,
+                SourceLabel(product.SourceStyle), timestamps[i],
+                isRollback, status,
+                references, enrichment, run);
+
+            // Only update the env tracker for successful / in-progress deploys
+            // so rollbacks don't poison the "last known good" pointer.
+            if (status != "failed") lastPerEnv[environment] = version;
+        }
+    }
+
+    private static string PickEnvironment(Random rand)
+    {
+        var total = 0;
+        foreach (var (_, w) in EnvWeights) total += w;
+        var roll = rand.Next(total);
+        foreach (var (env, w) in EnvWeights)
+        {
+            if (roll < w) return env;
+            roll -= w;
+        }
+        return Environments[0];
+    }
+
+    private static List<ReferenceDto> BuildReferences(
+        ProductCatalog product, string service, string environment, Random rand, Person[] people)
+    {
+        var refs = new List<ReferenceDto>();
+
+        // Pick distinct people for each role so references carry realistic participants.
+        var shuffled = people.OrderBy(_ => rand.Next()).ToArray();
+        var triggeredBy = shuffled[0];
+        var author      = shuffled[1];
+        var reviewer    = shuffled[2];
+        var qa          = shuffled[3];
+
+        var buildRunId  = rand.Next(10000, 99999);
+        var deployRunId = rand.Next(10000, 99999);
+        var prNum       = rand.Next(50, 900);
+        // Realistic titles for tickets and PRs so release-notes / activity cards have
+        // something to display instead of a bare key.
+        var prTitle     = PrTitles[rand.Next(PrTitles.Length)];
+
+        // Build pipeline — triggered by the PR author merging or a scheduled run.
+        // Deploy pipeline — triggered separately (CD job, release manager, or scheduler).
+        // Each carries its own triggered-by since different people/automation may initiate them.
+        if (product.SourceStyle == SourceStyle.AzureDevOps)
+        {
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/_build/results?buildId={buildRunId}", "azure-devops", $"build-{buildRunId}",
+                Participants: [new("triggered-by", author.Name, author.Email)]));
+
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/_release?releaseId={deployRunId}", "azure-devops", $"deploy-{deployRunId}",
+                Participants: [new("triggered-by", triggeredBy.Name, triggeredBy.Email)]));
+
+            refs.Add(new ReferenceDto("pull-request",
+                $"{product.BaseUrl}/_git/{service}/pullrequest/{prNum}", "azure-devops", prNum.ToString(),
+                Title: prTitle,
+                Participants: [
+                    new("author",   author.Name,   author.Email),
+                    new("reviewer", reviewer.Name, reviewer.Email),
+                ]));
+        }
+        else
+        {
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/{service}/actions/runs/{buildRunId}", "github", $"build-{buildRunId}",
+                Participants: [new("triggered-by", author.Name, author.Email)]));
+
+            refs.Add(new ReferenceDto("pipeline",
+                $"{product.BaseUrl}/{service}/actions/runs/{deployRunId}", "github", $"deploy-{deployRunId}",
+                Participants: [new("triggered-by", triggeredBy.Name, triggeredBy.Email)]));
+
+            refs.Add(new ReferenceDto("pull-request",
+                $"{product.BaseUrl}/{service}/pull/{prNum}", "github", prNum.ToString(),
+                Title: prTitle,
+                Participants: [
+                    new("author",   author.Name,   author.Email),
+                    new("reviewer", reviewer.Name, reviewer.Email),
+                ]));
+        }
+
+        // Work items — ~80% of deploys carry at least one, and a good share carry a bundle. The bundle
+        // is the case worth seeding: a promotion of several tickets is what the chip row's "+N more"
+        // collapse, the "3/5 approved" progress indicator and the per-chip decision colours all exist
+        // for, and an estate where every deploy carries exactly one ticket never shows any of them.
+        if (rand.NextDouble() < 0.8)
+        {
+            var workItemCount = rand.NextDouble() switch
+            {
+                < 0.45 => 1,
+                < 0.70 => 2,
+                < 0.88 => 3,
+                // 4–6. The list collapses the chip row past five, so the top of this range is what
+                // makes that button appear.
+                _ => 4 + rand.Next(3),
+            };
+
+            var usedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var n = 0; n < workItemCount; n++)
+            {
+                // Keys are rolled from a small space on purpose: a repeat across two promotions of the
+                // same product is a real situation (one ticket blocking several releases) and it's what
+                // puts the "×2" badge on a queue row.
+                var wiKey = $"{ProductPrefix(product.Name)}-{rand.Next(100, 9999)}";
+                if (!usedKeys.Add(wiKey)) continue;
+
+                var wiTitle = WorkItemTitles[rand.Next(WorkItemTitles.Length)];
+
+                // Most tickets name a `qa-owner`, which is the role the seeded production promotion
+                // policy requires (see PromotionSeedData); the rest name a plain `qa`. That mix is
+                // deliberate: it gives a fresh database both the satisfied case and the one the
+                // work-items queue's "Not assigned" tab exists for — somebody is named on the ticket,
+                // but not in the role the policy asks for, so nobody is actually answerable for it.
+                var qaRole = rand.NextDouble() < 0.7 ? "qa-owner" : "qa";
+                // Half of them land on a local sign-in account, weighted towards user@localhost — see
+                // LocalTesters. The rest stay with the fictional pool, which is what keeps the "someone
+                // else owns this" rows (and the assignee dropdown) worth looking at. Rolled per ticket,
+                // so one bundle can be split across several owners — which is the case the bundle-level
+                // "needs attention" badge reports on.
+                var qaOwner = PickQaOwner(rand, fallback: qa);
+                var wiParticipants = new List<ParticipantDto>
+                {
+                    new(qaRole, qaOwner.Name, qaOwner.Email),
+                };
+                if (rand.NextDouble() < 0.5)
+                {
+                    // Assignee is someone other than the QA owner
+                    var assignee = shuffled.First(p => p.Email != qaOwner.Email);
+                    wiParticipants.Add(new("assignee", assignee.Name, assignee.Email));
+                }
+
+                // Most seeded tickets carry a description, but not all — the detail page hides its
+                // Content section entirely when there's none, and that path should show up locally too.
+                var wiContent = rand.NextDouble() < 0.75 ? WorkItemBody(wiTitle, service, rand) : null;
+
+                // The commits the ticket rode in on. Producers send one `commit` reference per commit
+                // in the deployed range and list the hashes that mentioned the ticket on the work
+                // item itself; that linkage is what puts every commit message on the ticket's second
+                // display line. Seed a mix of one and several, because a multi-commit ticket is the
+                // case one commit subject can't name — and the reason the ticket's own title is what
+                // goes on the first line.
+                var commitCount = rand.NextDouble() switch
+                {
+                    < 0.45 => 1,
+                    < 0.80 => 2,
+                    _ => 3,
+                };
+                var wiCommits = new List<string>(commitCount);
+                var firstCommitSubject = "";
+                for (var c = 0; c < commitCount; c++)
+                {
+                    // A git sha is 40 hex characters and "N" only yields 32.
+                    var sha = (Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"))[..40];
+                    var subject = $"{CommitSubjects[rand.Next(CommitSubjects.Length)]} ({wiKey})";
+                    if (c == 0) firstCommitSubject = subject;
+                    wiCommits.Add(sha);
+
+                    var commitAuthor = shuffled[rand.Next(shuffled.Length)];
+                    refs.Add(new ReferenceDto("commit",
+                        product.SourceStyle == SourceStyle.AzureDevOps
+                            ? $"{product.BaseUrl}/_git/{service}/commit/{sha}"
+                            : $"{product.BaseUrl}/{service}/commit/{sha}",
+                        product.SourceStyle == SourceStyle.AzureDevOps ? "azure-devops" : "github",
+                        sha,
+                        sha,
+                        Title: subject,
+                        Participants: [new("author", commitAuthor.Name, commitAuthor.Email)]));
+                }
+
+                // Producers disagree about which name goes on `title`: some send the tracker's
+                // summary, others the commit subject with the summary on `subTitle`. Seed both
+                // shapes — either way the ticket is displayed by its own name, with the commit
+                // messages underneath.
+                var commitTitled = rand.NextDouble() < 0.6;
+
+                refs.Add(new ReferenceDto("work-item",
+                    $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
+                    Title: commitTitled ? firstCommitSubject : wiTitle,
+                    SubTitle: commitTitled ? wiTitle : null,
+                    Participants: wiParticipants,
+                    Commits: wiCommits,
+                    Content: wiContent));
+            }
+        }
+
+        // Build manifest — the release repository's record of exactly what this version is made of
+        // (chart, images, source revision). The detail page hangs the version number off this link,
+        // so it's pinned to the release-repo commit that deployed rather than to a branch tip.
+        // Two GUIDs because a git sha is 40 hex characters and "N" only yields 32.
+        var manifestSha = (Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"))[..40];
+        refs.Add(new ReferenceDto("build-manifest",
+            $"https://github.com/acmetrix/release/blob/{manifestSha}/{environment}/{service}/build-metadata.yaml",
+            "github",
+            $"{service}/build-metadata.yaml",
+            manifestSha,
+            $"build-metadata.yaml @ {service}"));
+
+        // Repository ~40% — just a pointer, no participants.
+        if (rand.NextDouble() < 0.4)
+        {
+            var revision = Guid.NewGuid().ToString("N")[..12];
+            if (product.SourceStyle == SourceStyle.AzureDevOps)
+                refs.Add(new ReferenceDto("repository",
+                    $"{product.BaseUrl}/_git/{service}", "azure-devops",
+                    $"{product.Name}/{service}", revision));
+            else
+                refs.Add(new ReferenceDto("repository",
+                    $"{product.BaseUrl}/{service}", "github",
+                    $"acmetrix/{service}", revision));
+        }
+
+        return refs;
+    }
+
+    /// <summary>
+    /// Picks who is answerable for a seeded work item. Weighted so <c>user@localhost</c> — the account
+    /// the queue is usually demoed from — owns a solid slice, the other two local accounts own a few,
+    /// and the rest stay with the fictional person the caller drew.
+    /// </summary>
+    private static Person PickQaOwner(Random rand, Person fallback)
+    {
+        var roll = rand.NextDouble();
+        if (roll < 0.30) return LocalTesters[0]; // user@localhost
+        if (roll < 0.42) return LocalTesters[1]; // admin@localhost
+        if (roll < 0.50) return LocalTesters[2]; // qa@localhost
+        return fallback;
+    }
+
+    /// <summary>
+    /// A Jira-shaped description for a seeded work item: a line of context, then acceptance
+    /// criteria. Composed from the ticket's own title rather than drawn from a parallel list so the
+    /// body always matches the summary above it, and deliberately multi-paragraph so the detail
+    /// page's Content section has real line breaks to render — and occasionally enough of them to
+    /// exercise the "Show more" collapse.
+    /// </summary>
+    private static string WorkItemBody(string title, string service, Random rand)
+    {
+        var summary = title[..1].ToLowerInvariant() + title[1..];
+        var criteria = new[]
+        {
+            $"- Covered by an automated test in `{service}`",
+            "- No change to the public contract",
+            "- Verified in staging before promotion",
+            "- Rollback is a redeploy of the previous version",
+            "- Dashboards and alerts updated where affected",
+        };
+        // 2–5 criteria: enough variance that some seeded tickets are short and some run long.
+        var taken = criteria.Take(2 + rand.Next(4));
+
+        return $"Reported by the {service} on-call rotation.\n\n"
+             + $"We need to {summary}. The current behaviour has been in place since the last\n"
+             + "major release and is now blocking downstream work.\n\n"
+             + "Acceptance criteria:\n"
+             + string.Join("\n", taken);
+    }
+
+    private static EnrichmentData BuildEnrichment(Random rand)
+    {
+        var wi = WorkItemTitles[rand.Next(WorkItemTitles.Length)];
+        var pr = PrTitles[rand.Next(PrTitles.Length)];
+        var status = rand.NextDouble() switch
+        {
+            < 0.4 => "Done",
+            < 0.75 => "In Review",
+            _ => "In Progress",
+        };
+        return new EnrichmentData(new Dictionary<string, string>
+        {
+            ["workItemTitle"] = wi,
+            ["workItemStatus"] = status,
+            ["prTitle"] = pr,
+        }, []);
+    }
+
+    private static string SourceLabel(SourceStyle style) =>
+        style == SourceStyle.GitHub ? "github-actions" : "azure-devops";
+
+    private static string ProductPrefix(string product) => product switch
+    {
+        "mpt" => "MPT",
+        "mpt-extentions" => "MPTX",
+        "extra" => "EXT",
+        _ => "SVC",
+    };
+
+    private record ProductCatalog(string Name, string BaseUrl, SourceStyle SourceStyle, string[] Services);
+
+    private record Person(string Name, string Email);
+
+    private enum SourceStyle { AzureDevOps, GitHub }
 
     private record EnrichmentData(Dictionary<string, string> Labels, List<ParticipantDto> Participants);
 
     private static DeployEvent MakeEvent(
         string product, string service, string environment, string version, string? previousVersion,
         string source, DateTimeOffset deployedAt,
-        List<ReferenceDto> references, List<ParticipantDto> participants,
-        EnrichmentData? enrichment = null)
+        bool isRollback, string status,
+        List<ReferenceDto> references,
+        EnrichmentData? enrichment = null,
+        DeployRun? run = null)
     {
         string? enrichmentJson = null;
         if (enrichment is not null)
@@ -326,12 +634,15 @@ public static class DeploymentSeedData
             Environment = environment,
             Version = version,
             PreviousVersion = previousVersion,
+            IsRollback = isRollback,
+            Status = status,
             Source = source,
             DeployedAt = deployedAt,
             ReferencesJson = JsonSerializer.Serialize(references, JsonOptions),
-            ParticipantsJson = JsonSerializer.Serialize(participants, JsonOptions),
+            ParticipantsJson = "[]",
             EnrichmentJson = enrichmentJson,
             MetadataJson = "{}",
+            RunJson = run is null ? null : JsonSerializer.Serialize(run, JsonOptions),
             CreatedAt = deployedAt,
         };
     }

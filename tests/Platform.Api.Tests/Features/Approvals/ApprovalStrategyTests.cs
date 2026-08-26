@@ -4,8 +4,10 @@ using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Notifications;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.Realtime;
 
@@ -17,6 +19,8 @@ public class ApprovalStrategyTests : IDisposable
     private readonly IAuditLogger _auditLogger = Substitute.For<IAuditLogger>();
     private readonly ICurrentUser _currentUser = Substitute.For<ICurrentUser>();
     private readonly IPlatformEventPublisher _eventPublisher = Substitute.For<IPlatformEventPublisher>();
+    private readonly IWebhookDispatcher _webhookDispatcher = Substitute.For<IWebhookDispatcher>();
+    private readonly INotificationService _notificationService = Substitute.For<INotificationService>();
     private readonly RequestStateMachine _stateMachine;
     private readonly ApprovalService _sut;
 
@@ -27,12 +31,12 @@ public class ApprovalStrategyTests : IDisposable
             .Options;
 
         _db = new PlatformDbContext(options);
-        _stateMachine = new RequestStateMachine(_auditLogger, _eventPublisher);
+        _stateMachine = new RequestStateMachine(_auditLogger, _eventPublisher, _webhookDispatcher);
 
         _currentUser.Id.Returns("approver1");
         _currentUser.Name.Returns("Approver One");
 
-        _sut = new ApprovalService(_db, _stateMachine, _auditLogger, _currentUser, _eventPublisher);
+        _sut = new ApprovalService(_db, _stateMachine, _auditLogger, _currentUser, _eventPublisher, _notificationService, _webhookDispatcher);
     }
 
     public void Dispose()

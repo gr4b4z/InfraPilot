@@ -1,16 +1,29 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
+import { api } from '@/lib/api';
+import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
+import { canonicaliseRoleKey } from '@/lib/roleKey';
+// Type-only import in envStage keeps this from being a runtime cycle.
+import { defaultStageRank } from '@/lib/envStage';
 
 export interface EnvironmentConfig {
   key: string;
   displayName: string;
+  /** Admin-chosen accent (`#rrggbb`) used to tell environments apart at a glance. When unset,
+   *  `getEnvironmentColor` derives a stable colour from the key. */
+  color?: string | null;
+  /** Marks a production stage — what executive analytics report on. Several environments may be
+   *  marked (multi-region production). When none is, consumers fall back to the historical
+   *  convention: the last environment in the list is the end of the pipeline. */
+  isProduction?: boolean;
 }
 
-export interface ProductEnvironments {
-  product: string;
-  environments: EnvironmentConfig[];
+export interface RoleConfig {
+  // Canonical lower-kebab key (e.g. "triggered-by"). Matched case-sensitively — the
+  // backend normalises on write so this lookup is deterministic.
+  key: string;
+  displayName: string;
 }
 
 export interface ActivityTemplateLine {
@@ -19,100 +32,145 @@ export interface ActivityTemplateLine {
 }
 
 interface SettingsState {
-  /** Default environments used when a product has no specific config */
-  defaultEnvironments: EnvironmentConfig[];
-  /** Per-product environment overrides */
-  productEnvironments: ProductEnvironments[];
+  /** Globally configured environments (shared across all products) */
+  environments: EnvironmentConfig[];
+  /** Admin-curated participant role display names. Canonical keys come from deploy-event
+   * ingest or promotion-level assignment; this dictionary maps them to human-friendly
+   * labels shown in the UI. Unknown keys fall back to the sender's `label` (if any),
+   * then to a humanised form of the key. */
+  roles: RoleConfig[];
   activityTemplate: ActivityTemplateLine[];
+  /** True once the server config has been loaded at least once this session. */
+  loaded: boolean;
 
-  setDefaultEnvironments: (envs: EnvironmentConfig[]) => void;
-  setProductEnvironments: (product: string, envs: EnvironmentConfig[]) => void;
-  removeProductEnvironments: (product: string) => void;
-  setActivityTemplate: (lines: ActivityTemplateLine[]) => void;
-  /** Get the environment config list for a product (falls back to defaults) */
-  getEnvironments: (product?: string) => EnvironmentConfig[];
-  getDisplayName: (key: string, product?: string) => string;
-  getOrderedEnvironments: (keys: string[], product?: string) => string[];
+  /** Hydrate from the server (source of truth). Falls back to defaults on failure. */
+  load: () => Promise<void>;
+  setEnvironments: (envs: EnvironmentConfig[]) => Promise<void>;
+  setRoles: (roles: RoleConfig[]) => Promise<void>;
+  setActivityTemplate: (lines: ActivityTemplateLine[]) => Promise<void>;
+  getDisplayName: (key: string) => string;
+  /** Resolved `#rrggbb` for an environment — the configured colour, or a stable one derived
+   *  from the key so every environment is distinguishable even before an admin picks. */
+  getEnvironmentColor: (key: string) => string;
+  getRoleDisplayName: (key: string) => string;
+  getOrderedEnvironments: (keys: string[]) => string[];
 }
 
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
-  { key: 'development', displayName: 'Development' },
-  { key: 'staging', displayName: 'Staging' },
-  { key: 'production', displayName: 'Production' },
+  { key: 'development', displayName: 'Development', color: '#2563eb' },
+  { key: 'staging', displayName: 'Staging', color: '#d97706' },
+  { key: 'production', displayName: 'Production', color: '#dc2626', isProduction: true },
 ];
+
+const DEFAULT_ROLES: RoleConfig[] = [
+  { key: 'triggered-by', displayName: 'Triggered by' },
+  { key: 'author', displayName: 'Author' },
+  { key: 'reviewer', displayName: 'Reviewer' },
+  { key: 'qa', displayName: 'QA' },
+];
+
+// Acronyms that should render uppercase rather than title-cased when humanising an
+// unmapped role key. Keep this small; bias toward letting admins add explicit mappings.
+const ACRONYMS = new Set(['qa', 'po', 'pm', 'sre', 'it', 'ui', 'ux', 'api', 'cto', 'cio', 'vp']);
+
+function humaniseRoleKey(key: string): string {
+  if (!key) return '';
+  const parts = key.split('-').filter(Boolean);
+  if (parts.length === 0) return key;
+  return parts
+    .map((part, i) => {
+      if (ACRONYMS.has(part)) return part.toUpperCase();
+      if (i === 0) return part.charAt(0).toUpperCase() + part.slice(1);
+      return part;
+    })
+    .join(' ');
+}
 
 export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
   { template: '{ref:work-item:key} \u2014 {label:workItemTitle}', style: 'secondary' },
   { template: 'PR: {participant:PR Author}  \u00b7  QA: {participant:QA}  \u00b7  {time}', style: 'muted' },
 ];
 
-export const useSettingsStore = create<SettingsState>()(
-  persist(
-    (set, get) => ({
-      defaultEnvironments: DEFAULT_ENVIRONMENTS,
-      productEnvironments: [],
-      activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
+// Shared, admin-curated config now lives server-side (GET/PUT /api/settings) so it can't
+// silently revert to defaults the way the old browser-localStorage store did. The defaults
+// below are only a first-paint placeholder until load() resolves; the server is the source
+// of truth and every setter writes through to it.
+export const useSettingsStore = create<SettingsState>()((set, get) => ({
+  environments: DEFAULT_ENVIRONMENTS,
+  roles: DEFAULT_ROLES,
+  activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
+  loaded: false,
 
-      setDefaultEnvironments: (envs) => set({ defaultEnvironments: envs }),
-
-      setProductEnvironments: (product, envs) =>
-        set((state) => {
-          const existing = state.productEnvironments.filter((pe) => pe.product !== product);
-          return { productEnvironments: [...existing, { product, environments: envs }] };
-        }),
-
-      removeProductEnvironments: (product) =>
-        set((state) => ({
-          productEnvironments: state.productEnvironments.filter((pe) => pe.product !== product),
-        })),
-
-      setActivityTemplate: (lines) => set({ activityTemplate: lines }),
-
-      getEnvironments: (product) => {
-        if (product) {
-          const pe = get().productEnvironments.find((p) => p.product === product);
-          if (pe) return pe.environments;
-        }
-        return get().defaultEnvironments;
-      },
-
-      getDisplayName: (key, product) => {
-        const envs = get().getEnvironments(product);
-        const env = envs.find((e) => e.key === key);
-        if (env) return env.displayName;
-        // Fallback: check defaults too in case product config omits this env
-        const def = get().defaultEnvironments.find((e) => e.key === key);
-        return def?.displayName ?? key;
-      },
-
-      getOrderedEnvironments: (keys, product) => {
-        const envs = get().getEnvironments(product);
-        const order = envs.map((e) => e.key);
-        return [...keys].sort((a, b) => {
-          const ai = order.indexOf(a);
-          const bi = order.indexOf(b);
-          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-        });
-      },
-    }),
-    {
-      name: 'platform-settings',
-      // Migrate old shape: `environments` → `defaultEnvironments`
-      migrate: (persisted: unknown) => {
-        const state = persisted as Record<string, unknown>;
-        if (state.environments && !state.defaultEnvironments) {
-          state.defaultEnvironments = state.environments;
-          delete state.environments;
-        }
-        if (!state.productEnvironments) {
-          state.productEnvironments = [];
-        }
-        return state as SettingsState;
-      },
-      version: 1,
+  load: async () => {
+    try {
+      const s = await api.getAppSettings();
+      set({
+        environments: s.environments,
+        roles: s.roles,
+        activityTemplate: s.activityTemplate as ActivityTemplateLine[],
+        loaded: true,
+      });
+    } catch {
+      // Keep defaults visible if the endpoint is unreachable; don't wipe the UI.
+      set({ loaded: true });
     }
-  )
-);
+  },
+
+  // Setters persist the full config to the server, then update local state only on success
+  // so the in-memory store never drifts from what's saved.
+  setEnvironments: async (envs) => {
+    await api.saveAppSettings({ ...currentPayload(get), environments: envs });
+    set({ environments: envs });
+  },
+
+  setRoles: async (roles) => {
+    await api.saveAppSettings({ ...currentPayload(get), roles });
+    set({ roles });
+  },
+
+  setActivityTemplate: async (lines) => {
+    await api.saveAppSettings({ ...currentPayload(get), activityTemplate: lines });
+    set({ activityTemplate: lines });
+  },
+
+  getDisplayName: (key) => {
+    const env = get().environments.find((e) => e.key === key);
+    return env?.displayName ?? key;
+  },
+
+  getEnvironmentColor: (key) => {
+    const configured = get().environments.find((e) => e.key === key)?.color;
+    return normalizeHexColor(configured) ?? autoEnvColor(key);
+  },
+
+  // Both sides are canonicalised before matching: participant roles reach the client as the
+  // producer sent them ("QA", "triggeredBy") when role normalisation is switched off server-side,
+  // and a configured entry should still label them rather than falling through to the humaniser.
+  getRoleDisplayName: (key) => {
+    if (!key) return '';
+    const canonical = canonicaliseRoleKey(key);
+    const role = get().roles.find((r) => canonicaliseRoleKey(r.key) === canonical);
+    if (role) return role.displayName;
+    return humaniseRoleKey(canonical || key);
+  },
+
+  getOrderedEnvironments: (keys) => {
+    const order = get().environments.map((e) => e.key);
+    // Configured keys keep their settings position; unknown keys get the default name-based
+    // stage order (dev < test < staging < prod — lib/envStage.ts, mirrored server-side) so an
+    // unconfigured "prod" never sorts before "test" by alphabetical accident.
+    const rank = (k: string) => {
+      const i = order.indexOf(k);
+      return i === -1 ? 1000 + defaultStageRank(k) : i;
+    };
+    return [...keys].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  },
+}));
+
+function currentPayload(get: () => SettingsState) {
+  const { environments, roles, activityTemplate } = get();
+  return { environments, roles, activityTemplate };
+}
 
 /**
  * Resolve a template string against a DeployEvent.

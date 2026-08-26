@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell } from 'lucide-react';
+import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell, Maximize2, Minimize2 } from 'lucide-react';
 import { useConversationStore } from '@/stores/conversationStore';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { ChatCard } from '@/components/chat/ChatCard';
+import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
 
 export function ChatSidebar() {
@@ -11,10 +13,12 @@ export function ChatSidebar() {
     messages,
     context,
     sidebarOpen,
+    sidebarExpanded,
     addMessage,
     replaceLoading,
     setContext,
     setSidebarOpen,
+    toggleSidebarExpanded,
     startNewThread,
     getHistoryForAgent,
   } = useConversationStore();
@@ -25,6 +29,7 @@ export function ChatSidebar() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const isDesktop = useIsDesktop();
   const assistantName = getAssistantName();
 
   // Auto-scroll on new messages
@@ -32,16 +37,25 @@ export function ChatSidebar() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Focus input when sidebar opens
+  // Focus input when the panel opens — but not on a phone, where focusing raises the keyboard over
+  // the conversation the user just opened to read.
   useEffect(() => {
-    if (sidebarOpen) {
+    if (sidebarOpen && isDesktop) {
       setTimeout(() => inputRef.current?.focus(), 150);
     }
-  }, [sidebarOpen]);
+  }, [sidebarOpen, isDesktop]);
 
-  // Detect current page context
+  // Clear catalog-specific context when the user navigates away from a catalog form.
+  // Without this, a stale catalogSlug leaks into subsequent requests on other pages.
   const slugMatch = location.pathname.match(/^\/catalog\/([^/]+)$/);
-  const currentSlug = slugMatch?.[1] || context.catalogSlug;
+  useEffect(() => {
+    if (!slugMatch) {
+      setContext({ catalogSlug: undefined, formData: undefined, step: undefined });
+    }
+  }, [location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Derive current slug from the URL only — never fall back to stale store value.
+  const currentSlug = slugMatch?.[1];
 
   const sendMessage = async (overrideMessage?: string) => {
     const msg = overrideMessage || input.trim();
@@ -62,8 +76,11 @@ export function ChatSidebar() {
         body: JSON.stringify({
           threadId,
           message: msg,
-          catalogSlug: currentSlug || undefined,
-          formData: context.formData || undefined,
+          pageContext: {
+            currentPath: location.pathname,
+            currentSlug: currentSlug || undefined,
+            formData: currentSlug ? (context.formData || undefined) : undefined,
+          },
           history: getHistoryForAgent(),
         }),
       });
@@ -97,6 +114,7 @@ export function ChatSidebar() {
         suggestedSlug: data.suggestedSlug || undefined,
         fieldSuggestions,
         cards: data.cards || undefined,
+        a2uiSurface: data.a2uiSurface || undefined,
       });
 
       // If a service was suggested, set it in context
@@ -120,12 +138,17 @@ export function ChatSidebar() {
 
   if (!sidebarOpen) return null;
 
+  // Below `lg` the panel is the content area (Layout hides `main` while it's open), so it fills the
+  // width rather than reserving a 380px column that wouldn't fit next to anything.
+  const docked = isDesktop && !sidebarExpanded;
+
   return (
     <div
       className="flex flex-col border-l h-full"
       style={{
-        width: 380,
-        minWidth: 380,
+        ...(docked
+          ? { width: 380, minWidth: 380, flex: 'none' }
+          : { flex: 1, minWidth: 0 }),
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
       }}
@@ -157,10 +180,20 @@ export function ChatSidebar() {
           >
             <RotateCcw size={14} />
           </button>
+          {/* Expand/dock is meaningless below `lg`, where the panel is already the whole view. */}
+          <button
+            onClick={toggleSidebarExpanded}
+            className="hidden lg:block p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
+            style={{ color: 'var(--text-muted)' }}
+            title={sidebarExpanded ? 'Collapse to sidebar' : 'Expand to full view'}
+          >
+            {sidebarExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
           <button
             onClick={() => setSidebarOpen(false)}
             className="p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
             style={{ color: 'var(--text-muted)' }}
+            aria-label="Close assistant"
           >
             <X size={16} />
           </button>
@@ -197,6 +230,14 @@ export function ChatSidebar() {
                 </span>
               )}
             </div>
+
+            {/* Inline form rendered by the generate_form tool */}
+            {msg.a2uiSurface && (
+              <ChatInlineForm
+                surfaceJson={msg.a2uiSurface}
+                initialValues={msg.fieldSuggestions}
+              />
+            )}
 
             {/* Structured data cards */}
             {msg.cards && msg.cards.length > 0 && (
@@ -292,10 +333,7 @@ export function ChatSidebar() {
  * Supports: [label](url), bare /path?query URLs, and **bold**.
  */
 function MessageText({ text }: { text: string }) {
-  // Match markdown links [text](url), bare internal paths (/something...), and **bold**
-  const parts = text.split(/(\[.+?\]\(.+?\)|\*\*.+?\*\*|(?:^|\s)(\/[a-zA-Z0-9/_-]+(?:\?[^\s)]*)?))/).filter(Boolean);
-
-  // Simpler approach: use a single regex to find all special segments
+  // Use a single regex to find all special segments
   const segments: Array<{ type: 'text' | 'md-link' | 'bare-link' | 'bold'; value: string; label?: string; href?: string }> = [];
   const regex = /\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|(\/deployments\/[^\s)]+|\/catalog\/[^\s)]+|\/requests\/[^\s)]+|\/settings[^\s)]*)/g;
   let lastIndex = 0;

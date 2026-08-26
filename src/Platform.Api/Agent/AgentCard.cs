@@ -87,7 +87,7 @@ public class DeploymentCellDto
 
 public class DeploymentStateCardData
 {
-    public string Product { get; set; } = "";
+    public string? Product { get; set; }
     public List<string> Services { get; set; } = [];
     public List<string> Environments { get; set; } = [];
     public List<DeploymentCellDto> Cells { get; set; } = [];

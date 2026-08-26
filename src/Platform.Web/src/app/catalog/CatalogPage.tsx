@@ -3,6 +3,7 @@ import { CatalogGrid } from '@/components/catalog/CatalogGrid';
 import { CategoryFilter } from '@/components/catalog/CategoryFilter';
 import type { CatalogItem } from '@/lib/types';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import { LayoutGrid, Search, TrendingUp, Clock, CheckCircle, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -13,6 +14,10 @@ export function CatalogPage() {
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+
+  // Category and search are local state, not URL state, so a link here is always the whole catalog —
+  // and the title says so rather than reporting a narrowing the recipient won't get.
+  useDocumentTitle(['Service catalog']);
 
   useEffect(() => {
     api.getCatalog()

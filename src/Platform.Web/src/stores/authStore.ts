@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { clearStoredToken } from '@/lib/localAuth';
 
 export interface AuthUser {
   id: string;
@@ -7,6 +8,7 @@ export interface AuthUser {
   initials: string;
   roles: string[];
   isAdmin: boolean;
+  isQA: boolean;
 }
 
 interface AuthState {
@@ -16,6 +18,12 @@ interface AuthState {
   setUser: (user: AuthUser) => void;
   setLoading: (loading: boolean) => void;
   clear: () => void;
+  logout: () => void;
+}
+
+function hasRole(roles: string[], role: string): boolean {
+  const target = role.toLowerCase();
+  return roles.some((r) => r.toLowerCase() === target);
 }
 
 function getInitials(name: string): string {
@@ -38,7 +46,8 @@ export function createAuthUser(
     email,
     initials: getInitials(name),
     roles,
-    isAdmin: roles.includes('InfraPortal.Admin'),
+    isAdmin: hasRole(roles, 'InfraPortal.Admin'),
+    isQA: hasRole(roles, 'InfraPortal.QA'),
   };
 }
 
@@ -49,4 +58,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   setUser: (user) => set({ user, isAuthenticated: true, isLoading: false }),
   setLoading: (isLoading) => set({ isLoading }),
   clear: () => set({ user: null, isAuthenticated: false, isLoading: false }),
+  logout: () => {
+    clearStoredToken();
+    set({ user: null, isAuthenticated: false, isLoading: false });
+  },
 }));

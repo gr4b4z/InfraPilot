@@ -1,10 +1,27 @@
 name: Release Image
 
+# Builds and publishes the single-container app image for linux/amd64 and linux/arm64.
+#
+# One job per architecture, each on a runner of that architecture, then a job that stitches the two
+# into a multi-arch manifest list. The obvious alternative — one job building both platforms with
+# `platforms: linux/amd64,linux/arm64` — needs QEMU to emulate arm64, and emulating a `dotnet publish`
+# plus an `npm ci && vite build` is punishingly slow: that arrangement took ~12 minutes, almost all of
+# it the arm64 half. Native runners build both at once, in the time of the slower one.
+#
+# The per-arch jobs push by digest only (no tags). Tags belong to the manifest list the merge job
+# creates, so a partial failure can never leave `:latest` pointing at a single-architecture image.
+
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to build and release (e.g. v1.0.25)
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -14,12 +31,38 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  publish-image:
-    runs-on: ubuntu-latest
-
+  build:
+    strategy:
+      # One architecture failing shouldn't cancel the other: the logs of the healthy build are what
+      # tell you the failure is arch-specific.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            # GitHub-hosted arm64, free for public repositories. This is what replaces QEMU. Pinned to
+            # the 24.04 LTS image rather than tracking the newest one: the build only needs Docker, so
+            # there is nothing to gain from moving it and a broken runner image would break releases.
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      image: ${{ steps.image-name.outputs.value }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve release tag
+        id: tag
+        run: echo "value=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Normalize image name
+        id: image-name
+        run: echo "value=${{ env.REGISTRY }}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -33,38 +76,146 @@ jobs:
 
       - name: Extract Docker metadata
         id: image-meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
+          images: ${{ steps.image-name.outputs.value }}
 
-      - name: Build and push app image
+      - name: Build and push by digest
         id: build-image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          push: true
-          tags: ${{ steps.image-meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.image-meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.tag.outputs.value }}
+          # Digest-only push; the merge job attaches the tags. `name-canonical` makes the pushed
+          # reference the fully-qualified repository, which is what imagetools needs to find it.
+          outputs: type=image,name=${{ steps.image-name.outputs.value }},push-by-digest=true,name-canonical=true,push=true
+          # Layer cache scoped per architecture — the two builds share no layers, and one scope would
+          # have them evicting each other every release. Saves the NuGet restore, the npm install and
+          # the nginx apt install on every run after the first.
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          # Bare digest as the filename; the merge job only needs the set of them, and a sha256:… name
+          # can't collide.
+          digest='${{ steps.build-image.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: echo "value=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Normalize image name
+        id: image-name
+        run: echo "value=${{ env.REGISTRY }}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: image-digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: image-meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image-name.outputs.value }}
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.value }}
+            type=raw,value=latest
+
+      - name: Create manifest list
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ steps.image-name.outputs.value }}
+          # Newline-separated, straight from metadata-action. Passed as an env var rather than
+          # interpolated into the script so a tag can never be read as shell.
+          TAGS: ${{ steps.image-meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # Guard the arch count explicitly: download-artifact merging silently yields fewer files if a
+          # build job was skipped, and a one-arch manifest published as `latest` is the exact failure
+          # the digest split exists to prevent.
+          count=$(ls -1 | wc -l)
+          echo "Digests found: $count"
+          ls -1
+          if [ "$count" -ne 2 ]; then
+            echo "::error::Expected 2 architecture digests, found $count — refusing to publish a partial manifest."
+            exit 1
+          fi
+
+          # Built as arrays so nothing depends on word-splitting behaving.
+          tag_args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && tag_args+=(-t "$tag")
+          done <<< "$TAGS"
+
+          refs=()
+          for digest in *; do
+            refs+=("${IMAGE}@sha256:${digest}")
+          done
+
+          echo "Creating manifest: ${tag_args[*]} ${refs[*]}"
+          docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
+
+      - name: Inspect manifest list
+        id: manifest
+        env:
+          IMAGE: ${{ steps.image-name.outputs.value }}
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}:${IMAGE_TAG}"
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${IMAGE_TAG}" \
+            --format '{{ .Manifest.Digest }}')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Create or update GitHub release notes
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
-          IMAGE_NAME: ${{ env.REGISTRY }}/${{ github.repository }}
-          IMAGE_TAG: ${{ github.ref_name }}
-          IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
+          IMAGE_NAME: ${{ steps.image-name.outputs.value }}
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+          IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
         with:
           script: |
-            const tag = context.ref.replace('refs/tags/', '');
+            const tag = process.env.IMAGE_TAG;
             const body = [
               '## Container image',
               '',
               `- Tag: \`${process.env.IMAGE_NAME}:${process.env.IMAGE_TAG}\``,
               `- Latest: \`${process.env.IMAGE_NAME}:latest\``,
               `- Digest: \`${process.env.IMAGE_NAME}@${process.env.IMAGE_DIGEST}\``,
+              '- Platforms: `linux/amd64`, `linux/arm64`',
             ].join('\n');
 
             try {

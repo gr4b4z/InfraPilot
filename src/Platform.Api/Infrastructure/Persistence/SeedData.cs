@@ -1,27 +1,29 @@
+using Microsoft.AspNetCore.Identity;
 using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
 
 namespace Platform.Api.Infrastructure.Persistence;
 
 public static class SeedData
 {
-    public static async Task Seed(PlatformDbContext db, CatalogYamlLoader loader)
+    /// <summary>
+    /// Seed catalog items from YAML files. Production-safe: only adds items with new slugs.
+    /// Fresh DB: items are active. Existing DB: new items are inactive (admin enables them).
+    /// </summary>
+    public static async Task SeedCatalog(PlatformDbContext db, CatalogYamlLoader loader)
     {
-        // 1. Sync catalog from YAML
         var definitions = loader.LoadAll();
-        var catalogItems = new Dictionary<string, CatalogItem>();
+        var existingSlugs = db.CatalogItems.Select(c => c.Slug).ToHashSet();
+        var isFreshDb = existingSlugs.Count == 0;
 
         foreach (var def in definitions)
         {
-            var existing = db.CatalogItems.FirstOrDefault(c => c.Slug == def.Id);
-            if (existing is not null)
-            {
-                catalogItems[def.Id] = existing;
+            if (existingSlugs.Contains(def.Id))
                 continue;
-            }
 
             var item = new CatalogItem
             {
@@ -32,7 +34,11 @@ public static class SeedData
                 Category = def.Category,
                 Icon = def.Icon,
                 CurrentYamlHash = def.YamlHash,
-                IsActive = true,
+                IsActive = isFreshDb,
+                Inputs = def.Inputs,
+                Validations = def.Validations,
+                Approval = def.Approval,
+                Executor = def.Executor,
             };
 
             db.CatalogItems.Add(item);
@@ -43,14 +49,20 @@ public static class SeedData
                 YamlContent = def.YamlContent,
                 YamlHash = def.YamlHash,
             });
-
-            catalogItems[def.Id] = item;
         }
 
         await db.SaveChangesAsync();
+    }
 
-        // 2. Skip if requests already exist
+    /// <summary>
+    /// Seed demo requests, approvals, and audit entries. Development only.
+    /// </summary>
+    public static async Task SeedDemoData(PlatformDbContext db)
+    {
+        // Skip if requests already exist
         if (db.ServiceRequests.Any()) return;
+
+        var catalogItems = db.CatalogItems.ToDictionary(c => c.Slug);
 
         var now = DateTimeOffset.UtcNow;
 
@@ -89,7 +101,7 @@ public static class SeedData
             RequesterId = "user-2",
             RequesterName = "Anna Nowak",
             Status = RequestStatus.Completed,
-            InputsJson = """{"record_type":"CNAME","hostname":"api.somedomain.com","value":"swo-api-gateway.azurefd.net","ttl":3600,"zone":"external"}""",
+            InputsJson = """{"record_type":"CNAME","hostname":"api.acmetrix.com","value":"swo-api-gateway.azurefd.net","ttl":3600,"zone":"external"}""",
             CreatedAt = now.AddDays(-5),
             UpdatedAt = now.AddDays(-4),
         };
@@ -154,7 +166,7 @@ public static class SeedData
                 ServiceRequestId = req3.Id,
                 Attempt = 1,
                 Status = "Completed",
-                OutputJson = """{"recordId":"dns-rec-789","fqdn":"api.somedomain.com"}""",
+                OutputJson = """{"recordId":"dns-rec-789","fqdn":"api.acmetrix.com"}""",
                 StartedAt = now.AddDays(-4).AddMinutes(-2),
                 CompletedAt = now.AddDays(-4),
             },
@@ -228,6 +240,44 @@ public static class SeedData
         };
 
         db.AuditLog.AddRange(auditEntries);
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Seed local dev users for DB-based authentication. Idempotent.
+    /// </summary>
+    public static async Task SeedLocalUsers(PlatformDbContext db)
+    {
+        if (db.LocalUsers.Any()) return;
+
+        var hasher = new PasswordHasher<LocalUser>();
+
+        // user@localhost carries QA on purpose. Work-item management — queue, assignment, sign-off —
+        // is the QA role's jurisdiction (WorkItemApprovalService.GetPendingForCurrentUserAsync bails
+        // early without it), so a plain user has no work-items queue at all, and the demo data that
+        // names them as `qa-owner` would be invisible to the account it was assigned to.
+        // viewer@localhost stays role-less: that's the account for seeing the restricted view.
+        var users = new (string Email, string Password, string Name, List<string> Roles)[]
+        {
+            ("admin@localhost", "admin123", "Admin User", ["InfraPortal.Admin", "InfraPortal.User"]),
+            ("qa@localhost", "qa123", "QA Engineer", ["InfraPortal.QA", "InfraPortal.User"]),
+            ("user@localhost", "user123", "Regular User", ["InfraPortal.QA", "InfraPortal.User"]),
+            ("viewer@localhost", "viewer123", "Viewer", []),
+        };
+
+        foreach (var (email, password, name, roles) in users)
+        {
+            var user = new LocalUser
+            {
+                Id = Guid.NewGuid(),
+                Email = email,
+                Name = name,
+                Roles = roles,
+            };
+            user.PasswordHash = hasher.HashPassword(user, password);
+            db.LocalUsers.Add(user);
+        }
+
         await db.SaveChangesAsync();
     }
 

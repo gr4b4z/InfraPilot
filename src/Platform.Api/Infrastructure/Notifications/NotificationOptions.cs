@@ -3,7 +3,7 @@ namespace Platform.Api.Infrastructure.Notifications;
 public class NotificationOptions
 {
     public const string SectionName = "Notifications";
-    public string PortalBaseUrl { get; set; } = "https://platform.somedomain.com";
+    public string PortalBaseUrl { get; set; } = "https://platform.example.com";
     public ChannelsConfig Channels { get; set; } = new();
 }
 

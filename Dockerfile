@@ -8,8 +8,11 @@ RUN dotnet restore src/Platform.Api/Platform.Api.csproj
 COPY . .
 RUN dotnet publish src/Platform.Api/Platform.Api.csproj -c Release -o /app/api /p:UseAppHost=false
 
-FROM node:25-alpine AS web-build
+FROM node:26-alpine AS web-build
 WORKDIR /app
+
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 
 COPY src/Platform.Web/package.json src/Platform.Web/package-lock.json ./
 RUN npm ci
@@ -41,6 +44,11 @@ ENV APP_NAME=InfraPilot
 ENV APP_SUBTITLE="Infrastructure Portal"
 ENV ASSISTANT_NAME="InfraPilot Assistant"
 ENV PAGE_TITLE="InfraPilot | Infrastructure Portal"
+# MSAL is configured at runtime via /config.json (see start-single-container.sh).
+# Empty defaults disable MSAL and fall back to the dev user; override at deploy
+# time with -e AZURE_CLIENT_ID=... -e AZURE_TENANT_ID=... or equivalent.
+ENV AZURE_CLIENT_ID=
+ENV AZURE_TENANT_ID=
 
 EXPOSE 8080
 

@@ -3,6 +3,7 @@ using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Infrastructure.Notifications;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.BackgroundServices;
 
@@ -12,13 +13,16 @@ public class EscalationTimerService : BackgroundService
     private static readonly TimeSpan EscalationThreshold = TimeSpan.FromHours(4);
 
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IPlatformEventPublisher _events;
     private readonly ILogger<EscalationTimerService> _logger;
 
     public EscalationTimerService(
         IServiceScopeFactory scopeFactory,
+        IPlatformEventPublisher events,
         ILogger<EscalationTimerService> logger)
     {
         _scopeFactory = scopeFactory;
+        _events = events;
         _logger = logger;
     }
 
@@ -80,6 +84,12 @@ public class EscalationTimerService : BackgroundService
         }
     }
 
+    private static readonly RequestStatus[] TerminalStatuses =
+    [
+        RequestStatus.Completed, RequestStatus.Failed, RequestStatus.Rejected,
+        RequestStatus.TimedOut, RequestStatus.ManuallyResolved, RequestStatus.Cancelled,
+    ];
+
     private async Task HandleTimeout(
         PlatformDbContext db,
         RequestStateMachine stateMachine,
@@ -88,6 +98,19 @@ public class EscalationTimerService : BackgroundService
         CancellationToken ct)
     {
         var request = approval.ServiceRequest!;
+
+        // The request may have been cancelled/completed while the approval was still
+        // pending. Mark the approval as timed-out but skip the state machine transition.
+        if (TerminalStatuses.Contains(request.Status))
+        {
+            _logger.LogInformation(
+                "Skipping timeout for approval {ApprovalId} — request {RequestId} is already {Status}",
+                approval.Id, request.Id, request.Status);
+            approval.Status = "TimedOut";
+            await db.SaveChangesAsync(ct);
+            await PublishApprovalChanged(approval.Id, "timed-out");
+            return;
+        }
 
         _logger.LogWarning(
             "Approval {ApprovalId} timed out for request {RequestId}",
@@ -102,6 +125,7 @@ public class EscalationTimerService : BackgroundService
         approval.Status = "TimedOut";
 
         await db.SaveChangesAsync(ct);
+        await PublishApprovalChanged(approval.Id, "timed-out");
 
         var serviceName = request.CatalogItem?.Name ?? "Unknown Service";
 
@@ -128,6 +152,7 @@ public class EscalationTimerService : BackgroundService
         approval.Escalated = true;
 
         await db.SaveChangesAsync(ct);
+        await PublishApprovalChanged(approval.Id, "escalated");
 
         if (!string.IsNullOrEmpty(approval.EscalationGroup))
         {
@@ -141,4 +166,14 @@ public class EscalationTimerService : BackgroundService
                 $"Approval for '{serviceName}' (requested by {request.RequesterName}) is approaching its timeout and has been escalated.");
         }
     }
+
+    // Timer-driven approval mutations don't pass through ApprovalService, so its webhook-side
+    // realtime bridge never sees them — publish the refresh signal directly.
+    private Task PublishApprovalChanged(Guid approvalId, string action)
+        => _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "approval",
+            Action = action,
+            Id = approvalId.ToString(),
+        });
 }
