@@ -4,6 +4,7 @@ using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
@@ -52,6 +53,7 @@ public class RollbackService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhooks;
     private readonly IFeatureFlags _flags;
+    private readonly EnvironmentAliasResolver _environments;
     private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<RollbackService> _logger;
 
@@ -69,6 +71,7 @@ public class RollbackService
         IAuditLogger audit,
         IWebhookDispatcher webhooks,
         IFeatureFlags flags,
+        EnvironmentAliasResolver environments,
         UserPreferencesService userPrefs,
         ILogger<RollbackService> logger)
     {
@@ -79,6 +82,7 @@ public class RollbackService
         _audit = audit;
         _webhooks = webhooks;
         _flags = flags;
+        _environments = environments;
         _userPrefs = userPrefs;
         _logger = logger;
     }
@@ -154,6 +158,9 @@ public class RollbackService
 
         if (_user.IsAdmin) return (true, null);
 
+        // The policy is keyed on the canonical environment, so an alias has to resolve before the
+        // lookup â€” otherwise "prod" reads as unconfigured while a policy for "production" governs it.
+        targetEnv = await _environments.ResolveAsync(targetEnv, ct);
         var policy = await _policies.ResolveAsync(product, targetEnv, ct);
         if (policy is null)
             return (false, $"Rollbacks are not configured for '{product}' in {targetEnv} — " +
@@ -254,6 +261,7 @@ public class RollbackService
     /// </summary>
     public async Task<RollbackPreview> PreviewAsync(CreateRollbackRequestDto dto, CancellationToken ct = default)
     {
+        dto = await ResolveEnvironmentsAsync(dto, ct);
         var (allowed, reason) = await CanCreateAsync(dto.Product, dto.TargetEnv, ct);
         if (!allowed) throw new UnauthorizedAccessException(reason!);
 
@@ -266,8 +274,23 @@ public class RollbackService
     // Create
     // ---------------------------------------------------------------------
 
+    /// <summary>
+    /// Canonicalises the environments on an incoming request once, at the top, so the permission
+    /// check, the version lookups, the policy snapshot and the stored row all name the same
+    /// environment. Resolving per-use is how a rollback ends up gated by one environment's policy
+    /// and recorded against another's.
+    /// </summary>
+    private async Task<CreateRollbackRequestDto> ResolveEnvironmentsAsync(
+        CreateRollbackRequestDto dto, CancellationToken ct)
+        => dto with
+        {
+            TargetEnv = await _environments.ResolveAsync(dto.TargetEnv, ct),
+            ReferenceEnv = await _environments.ResolveFilterAsync(dto.ReferenceEnv, ct),
+        };
+
     public async Task<RollbackRequest> CreateAsync(CreateRollbackRequestDto dto, CancellationToken ct = default)
     {
+        dto = await ResolveEnvironmentsAsync(dto, ct);
         var (allowed, reason) = await CanCreateAsync(dto.Product, dto.TargetEnv, ct);
         if (!allowed) throw new UnauthorizedAccessException(reason!);
 

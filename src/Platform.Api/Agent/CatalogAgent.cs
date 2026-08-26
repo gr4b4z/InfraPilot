@@ -7,6 +7,7 @@ using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
@@ -20,6 +21,7 @@ public class CatalogAgent
     private readonly ValidationRunner _validationRunner;
     private readonly PlatformQueryService _queryService;
     private readonly PromotionService _promotionService;
+    private readonly EnvironmentAliasResolver _environments;
     private readonly IIdentityService _identity;
     private readonly PlatformDbContext _db;
     private readonly HttpClient _httpClient;
@@ -343,6 +345,7 @@ public class CatalogAgent
         ValidationRunner validationRunner,
         PlatformQueryService queryService,
         PromotionService promotionService,
+        EnvironmentAliasResolver environments,
         IIdentityService identity,
         PlatformDbContext db,
         HttpClient httpClient,
@@ -354,6 +357,7 @@ public class CatalogAgent
         _validationRunner = validationRunner;
         _queryService = queryService;
         _promotionService = promotionService;
+        _environments = environments;
         _identity = identity;
         _db = db;
         _httpClient = httpClient;
@@ -901,9 +905,9 @@ public class CatalogAgent
                     var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
                     var rawService = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
                     var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
-                    // Users naturally say "Production" / "Staging" (display-name form); the DB
-                    // stores canonical kebab-case by default. Normalise the filter before querying.
-                    var environment = NormalizeEnvFilter(args.TryGetProperty("environment", out var env) ? env.GetString() : null);
+                    // Users naturally say "Production", or whatever their own pipeline calls the
+                    // environment; the DB stores the canonical key. Resolve before querying.
+                    var environment = await ResolveEnvFilter(args.TryGetProperty("environment", out var env) ? env.GetString() : null);
                     var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd
                         : DateTimeOffset.UtcNow.Date;
@@ -945,8 +949,9 @@ public class CatalogAgent
 
                     var product = args.TryGetProperty("product", out var pr) ? pr.GetString() : null;
                     var service = args.TryGetProperty("service", out var sv) ? sv.GetString() : null;
-                    // Env in display-name form ("Production") still lands on the canonical key.
-                    var targetEnv = NormalizeEnvFilter(args.TryGetProperty("target_env", out var te) ? te.GetString() : null);
+                    // Env in display-name or alias form ("Production", "prod") still lands on the
+                    // canonical key.
+                    var targetEnv = await ResolveEnvFilter(args.TryGetProperty("target_env", out var te) ? te.GetString() : null);
                     var reference = args.TryGetProperty("reference", out var rf) ? rf.GetString() : null;
 
                     var query = new PromotionQuery(
@@ -1213,15 +1218,17 @@ public class CatalogAgent
         catch { return default; }
     }
 
-    // Normalise an environment filter string to the stored form. Accepts display-name casing
-    // ("Production", "Staging") and converts to canonical lower-kebab ("production", "staging").
-    // Safe to call when the backend normalisation policy is disabled too — the extra work is
-    // only the difference between "staging" and "staging", i.e. a no-op.
-    private static string? NormalizeEnvFilter(string? input)
+    // Resolve an environment filter string to the stored form. Two steps, because a question typed
+    // in chat gets both wrong: display-name casing ("Production", "Staging") is folded to canonical
+    // lower-kebab, then the admin's alias map is applied so "prod" or "develop" reaches whichever
+    // environment actually holds the rows. A no-op when the normalisation policy is off and nothing
+    // is aliased.
+    private async Task<string?> ResolveEnvFilter(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return null;
         var canonical = RoleNormalizer.Normalize(input);
-        return string.IsNullOrEmpty(canonical) ? input.Trim() : canonical;
+        return await _environments.ResolveFilterAsync(
+            string.IsNullOrEmpty(canonical) ? input.Trim() : canonical);
     }
 
     /// <summary>

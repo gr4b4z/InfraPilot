@@ -1,4 +1,5 @@
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 
 namespace Platform.Api.Features.Promotions;
 
@@ -84,12 +85,18 @@ public static class WorkItemEndpoints
         // more specific route first makes the intent obvious).
         group.MapGet("/{key}/detail", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             string product,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            // Sign-offs are keyed on (key, product, targetEnv), so the environment is resolved on
+            // the way in â€” here and on every route below. A decision recorded against "production"
+            // has to be the one a caller asking about "prod" sees, or the same reviewer is asked to
+            // sign the same ticket off twice.
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
             var detail = await svc.GetDetailAsync(decoded, product, targetEnv, ct);
             return detail is null
                 ? Results.NotFound(new { error = $"Work item '{decoded}' not found for {product}/{targetEnv}" })
@@ -99,12 +106,14 @@ public static class WorkItemEndpoints
         // Ticket context — authority + decision history for a specific (key, product, env).
         group.MapGet("/{key}", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             string product,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
             var ctx = await svc.GetTicketContextAsync(decoded, product, targetEnv, ct);
             return Results.Ok(ToContextDto(ctx));
         });
@@ -113,25 +122,29 @@ public static class WorkItemEndpoints
         // candidate id it was attached to so the UI can deep-link back.
         group.MapPost("/{key}/approvals", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             WorkItemDecisionRequest body,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.ApproveAsync(
-                decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
+                decoded, body.Product ?? "", env, body.Comment, ct));
         });
 
         // Raise an issue — flags a problem on the item without calling it undeliverable.
         group.MapPost("/{key}/issues", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             WorkItemDecisionRequest body,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.RaiseIssueAsync(
-                decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
+                decoded, body.Product ?? "", env, body.Comment, ct));
         });
 
         // Record a block — holds the item back. Neither this nor /issues vetoes the promotion, and
@@ -142,13 +155,15 @@ public static class WorkItemEndpoints
         // /blocks working while silently changing which decision it records.
         group.MapPost("/{key}/blocks", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             WorkItemDecisionRequest body,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.BlockAsync(
-                decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
+                decoded, body.Product ?? "", env, body.Comment, ct));
         });
 
         // ── Comment thread ────────────────────────────────────────────────
@@ -158,18 +173,21 @@ public static class WorkItemEndpoints
 
         group.MapGet("/{key}/comments", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             string product,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
             var comments = await svc.GetCommentsAsync(decoded, product, targetEnv, ct);
             return Results.Ok(new { comments = comments.Select(ToCommentDto) });
         });
 
         group.MapPost("/{key}/comments", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             WorkItemCommentRequest body,
             CancellationToken ct) =>
@@ -178,7 +196,9 @@ public static class WorkItemEndpoints
             try
             {
                 var comment = await svc.AddCommentAsync(
-                    decoded, body.Product ?? "", body.TargetEnv ?? "", body.Body ?? "", ct);
+                    decoded, body.Product ?? "",
+                    await environments.ResolveAsync(body.TargetEnv, ct),
+                    body.Body ?? "", ct);
                 return Results.Ok(ToCommentDto(comment));
             }
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }

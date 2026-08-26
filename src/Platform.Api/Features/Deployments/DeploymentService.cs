@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
@@ -16,6 +17,7 @@ public class DeploymentService
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IPromotionIngestHook _promotionHook;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
+    private readonly EnvironmentAliasResolver _environments;
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceDeletionService _serviceDeletions;
     private readonly ServiceProductOverrideService _productOverrides;
@@ -42,6 +44,7 @@ public class DeploymentService
         IWebhookDispatcher webhookDispatcher,
         IPromotionIngestHook promotionHook,
         IOptionsMonitor<NormalizationOptions> normalization,
+        EnvironmentAliasResolver environments,
         UserPreferencesService userPrefs,
         ServiceDeletionService serviceDeletions,
         ServiceProductOverrideService productOverrides,
@@ -51,6 +54,7 @@ public class DeploymentService
         _webhookDispatcher = webhookDispatcher;
         _promotionHook = promotionHook;
         _normalization = normalization;
+        _environments = environments;
         _userPrefs = userPrefs;
         _serviceDeletions = serviceDeletions;
         _productOverrides = productOverrides;
@@ -70,7 +74,7 @@ public class DeploymentService
     public async Task<DeployEvent> CreateManualEventAsync(
         CreateManualDeployRequest req, ManualDeployActor actor, CancellationToken ct = default)
     {
-        var environment = _normalization.CurrentValue.ApplyEnvironment(req.Environment);
+        var environment = await ResolveEnvironmentAsync(req.Environment, ct);
 
         // Same override as CI ingest, applied before the lookup: the event this entry is based on lives
         // under the resolved product, so asking for the requested one would report "no prior deployment"
@@ -114,6 +118,15 @@ public class DeploymentService
         return await IngestEvent(dto, ct);
     }
 
+    /// <summary>
+    /// The environment key to store for what a sender supplied: the configured casing/punctuation
+    /// canonicalisation first (<c>Normalization:Environments</c> in appsettings), then the admin's
+    /// alias map. Both are needed and in this order — the alias list is written in canonical form,
+    /// so "Pre Prod" has to become "pre-prod" before it can match an alias spelled that way.
+    /// </summary>
+    private async Task<string> ResolveEnvironmentAsync(string? sent, CancellationToken ct)
+        => await _environments.ResolveAsync(_normalization.CurrentValue.ApplyEnvironment(sent), ct);
+
     /// <summary>Outcome of an ingest: the stored event plus whether it was a replay of an existing row.</summary>
     public record IngestResult(DeployEvent Event, bool Replayed);
 
@@ -137,9 +150,10 @@ public class DeploymentService
     {
         var norm = _normalization.CurrentValue;
 
-        // Optional canonicalisation — controlled by appsettings `Normalization:*`. Off by
-        // default, so senders' original casing is preserved unless an admin opts in.
-        var environment = norm.ApplyEnvironment(dto.Environment);
+        // Casing/punctuation canonicalisation (appsettings `Normalization:*`), then the admin's
+        // alias map: a sender that calls production "prod" stores under whichever key an admin
+        // curated, so one environment does not arrive as three.
+        var environment = await ResolveEnvironmentAsync(dto.Environment, ct);
 
         // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
         // so an admin override for the service wins over what was sent (ServiceProductOverride).

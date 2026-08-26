@@ -23,7 +23,7 @@ public class DeploymentServiceDedupTests : IDisposable
 
         var webhooks = Substitute.For<IWebhookDispatcher>();
         var hook = Substitute.For<IPromotionIngestHook>();
-        _sut = new DeploymentService(_db, webhooks, hook, TestOptions.Normalization(),
+        _sut = new DeploymentService(_db, webhooks, hook, TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
             TestServiceDeletions.For(_db),
             TestProductOverrides.For(_db),
