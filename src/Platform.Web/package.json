@@ -11,7 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@azure/msal-browser": "^5.7.0",
+    "@azure/msal-browser": "^5.19.0",
     "@azure/msal-react": "^5.5.5",
     "@copilotkit/react-core": "^1.67.1",
     "@copilotkit/react-ui": "^1.66.0",
