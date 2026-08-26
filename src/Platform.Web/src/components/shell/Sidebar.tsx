@@ -15,6 +15,7 @@ import {
   GitPullRequest,
   History,
   Inbox,
+  ListTodo,
   Package,
   ScrollText,
   Undo2,
@@ -31,7 +32,7 @@ import { KeyboardHints } from './KeyboardHints';
  * Live "assigned to me" counters, resolved at render from the shared My-tasks rollup rather than
  * baked into {@link navGroups}. Same numbers the topbar bell and the My Tasks page show.
  */
-type CounterKey = 'promotionsAwaitingMe' | 'workItemsAssignedToMe';
+type CounterKey = 'promotionsAwaitingMe' | 'workItemsAssignedToMe' | 'myTasksTotal';
 
 interface NavItem {
   to: string;
@@ -61,6 +62,15 @@ interface NavGroup {
 }
 
 const navGroups: NavGroup[] = [
+  {
+    // No header: this is the "everything waiting on you" entry above the product areas, not an
+    // area of its own. Not feature-gated for the same reason the /my-tasks route isn't — it
+    // degrades to an empty page when Promotions is off.
+    label: '',
+    items: [
+      { to: '/my-tasks', label: 'My Tasks', icon: ListTodo, counter: 'myTasksTotal' },
+    ],
+  },
   {
     label: 'Catalog',
     featureFlag: FeatureFlag.ServiceCatalog,
@@ -126,7 +136,12 @@ export function Sidebar() {
   const workItemsAssignedToMe = useMyTasksStore(
     (s) => s.workItems.length + s.unassignedWorkItems.length,
   );
-  const counters: Record<CounterKey, number> = { promotionsAwaitingMe, workItemsAssignedToMe };
+  const counters: Record<CounterKey, number> = {
+    promotionsAwaitingMe,
+    workItemsAssignedToMe,
+    // Everything awaiting the user — same sum the topbar bell shows, and what /my-tasks lists.
+    myTasksTotal: promotionsAwaitingMe + workItemsAssignedToMe,
+  };
 
   const visibleGroups = navGroups
     .filter((g) => {
@@ -249,12 +264,12 @@ export function Sidebar() {
         <nav className="flex-1 py-2 px-2 overflow-y-auto">
           {visibleGroups.map((group, groupIdx) => (
             <div
-              key={group.label}
+              key={group.label || group.items[0]?.to}
               className={groupIdx > 0 ? 'mt-1 pt-1 border-t' : ''}
               style={groupIdx > 0 ? { borderColor: 'var(--border-color)' } : undefined}
             >
-              {/* Group label — hidden when collapsed */}
-              {!collapsed && (
+              {/* Group label — hidden when collapsed, absent for the headerless top group */}
+              {!collapsed && group.label && (
                 <div className="px-2 pt-2 pb-1">
                   <span
                     className="text-[10px] font-semibold uppercase tracking-wider"
