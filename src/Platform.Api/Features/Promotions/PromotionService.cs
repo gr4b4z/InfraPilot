@@ -1450,7 +1450,17 @@ public class PromotionService
     ///
     /// <para>Refused when the gate would re-satisfy itself with no approvals at all — an auto-approve
     /// policy. There is no human decision to retract there, and the candidate would flip straight back
-    /// to Approved; rejecting it is the honest action.</para>
+    /// to Approved; tightening the edge's policy first is the action that gets somewhere.</para>
+    ///
+    /// <para>That question — and the eligibility check above it — is asked of the policy in force
+    /// <i>now</i>, not the one frozen onto the candidate when it was approved. The two diverge when the
+    /// edge's gate was tightened after the candidate reached Approved, because
+    /// <see cref="RefreshPolicySnapshotsAsync"/> re-snapshots Pending candidates only. Without the
+    /// re-resolution a candidate auto-approved under an empty gate stays un-cancellable forever: the
+    /// frozen snapshot keeps answering "it would re-approve anyway" no matter how the real policy has
+    /// changed, and nothing else moves a candidate off Approved. Cancelling under a newer policy
+    /// carries that policy onto the candidate, so it lands in Pending against the gate it will
+    /// actually have to satisfy.</para>
     ///
     /// <para>Best case, this also catches the <c>promotion.approved</c> webhook inside its
     /// <see cref="ApprovedWebhookDelay"/> hold and stops it going out at all — reported back as
@@ -1477,24 +1487,52 @@ public class PromotionService
             });
         }
 
-        var snapshot = ReadSnapshot(candidate);
+        // Judged against the policy in force NOW, not the one frozen onto the candidate at approval
+        // time. The two diverge whenever the edge's gate was tightened after this candidate was
+        // approved (see ResolveCurrentPolicyAsync) — and that is precisely the case where the
+        // approval most needs taking back.
+        var policy = await ResolveCurrentPolicyAsync(candidate, ct);
 
         // Anyone the policy trusts to approve this candidate may take an approval back — including an
         // approver other than the one who made the mistake, which is the point when the mistake is
         // spotted by a colleague. Admins qualify regardless, matching the bypass escape hatch.
         if (!_currentUser.IsAdmin
-            && !await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
+            && !await _auth.IsAuthorizedForAnyRequirementAsync(policy.Current, _currentUser.Email, ct))
         {
             throw new UnauthorizedAccessException(
                 "You are not authorized to cancel the approval on this promotion");
         }
 
-        var wouldReapprove = await EvaluateGateAsync(candidate, snapshot, ct, ignoreRecordedApprovals: true);
+        var wouldReapprove = await EvaluateGateAsync(
+            candidate, policy.Current, ct, ignoreRecordedApprovals: true);
         if (wouldReapprove.Satisfied)
         {
+            // Rejecting is NOT the alternative to offer: RejectAsync only accepts Pending candidates,
+            // so pointing an Approved one at it names an action that cannot be taken. Name the thing
+            // that is actually holding the gate open instead — with the re-resolution above, undoing
+            // that makes this call succeed. The two ways to be satisfied with zero sign-offs read very
+            // differently to whoever has to act: an empty requirement tree, or the work-item
+            // auto-approve rule firing over a tree that does have approvers in it.
             throw new InvalidOperationException(
                 "This promotion's policy approves it without human sign-off, so there is no approval "
-                + "to take back — it would be approved again immediately. Reject it instead.");
+                + "to take back — it would be approved again immediately. "
+                + (policy.Current.IsAutoApprove
+                    ? $"Add an approval requirement to the {candidate.SourceEnv} → {candidate.TargetEnv} "
+                      + "policy first, then cancel."
+                    : "Its policy auto-approves once every work item is signed off; raise an issue or "
+                      + "block on a work item to reopen the gate, then cancel."));
+        }
+
+        // Cancelling under a newer policy has to carry that policy onto the candidate. Sending it
+        // back to Pending against the stale snapshot would let the next gate evaluation — the source
+        // system's next change-set refresh is enough — auto-approve it straight back under exactly
+        // the rules we just decided no longer apply.
+        if (policy.Json is not null)
+        {
+            candidate.PolicyId = policy.PolicyId;
+            candidate.ResolvedPolicyJson = policy.Json;
+            if (policy.Stored.TracksWorkItems != policy.Current.TracksWorkItems)
+                await ResyncWorkItemIndexAsync(candidate, policy.Current.TracksWorkItems, ct);
         }
 
         var approvals = await _db.PromotionApprovals
@@ -1515,9 +1553,14 @@ public class PromotionService
         var cleared = clearedNames.Count == 0
             ? "the promotion is back to pending"
             : $"the promotion is back to pending and the sign-off(s) by {string.Join(", ", clearedNames)} were cleared";
+        // Say so when the snapshot moved underneath the candidate: the reader needs to know the
+        // promotion is going back to a DIFFERENT gate than the one it was approved under.
+        var regated = policy.Json is null
+            ? ""
+            : " The promotion has been re-gated under the edge's current approval rules.";
         StageSystemComment(candidateId, trimmedComment.Length == 0
-            ? $"{Actor} cancelled the approval — {cleared}."
-            : $"{Actor} cancelled the approval — {cleared}. Reason: {trimmedComment}");
+            ? $"{Actor} cancelled the approval — {cleared}.{regated}"
+            : $"{Actor} cancelled the approval — {cleared}. Reason: {trimmedComment}{regated}");
 
         await _db.SaveChangesAsync(ct);
 
@@ -1525,7 +1568,13 @@ public class PromotionService
             "promotions", "promotion.approval.cancelled",
             _currentUser.Id, _currentUser.Name, "user",
             "PromotionCandidate", candidate.Id, null,
-            new { comment = trimmedComment.Length == 0 ? null : trimmedComment, clearedApprovals = approvals.Count });
+            new
+            {
+                comment = trimmedComment.Length == 0 ? null : trimmedComment,
+                clearedApprovals = approvals.Count,
+                repolicied = policy.Json is not null,
+                policyId = candidate.PolicyId,
+            });
 
         _logger.LogInformation(
             "Candidate {Id} approval cancelled by {Email}; {Count} approval row(s) cleared",
@@ -1571,12 +1620,13 @@ public class PromotionService
 
         try
         {
-            var snapshot = ReadSnapshot(candidate);
+            var policy = await ResolveCurrentPolicyAsync(candidate, ct);
             if (!_currentUser.IsAdmin
-                && !await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
+                && !await _auth.IsAuthorizedForAnyRequirementAsync(policy.Current, _currentUser.Email, ct))
                 return false;
 
-            var wouldReapprove = await EvaluateGateAsync(candidate, snapshot, ct, ignoreRecordedApprovals: true);
+            var wouldReapprove = await EvaluateGateAsync(
+                candidate, policy.Current, ct, ignoreRecordedApprovals: true);
             return !wouldReapprove.Satisfied;
         }
         catch (Exception ex)
@@ -2934,6 +2984,46 @@ public class PromotionService
         if (string.Equals(comment.AuthorEmail, PromotionComment.SystemAuthor, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"This entry is a system record and cannot be {verb}");
     }
+
+    /// <summary>
+    /// Resolves the policy that applies to <paramref name="candidate"/> <i>right now</i>, alongside
+    /// the snapshot frozen onto it. Cancel-approval is the one caller that has to reason about both:
+    /// the frozen snapshot records the rules the candidate was approved under, while the live
+    /// resolution records the rules its edge is governed by today.
+    ///
+    /// <para>Why they can differ: <see cref="RefreshPolicySnapshotsAsync"/> deliberately re-snapshots
+    /// only Pending candidates, so a policy tightened after a candidate reached Approved never reaches
+    /// it. That rail is right — a policy edit must not silently un-approve work — but it leaves the
+    /// frozen snapshot the wrong basis for deciding whether an approval is still worth having. A
+    /// candidate auto-approved under an empty gate, whose edge has since grown an approver
+    /// requirement, is carrying an approval no human ever gave.</para>
+    ///
+    /// <para>Falls back to the stored snapshot when no policy resolves at all (edge un-enrolled),
+    /// mirroring <see cref="RefreshPolicySnapshotsAsync"/>: deleting a gate's configuration must not
+    /// change what happens to candidates that were waiting on it.</para>
+    /// </summary>
+    /// <returns>
+    /// <c>Stored</c> is the frozen snapshot; <c>Current</c> is the live resolution (or <c>Stored</c>
+    /// again when none resolves); <c>Json</c> is <c>Current</c> serialized and ready to persist, or
+    /// <c>null</c> when the resolution is unchanged from what the candidate already carries.
+    /// </returns>
+    private async Task<CurrentPolicy> ResolveCurrentPolicyAsync(
+        PromotionCandidate candidate, CancellationToken ct)
+    {
+        var stored = ReadSnapshot(candidate);
+
+        var live = await _resolver.SnapshotAsync(
+            candidate.Product, candidate.Service, candidate.SourceEnv, candidate.TargetEnv, ct);
+        if (live.PolicyId is null) return new CurrentPolicy(stored, stored, candidate.PolicyId, null);
+
+        var json = JsonSerializer.Serialize(live, JsonOptions);
+        return json == candidate.ResolvedPolicyJson
+            ? new CurrentPolicy(stored, stored, candidate.PolicyId, null)
+            : new CurrentPolicy(stored, live, live.PolicyId, json);
+    }
+
+    private readonly record struct CurrentPolicy(
+        ResolvedPolicySnapshot Stored, ResolvedPolicySnapshot Current, Guid? PolicyId, string? Json);
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)
     {
