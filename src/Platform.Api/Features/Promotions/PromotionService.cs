@@ -2327,7 +2327,8 @@ public class PromotionService
 
             _logger.LogInformation(
                 "Candidate {Id} → Superseded: {Environment} moved on to {LandedVersion} (was carrying {Version})",
-                candidate.Id, environment, landedVersion, candidate.Version);
+                candidate.Id, LogSanitizer.Clean(environment), LogSanitizer.Clean(landedVersion),
+                LogSanitizer.Clean(candidate.Version));
         }
 
         if (supersededCandidates.Count > 0)
