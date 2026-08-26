@@ -29,7 +29,7 @@ public class DeploymentServiceRunAndLogTests : IDisposable
         _db = new PlatformDbContext(options);
         _sut = new DeploymentService(
             _db, Substitute.For<IWebhookDispatcher>(), Substitute.For<IPromotionIngestHook>(),
-            TestOptions.Normalization(),
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
             TestServiceDeletions.For(_db),
             TestProductOverrides.For(_db),

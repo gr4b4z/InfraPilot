@@ -36,7 +36,7 @@ public class ServiceDeletionTests : IDisposable
             _db,
             Substitute.For<IWebhookDispatcher>(),
             Substitute.For<IPromotionIngestHook>(),
-            TestOptions.Normalization(),
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
             _deletions,
             TestProductOverrides.For(_db),

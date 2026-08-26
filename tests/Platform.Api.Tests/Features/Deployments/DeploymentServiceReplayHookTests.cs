@@ -28,7 +28,7 @@ public class DeploymentServiceReplayHookTests : IDisposable
             .Options;
         _db = new PlatformDbContext(options);
         _sut = new DeploymentService(_db, Substitute.For<IWebhookDispatcher>(), _hook,
-            TestOptions.Normalization(), TestUserPreferences.For(_db),
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db), TestUserPreferences.For(_db),
             TestServiceDeletions.For(_db),
             TestProductOverrides.For(_db),
             Substitute.For<ILogger<DeploymentService>>());

@@ -210,6 +210,13 @@ builder.Services.AddScoped<ReleaseNoteTemplateService>();
 
 // Shared UI settings (environments, roles, activity template)
 builder.Services.AddScoped<Platform.Api.Features.Settings.AppSettingsService>();
+// Environment alias resolution, read from the configured environments above. Every path that takes
+// an environment name from a caller — deploy ingest, promotion/rollback create, release notes,
+// query filters — resolves through this so one environment stops arriving under three names.
+builder.Services.AddScoped<Platform.Api.Features.Settings.EnvironmentAliasResolver>();
+// The forward-only alias above only fixes new traffic; this moves the history that arrived under
+// the old names.
+builder.Services.AddScoped<Platform.Api.Features.Settings.EnvironmentMergeService>();
 // The configured participant-role vocabulary, read from the settings above. Gates manual
 // assignment and populates the work-item role pickers.
 builder.Services.AddScoped<Platform.Api.Features.Settings.ParticipantRoleCatalog>();

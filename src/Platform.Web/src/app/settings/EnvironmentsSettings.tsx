@@ -3,6 +3,7 @@ import { GripVertical, Plus, Trash2, Check, ChevronDown, Wand2 } from 'lucide-re
 import { useSettingsStore, type EnvironmentConfig } from '@/stores/settingsStore';
 import { ENV_COLOR_PRESETS, autoEnvColor, envColorStyles, normalizeHexColor } from '@/lib/envColor';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
+import { EnvironmentMergeSettings } from './EnvironmentMergeSettings';
 
 export function EnvironmentsSettings() {
   const { environments, setEnvironments } = useSettingsStore();
@@ -28,6 +29,9 @@ export function EnvironmentsSettings() {
         // server applies the same rule, and null means "derive from the key".
         color: normalizeHexColor(i.color),
         isProduction: i.isProduction ?? false,
+        // Blank, duplicate and self-referential entries are dropped by the server as well; doing it
+        // here too means the list the admin is left looking at is the list that was saved.
+        aliases: parseAliases(i.aliases, i.key),
       }));
     setSaving(true);
     setError(null);
@@ -43,14 +47,18 @@ export function EnvironmentsSettings() {
     }
   };
 
-  const updateItem = (index: number, field: keyof EnvironmentConfig, value: string | boolean | null) => {
+  const updateItem = (
+    index: number,
+    field: keyof EnvironmentConfig,
+    value: string | boolean | string[] | null,
+  ) => {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
   };
   const removeItem = (index: number) => {
     setItems((prev) => prev.filter((_, i) => i !== index));
     setPickerIndex(null);
   };
-  const addItem = () => setItems((prev) => [...prev, { key: '', displayName: '', color: null }]);
+  const addItem = () => setItems((prev) => [...prev, { key: '', displayName: '', color: null, aliases: [] }]);
 
   const handleDragStart = (index: number) => setDragIndex(index);
   const handleDragOver = (e: React.DragEvent, index: number) => {
@@ -68,6 +76,7 @@ export function EnvironmentsSettings() {
   const handleDragEnd = () => setDragIndex(null);
 
   return (
+    <div className="space-y-4">
     <section
       className="rounded-xl border p-5 space-y-4"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
@@ -82,21 +91,30 @@ export function EnvironmentsSettings() {
           marks production stages — the environments executive analytics report on; several may be
           marked (multi-region). With none marked, the last environment in the list is assumed.
         </p>
+        <p className="text-[13px] mt-2" style={{ color: 'var(--text-muted)' }}>
+          <strong>Aliases</strong> are the other names your pipelines use for the same environment —
+          list <code>dev, develop</code> on <code>development</code> and every deploy, promotion,
+          rollback, release note and webhook filter that arrives under any of them is stored against
+          the one environment. Comma-separated; matched ignoring case, spaces, underscores and
+          hyphens. Aliases only affect what arrives next — use <strong>Merge environments</strong>{' '}
+          below to bring existing history across.
+        </p>
       </div>
 
-      {/* Five columns — two of them free-text — need ~520px before the inputs stop being usable,
+      {/* Six columns — three of them free-text — need ~680px before the inputs stop being usable,
           so on a narrow screen the editor scrolls sideways rather than compressing. The colour
           picker escapes this container through a portal (see ColorCell) so the scroll box can't
           clip it. */}
       <div className="overflow-x-auto">
-      <div className="space-y-1.5 min-w-[520px]">
+      <div className="space-y-1.5 min-w-[680px]">
         <div
-          className="grid grid-cols-[28px_1fr_1fr_150px_44px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
+          className="grid grid-cols-[28px_1fr_1fr_1.3fr_150px_44px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
           style={{ color: 'var(--text-muted)' }}
         >
           <span />
           <span>Key</span>
           <span>Display Name</span>
+          <span title="Other names your pipelines use for this environment">Aliases</span>
           <span>Colour</span>
           <span title="Production stage">Prod</span>
           <span />
@@ -109,7 +127,7 @@ export function EnvironmentsSettings() {
             onDragStart={() => handleDragStart(index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragEnd={handleDragEnd}
-            className="grid grid-cols-[28px_1fr_1fr_150px_44px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
+            className="grid grid-cols-[28px_1fr_1fr_1.3fr_150px_44px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
             style={{ backgroundColor: dragIndex === index ? 'var(--accent-muted)' : undefined }}
           >
             <span className="cursor-grab flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
@@ -132,6 +150,22 @@ export function EnvironmentsSettings() {
               value={item.displayName}
               onChange={(e) => updateItem(index, 'displayName', e.target.value)}
               placeholder="e.g. Staging"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+            <input
+              type="text"
+              // Free text while typing, split on save: splitting on every keystroke would eat the
+              // comma the moment it is typed and make the field impossible to use.
+              value={aliasText(item.aliases)}
+              onChange={(e) => updateItem(index, 'aliases', e.target.value.split(','))}
+              placeholder="e.g. prod, production"
+              spellCheck={false}
+              title="Other names your pipelines use for this environment, comma-separated"
               className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
@@ -198,7 +232,38 @@ export function EnvironmentsSettings() {
         )}
       </div>
     </section>
+
+    <EnvironmentMergeSettings />
+    </div>
   );
+}
+
+/**
+ * The alias list as one editable string. Held as text while typing and split only on save — the
+ * separator has to survive being typed.
+ */
+function aliasText(aliases: string[] | null | undefined): string {
+  return (aliases ?? []).join(', ');
+}
+
+/**
+ * Drops blank, duplicate and self-referential entries, matching what the server does on save. A
+ * duplicate or an alias equal to its own key is redundant rather than wrong, so it is quietly
+ * removed; an alias claimed by two environments is genuinely ambiguous and the server rejects the
+ * whole save with a message naming both.
+ */
+function parseAliases(aliases: string[] | null | undefined, key: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of aliases ?? []) {
+    const alias = (raw ?? '').trim();
+    if (!alias) continue;
+    if (alias.toLowerCase() === key.trim().toLowerCase()) continue;
+    if (seen.has(alias.toLowerCase())) continue;
+    seen.add(alias.toLowerCase());
+    out.push(alias);
+  }
+  return out;
 }
 
 /**

@@ -1,4 +1,5 @@
 using Platform.Api.Features.Analytics.Models;
+using Platform.Api.Features.Settings;
 
 namespace Platform.Api.Features.Analytics;
 
@@ -18,7 +19,7 @@ public static class AnalyticsEndpoints
         // Deployment frequency: how often does (product/service/environment) change, bucketed
         // for charting, with cadence stats per series.
         group.MapGet("/deployments/frequency", async (
-            AnalyticsService analytics,
+            AnalyticsService analytics, EnvironmentAliasResolver environments,
             string? product, string? serviceName, string? environment,
             DateTimeOffset? from, DateTimeOffset? to,
             string? bucket, string? groupBy, string? tz,
@@ -37,8 +38,11 @@ public static class AnalyticsEndpoints
             if (from is not null && to is not null && from >= to)
                 return Results.BadRequest(new { error = "'from' must be before 'to'" });
 
+            // Alias-resolved so a filter typed as "prod" counts the rows stored under whichever
+            // key an admin made canonical, instead of returning an empty series.
+            var env = await environments.ResolveFilterAsync(environment, ct);
             return Results.Ok(await analytics.GetDeploymentFrequency(
-                product, serviceName, environment, from, to,
+                product, serviceName, env, from, to,
                 resolvedBucket, resolvedGroupBy, tzInfo, includeRollbacks ?? false, includeRedeploys ?? false,
                 summaryOnly ?? false, ct));
         });
@@ -46,7 +50,7 @@ public static class AnalyticsEndpoints
         // Work-item × environment matrix: which stories are deployed / awaiting where. The window
         // selects stories (any activity, or an open candidate); cells show full state.
         group.MapGet("/work-items/matrix", async (
-            AnalyticsService analytics,
+            AnalyticsService analytics, EnvironmentAliasResolver environments,
             string? product, string? environment, string? reachedEnv,
             DateTimeOffset? from, DateTimeOffset? to,
             int? limit, int? offset,
@@ -56,7 +60,10 @@ public static class AnalyticsEndpoints
                 return Results.BadRequest(new { error = "'product' is required" });
 
             return Results.Ok(await analytics.GetWorkItemMatrix(
-                product, environment, reachedEnv, from, to,
+                product,
+                await environments.ResolveFilterAsync(environment, ct),
+                await environments.ResolveFilterAsync(reachedEnv, ct),
+                from, to,
                 Math.Clamp(limit ?? 100, 1, 500), Math.Max(offset ?? 0, 0), ct));
         });
 
@@ -73,7 +80,7 @@ public static class AnalyticsEndpoints
         // Lead time: commit → first successful deploy per environment (cumulative). Reports
         // empty stats with coverage 0 — never 404 — when producers don't send occurredAt yet.
         group.MapGet("/lead-time", async (
-            AnalyticsService analytics,
+            AnalyticsService analytics, EnvironmentAliasResolver environments,
             string? product, string? serviceName, string? environment,
             DateTimeOffset? from, DateTimeOffset? to,
             string? bucket, string? tz,
@@ -85,8 +92,9 @@ public static class AnalyticsEndpoints
             if (!TryResolveTz(tz, out var tzInfo))
                 return Results.BadRequest(new { error = $"unknown timezone '{tz}'" });
 
+            var env = await environments.ResolveFilterAsync(environment, ct);
             return Results.Ok(await analytics.GetLeadTime(
-                product, serviceName, environment, from, to, resolvedBucket, tzInfo, ct));
+                product, serviceName, env, from, to, resolvedBucket, tzInfo, ct));
         });
 
         return group;

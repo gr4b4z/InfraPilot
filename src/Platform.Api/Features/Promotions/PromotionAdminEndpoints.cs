@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
@@ -50,10 +51,13 @@ public static class PromotionAdminEndpoints
         // whose version never reached the target, or only failed there, or whose target rolled back, are
         // left exactly as they are. `dryRun=true` reports without writing — run it that way first.
         group.MapPost("/candidates/reconcile-completions", async (
-            PromotionService service, ReconcileCompletionsRequest? request, CancellationToken ct) =>
+            PromotionService service, EnvironmentAliasResolver environments,
+            ReconcileCompletionsRequest? request, CancellationToken ct) =>
         {
             var result = await service.ReconcileCompletionsAsync(
-                request?.Product, request?.TargetEnv, request?.DryRun ?? false, ct);
+                request?.Product,
+                await environments.ResolveFilterAsync(request?.TargetEnv, ct),
+                request?.DryRun ?? false, ct);
 
             return Results.Ok(new
             {
@@ -154,10 +158,16 @@ public static class PromotionAdminEndpoints
 
         group.MapPost("/policies", async (
             PlatformDbContext db, PromotionService promotions, ICurrentUser user,
-            UpsertPolicyRequest request, CancellationToken ct) =>
+            EnvironmentAliasResolver environments, UpsertPolicyRequest request, CancellationToken ct) =>
         {
             var error = ValidatePolicyRequest(request);
             if (error is not null) return Results.BadRequest(new { error });
+
+            // A policy is stored against the canonical environment so it governs every name the
+            // edge answers to. An admin who types an alias here would otherwise create a second
+            // policy for an edge that already has one, and neither would ever resolve for half the
+            // traffic.
+            request = await ResolveEnvironments(request, environments, ct);
 
             // Duplicate-check: the DB-level unique index on (Product, Service, SourceEnv, TargetEnv)
             // is the hard guard; this pre-check lets us return a friendly 409 instead of a 500 from EF.
@@ -206,10 +216,12 @@ public static class PromotionAdminEndpoints
 
         group.MapPut("/policies/{id:guid}", async (
             PlatformDbContext db, PromotionService promotions, ICurrentUser user, Guid id,
-            UpsertPolicyRequest request, CancellationToken ct) =>
+            EnvironmentAliasResolver environments, UpsertPolicyRequest request, CancellationToken ct) =>
         {
             var error = ValidatePolicyRequest(request);
             if (error is not null) return Results.BadRequest(new { error });
+
+            request = await ResolveEnvironments(request, environments, ct);
 
             var policy = await db.PromotionPolicies.FirstOrDefaultAsync(p => p.Id == id);
             if (policy is null) return Results.NotFound();
@@ -380,6 +392,18 @@ public static class PromotionAdminEndpoints
             .Where(p => p.Length > 0 && seen.Add(p))
             .ToList();
     }
+
+    /// <summary>
+    /// Canonicalises both ends of the edge a policy governs. Applied after validation, so a blank
+    /// environment is still reported as missing rather than silently becoming an empty key.
+    /// </summary>
+    private static async Task<UpsertPolicyRequest> ResolveEnvironments(
+        UpsertPolicyRequest request, EnvironmentAliasResolver environments, CancellationToken ct)
+        => request with
+        {
+            SourceEnv = await environments.ResolveAsync(request.SourceEnv, ct),
+            TargetEnv = await environments.ResolveAsync(request.TargetEnv, ct),
+        };
 
     private static string? ValidatePolicyRequest(UpsertPolicyRequest r)
     {

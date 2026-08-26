@@ -3,6 +3,7 @@ import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
+import { resolveEnvKey } from '@/lib/envAlias';
 import { canonicaliseRoleKey } from '@/lib/roleKey';
 // Type-only import in envStage keeps this from being a runtime cycle.
 import { defaultStageRank } from '@/lib/envStage';
@@ -17,6 +18,11 @@ export interface EnvironmentConfig {
    *  marked (multi-region production). When none is, consumers fall back to the historical
    *  convention: the last environment in the list is the end of the pipeline. */
   isProduction?: boolean;
+  /** Other names producers call this same environment ("prod" for "production"). The server
+   *  resolves every write through them; the client resolves reads through them too, so rows that
+   *  arrived under an old name still render as the environment they actually are — until an admin
+   *  merges the history in Settings → Environments. */
+  aliases?: string[] | null;
 }
 
 export interface RoleConfig {
@@ -133,14 +139,21 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ activityTemplate: lines });
   },
 
+  // Alias-resolved, here and in the two lookups below: a deploy stored as "productions" before an
+  // admin folded it into "prod" still has to render with the "prod" label, colour and pipeline
+  // position. Otherwise configuring the alias appears to do nothing until the merge runs.
   getDisplayName: (key) => {
-    const env = get().environments.find((e) => e.key === key);
+    const canonical = resolveEnvKey(key, get().environments);
+    const env = get().environments.find((e) => e.key === canonical);
     return env?.displayName ?? key;
   },
 
   getEnvironmentColor: (key) => {
-    const configured = get().environments.find((e) => e.key === key)?.color;
-    return normalizeHexColor(configured) ?? autoEnvColor(key);
+    const canonical = resolveEnvKey(key, get().environments);
+    const configured = get().environments.find((e) => e.key === canonical)?.color;
+    // Fall back on the canonical key, not the alias: two names for one environment must derive the
+    // same colour, or the badge changes shade depending on which pipeline wrote the row.
+    return normalizeHexColor(configured) ?? autoEnvColor(canonical);
   },
 
   // Both sides are canonicalised before matching: participant roles reach the client as the
@@ -155,13 +168,18 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   getOrderedEnvironments: (keys) => {
-    const order = get().environments.map((e) => e.key);
-    // Configured keys keep their settings position; unknown keys get the default name-based
-    // stage order (dev < test < staging < prod — lib/envStage.ts, mirrored server-side) so an
+    const envs = get().environments;
+    const order = envs.map((e) => e.key);
+    // Ranked on the alias-resolved key, so an un-merged "productions" sits next to the "prod" it is
+    // an alias of instead of sorting somewhere else entirely. They stay two columns — only a merge
+    // collapses them, because every cell lookup keys on the name actually stored on the row.
+    // Configured keys keep their settings position; unknown keys get the default name-based stage
+    // order (dev < test < staging < prod — lib/envStage.ts, mirrored server-side) so an
     // unconfigured "prod" never sorts before "test" by alphabetical accident.
     const rank = (k: string) => {
-      const i = order.indexOf(k);
-      return i === -1 ? 1000 + defaultStageRank(k) : i;
+      const canonical = resolveEnvKey(k, envs);
+      const i = order.indexOf(canonical);
+      return i === -1 ? 1000 + defaultStageRank(canonical) : i;
     };
     return [...keys].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   },
