@@ -873,7 +873,8 @@ class ApiClient {
      *   - `assigned` → `assignee` must hold a role the item's own policy REQUIRES. Items whose policy
      *                  requires no role never match. This is what the "Assigned to me" tab and the
      *                  queue's person filter mean.
-     *   - `missing`  → items where at least one policy-required role has nobody in it ("Not assigned").
+     *   - `missing`  → items where at least one policy-required role has nobody in it and nobody has
+     *                  decided them yet ("Not assigned"). A decided item needs no assignment.
      * Ignored on the "decided" view.
      */
     roleRequirement?: 'assigned' | 'missing';
@@ -1517,7 +1518,11 @@ export interface PromotionAuditResponse {
   actors: { id: string; name: string; type: string; count: number }[];
 }
 
-/** One work item that has nobody in a role its promotion policy requires. */
+/**
+ * One work item that has nobody in a role its promotion policy requires. Only ever reported for an
+ * item still awaiting a decision — once somebody has signed off (or raised an issue, or blocked it)
+ * there is no assignment left to ask for, and the server stops reporting the gap.
+ */
 export interface WorkItemRoleGap {
   workItemKey: string;
   title: string | null;

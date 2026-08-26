@@ -81,6 +81,7 @@ public static class PromotionEndpoints
             var capability = await svc.CanUserApproveManyAsync(candidates);
             var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
+            var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
 
             return Results.Ok(new
             {
@@ -88,13 +89,15 @@ public static class PromotionEndpoints
                 {
                     targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
                     sourceBranches.TryGetValue((c.Product, c.Service, c.Version), out var sourceBranch);
+                    decidedWorkItems.TryGetValue((c.Product, c.TargetEnv), out var decidedKeys);
                     // sourceEventReferences carries the candidate's own net change set so the list
                     // card keeps rendering refs without a deploy-event join (D14 dropped the link).
                     return ToDto(c, capability.GetValueOrDefault(c.Id),
                         sourceEventParticipants: Array.Empty<ParticipantDto>(),
                         sourceEventReferences: c.References,
                         targetCurrentVersion: targetCurrent,
-                        sourceBranch: sourceBranch);
+                        sourceBranch: sourceBranch,
+                        decidedWorkItemKeys: decidedKeys);
                 }),
             });
         });
@@ -135,6 +138,10 @@ public static class PromotionEndpoints
                 : null;
 
             var comments = await svc.GetCommentsAsync(id);
+
+            // Work items on this edge that have already been ruled on — they report no role gap.
+            var decidedWorkItems = (await LoadDecidedWorkItemKeysAsync(db, new[] { c }))
+                .GetValueOrDefault((c.Product, c.TargetEnv));
 
             // Surface an admin bypass, if any. A bypass records NO approval row, so without this a
             // force-approved candidate would show an empty approval trail with no trace of who did it
@@ -203,7 +210,8 @@ public static class PromotionEndpoints
                     sourceEventParticipants: Array.Empty<ParticipantDto>(),
                     sourceEventReferences: c.References,
                     targetCurrentVersion: targetCurrent,
-                    sourceBranch: sourceBranch),
+                    sourceBranch: sourceBranch,
+                    decidedWorkItemKeys: decidedWorkItems),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -766,7 +774,11 @@ public static class PromotionEndpoints
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
         IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
         string? targetCurrentVersion = null,
-        string? sourceBranch = null) => new
+        string? sourceBranch = null,
+        // Work items on this edge that already carry a decision — see LoadDecidedWorkItemKeysAsync.
+        // Supplied by the read paths (list, detail), which is where completeness is rendered; the
+        // decision responses below omit it, and the UI refetches the candidate after acting anyway.
+        IReadOnlySet<string>? decidedWorkItemKeys = null) => new
     {
         id = c.Id,
         product = c.Product,
@@ -804,10 +816,11 @@ public static class PromotionEndpoints
         // (sign-off links, counts, completeness) and shows the references as change-set history only.
         tracksWorkItems = WorkItemRoleRequirements.TracksWorkItems(c),
         // Work-item completeness, derived from the candidate's own policy snapshot and participants
-        // (see WorkItemRoleRequirements) — no extra query, and automatically correct after a late
-        // work-item attachment, a reassignment, or a policy edit.
+        // (see WorkItemRoleRequirements) — automatically correct after a late work-item attachment, a
+        // reassignment, or a policy edit. Work items already signed off are not reported: the gap
+        // asks for somebody to be assigned, and a decided item is past that.
         requiredWorkItemRoles = WorkItemRoleRequirements.RequiredRoles(c),
-        workItemRoleGaps = WorkItemRoleRequirements.Evaluate(c).Select(g => new
+        workItemRoleGaps = WorkItemRoleRequirements.Evaluate(c, decidedWorkItemKeys).Select(g => new
         {
             workItemKey = g.WorkItemKey,
             title = g.Title,
@@ -886,6 +899,51 @@ public static class PromotionEndpoints
                      && !string.IsNullOrWhiteSpace(b.Branch))
             .GroupBy(b => (b.Product, b.Service, b.Version))
             .ToDictionary(g => g.Key, g => g.First().Branch);
+    }
+
+    /// <summary>
+    /// The work items already ruled on, per <c>(product, targetEnv)</c> — the grain a work-item
+    /// decision keys on, and therefore shared by every candidate on the same edge. Feeds
+    /// <see cref="WorkItemRoleRequirements.Evaluate(PromotionCandidate, IReadOnlySet{string})"/>, which
+    /// drops a decided item from the "needs attention" gaps: the affordance asks for an assignment,
+    /// and a signed-off item is past needing one.
+    ///
+    /// <para>One query for the whole candidate set, the same coarse-IN-then-reduce shape as
+    /// <see cref="LoadTargetCurrentVersionsAsync"/>. The set may name tickets these candidates don't
+    /// carry (another promotion on the same edge decided them); harmless, because the consumer only
+    /// ever looks up keys the candidate actually references.</para>
+    /// </summary>
+    private static async Task<Dictionary<(string Product, string TargetEnv), HashSet<string>>> LoadDecidedWorkItemKeysAsync(
+        PlatformDbContext db,
+        IReadOnlyCollection<PromotionCandidate> candidates,
+        CancellationToken ct = default)
+    {
+        var pairs = candidates
+            .Select(c => (c.Product, c.TargetEnv))
+            .Distinct()
+            .ToList();
+        if (pairs.Count == 0) return new();
+
+        var products = pairs.Select(p => p.Product).Distinct().ToList();
+        var envs = pairs.Select(p => p.TargetEnv).Distinct().ToList();
+
+        var decisions = await db.WorkItemApprovals
+            .AsNoTracking()
+            .Where(a => products.Contains(a.Product) && envs.Contains(a.TargetEnv))
+            .Select(a => new { a.Product, a.TargetEnv, a.WorkItemKey })
+            .Distinct()
+            .ToListAsync(ct);
+
+        var wanted = pairs.ToHashSet();
+        var result = new Dictionary<(string Product, string TargetEnv), HashSet<string>>();
+        foreach (var d in decisions)
+        {
+            if (!wanted.Contains((d.Product, d.TargetEnv))) continue;
+            if (!result.TryGetValue((d.Product, d.TargetEnv), out var keys))
+                result[(d.Product, d.TargetEnv)] = keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            keys.Add(d.WorkItemKey);
+        }
+        return result;
     }
 
     private static bool ContainsIgnoreCase(string? haystack, string needle)
