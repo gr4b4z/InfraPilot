@@ -173,7 +173,8 @@ public class DeploymentService
 
             _logger.LogInformation(
                 "Replayed deploy event {Id}: {Product}/{Service} → {Environment} v{Version} already ingested; returning existing row",
-                replayed.Id, replayed.Product, replayed.Service, replayed.Environment, replayed.Version);
+                replayed.Id, LogSanitizer.Clean(replayed.Product), LogSanitizer.Clean(replayed.Service),
+                LogSanitizer.Clean(replayed.Environment), LogSanitizer.Clean(replayed.Version));
 
             // A replay still runs the promotion hook. The original POST could only match promotions
             // that existed at the time; one created since — or one stranded by a hook failure the first
@@ -257,8 +258,9 @@ public class DeploymentService
 
         _logger.LogInformation(
             "Ingested deploy event {Id}: {Product}/{Service} → {Environment} v{Version} (prev: {PreviousVersion})",
-            deployEvent.Id, deployEvent.Product, deployEvent.Service, deployEvent.Environment,
-            deployEvent.Version, deployEvent.PreviousVersion ?? "none");
+            deployEvent.Id, LogSanitizer.Clean(deployEvent.Product), LogSanitizer.Clean(deployEvent.Service),
+            LogSanitizer.Clean(deployEvent.Environment), LogSanitizer.Clean(deployEvent.Version),
+            LogSanitizer.Clean(deployEvent.PreviousVersion ?? "none"));
 
         await _webhookDispatcher.DispatchAsync("deployment.created", new
         {
