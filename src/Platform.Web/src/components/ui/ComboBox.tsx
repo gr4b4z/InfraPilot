@@ -27,9 +27,14 @@ const inputStyle = {
  * typing is how you get to it.
  *
  * The dropdown opens on focus with every option (an empty input is the "what can I put here?"
- * moment), narrows by case-insensitive substring as the user types, and each option can carry a
- * hint line. Arrow keys walk the list, Enter takes the highlighted option, Escape closes without
- * changing anything. Blur is delayed so an option's mousedown wins over the input's blur.
+ * moment), narrows by case-insensitive substring while the user is *typing*, and each option can
+ * carry a hint line. Arrow keys walk the list, Enter takes the highlighted option, Escape closes
+ * without changing anything. Blur is delayed so an option's mousedown wins over the input's blur.
+ *
+ * Narrowing is tied to typing rather than to the current value: once a value is committed (picked,
+ * or arrived from a URL), reopening the field offers every option again. Filtering the list by the
+ * value already chosen is what makes a picker a dead end — pick "prod" and the only thing left to
+ * pick is "prod".
  */
 export function ComboBox({
   value,
@@ -54,19 +59,24 @@ export function ComboBox({
 }) {
   const [focused, setFocused] = useState(false);
   const [active, setActive] = useState(-1);
+  /**
+   * What the user has typed since the field was last focused, or null when they haven't typed —
+   * a fresh focus, or a value that was committed rather than typed. Only a non-null query narrows
+   * the list, which is what keeps a committed value from hiding its alternatives.
+   */
+  const [query, setQuery] = useState<string | null>(null);
   const listId = useId();
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const filtered = useMemo(() => {
-    const needle = value.trim().toLowerCase();
-    // An exact match means the user already picked (or typed) a known value — show the full list
-    // again so the field still works as a browser, not just a filter.
-    const matches = needle
-      ? options.filter((o) => o.value.toLowerCase().includes(needle))
-      : options;
-    return matches.length > 0 || !needle ? matches : options;
-  }, [options, value]);
+    const needle = (query ?? '').trim().toLowerCase();
+    if (!needle) return options;
+    const matches = options.filter((o) => o.value.toLowerCase().includes(needle));
+    // A query that matches nothing keeps the full list rather than an empty dropdown: the field
+    // accepts free text, so "no suggestion for this" is not an error to hide the suggestions over.
+    return matches.length > 0 ? matches : options;
+  }, [options, query]);
 
   // The highlight is an index into a list that shrinks as the user types (and as the caller's
   // options arrive), so a stored index can outlive the option it pointed at. Reading it through
@@ -83,6 +93,7 @@ export function ComboBox({
 
   const commit = (next: string) => {
     onChange(next);
+    setQuery(null);
     setFocused(false);
   };
 
@@ -102,10 +113,21 @@ export function ComboBox({
           // Typing re-narrows the list, so whatever was highlighted is no longer what the arrow
           // keys walked to.
           setActive(-1);
+          setQuery(e.target.value);
           onChange(e.target.value);
         }}
         onFocus={() => {
           setActive(-1);
+          // Focusing is the "show me what else there is" gesture, so the last query is dropped
+          // and the whole list comes back — including after a pick.
+          setQuery(null);
+          setFocused(true);
+        }}
+        // Clicking the field always reopens the list. Focus alone isn't enough: committing with
+        // Enter closes the dropdown while the input keeps the caret, and a click on an
+        // already-focused input fires no focus event — leaving the field looking dead.
+        onMouseDown={() => {
+          setQuery(null);
           setFocused(true);
         }}
         onBlur={() => {
