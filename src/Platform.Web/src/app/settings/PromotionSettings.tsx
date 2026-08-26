@@ -1076,7 +1076,8 @@ export function PromotionSettings() {
                         Every work item promoted over this edge must have somebody in each role picked
                         here. Items missing one are flagged as needing attention across the promotions
                         list, the promotion page and the work-items queue, and show up under its
-                        &ldquo;Not assigned&rdquo; tab. This does not block approval.
+                        &ldquo;Not assigned&rdquo; tab until they are signed off. This does not block
+                        approval.
                       </>
                     ) : (
                       <>Not applicable — this edge creates no work items.</>
