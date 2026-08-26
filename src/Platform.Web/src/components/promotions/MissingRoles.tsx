@@ -10,6 +10,10 @@ import { missingRolesLabel } from '@/lib/workItem';
  * into words, so the promotions list, the promotion page, the work-items queue and the work-item page
  * can't drift on what "incomplete" reads like.
  *
+ * A work item that has already been decided reports no missing roles at all: the badge asks for
+ * somebody to be assigned, and a signed-off item is past needing one. That's suppressed server-side
+ * (see the API's WorkItemRoleRequirements), so these components never have to know about decisions.
+ *
  * Deliberately warning-coloured rather than danger: the promotion is not blocked by an empty role, and
  * a red badge on every row of a newly-configured product would train people to ignore it.
  */

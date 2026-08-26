@@ -1106,7 +1106,8 @@ function CandidateCard({
                 const decision = workItemProgress?.decisions[workItemKey] ?? null;
                 const decided = decision ? decisionStyle(decision) : null;
                 // Unfilled policy-required roles win the chip's tint over the sign-off state: an item
-                // nobody owns is the thing to act on, and it can't have been signed off anyway.
+                // nobody owns is the thing to act on. The two can't actually collide — the server
+                // reports no gap once an item has been decided — so this is belt and braces.
                 const missingRoles = missingRolesByKey.get(workItemKey);
                 const needsPeople = (missingRoles?.length ?? 0) > 0;
                 // On an edge that doesn't create work items there is no detail page to open — the

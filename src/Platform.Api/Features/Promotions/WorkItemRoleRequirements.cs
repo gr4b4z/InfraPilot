@@ -22,6 +22,15 @@ namespace Platform.Api.Features.Promotions;
 /// <para>This is deliberately not part of the approval gate. It records data completeness, not
 /// authority; the blocking work-item condition remains
 /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>.</para>
+///
+/// <para><b>A decided work item is never incomplete.</b> The whole affordance asks for an
+/// assignment, and once a reviewer has recorded a decision on the item (any
+/// <see cref="WorkItemApproval"/> — approved, an issue, or a block) there is nobody left to put on
+/// it: the sign-off it was waiting for has happened. So every surface reads its completeness through
+/// a decided check — <see cref="MissingRoles(IReadOnlyList{ParticipantDto}, IReadOnlyList{string}, bool)"/>
+/// and the <see cref="Evaluate(PromotionCandidate, IReadOnlySet{string})"/> overload — and a signed-off
+/// ticket drops out of the "Not assigned" queue instead of sitting there with a warning nobody can
+/// clear.</para>
 /// </summary>
 public static class WorkItemRoleRequirements
 {
@@ -175,11 +184,33 @@ public static class WorkItemRoleRequirements
         => MissingRoles(ResolveParticipants(candidate, workItemKey), requiredRoles);
 
     /// <summary>
+    /// <see cref="MissingRoles(IReadOnlyList{ParticipantDto}, IReadOnlyList{string})"/> with the
+    /// decided rule applied: a work item somebody has already ruled on has no unfilled roles to
+    /// report, whatever its participants say (see the type summary). Every read surface goes through
+    /// this overload so none of them can drift back into warning about a settled ticket.
+    /// </summary>
+    public static List<string> MissingRoles(
+        IReadOnlyList<ParticipantDto> participants,
+        IReadOnlyList<string> requiredRoles,
+        bool decided)
+        => decided ? new() : MissingRoles(participants, requiredRoles);
+
+    /// <summary>
     /// Every work item on the candidate that is missing at least one required role, deduped on key in
     /// reference order. Empty when the policy declares no required roles — which is the common case, so
     /// callers can render the whole "needs attention" affordance off <c>Count == 0</c>.
     /// </summary>
     public static List<WorkItemRoleGap> Evaluate(PromotionCandidate candidate)
+        => Evaluate(candidate, decidedWorkItemKeys: null);
+
+    /// <summary>
+    /// <see cref="Evaluate(PromotionCandidate)"/> with the decided rule applied:
+    /// <paramref name="decidedWorkItemKeys"/> are the candidate's work items that already carry a
+    /// decision, and they never appear as gaps (see the type summary). Callers that can see the
+    /// decisions pass the set; the ones that can't pass <c>null</c> and get the raw completeness.
+    /// </summary>
+    public static List<WorkItemRoleGap> Evaluate(
+        PromotionCandidate candidate, IReadOnlySet<string>? decidedWorkItemKeys)
     {
         var required = RequiredRoles(candidate);
         if (required.Count == 0) return new();
@@ -196,6 +227,9 @@ public static class WorkItemRoleRequirements
             if (!string.Equals(reference.Type, "work-item", StringComparison.OrdinalIgnoreCase)) continue;
             var key = (reference.Key ?? "").Trim();
             if (key.Length == 0 || !seen.Add(key)) continue;
+            // Already ruled on ⇒ nothing left to assign. Checked before the participant walk so a
+            // signed-off bundle costs nothing to evaluate.
+            if (decidedWorkItemKeys is not null && decidedWorkItemKeys.Contains(key)) continue;
 
             var participants = ResolveParticipants(references, promotionParticipants, key);
             var missing = MissingRoles(participants, required);
