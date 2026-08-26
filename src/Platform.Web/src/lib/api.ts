@@ -1104,6 +1104,37 @@ class ApiClient {
     });
   }
 
+  /**
+   * Every environment name the stored data uses, with what hangs off each. Admin-only: it is the
+   * input to a merge decision, and the row counts are what an admin needs before folding one name
+   * into another.
+   */
+  listEnvironmentUsage() {
+    return this.request<EnvironmentUsage[]>('/settings/environments/usage');
+  }
+
+  /**
+   * Aliases only fix what arrives next. These two move the history that arrived under the old
+   * names: preview counts what would move, merge moves it. Same payload from both, so the
+   * confirmation the admin approved is the report they get back.
+   *
+   * `recordAliases` also records the merged names as aliases of the target and drops them as
+   * environments of their own — without it the next pipeline run undoes the merge.
+   */
+  previewEnvironmentMerge(body: { into: string; from: string[]; recordAliases?: boolean }) {
+    return this.request<EnvironmentMergePlan>('/settings/environments/merge/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  mergeEnvironments(body: { into: string; from: string[]; recordAliases?: boolean }) {
+    return this.request<EnvironmentMergePlan>('/settings/environments/merge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
   // ── The signed-in user's own preferences ───────────────────────────────────
 
   /**
@@ -1249,10 +1280,75 @@ export interface UserPreferencesPayload {
 }
 
 export interface AppSettingsPayload {
-  /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values. */
-  environments: { key: string; displayName: string; color?: string | null; isProduction?: boolean }[];
+  /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values.
+   *  `aliases` are the other names producers call this same environment; every write path resolves
+   *  through them, so one environment stops arriving under three names. */
+  environments: {
+    key: string;
+    displayName: string;
+    color?: string | null;
+    isProduction?: boolean;
+    aliases?: string[] | null;
+  }[];
   roles: { key: string; displayName: string }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
+}
+
+/**
+ * One environment name as the stored data actually uses it — as opposed to the ones an admin
+ * curated. This is what makes duplicates visible: three rows for "dev", "develop" and
+ * "development", each with its own deploy count.
+ *
+ * `resolvesTo` non-null means an alias already redirects this name, but its history has not been
+ * merged yet: new deploys land on the canonical key while these rows stay behind.
+ */
+export interface EnvironmentUsage {
+  key: string;
+  deployments: number;
+  promotions: number;
+  releaseNotes: number;
+  lastDeployedAt: string | null;
+  configured: boolean;
+  resolvesTo: string | null;
+}
+
+/**
+ * What merging environments involves. Identical shape from the preview and the apply — `applied` is
+ * what tells them apart.
+ *
+ * `moved` is the headline ("did this do anything"); `leftBehind` is the honest caveat. Rows are left
+ * behind when they would collide with one the target already has — a promotion policy for the same
+ * edge, a ticket sign-off from the same approver, a rollback policy for the same product — or when
+ * a promotion's two ends would become the same environment (`degenerateEdges`).
+ */
+export interface EnvironmentMergePlan {
+  into: string;
+  sources: string[];
+  aliasesRecorded: boolean;
+  /** Sources that were configured environments in their own right and were removed from the list. */
+  removedEnvironments: string[];
+  applied: boolean;
+  moved: number;
+  leftBehind: number;
+  counts: {
+    deployments: number;
+    promotionPolicies: number;
+    promotionPolicyConflicts: number;
+    promotionCandidates: number;
+    openPromotionCandidates: number;
+    promotionWorkItems: number;
+    workItemApprovals: number;
+    workItemApprovalConflicts: number;
+    workItemComments: number;
+    releaseNotes: number;
+    releaseNoteTemplates: number;
+    releaseNoteTemplateConflicts: number;
+    rollbackRequests: number;
+    rollbackPolicies: number;
+    rollbackPolicyConflicts: number;
+    webhookSubscriptions: number;
+    degenerateEdges: number;
+  };
 }
 
 export interface RawPreview {

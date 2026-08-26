@@ -33,6 +33,7 @@ public static class PromotionEndpoints
         group.MapGet("/", async (
             PromotionService svc,
             PlatformDbContext db,
+            EnvironmentAliasResolver environments,
             string? status,
             string? product,
             string? service,
@@ -57,7 +58,9 @@ public static class PromotionEndpoints
                 Status: parsed,
                 Product: product,
                 Service: service,
-                TargetEnv: targetEnv,
+                // Alias-resolved so filtering by "prod" finds the candidates stored against
+                // whichever key an admin made canonical.
+                TargetEnv: await environments.ResolveFilterAsync(targetEnv),
                 Limit: limit is > 0 ? limit.Value : defaultLimit);
 
             var candidates = await svc.GetAsync(query);

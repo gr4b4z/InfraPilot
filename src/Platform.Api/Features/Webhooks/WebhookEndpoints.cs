@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
@@ -277,6 +278,7 @@ public static class WebhookEndpoints
     private static async Task<IResult> CreateSubscription(
         PlatformDbContext db,
         IDataProtectionProvider dataProtection,
+        EnvironmentAliasResolver environments,
         CreateWebhookRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Url))
@@ -309,7 +311,10 @@ public static class WebhookEndpoints
             EncryptedSecret = isMessaging ? "" : protector.Protect(rawSecret),
             EventsJson = JsonSerializer.Serialize(request.Events),
             FilterProduct = request.Filters?.Product,
-            FilterEnvironment = request.Filters?.Environment,
+            // Alias-resolved: the filter is matched against the environment stored on the event, so a
+            // subscription written for "prod" has to hold the canonical key or it silently matches
+            // nothing â€” a webhook that never fires is the hardest kind of misconfiguration to spot.
+            FilterEnvironment = await environments.ResolveFilterAsync(request.Filters?.Environment),
             TargetType = targetType,
             SignatureHeader = NormalizeSignatureHeader(targetType, request.SignatureHeader),
             GitHubEventType = NormalizeGitHubEventType(targetType, request.GitHubEventType),
@@ -446,7 +451,8 @@ public static class WebhookEndpoints
     }
 
     private static async Task<IResult> UpdateSubscription(
-        PlatformDbContext db, IDataProtectionProvider dataProtection, Guid id, UpdateWebhookRequest request)
+        PlatformDbContext db, IDataProtectionProvider dataProtection,
+        EnvironmentAliasResolver environments, Guid id, UpdateWebhookRequest request)
     {
         var sub = await db.WebhookSubscriptions.FindAsync(id);
         if (sub is null) return Results.NotFound();
@@ -478,7 +484,7 @@ public static class WebhookEndpoints
         if (request.Filters is not null)
         {
             sub.FilterProduct = request.Filters.Product;
-            sub.FilterEnvironment = request.Filters.Environment;
+            sub.FilterEnvironment = await environments.ResolveFilterAsync(request.Filters.Environment);
         }
         if (request.SignatureHeader is not null)
             sub.SignatureHeader = NormalizeSignatureHeader(sub.TargetType, request.SignatureHeader);

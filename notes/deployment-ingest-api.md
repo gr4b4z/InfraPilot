@@ -193,6 +193,39 @@ By default the platform canonicalises role and environment strings to **kebab-ca
 
 Set either field to `null` to preserve sender casing exactly as sent. Read-time matching (e.g. participant-role and environment lookups) always normalises before comparing, so matching works regardless of sender casing.
 
+### Environment aliases
+
+Casing is only half the problem: different pipelines call the *same* environment different things — `dev` / `develop` / `development`, `prod` / `production` / `prd`. Left alone that is three environments on the deployment matrix, three columns in analytics, and three separate promotion edges to configure.
+
+An admin lists the variants as **aliases** of the one real environment in **Settings → Environments**, and the server resolves every environment name a caller sends through them before storing it. So with `production` and `productions` listed as aliases of `prod`:
+
+```json
+{ "environment": "productions", ... }   // stored as "prod"
+```
+
+This applies to every path that takes an environment from a caller — deploy ingest, manual deploys, external promotion create, promotion-from-build, rollback create/preview, release-note generation, webhook subscription filters, and the promotion/rollback policy editors — and to the environment **filter** on the read endpoints, so a pipeline that posts to `productions` and queries `?environment=productions` gets back the rows it just wrote.
+
+An environment that is not configured at all passes through unchanged: curating the list is never a precondition for ingesting.
+
+Aliases are **forward-only** — they fix what arrives next and leave rows that arrived under the old name where they are. **Settings → Environments → Merge environments** is the second, preview-then-apply step that moves that history (deployments, promotions and their ticket index, ticket sign-offs and comments, release notes and per-environment templates, rollback requests, promotion and rollback policies, webhook filters), records the merged names as aliases, and removes them from the environment list. Rows that would collide with one the target already has — a policy for the same edge, a sign-off from the same approver — are left in place and reported in the response.
+
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/settings/environments/usage` | GET | Every environment name the stored data actually uses, with deploy/promotion/release-note counts and whether an alias already redirects it. Admin only. |
+| `/api/settings/environments/merge/preview` | POST | Counts what a merge would move. Changes nothing. Admin only. |
+| `/api/settings/environments/merge` | POST | Performs the merge. Admin only. |
+
+```json
+// POST /api/settings/environments/merge
+{
+  "into": "prod",
+  "from": ["production", "productions"],
+  "recordAliases": true
+}
+```
+
+`recordAliases` defaults to `true`. Without it the merge is a one-off tidy-up that the next run of a pipeline still posting the old name undoes.
+
 ## Response
 
 ### 201 Created

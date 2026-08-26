@@ -1,5 +1,6 @@
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Rollbacks.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Users;
 
 namespace Platform.Api.Features.Rollbacks;
@@ -16,7 +17,9 @@ public static class RollbackEndpoints
     public static RouteGroupBuilder MapRollbackEndpoints(this RouteGroupBuilder group)
     {
         // List requests with filters + per-request approve/override capabilities.
-        group.MapGet("/", async (RollbackService svc, string? status, string? product, string? targetEnv, int? limit) =>
+        group.MapGet("/", async (
+            RollbackService svc, EnvironmentAliasResolver environments,
+            string? status, string? product, string? targetEnv, int? limit, CancellationToken ct) =>
         {
             RollbackStatus? parsed = null;
             if (!string.IsNullOrEmpty(status))
@@ -25,7 +28,8 @@ public static class RollbackEndpoints
                     return Results.BadRequest(new { error = $"Unknown status '{status}'" });
                 parsed = s;
             }
-            var requests = await svc.GetAsync(new RollbackQuery(parsed, product, targetEnv, limit ?? 200));
+            var env = await environments.ResolveFilterAsync(targetEnv, ct);
+            var requests = await svc.GetAsync(new RollbackQuery(parsed, product, env, limit ?? 200));
             var caps = new Dictionary<Guid, (bool Approve, bool Override)>();
             foreach (var r in requests)
                 caps[r.Id] = (await svc.CanUserApproveAsync(r), await svc.CanUserOverrideAsync(r));
