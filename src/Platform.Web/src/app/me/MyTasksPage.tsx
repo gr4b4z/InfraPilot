@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -115,6 +115,58 @@ export function MyTasksPage() {
   // depth, not the recipient's. The bell badge is where a live count belongs.
   useDocumentTitle(['My tasks']);
 
+  // One entry per group, in the order they're read. Driving both the jump nav and the sections from
+  // the same array keeps the pill labels, counts and anchors from drifting apart.
+  const sections: SectionSpec[] = [
+    {
+      id: 'tasks-promotions',
+      icon: GitPullRequest,
+      title: 'Promotions awaiting your approval',
+      navLabel: 'Promotions',
+      accent: 'var(--warning)',
+      accentBg: 'var(--warning-bg)',
+      count: visiblePromotions.length,
+      allLink: { to: '/promotions', label: 'Open promotions' },
+      children: visiblePromotions.map((c, index) => (
+        <PromotionTaskRow key={c.id} index={index} candidate={c} />
+      )),
+    },
+    {
+      id: 'tasks-assigned',
+      icon: Ticket,
+      title: 'Work items assigned to you',
+      navLabel: 'Assigned to me',
+      accent: 'var(--accent)',
+      accentBg: 'var(--accent-bg)',
+      count: visibleWorkItems.length,
+      allLink: { to: '/me/work-items', label: 'Open work items queue' },
+      children: visibleWorkItems.map((t, index) => (
+        <WorkItemTaskRow key={`${t.workItemKey}-${t.candidateId}`} index={index} ticket={t} />
+      )),
+    },
+    // Work items whose promotion policy asks for a role nobody is in. Last of the three: the action
+    // is to find an owner rather than to decide something, so it shouldn't sit above the items
+    // already waiting on this user.
+    {
+      id: 'tasks-unassigned',
+      icon: UserPlus,
+      title: 'Work items with nobody assigned',
+      navLabel: 'Nobody assigned',
+      accent: 'var(--warning)',
+      accentBg: 'var(--warning-bg)',
+      count: visibleUnassigned.length,
+      allLink: { to: '/me/work-items', label: 'Open work items queue' },
+      children: visibleUnassigned.map((t, index) => (
+        <WorkItemTaskRow
+          key={`${t.workItemKey}-${t.candidateId}`}
+          index={index}
+          ticket={t}
+          variant="unassigned"
+        />
+      )),
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -182,52 +234,21 @@ export function MyTasksPage() {
       ) : total === 0 ? (
         <AllCaughtUp />
       ) : (
-        <div className="space-y-8">
-          <Section
-            icon={GitPullRequest}
-            title="Promotions awaiting your approval"
-            count={visiblePromotions.length}
-            allLink={{ to: '/promotions', label: 'Open promotions' }}
-          >
-            {visiblePromotions.map((c, index) => (
-              <PromotionTaskRow key={c.id} index={index} candidate={c} />
+        <>
+          <SectionNav
+            sections={sections.map(({ id, icon, navLabel, count }) => ({
+              id,
+              icon,
+              navLabel,
+              count,
+            }))}
+          />
+          <div className="space-y-6">
+            {sections.map((section) => (
+              <Section key={section.id} {...section} />
             ))}
-          </Section>
-
-          <Section
-            icon={Ticket}
-            title="Work items assigned to you"
-            count={visibleWorkItems.length}
-            allLink={{ to: '/me/work-items', label: 'Open work items queue' }}
-          >
-            {visibleWorkItems.map((t, index) => (
-              <WorkItemTaskRow
-                key={`${t.workItemKey}-${t.candidateId}`}
-                index={index}
-                ticket={t}
-              />
-            ))}
-          </Section>
-
-          {/* Work items whose promotion policy asks for a role nobody is in. Last of the three: the
-             action is to find an owner rather than to decide something, so it shouldn't sit above the
-             items already waiting on this user. */}
-          <Section
-            icon={UserPlus}
-            title="Work items with nobody assigned"
-            count={visibleUnassigned.length}
-            allLink={{ to: '/me/work-items', label: 'Open work items queue' }}
-          >
-            {visibleUnassigned.map((t, index) => (
-              <WorkItemTaskRow
-                key={`${t.workItemKey}-${t.candidateId}`}
-                index={index}
-                ticket={t}
-                variant="unassigned"
-              />
-            ))}
-          </Section>
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -256,35 +277,178 @@ function AllCaughtUp() {
   );
 }
 
-/**
- * One task group. Rendered even when empty (with a one-line "nothing here") so the page keeps a
- * stable shape — a section that vanishes when it empties makes the remaining one look like the
- * whole story.
- */
-function Section({
-  icon: Icon,
-  title,
-  count,
-  allLink,
-  children,
-}: {
+type SectionSpec = {
+  /** DOM id of the section, and the anchor the jump nav scrolls to. */
+  id: string;
   icon: typeof Ticket;
+  /** Full heading, spelled out for the section itself. */
   title: string;
+  /** Short form for the jump nav, where three full headings wouldn't fit on one line. */
+  navLabel: string;
+  /** Hue tying the section header's icon chip to the stripe on its rows. */
+  accent: string;
+  accentBg: string;
   count: number;
   allLink: { to: string; label: string };
   children: React.ReactNode;
+};
+
+/**
+ * How far below the scrollport's top edge a section should land when jumped to — enough to clear
+ * the sticky nav, which would otherwise sit on top of the heading you just asked to see.
+ */
+const SECTION_SCROLL_MARGIN = 64;
+
+/**
+ * Sticky row of pills, one per section, that scrolls its group into view. The page is three long
+ * lists deep, so the group you want is usually off-screen; the nav doubles as the at-a-glance "how
+ * much of each kind is waiting" summary, and marks which group you're currently inside.
+ */
+function SectionNav({
+  sections,
+}: {
+  sections: Array<Pick<SectionSpec, 'id' | 'icon' | 'navLabel' | 'count'>>;
 }) {
+  const active = useActiveSection(sections.map((s) => s.id));
+
+  const jumpTo = useCallback((id: string) => {
+    const target = document.getElementById(id);
+    if (!target) return;
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+  }, []);
+
   return (
-    <section>
-      <div className="flex items-center justify-between gap-3 mb-3">
+    <nav
+      aria-label="Task sections"
+      // Spans the page gutters so the bar reads as a full-width toolbar once it sticks, and so rows
+      // scrolling underneath are covered rather than peeking out at the edges. z-10 keeps it under
+      // the header's environment dropdown (z-20), which opens downward across the stuck bar.
+      className="sticky top-0 z-10 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-2.5 border-b overflow-x-auto"
+      style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+    >
+      <div className="flex items-center gap-2 w-max">
+        {sections.map(({ id, icon: Icon, navLabel, count }) => {
+          const isActive = id === active;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => jumpTo(id)}
+              aria-current={isActive ? 'true' : undefined}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors"
+              style={{
+                borderColor: isActive ? 'var(--accent)' : 'var(--border-color)',
+                backgroundColor: isActive ? 'var(--accent-bg)' : 'var(--bg-primary)',
+                color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+            >
+              <Icon size={13} />
+              {navLabel}
+              <span
+                className="px-1.5 rounded-full text-[11px] font-semibold"
+                style={{
+                  backgroundColor: count > 0 ? 'var(--warning-bg)' : 'var(--bg-secondary)',
+                  color: count > 0 ? 'var(--warning)' : 'var(--text-muted)',
+                }}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+/**
+ * Which section the reader is currently inside: the last one whose top edge has passed under the
+ * sticky nav. Measured off the shell's scroll container rather than the window, since that's what
+ * actually scrolls.
+ */
+function useActiveSection(ids: string[]) {
+  const key = ids.join('|');
+  const [active, setActive] = useState(ids[0] ?? '');
+
+  useEffect(() => {
+    const scroller = document.getElementById('main-content');
+    if (!scroller) return;
+    const sectionIds = key.split('|');
+    let frame = 0;
+
+    const measure = () => {
+      frame = 0;
+      const line = scroller.getBoundingClientRect().top + SECTION_SCROLL_MARGIN + 4;
+      let current = sectionIds[0];
+      for (const id of sectionIds) {
+        const top = document.getElementById(id)?.getBoundingClientRect().top;
+        if (top !== undefined && top <= line) current = id;
+      }
+      // At the bottom of the page nothing further can cross the line, so a short last section would
+      // otherwise never light up even while it's the only one on screen.
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4) {
+        current = sectionIds[sectionIds.length - 1];
+      }
+      setActive(current);
+    };
+    // One measurement per frame: scroll fires far faster than the pills can change, and each pass
+    // reads layout back out of the DOM.
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+
+    measure();
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      scroller.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [key]);
+
+  return active;
+}
+
+/**
+ * One task group, framed as a panel: a titled header bar over a recessed well holding the rows.
+ * Three flat runs of near-identical cards read as one long list, so the boundary has to be drawn
+ * rather than implied by a small muted label.
+ *
+ * Rendered even when empty (with a one-line "nothing here") so the page keeps a stable shape — a
+ * section that vanishes when it empties makes the remaining one look like the whole story.
+ */
+function Section({ id, icon: Icon, title, accent, accentBg, count, allLink, children }: SectionSpec) {
+  return (
+    <section
+      id={id}
+      aria-labelledby={`${id}-heading`}
+      className="rounded-xl border overflow-hidden"
+      style={{
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-secondary)',
+        scrollMarginTop: SECTION_SCROLL_MARGIN,
+      }}
+    >
+      <div
+        className="flex items-center justify-between gap-3 px-4 py-3 border-b"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+      >
         <h2
-          className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
+          id={`${id}-heading`}
+          className="flex items-center gap-2.5 text-[13px] font-semibold min-w-0"
+          style={{ color: 'var(--text-primary)' }}
         >
-          <Icon size={13} />
-          {title}
           <span
-            className="px-1.5 rounded-full text-[11px] font-semibold normal-case tracking-normal"
+            className="shrink-0 w-7 h-7 rounded-lg inline-flex items-center justify-center"
+            style={{ backgroundColor: accentBg, color: accent }}
+          >
+            <Icon size={15} />
+          </span>
+          <span className="truncate">{title}</span>
+          <span
+            className="shrink-0 px-2 rounded-full text-[11px] font-semibold"
             style={{
               backgroundColor: count > 0 ? 'var(--warning-bg)' : 'var(--bg-secondary)',
               color: count > 0 ? 'var(--warning)' : 'var(--text-muted)',
@@ -295,30 +459,25 @@ function Section({
         </h2>
         <Link
           to={allLink.to}
-          className="text-[12px] font-medium transition-opacity hover:opacity-80"
+          className="shrink-0 text-[12px] font-medium transition-opacity hover:opacity-80"
           style={{ color: 'var(--accent)' }}
         >
           {allLink.label}
         </Link>
       </div>
-      {count === 0 ? (
-        <p
-          className="rounded-xl border px-4 py-3 text-[12px]"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-muted)',
-          }}
-        >
-          Nothing here right now.
-        </p>
-      ) : (
-        // Each section is its own arrow-key list: the two groups are separate concerns, and running
-        // one cursor across both would let ArrowDown walk from a promotion into a work item.
-        <KeyboardList className="space-y-2" count={count} ariaLabel={title}>
-          {children}
-        </KeyboardList>
-      )}
+      <div className="p-3">
+        {count === 0 ? (
+          <p className="px-1 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            Nothing here right now.
+          </p>
+        ) : (
+          // Each section is its own arrow-key list: the groups are separate concerns, and running
+          // one cursor across them would let ArrowDown walk from a promotion into a work item.
+          <KeyboardList className="space-y-2" count={count} ariaLabel={title}>
+            {children}
+          </KeyboardList>
+        )}
+      </div>
     </section>
   );
 }
