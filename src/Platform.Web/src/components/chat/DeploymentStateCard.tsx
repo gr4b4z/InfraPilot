@@ -11,7 +11,7 @@ interface CellData {
 }
 
 interface StateData {
-  product: string;
+  product?: string | null;
   services: string[];
   environments: string[];
   cells: CellData[];
@@ -51,13 +51,15 @@ export function DeploymentStateCard({ title, data }: Props) {
           style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
         >
           <span>{title}</span>
-          <button
-            onClick={() => navigate(`/deployments/${d.product}`)}
-            className="flex items-center gap-1 hover:opacity-80 transition-opacity"
-            style={{ color: 'var(--accent)' }}
-          >
-            Open <ExternalLink size={11} />
-          </button>
+          {d.product && (
+            <button
+              onClick={() => navigate(`/deployments/${d.product}`)}
+              className="flex items-center gap-1 hover:opacity-80 transition-opacity"
+              style={{ color: 'var(--accent)' }}
+            >
+              Open <ExternalLink size={11} />
+            </button>
+          )}
         </div>
       )}
       <div className="overflow-x-auto">

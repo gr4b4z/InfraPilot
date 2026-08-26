@@ -51,4 +51,19 @@ public class EntraIdGraphService : IIdentityService
             .ToList()
             .AsReadOnly();
     }
+
+    public async Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
+    {
+        var groups = await _graphClient.Groups.GetAsync(r =>
+        {
+            r.QueryParameters.Filter = $"startsWith(displayName, '{query}')";
+            r.QueryParameters.Top = 10;
+        }, cancellationToken: ct);
+
+        return (groups?.Value ?? [])
+            .Where(g => g.Id is not null)
+            .Select(g => new GroupInfo(g.Id!, g.DisplayName ?? ""))
+            .ToList()
+            .AsReadOnly();
+    }
 }

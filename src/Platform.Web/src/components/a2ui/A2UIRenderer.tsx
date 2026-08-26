@@ -50,6 +50,8 @@ export interface ComponentProps {
   error?: string;
   onChange: (value: unknown) => void;
   readOnly?: boolean;
+  /** All sibling form values — used by dynamic-source components like ResourcePicker. */
+  allValues?: Record<string, unknown>;
 }
 
 export function A2UIRenderer({ components, values, errors, onChange, onValidate, readOnly }: Props) {
@@ -83,6 +85,7 @@ export function A2UIRenderer({ components, values, errors, onChange, onValidate,
             error={errors[comp.dataKey]}
             onChange={(v) => onChange(comp.dataKey, v)}
             readOnly={readOnly}
+            allValues={values}
           />
         );
       })}

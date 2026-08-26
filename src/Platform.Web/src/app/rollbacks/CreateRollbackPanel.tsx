@@ -1,0 +1,533 @@
+import { useEffect, useMemo, useState } from 'react';
+import { api } from '@/lib/api';
+import type { RollbackInput, RollbackPreview, RollbackMode, DeploymentVersion } from '@/lib/api';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
+import { X, ArrowRight, Loader2, AlertTriangle, Undo2 } from 'lucide-react';
+
+interface Prefill {
+  product: string;
+  targetEnv: string;
+  service: string;
+}
+
+/**
+ * Slide-over panel for composing a rollback. Two modes:
+ *  - Manual: pick a target version for a single service (prefilled from a deploy
+ *    event when deep-linked).
+ *  - Align: pick a reference environment and exclude services; the backend
+ *    resolves which services move and to what version (services already on the
+ *    reference version aren't in the diff, so they never reach this panel).
+ *
+ * Both modes run `previewRollback` to surface the resolved items (eligible +
+ * skipped-with-reason) before the user commits with `createRollback`.
+ */
+export function CreateRollbackPanel({
+  prefill,
+  onClose,
+  onCreated,
+}: {
+  prefill: Prefill;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
+
+  const [products, setProducts] = useState<string[]>([]);
+  const [product, setProduct] = useState(prefill.product);
+  const [targetEnv, setTargetEnv] = useState(prefill.targetEnv);
+  // A prefilled service implies a single-service manual rollback.
+  const [mode, setMode] = useState<RollbackMode>(prefill.service ? 'Manual' : 'Align');
+  const [referenceEnv, setReferenceEnv] = useState('');
+  const [reason, setReason] = useState('');
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+
+  // Manual mode: single service + chosen target version. Prefilled when deep-linked from a
+  // deployment; otherwise the user picks a service from those deployed in the target env.
+  const [manualService, setManualService] = useState(prefill.service);
+  const [manualVersion, setManualVersion] = useState('');
+  const [services, setServices] = useState<string[]>([]);
+  const [versions, setVersions] = useState<DeploymentVersion[]>([]);
+
+  const targetEnvStyle = useEnvControlStyle(targetEnv);
+  const referenceEnvStyle = useEnvControlStyle(referenceEnv);
+
+  const [preview, setPreview] = useState<RollbackPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Result of the last create-permission probe, tagged with the scope it answered for. Create
+  // permission is per-(product, environment), so a product appearing in the picker doesn't settle it
+  // — the panel checks up front and explains itself rather than letting Preview come back 403.
+  // Tagging (rather than clearing on change) means a slow answer for the previous scope can never be
+  // shown against the current one.
+  const [createCheck, setCreateCheck] = useState<{
+    product: string;
+    targetEnv: string;
+    reason: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    api
+      .getRollbackEnabledProducts()
+      .then((d) => setProducts(d.products || []))
+      .catch(() => setProducts([]));
+  }, []);
+
+  useEffect(() => {
+    if (!product || !targetEnv) return;
+    let cancelled = false;
+    api
+      .canCreateRollback(product, targetEnv)
+      .then((r) => {
+        if (!cancelled)
+          setCreateCheck({
+            product,
+            targetEnv,
+            reason: r.allowed ? null : (r.reason ?? 'You cannot create rollbacks here'),
+          });
+      })
+      // A transient probe failure shouldn't lock the form: create/preview are authoritative and will
+      // refuse on their own, so treat an unknown answer as "not blocked here".
+      .catch(() => {
+        if (!cancelled) setCreateCheck({ product, targetEnv, reason: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product, targetEnv]);
+
+  const scopeChosen = !!product && !!targetEnv;
+  const permissionKnown =
+    createCheck?.product === product && createCheck?.targetEnv === targetEnv;
+  const createBlock = scopeChosen && permissionKnown ? createCheck!.reason : null;
+  // Hold Preview until the probe lands, so the first click can't race the answer.
+  const permissionPending = scopeChosen && !permissionKnown;
+
+  // Manual mode (not deep-linked): load the services deployed in the target env so the user
+  // can pick which one to roll back.
+  useEffect(() => {
+    if (mode !== 'Manual' || prefill.service || !product || !targetEnv) {
+      setServices([]);
+      return;
+    }
+    api
+      .getDeploymentState({ product, environment: targetEnv })
+      .then((rows) => setServices([...new Set(rows.map((r) => r.service))].sort()))
+      .catch(() => setServices([]));
+  }, [mode, product, targetEnv, prefill.service]);
+
+  // Manual mode: load version history for the chosen service so the user can
+  // pick which version to roll back to.
+  useEffect(() => {
+    if (mode !== 'Manual' || !product || !targetEnv || !manualService) {
+      setVersions([]);
+      return;
+    }
+    api
+      .getDeploymentVersions({ product, environment: targetEnv, service: manualService, limit: 50 })
+      .then((d) => setVersions(d.versions || []))
+      .catch(() => setVersions([]));
+  }, [mode, product, targetEnv, manualService]);
+
+  // Reset any stale preview when the inputs that shape it change. NOTE: `excluded` is
+  // intentionally NOT here — it's a client-side selection over an existing preview, so toggling
+  // a service's checkbox must not wipe the list (it would force a re-preview every click).
+  useEffect(() => {
+    setPreview(null);
+  }, [product, targetEnv, mode, referenceEnv, manualVersion]);
+
+  // Target/reference environments come from the product's actual deploy history (the DB), not just
+  // the configured mapping — a product can only be rolled back in an env it has deployed to. The
+  // settings mapping is used only for display names and ordering (unmapped envs sort last).
+  const [productEnvs, setProductEnvs] = useState<string[]>([]);
+  useEffect(() => {
+    if (!product) {
+      setProductEnvs([]);
+      return;
+    }
+    api
+      .getDeploymentState({ product })
+      .then((rows) => setProductEnvs([...new Set(rows.map((r) => r.environment))]))
+      .catch(() => setProductEnvs([]));
+  }, [product]);
+
+  const envOptions = useMemo(
+    // Include the current targetEnv (e.g. a deep-linked prefill) so it shows before the list loads.
+    () => getOrderedEnvironments([...new Set([...productEnvs, ...(targetEnv ? [targetEnv] : [])])]),
+    [productEnvs, targetEnv, getOrderedEnvironments],
+  );
+
+  const buildBody = (applyExclusions: boolean): RollbackInput => {
+    const body: RollbackInput = {
+      product,
+      targetEnv,
+      mode,
+      reason: reason.trim() || undefined,
+    };
+    if (mode === 'Align') {
+      body.referenceEnv = referenceEnv;
+      // Preview shows every differing service; exclusions are applied only at create time so
+      // ticking a checkbox is a pure client-side selection (no re-preview needed).
+      body.exclude = applyExclusions ? Array.from(excluded) : [];
+    } else {
+      body.items = manualService && manualVersion
+        ? [{ service: manualService, toVersion: manualVersion }]
+        : [];
+    }
+    return body;
+  };
+
+  const canPreview =
+    !!product &&
+    !!targetEnv &&
+    !createBlock &&
+    !permissionPending &&
+    (mode === 'Align'
+      ? !!referenceEnv && referenceEnv !== targetEnv
+      : !!manualService && !!manualVersion);
+
+  const handlePreview = async () => {
+    setError(null);
+    setPreviewing(true);
+    try {
+      const result = await api.previewRollback(buildBody(false));
+      setPreview(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Preview failed');
+      setPreview(null);
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    setError(null);
+    setSubmitting(true);
+    try {
+      await api.createRollback(buildBody(true));
+      onCreated();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create rollback');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Eligible = backend-eligible AND not unchecked by the operator. Recomputes live as checkboxes
+  // toggle, so the count and the Create button reflect the current selection without a re-preview.
+  const eligibleCount = preview?.items.filter((i) => i.eligible && !excluded.has(i.service)).length ?? 0;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" style={{ backgroundColor: 'rgba(0,0,0,0.35)' }} onClick={onClose} />
+      {/* Full-bleed sheet on a phone, 480px drawer once there's room beside it. */}
+      <div
+        className="fixed inset-y-0 right-0 w-full sm:w-[480px] z-50 border-l shadow-lg overflow-y-auto"
+        style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+      >
+        <div className="p-4 sm:p-5 space-y-5">
+          {/* Header */}
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <Undo2 size={18} style={{ color: 'var(--accent)' }} />
+              <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+                New rollback
+              </h2>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Product */}
+          <Field label="Product">
+            <select
+              value={product}
+              onChange={(e) => setProduct(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-[13px]"
+              style={selectStyle}
+            >
+              <option value="">Select a product…</option>
+              {[...new Set([...(product ? [product] : []), ...products])].sort().map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {/* Target env */}
+          <Field label="Target environment" hint="The environment that will be rolled back">
+            {/* Coloured once chosen — rolling back the wrong environment is the expensive
+                mistake this form can make, so the choice stays visible. */}
+            <select
+              value={targetEnv}
+              onChange={(e) => setTargetEnv(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
+              style={targetEnvStyle}
+            >
+              <option value="">Select an environment…</option>
+              {envOptions.map((env) => (
+                <option key={env} value={env}>
+                  {getDisplayName(env)}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {/* Not permitted here. Placed directly under the two inputs that decide it, so the cause
+              is adjacent to the message, and above Mode so the rest of the form reads as inert. */}
+          {createBlock && (
+            <div
+              className="flex items-start gap-2 px-3 py-2 rounded-lg text-[12px]"
+              style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            >
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>{createBlock}</span>
+            </div>
+          )}
+
+          {/* Mode */}
+          <Field label="Mode">
+            <div className="inline-flex rounded-lg p-0.5 gap-0.5" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+              {(['Manual', 'Align'] as RollbackMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className="px-3.5 py-1.5 text-[13px] font-medium rounded-md transition-all"
+                  style={{
+                    backgroundColor: mode === m ? 'var(--bg-primary)' : 'transparent',
+                    color: mode === m ? 'var(--text-primary)' : 'var(--text-muted)',
+                  }}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {/* Manual: service + version */}
+          {mode === 'Manual' && (
+            <>
+              <Field label="Service">
+                {prefill.service ? (
+                  // Deep-linked from a deployment — service is fixed.
+                  <div
+                    className="rounded-lg border px-3 py-2 text-[13px]"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+                  >
+                    {manualService}
+                  </div>
+                ) : (
+                  <select
+                    value={manualService}
+                    onChange={(e) => {
+                      setManualService(e.target.value);
+                      setManualVersion('');
+                    }}
+                    className="w-full rounded-lg border px-3 py-2 text-[13px]"
+                    style={selectStyle}
+                    disabled={!product || !targetEnv || services.length === 0}
+                  >
+                    <option value="">
+                      {!product || !targetEnv
+                        ? 'Pick a product and environment first…'
+                        : services.length === 0
+                          ? 'No services deployed here'
+                          : 'Select a service…'}
+                    </option>
+                    {[...new Set([...(manualService ? [manualService] : []), ...services])].map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+              {manualService && (
+                <Field label="Roll back to version">
+                  <select
+                    value={manualVersion}
+                    onChange={(e) => setManualVersion(e.target.value)}
+                    className="w-full rounded-lg border px-3 py-2 text-[13px]"
+                    style={selectStyle}
+                    disabled={versions.length === 0}
+                  >
+                    <option value="">{versions.length === 0 ? 'No prior versions found' : 'Select a version…'}</option>
+                    {versions.map((v) => (
+                      <option key={v.id} value={v.version}>
+                        v{v.version}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+            </>
+          )}
+
+          {/* Align: reference env + exclusions */}
+          {mode === 'Align' && (
+            <Field label="Reference environment" hint="Target services will be aligned to the versions running here">
+              <select
+                value={referenceEnv}
+                onChange={(e) => setReferenceEnv(e.target.value)}
+                className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
+                style={referenceEnvStyle}
+              >
+                <option value="">Select a reference…</option>
+                {envOptions
+                  .filter((env) => env !== targetEnv)
+                  .map((env) => (
+                    <option key={env} value={env}>
+                      {getDisplayName(env)}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+          )}
+
+          {/* Reason */}
+          <Field label="Reason" hint="Optional — surfaced on the request and to approvers">
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              placeholder="Why are you rolling back?"
+              className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
+              style={selectStyle}
+            />
+          </Field>
+
+          {error && (
+            <div
+              className="flex items-start gap-2 px-3 py-2 rounded-lg text-[12px]"
+              style={{ backgroundColor: 'var(--danger-bg)', color: 'var(--danger)' }}
+            >
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Preview */}
+          {preview && (
+            <div className="space-y-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                Preview — {eligibleCount} of {preview.items.length} eligible
+              </h3>
+              <div className="space-y-1.5">
+                {preview.items.map((item) => (
+                  <div
+                    key={item.service}
+                    className="flex items-center gap-2 text-[12px] px-2.5 py-1.5 rounded-lg border"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: item.eligible ? 'var(--bg-primary)' : 'var(--bg-secondary)',
+                      opacity: item.eligible ? 1 : 0.7,
+                    }}
+                  >
+                    {mode === 'Align' && (
+                      <input
+                        type="checkbox"
+                        checked={!excluded.has(item.service)}
+                        onChange={() =>
+                          setExcluded((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(item.service)) next.delete(item.service);
+                            else next.add(item.service);
+                            return next;
+                          })
+                        }
+                        title="Include in rollback"
+                        className="rounded shrink-0"
+                      />
+                    )}
+                    <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                      {item.service}
+                    </span>
+                    {item.eligible ? (
+                      <>
+                        <span className="font-mono text-[11px]">v{item.fromVersion}</span>
+                        <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
+                        <span className="font-mono text-[11px]">v{item.toVersion}</span>
+                      </>
+                    ) : (
+                      <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        skipped{item.skipReason ? ` — ${item.skipReason}` : ''}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 pt-2">
+            <button
+              onClick={handlePreview}
+              disabled={!canPreview || previewing}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
+              style={{
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-primary)',
+                opacity: !canPreview || previewing ? 0.5 : 1,
+              }}
+            >
+              {previewing && <Loader2 size={13} className="animate-spin" />}
+              {preview ? 'Refresh preview' : 'Preview'}
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={!preview || eligibleCount === 0 || submitting}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
+              style={{
+                backgroundColor: 'var(--accent)',
+                color: '#fff',
+                opacity: !preview || eligibleCount === 0 || submitting ? 0.5 : 1,
+              }}
+            >
+              {submitting && <Loader2 size={13} className="animate-spin" />}
+              Create rollback
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+const selectStyle: React.CSSProperties = {
+  borderColor: 'var(--border-color)',
+  backgroundColor: 'var(--bg-primary)',
+  color: 'var(--text-primary)',
+};
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+        {label}
+      </label>
+      {children}
+      {hint && (
+        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {hint}
+        </p>
+      )}
+    </div>
+  );
+}

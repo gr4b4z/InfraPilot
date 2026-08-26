@@ -1,0 +1,141 @@
+import { useEffect, useState } from 'react';
+import { Plus, Trash2, Check } from 'lucide-react';
+import { useSettingsStore, type RoleConfig } from '@/stores/settingsStore';
+// Shared with the pickers and the unrecognised-role marking, so "is this the same role?" is one
+// answer everywhere.
+import { canonicaliseRoleKey } from '@/lib/roleKey';
+
+export function RolesSettings() {
+  const { roles, setRoles } = useSettingsStore();
+  const [items, setItems] = useState<RoleConfig[]>(roles);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setItems(roles);
+  }, [roles]);
+
+  const save = async () => {
+    const cleaned = items
+      .map((r) => ({
+        key: canonicaliseRoleKey(r.key),
+        displayName: r.displayName.trim(),
+      }))
+      .filter((r) => r.key.length > 0);
+    setSaving(true);
+    setError(null);
+    try {
+      await setRoles(cleaned);
+      setItems(cleaned);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateItem = (index: number, field: keyof RoleConfig, value: string) => {
+    setItems((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
+  };
+  const removeItem = (index: number) => setItems((prev) => prev.filter((_, i) => i !== index));
+  const addItem = () => setItems((prev) => [...prev, { key: '', displayName: '' }]);
+
+  return (
+    <section
+      className="rounded-xl border p-5 space-y-4"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div>
+        <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Participant Roles
+        </h2>
+        <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          The roles the platform knows about. This list is what the role filters and assignment
+          pickers offer, and the only set someone can be manually assigned to — a role that isn't
+          here is flagged as unrecognised wherever it shows up. Ingest still accepts any role a
+          producer sends. Keys are canonicalised to lower-kebab-case
+          (<code>triggered-by</code>, <code>qa</code>); ones with no entry here fall back to a
+          humanised form of the key for display.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <div
+          className="grid grid-cols-[1fr_1fr_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <span>Key</span>
+          <span>Display Name</span>
+          <span />
+        </div>
+
+        {items.map((item, index) => (
+          <div key={index} className="grid grid-cols-[1fr_1fr_32px] gap-2 items-center rounded-lg p-1.5">
+            <input
+              type="text"
+              value={item.key}
+              onChange={(e) => updateItem(index, 'key', e.target.value)}
+              placeholder="e.g. triggered-by"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] font-mono outline-none transition-colors focus:border-[var(--accent)]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+            <input
+              type="text"
+              value={item.displayName}
+              onChange={(e) => updateItem(index, 'displayName', e.target.value)}
+              placeholder="e.g. Triggered by"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+            <button
+              onClick={() => removeItem(index)}
+              className="p-1 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={addItem}
+        className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+        style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+      >
+        <Plus size={14} />
+        Add Role
+      </button>
+
+      <div className="flex items-center gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-60"
+          style={{ backgroundColor: 'var(--accent)' }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {saved && (
+          <span className="inline-flex items-center gap-1 text-[13px]" style={{ color: 'var(--success)' }}>
+            <Check size={14} /> Saved
+          </span>
+        )}
+        {error && (
+          <span className="text-[13px]" style={{ color: 'var(--danger)' }}>{error}</span>
+        )}
+      </div>
+    </section>
+  );
+}

@@ -16,12 +16,16 @@ public class DeployEvent
     public string Environment { get; set; } = "";
     public string Version { get; set; } = "";
     public string? PreviousVersion { get; set; }
+    public bool IsRollback { get; set; }
+    public string Status { get; set; } = "succeeded";
     public string Source { get; set; } = "";
     public DateTimeOffset DeployedAt { get; set; }
     public string ReferencesJson { get; set; } = "[]";
     public string ParticipantsJson { get; set; } = "[]";
     public string? EnrichmentJson { get; set; }
     public string MetadataJson { get; set; } = "{}";
+    /// <summary>Serialized <see cref="Models.DeployRun"/>. Null for events with no CI run behind them (manual entries).</summary>
+    public string? RunJson { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     // Convenience accessors (not mapped to DB)
@@ -47,5 +51,11 @@ public class DeployEvent
     {
         get => JsonSerializer.Deserialize<Dictionary<string, object>>(MetadataJson, JsonOptions);
         set => MetadataJson = JsonSerializer.Serialize(value ?? new Dictionary<string, object>(), JsonOptions);
+    }
+
+    public DeployRun? Run
+    {
+        get => string.IsNullOrEmpty(RunJson) ? null : JsonSerializer.Deserialize<DeployRun>(RunJson, JsonOptions);
+        set => RunJson = value is null ? null : JsonSerializer.Serialize(value, JsonOptions);
     }
 }

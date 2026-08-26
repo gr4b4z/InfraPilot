@@ -1,4 +1,5 @@
 import { Clock, User, Shield, Settings, Bot } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 interface TimelineEvent {
   action: string;
@@ -22,7 +23,7 @@ interface Props {
   data: TimelineData | unknown;
 }
 
-const actorIcons: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
+const actorIcons: Record<string, LucideIcon> = {
   user: User,
   system: Settings,
   bot: Bot,

@@ -1,0 +1,322 @@
+﻿using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using NSubstitute;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Webhooks;
+using Platform.Api.Infrastructure.Audit;
+using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Identity;
+using Platform.Api.Infrastructure.Persistence;
+
+namespace Platform.Api.Tests.Features.Promotions;
+
+/// <summary>
+/// Focused tests for how <see cref="PromotionService"/> dispatches webhook events
+/// when a candidate transitions to Approved or Rejected.
+/// </summary>
+public class PromotionServiceDispatchTests : IDisposable
+{
+    private readonly PlatformDbContext _db;
+    private readonly ICurrentUser _currentUser = Substitute.For<ICurrentUser>();
+    private readonly IIdentityService _identity = Substitute.For<IIdentityService>();
+    private readonly IAuditLogger _audit = Substitute.For<IAuditLogger>();
+    private readonly IWebhookDispatcher _webhookDispatcher = Substitute.For<IWebhookDispatcher>();
+    private readonly PromotionService _sut;
+
+    public PromotionServiceDispatchTests()
+    {
+        var options = new DbContextOptionsBuilder<PlatformDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        _db = new PlatformDbContext(options);
+
+        _currentUser.Id.Returns("alice-id");
+        _currentUser.Name.Returns("Alice");
+        _currentUser.Email.Returns("alice@example.com");
+        _currentUser.IsAdmin.Returns(true); // short-circuit group membership for threshold-met test
+        _currentUser.IsQA.Returns(false);
+        _currentUser.Roles.Returns(new List<string>().AsReadOnly());
+        _currentUser.Groups.Returns(new List<string>().AsReadOnly());
+        _identity.GetGroupMembers(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new List<UserInfo>());
+
+        var resolver = new PromotionPolicyResolver(_db);
+        var auth = new PromotionApprovalAuthorizer(
+            _currentUser, _identity,
+            Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
+        _sut = new PromotionService(
+            _db, resolver, auth, _currentUser, _audit,
+            Substitute.For<ILogger<PromotionService>>(),
+            _webhookDispatcher,
+            TestOptions.Normalization(),
+            TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db));
+    }
+
+    public void Dispose() => _db.Dispose();
+
+    /// <summary>
+    /// Builds a <see cref="CreatePromotionDto"/> for the (acme, api, staging→prod) edge and calls the
+    /// external create path. Seeds a matching succeeded staging deploy first so source validation passes.
+    /// </summary>
+    private Task<PromotionCandidate?> CreateAsync(string version = "v1")
+    {
+        _db.DeployEvents.Add(new DeployEvent
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = "api",
+            Environment = "staging",
+            Version = version,
+            Status = "succeeded",
+            Source = "ci",
+            DeployedAt = DateTimeOffset.UtcNow,
+            ParticipantsJson = "[]",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        _db.SaveChanges();
+        return _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme",
+            Service: "api",
+            SourceEnv: "staging",
+            TargetEnv: "prod",
+            Version: version,
+            FromRevision: null,
+            ToRevision: null,
+            References: null,
+            Participants: null));
+    }
+
+    /// <summary>
+    /// Seeds a product-level policy (Service=null) for prod. A null <paramref name="approverGroup"/>
+    /// means no requirements ⇒ auto-approve; otherwise one requirement satisfied by the group with
+    /// MinApprovers:1.
+    /// </summary>
+    private void SeedPolicy(string? approverGroup)
+    {
+        var steps = approverGroup is null
+            ? new List<ApprovalStep>()
+            : new List<ApprovalStep>
+            {
+                new("Approval", new()
+                {
+                    new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), 1),
+                }),
+            };
+
+        _db.PromotionPolicies.Add(new PromotionPolicy
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = null,
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            ApprovalSteps = steps,
+        });
+        _db.SaveChanges();
+    }
+
+    [Fact]
+    public async Task AutoApprove_DispatchesPromotionApprovedWebhook()
+    {
+        SeedPolicy(approverGroup: null);
+
+        var candidate = await CreateAsync();
+
+        Assert.NotNull(candidate);
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Theory]
+    // Every path to Approved must queue the approval webhook the same way — held, and keyed so
+    // CancelApprovalAsync can find it. A path that dispatched it plainly would be un-undoable.
+    [InlineData("gate")]
+    [InlineData("bypass")]
+    [InlineData("auto")]
+    public async Task PromotionApprovedWebhook_IsHeldAndCancellable_OnEveryApprovalPath(string path)
+    {
+        SeedPolicy(approverGroup: path == "auto" ? null : "ops");
+        var candidate = await CreateAsync();
+
+        if (path == "gate") await _sut.ApproveAsync(candidate!.Id, comment: null);
+        else if (path == "bypass") await _sut.BypassAsync(candidate!.Id, reason: "hotfix");
+
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Is<WebhookDispatchOptions>(o =>
+                o.Delay == PromotionService.ApprovedWebhookDelay
+                && o.CancelKey == PromotionService.ApprovedWebhookCancelKey(candidate!.Id)));
+    }
+
+    [Fact]
+    public async Task RejectedWebhook_IsNotHeld()
+    {
+        // The hold buys back a mistaken approval. Nothing else is retractable, so nothing else waits.
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.RejectAsync(candidate!.Id, comment: "not ready");
+
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.rejected",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Is<WebhookDispatchOptions?>(o => o == null || o.Delay == null));
+    }
+
+    [Fact]
+    public async Task NoAutoApprove_DispatchesCreatedButNoDecisionWebhook()
+    {
+        SeedPolicy(approverGroup: "ops");
+
+        var candidate = await CreateAsync();
+
+        Assert.NotNull(candidate);
+        Assert.Equal(PromotionStatus.Pending, candidate!.Status);
+        // Creation always announces itself; what a Pending candidate must NOT do is claim a decision.
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.created",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+        await _webhookDispatcher.DidNotReceive().DispatchAsync(
+            Arg.Is<string>(e => e != "promotion.created"),
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task ThresholdMet_OnApprove_DispatchesWebhook()
+    {
+        SeedPolicy(approverGroup: "ops");
+
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Pending, candidate!.Status);
+
+        // Admin satisfies the single MinApprovers:1 requirement (group bypass) → gate flips Approved.
+        var approved = await _sut.ApproveAsync(candidate.Id, comment: null);
+
+        Assert.Equal(PromotionStatus.Approved, approved.Status);
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task PromotionApprovedWebhook_CarriesApprovedBy_TaggedApproval()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.ApproveAsync(candidate!.Id, comment: null);
+
+        // The payload must carry an approvedBy entry naming the approver, tagged via="approval".
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Is<object>(o =>
+                JsonSerializer.Serialize(o).Contains("approvedBy")
+                && JsonSerializer.Serialize(o).Contains("alice@example.com")
+                && JsonSerializer.Serialize(o).Contains("\"via\":\"approval\"")),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task BypassWebhook_CarriesBypasserInApprovedBy_TaggedBypass()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await _sut.BypassAsync(candidate!.Id, reason: "INC-1234 hotfix");
+
+        // A bypass records no approver row, but the bypasser must still appear in approvedBy,
+        // tagged via="bypass" with the reason — one list answers "who caused this to be approved".
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Is<object>(o =>
+                JsonSerializer.Serialize(o).Contains("approvedBy")
+                && JsonSerializer.Serialize(o).Contains("\"via\":\"bypass\"")
+                && JsonSerializer.Serialize(o).Contains("alice@example.com")
+                && JsonSerializer.Serialize(o).Contains("INC-1234 hotfix")),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task Reject_DispatchesPromotionRejectedWebhook()
+    {
+        SeedPolicy(approverGroup: "ops");
+
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Pending, candidate!.Status);
+
+        await _sut.RejectAsync(candidate.Id, comment: "not ready");
+
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.rejected",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task Bypass_ForcesApproved_AndFiresExistingPromotionApprovedWebhook()
+    {
+        // A gated candidate that no one has approved. The admin bypass must flip it to Approved and
+        // fire the SAME promotion.approved webhook a normal approval does — so downstream is unchanged.
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Pending, candidate!.Status);
+
+        var bypassed = await _sut.BypassAsync(candidate.Id, reason: "hotfix — incident INC-42");
+
+        Assert.Equal(PromotionStatus.Approved, bypassed.Status);
+        Assert.NotNull(bypassed.ApprovedAt);
+        // Bypass records no approver row — it's an escape hatch, not a manufactured approval.
+        Assert.Empty(_db.PromotionApprovals);
+        await _webhookDispatcher.Received(1).DispatchAsync(
+            "promotion.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task Bypass_WithoutReason_Throws_AndDoesNotDispatch()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var candidate = await CreateAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _sut.BypassAsync(candidate!.Id, reason: "   "));
+
+        Assert.Equal(PromotionStatus.Pending, _db.PromotionCandidates.Single().Status);
+        // Only creation announced itself — the failed bypass must not have dispatched a decision.
+        await _webhookDispatcher.DidNotReceive().DispatchAsync(
+            Arg.Is<string>(e => e != "promotion.created"),
+            Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task Bypass_NonPendingCandidate_Throws()
+    {
+        SeedPolicy(approverGroup: null); // auto-approve ⇒ candidate is born Approved
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, candidate!.Status);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.BypassAsync(candidate.Id, reason: "too late"));
+    }
+}

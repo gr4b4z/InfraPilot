@@ -1,0 +1,486 @@
+# Deployment Ingest API
+
+Endpoint for CI/CD pipelines to report deployment events to InfraPilot.
+
+```
+POST /api/deployments/events
+```
+
+## Authentication
+
+Every request must include an API key header:
+
+```
+X-Api-Key: <your-api-key>
+```
+
+Keys are provisioned by an admin and may be scoped to specific products. A scoped key can only ingest events for the products it was created for; attempts to post for other products return `403 Forbidden`.
+
+Rate limiting is applied per key.
+
+## Request body
+
+```jsonc
+{
+  // ── Required ────────────────────────────────────────────────
+  "product":     "ticketing-platform",   // Product name
+  "service":     "order-api",            // Service / component name
+  "environment": "production",           // Target environment
+  "version":     "2.14.0-rc.3",         // Deployed version (semver, SHA, tag — any string)
+  "source":      "github-actions",       // Origin system identifier
+  "deployedAt":  "2026-04-16T10:30:00Z", // UTC timestamp of the deployment
+
+  // ── Optional ────────────────────────────────────────────────
+  "status":      "succeeded",            // Default: "succeeded"
+  "isRollback":  false,                  // Default: false
+
+  "references": [
+    {
+      "type":     "repository",          // Required
+      "url":      "https://github.com/org/order-api",
+      "provider": "github",
+      "key":      "org/order-api",
+      "revision": "a1b2c3d"
+    }
+  ],
+
+  "participants": [
+    {
+      "role":        "PR Author",        // Required
+      "displayName": "Jan Kowalski",
+      "email":       "jan.kowalski@acmetrix.com"
+    }
+  ],
+
+  "metadata": {
+    "buildNumber": "1234",
+    "triggeredBy": "merge-to-main"
+  }
+}
+```
+
+## Field reference
+
+### Top-level fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `product` | string | **yes** | — | Product name. Must be non-empty. |
+| `service` | string | **yes** | — | Service or component within the product. |
+| `environment` | string | **yes** | — | Target environment (e.g. `development`, `staging`, `production`). |
+| `version` | string | **yes** | — | Version identifier. Any format is accepted (semver, git SHA, build tag). |
+| `source` | string | **yes** | — | Identifies the CI/CD system sending the event. |
+| `deployedAt` | DateTimeOffset | **yes** | — | UTC timestamp of the deployment. Must not be the zero value. |
+| `status` | string | no | `"succeeded"` | One of: `succeeded`, `failed`, `in_progress`. Case-insensitive. |
+| `isRollback` | boolean | no | `false` | Whether this deployment is a rollback to a previous version. |
+| `previousVersion` | string | no | _server-derived_ | The predecessor version the caller observed. When omitted, the server derives it from the most recent event for the same product/service/environment. Supplying this lets integrators assert the predecessor they saw and detect drift vs. the server's history. |
+| `references` | array | no | `[]` | Links to external resources (repos, pipelines, PRs, tickets). |
+| `participants` | array | no | `[]` | People involved in the deployment. |
+| `metadata` | object | no | `{}` | Free-form key-value pairs for custom data. |
+
+### `status` values
+
+| Value | Meaning |
+|-------|---------|
+| `succeeded` | Deployment completed successfully. Eligible as a rollback target, and the status that completes a matching in-flight promotion when the version lands on its target environment. |
+| `failed` | Deployment failed. Recorded for tracking and dashboards. |
+| `in_progress` | Deployment is still running. Can be updated later by sending a new event with the same version and a final status. |
+
+### `references[]` object
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | **yes** | Reference category. |
+| `url` | string | no | Full URL to the external resource. |
+| `provider` | string | no | Provider name (e.g. `github`, `azure-devops`, `gitlab`, `jira`). |
+| `key` | string | no | Unique identifier in that system (commit SHA, PR number, ticket key). |
+| `revision` | string | no | Git revision / commit SHA. Can be omitted if not available. |
+| `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. Send the **tracker's own summary** (the Jira ticket title) here: one ticket routinely rides several commits, so no single commit subject can name it. The commit subjects are shown underneath, resolved from `commits` — see `subTitle`. |
+| `subTitle` | string | no | The tracker's own summary, for producers whose `title` carries a commit subject instead. Whenever it is sent it is taken as the item's real name and displayed as the title, with the commit messages moved to the second line — so a producer that already puts the tracker summary on `title` should omit it. **Never** put the commit messages here: the server builds that line itself from `commits` + the event's `commit` references, so all of them are shown, not just one. |
+| `content` | string | no | The reference's **body**, copied verbatim from the source system: a Jira ticket's description, a PR's description, a commit message body. Where `title` is the one-line summary, this is the prose under it. No length limit. On a `work-item` reference it surfaces as the **Content** section of the work-item detail page, between People and Sign-off; a work item with no `content` shows no such section. Rendered as plain text with line breaks preserved — **never** interpreted as markdown or HTML, so markup in the body appears literally. |
+| `participants` | array | no | Reference-scoped participants. Same shape as the top-level `participants[]` (see below) — a PR has its author/reviewer, a ticket has its QA/assignee, a commit has its author. Optional and may be omitted entirely on legacy senders. |
+| `resolution` | object | no | The item's state in its **source system**, for `work-item` references: `{ resolved, status?, at?, by? { displayName?, email? } }`. `resolved: true` means the tracker already reports the item finished; InfraPortal notes that on the work item's thread — the status, the date, and who performed the closing transition — so a reviewer can see where the ticket stands without opening the tracker. It does **not** approve anything: a closed ticket says the work is done, not that this release is fit to ship, so the work item stays pending and a human still signs it off. Only `true` is meaningful; `false` and an absent `resolution` are both "still open". Notes are deduplicated by content, so a producer re-posting the same change set does not repeat them. |
+| `commits` | array of strings | no | Commit hashes this reference was derived from. Meaningful on `work-item` references only: records which commit messages mentioned the ticket, so the read path can link the ticket to its `commit` references (matched on `key`) and the `pull-request` references those commits merged (matched on `revision`). Ignored on other types. |
+| `occurredAt` | ISO-8601 timestamp | no | When the referenced thing happened in its source system. Meaning follows `type`: `pull-request` → merge/completion time, `commit` → **committer** date (not the author date — author dates survive rebase/squash and would overstate lead time), `work-item` → created in the tracker, `pipeline` → build finish. Feeds the lead-time analytics clock start: `pull-request.occurredAt` first, `commit.occurredAt` as fallback (see `notes/analytics-api.md`). Omitting it is always safe — events without it are simply excluded from lead-time coverage. |
+
+#### `references[].participants[]` — reference-scoped participants
+
+A reference may carry its own `participants[]` array. Same shape as the event-level participants block — `role` is required, `displayName` and `email` are optional — but scoped to the specific PR/ticket/commit instead of the deploy as a whole. This is the natural place to put a ticket's QA, a PR's reviewer, or a commit's author.
+
+```jsonc
+"references": [
+  {
+    "type": "work-item",
+    "provider": "jira",
+    "key": "PLT-1234",
+    "title": "Add idempotency key to checkout endpoint",
+    "content": "Retried POSTs create duplicate orders.\n\nAccept an Idempotency-Key header and\nreturn the original response on replay.",
+    "participants": [
+      { "role": "qa",       "displayName": "Eve QA",     "email": "eve.qa@acmetrix.com" },
+      { "role": "assignee", "displayName": "Dan Dev",    "email": "dan.dev@acmetrix.com" }
+    ]
+  },
+  {
+    "type": "pull-request",
+    "provider": "github",
+    "key": "312",
+    "participants": [
+      { "role": "author",   "displayName": "Jan Kowalski", "email": "jan@acmetrix.com" },
+      { "role": "reviewer", "displayName": "Anna Kowalska", "email": "anna@acmetrix.com" }
+    ]
+  }
+]
+```
+
+The event-level `participants[]` block is still accepted and is the right place for genuinely event-level roles like `triggered-by` (the deployer / pipeline trigger). When both layers are present and both carry a participant for the same role, **reference-level wins** for read-time lookups — a participant attached directly to a PR/ticket is a more specific signal than the event-level fallback.
+
+Reference-level participants are surfaced on the promotion candidate (carried on the create payload), so a work item's QA or a PR's reviewer is visible where the promotion is reviewed.
+
+Common `type` values:
+
+| Type | Usage |
+|------|-------|
+| `repository` | Link to the source code repository. |
+| `pipeline` | Link to the CI/CD build or workflow run. |
+| `build` | The build that produced the artifact (e.g. Azure DevOps build id/number). Sent by producers that distinguish the artifact build from the deploying workflow. |
+| `pull-request` | Link to the merged PR that triggered the deploy. |
+| `commit` | The commit that was deployed. `key` is the SHA. |
+| `branch` | The source branch the build came from. `key` is the ref name. |
+| `work-item` | Link to a Jira ticket, Azure DevOps work item, etc. |
+
+The server stores any `type` verbatim — the table above is the vocabulary current producers send and the UI/analytics understand, not a validation list.
+
+**Commit deep-linking.** When a `repository` reference includes both `url` and `revision`, the UI renders a link to the specific commit, derived from `provider`:
+
+| Provider | Resolved URL |
+|---|---|
+| `github`, `azure-devops` | `{url}/commit/{revision}` |
+| `gitlab` | `{url}/-/commit/{revision}` |
+| `bitbucket` | `{url}/commits/{revision}` |
+| _other / omitted_ | falls back to `url` |
+
+The URL is derived purely from the inbound `url` (with any trailing `.git` or `/` stripped) — no org/repo names are hardcoded.
+
+### `participants[]` object
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `role` | string | **yes** | Role in the deployment process. |
+| `displayName` | string | no | Human-readable name. |
+| `email` | string | no | Email address. Used for identifying the pipeline trigger in the promotions system. |
+
+`role` is a free-form string — the platform doesn't enforce a fixed taxonomy, so senders can add new roles without schema changes. Canonical roles recognized by the platform:
+
+| Role | Usage |
+|------|-------|
+| `triggered-by` | **Canonical.** Person or service principal that initiated the pipeline run. Recorded as a deploy participant. (The promotions system no longer enforces a built-in "exclude deployer" approval rule — separation-of-duties, if needed, is supplied via the promotion create payload.) |
+| `author` | Git commit author on the deployed revision. |
+| `reviewer` | Person who reviewed/approved the PR. |
+| `qa` | QA engineer who validated the change. |
+
+Senders can emit additional custom roles (e.g. `release-manager`, `on-call`) — they'll surface in the UI as-is alongside the canonical ones.
+
+### Canonicalisation on write
+
+By default the platform canonicalises role and environment strings to **kebab-case** on write, so `"Triggered By"`, `"triggeredBy"`, `"triggered_by"`, and `"TRIGGERED-BY"` all become `triggered-by`; `"Production"` becomes `production`. Controlled in `appsettings.json`:
+
+```json
+"Normalization": {
+  "Roles": "kebab-case",
+  "Environments": "kebab-case"
+}
+```
+
+Set either field to `null` to preserve sender casing exactly as sent. Read-time matching (e.g. participant-role and environment lookups) always normalises before comparing, so matching works regardless of sender casing.
+
+## Response
+
+### 201 Created
+
+```json
+{
+  "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "version": "2.14.0-rc.3",
+  "previousVersion": "2.13.1"
+}
+```
+
+`previousVersion` is the most recent prior version deployed to the same product/service/environment, or `null` for first-time deployments.
+
+### 400 Bad Request
+
+```json
+{
+  "errors": [
+    "'product' is required",
+    "'status' must be one of: succeeded, failed, in_progress"
+  ]
+}
+```
+
+### 403 Forbidden
+
+Returned when the API key is scoped to specific products and the `product` in the payload is not in the allowed list.
+
+## Examples
+
+### Minimal payload
+
+```json
+{
+  "product": "marketplace",
+  "service": "search-api",
+  "environment": "staging",
+  "version": "1.0.42",
+  "source": "github-actions",
+  "deployedAt": "2026-04-16T14:00:00Z"
+}
+```
+
+### Full payload (GitHub Actions)
+
+```json
+{
+  "product": "ticketing-platform",
+  "service": "order-api",
+  "environment": "production",
+  "version": "2.14.0",
+  "source": "github-actions",
+  "deployedAt": "2026-04-16T10:30:00Z",
+  "status": "succeeded",
+  "isRollback": false,
+  "references": [
+    {
+      "type": "repository",
+      "url": "https://github.com/Acmetrix/order-api",
+      "provider": "github",
+      "key": "Acmetrix/order-api",
+      "revision": "a1b2c3d4e5f6"
+    },
+    {
+      "type": "pipeline",
+      "url": "https://github.com/Acmetrix/order-api/actions/runs/87654",
+      "provider": "github",
+      "key": "87654"
+    },
+    {
+      "type": "pull-request",
+      "url": "https://github.com/Acmetrix/order-api/pull/312",
+      "provider": "github",
+      "key": "312"
+    },
+    {
+      "type": "work-item",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
+      "provider": "jira",
+      "key": "PLT-1234",
+      "title": "Add idempotency key to checkout endpoint"
+    }
+  ],
+  "participants": [
+    {
+      "role": "PR Author",
+      "displayName": "Jan Kowalski",
+      "email": "jan.kowalski@acmetrix.com"
+    },
+    {
+      "role": "PR Reviewer",
+      "displayName": "Anna Kowalska",
+      "email": "anna.kowalska@acmetrix.com"
+    },
+    {
+      "role": "QA",
+      "displayName": "Piotr Nowak",
+      "email": "piotr.nowak@acmetrix.com"
+    }
+  ],
+  "metadata": {
+    "buildNumber": "87654",
+    "triggeredBy": "merge-to-main",
+    "cluster": "prod-westeurope-01"
+  }
+}
+```
+
+### Full payload (Azure DevOps)
+
+```json
+{
+  "product": "identity-platform",
+  "service": "auth-service",
+  "environment": "staging",
+  "version": "3.1.0-beta.2",
+  "source": "azure-devops",
+  "deployedAt": "2026-04-16T09:15:00Z",
+  "status": "succeeded",
+  "references": [
+    {
+      "type": "repository",
+      "url": "https://dev.azure.com/Acmetrix/Identity/_git/auth-service",
+      "provider": "azure-devops",
+      "key": "auth-service",
+      "revision": "f9e8d7c6b5a4"
+    },
+    {
+      "type": "pipeline",
+      "url": "https://dev.azure.com/Acmetrix/Identity/_build/results?buildId=45678",
+      "provider": "azure-devops",
+      "key": "45678"
+    },
+    {
+      "type": "pull-request",
+      "url": "https://dev.azure.com/Acmetrix/Identity/_git/auth-service/pullrequest/89",
+      "provider": "azure-devops",
+      "key": "89"
+    }
+  ],
+  "participants": [
+    {
+      "role": "PR Author",
+      "displayName": "Marta Wisniewska",
+      "email": "marta.wisniewska@acmetrix.com"
+    },
+    {
+      "role": "PR Reviewer",
+      "displayName": "Tomasz Wojcik",
+      "email": "tomasz.wojcik@acmetrix.com"
+    }
+  ]
+}
+```
+
+### Two-level participants (reference-scoped)
+
+Same deployment as the GitHub Actions example, but with the QA tagged on the ticket and the reviewer tagged on the PR — instead of mixed in to the top-level `participants[]`. The deployer (`triggered-by`) stays at event level because it's not scoped to any one reference.
+
+```json
+{
+  "product": "ticketing-platform",
+  "service": "order-api",
+  "environment": "production",
+  "version": "2.14.0",
+  "source": "github-actions",
+  "deployedAt": "2026-04-16T10:30:00Z",
+  "status": "succeeded",
+  "references": [
+    {
+      "type": "pull-request",
+      "url": "https://github.com/Acmetrix/order-api/pull/312",
+      "provider": "github",
+      "key": "312",
+      "participants": [
+        { "role": "author",   "displayName": "Jan Kowalski",  "email": "jan@acmetrix.com" },
+        { "role": "reviewer", "displayName": "Anna Kowalska", "email": "anna@acmetrix.com" }
+      ]
+    },
+    {
+      "type": "work-item",
+      "url": "https://acmetrix.atlassian.net/browse/PLT-1234",
+      "provider": "jira",
+      "key": "PLT-1234",
+      "title": "Add idempotency key to checkout endpoint",
+      "participants": [
+        { "role": "qa",       "displayName": "Piotr Nowak",    "email": "piotr@acmetrix.com" },
+        { "role": "assignee", "displayName": "Marta Wisniewska", "email": "marta@acmetrix.com" }
+      ]
+    }
+  ],
+  "participants": [
+    { "role": "triggered-by", "displayName": "Pipeline Bot", "email": "ci@acmetrix.com" }
+  ]
+}
+```
+
+### Rollback
+
+```json
+{
+  "product": "marketplace",
+  "service": "payment-gateway",
+  "environment": "production",
+  "version": "4.2.1",
+  "source": "github-actions",
+  "deployedAt": "2026-04-16T11:45:00Z",
+  "status": "succeeded",
+  "isRollback": true,
+  "metadata": {
+    "rollbackReason": "Elevated error rate after 4.3.0 deploy",
+    "rollbackFrom": "4.3.0"
+  }
+}
+```
+
+## Promotion integration
+
+Ingesting a deployment event does **not** create promotion candidates. Promotions are
+created explicitly by an external system (typically the pipeline that computed the change
+set) via `POST /api/promotions`, with the authoritative set of references (work items, PRs,
+commits) being promoted on the request. There is no promotion topology and no auto-generation
+from the deploy graph. See `docs/plans/external-promotion-creation.md` for the full model.
+
+Ingest still **completes** promotions: when a `succeeded` event lands a version on a
+promotion's target environment, the matching in-flight candidate is marked `Deployed`.
+
+## Operator overrides (assigning a participant from the UI)
+
+Routing is editable separately from ingest. Operators can assign, reassign, or clear a
+reference-scoped participant on a deploy event without mutating the source `referencesJson`.
+Re-ingesting the same event does **not** clobber an override — overrides live in their own
+`reference_participant_overrides` table, keyed by `(deployEventId, referenceKey, role)`.
+
+```
+PATCH /api/deployments/{eventId}/references/{referenceKey}/participants
+Content-Type: application/json
+
+{
+  "role": "qa",
+  "assignee": { "email": "qa-new@example.com", "displayName": "QA New" }
+}
+```
+
+- Returns the merged participant list for the target reference (override > reference-level
+  > event-level), plus a `tombstone` flag and the `override` participant (when assigned).
+- `assignee: null` upserts a **tombstone** row, which suppresses the original Jira-supplied
+  participant for that role on the read path. This is how "remove this Jira person" is
+  expressed — without tombstones, an empty payload would just be ignored.
+- The `role` is canonicalised on write (lower-kebab-case via `RoleNormalizer`) so the
+  unique `(eventId, referenceKey, role)` index doesn't fragment on casing differences.
+- The `referenceKey` must already exist on the event's `referencesJson` — this is the
+  **only path** to assign a routing override. Events that carry only a flat
+  event-level `participants[]` (no `references[]`) cannot be overridden via this endpoint;
+  callers will receive `404` because there's no reference to scope the assignment to.
+  Backfilling a `references[]` entry on those events (via re-ingest) is the migration path.
+
+### Read path
+
+`GET` endpoints under `/api/deployments` and the promotion read endpoints
+(`/api/promotions`, `/api/promotions/{id}`) merge overrides into each
+`reference.participants[]` so the UI sees the effective state without the merge logic.
+Override participants surface with `isOverride: true` and `assignedBy: "<actor display name>"`.
+Tombstones are filtered out — the slot reads back as empty.
+
+### Auth + audit
+
+The endpoint is gated by the same `CanApprove` policy as the rest of `/api/deployments`
+(any authenticated user). Each successful PATCH writes an audit row:
+- `deployment.participant.assigned` — when an assignee was set.
+- `deployment.participant.cleared` — when a tombstone was upserted.
+
+Both rows attach the `deployEventId`, `referenceKey`, canonical `role`, the assignee
+(or null), and the actor email.
+
+## cURL example
+
+```bash
+curl -X POST https://infrapilot.example.com/api/deployments/events \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: your-api-key-here" \
+  -d '{
+    "product": "marketplace",
+    "service": "search-api",
+    "environment": "staging",
+    "version": "1.0.42",
+    "source": "github-actions",
+    "deployedAt": "2026-04-16T14:00:00Z"
+  }'
+```

@@ -4,6 +4,7 @@ interface RuntimeConfig {
   appSubtitle?: string;
   assistantName?: string;
   pageTitle?: string;
+  environmentLabel?: string;
 }
 
 let runtimeConfig: RuntimeConfig = {};
@@ -32,6 +33,7 @@ export async function loadRuntimeConfig() {
       appSubtitle: config.appSubtitle,
       assistantName: config.assistantName,
       pageTitle: config.pageTitle,
+      environmentLabel: config.environmentLabel,
     };
   } catch {
     runtimeConfig = {};
@@ -66,4 +68,8 @@ export function getAssistantName() {
 
 export function getPageTitle() {
   return runtimeConfig.pageTitle || defaultConfig.pageTitle;
+}
+
+export function getEnvironmentLabel(): string {
+  return runtimeConfig.environmentLabel || '';
 }

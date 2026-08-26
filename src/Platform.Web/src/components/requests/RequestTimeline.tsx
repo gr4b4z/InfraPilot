@@ -1,11 +1,12 @@
 import { Bot, User, Shield, Clock, Settings } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { AuditEntry } from '@/lib/types';
 
 interface Props {
   entries: AuditEntry[];
 }
 
-const actorIcons: Record<string, React.ComponentType<{ className?: string }>> = {
+const actorIcons: Record<string, LucideIcon> = {
   User: User,
   System: Settings,
   Bot: Bot,

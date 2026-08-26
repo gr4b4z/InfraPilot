@@ -35,9 +35,20 @@ catalog/*
 
 # Build
 *.nupkg
-.claude
 
 
 .got/
-.dockerignore
 llm_docs/
+
+# Local infrastructure experiments — may contain secrets
+local_tf/
+local/
+
+# Logs and pid files written by scripts/start.ps1
+.local/
+
+# Legacy /site directory — contents moved to /docs
+site/
+
+# Test runner output
+**/TestResults/

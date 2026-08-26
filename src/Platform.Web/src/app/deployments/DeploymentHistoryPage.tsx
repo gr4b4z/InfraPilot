@@ -1,30 +1,126 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+import { deploymentDetailPath } from '@/lib/deploymentPath';
+import { useDocumentTitle } from '@/lib/pageTitle';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { format, formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
-import type { DeployEvent } from '@/lib/types';
+import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
+import { formatDistanceToNow } from 'date-fns';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
+import type { DeployEvent, DeployReference } from '@/lib/types';
+import { collectParticipants } from '@/lib/types';
+
+const REF_ICONS: Record<string, typeof ExternalLink> = {
+  'work-item': Ticket,
+  'pull-request': GitPullRequest,
+  repository: GitBranch,
+  pipeline: Workflow,
+};
+
+function referenceLabel(ref: DeployReference): string {
+  switch (ref.type) {
+    case 'work-item':
+      return ref.key ?? 'Work Item';
+    case 'pull-request':
+      return ref.key ? `#${ref.key}` : 'PR';
+    case 'repository':
+      if (ref.key) return ref.key;
+      if (ref.url) {
+        const m = ref.url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?(?:\/|$|\?|#)/);
+        if (m) return m[1];
+      }
+      return ref.revision?.slice(0, 8) ?? 'Repo';
+    case 'pipeline':
+      return ref.key ?? ref.provider ?? 'Pipeline';
+    default:
+      return ref.key ?? ref.type;
+  }
+}
+
+const PAGE_SIZE = 20;
+const MAX_HISTORY_FETCH = 500;
 
 export function DeploymentHistoryPage() {
   const { product, service } = useParams<{ product: string; service: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const environment = searchParams.get('environment') ?? undefined;
-  const { history, loading, fetchHistory } = useDeploymentStore();
+  const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
 
-  const displayName = (key: string) => getDisplayName(key, product);
+  // The environment filter is in the URL, so "the prod history for checkout-api/api" is a link — and
+  // the title has to name the environment or every one of those links reads the same.
+  useDocumentTitle([`${product}/${service}`, environment, 'Deployment history']);
+
+  const deploymentsTick = useEntityRefresh(['deployment'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
 
   useEffect(() => {
-    if (product && service) fetchHistory(product, service, environment);
-  }, [product, service, environment, fetchHistory]);
+    if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
+  }, [product, service, fetchHistory, deploymentsTick]);
+
+  const environments = useMemo(() => {
+    const envSet = new Set(allHistory.map((e) => e.environment));
+    return Array.from(envSet).sort();
+  }, [allHistory]);
+
+  const history = useMemo(
+    () => environment ? allHistory.filter((e) => e.environment === environment) : allHistory,
+    [allHistory, environment],
+  );
+
+  useEffect(() => {
+    setDisplayCount(PAGE_SIZE);
+  }, [environment]);
+
+  // Where the detail page's back link should return to: this page with its environment filter intact,
+  // rather than the product matrix a level up.
+  const backHref = useMemo(
+    () => `/deployments/${product}/${service}/history${environment ? `?environment=${encodeURIComponent(environment)}` : ''}`,
+    [product, service, environment],
+  );
+
+  const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
+  const hasMore = displayCount < history.length;
+
+  const setEnvironmentFilter = useCallback((env: string | undefined) => {
+    setSearchParams(env ? { environment: env } : {});
+  }, [setSearchParams]);
+
+  const downloadFile = useCallback((content: string, filename: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const exportJson = useCallback(() => {
+    downloadFile(JSON.stringify(history.map(flattenEvent), null, 2), `${product}-${service}-history.json`, 'application/json');
+  }, [history, product, service, downloadFile]);
+
+  const exportCsv = useCallback(() => {
+    const rows = history.map(flattenEvent);
+    if (rows.length === 0) return;
+    const headers = Object.keys(rows[0]);
+    const lines = [
+      headers.join(','),
+      ...rows.map((r) => headers.map((h) => csvCell(String(r[h as keyof typeof r] ?? ''))).join(',')),
+    ];
+    downloadFile(lines.join('\n'), `${product}-${service}-history.csv`, 'text/csv');
+  }, [history, product, service, downloadFile]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
+        {/* Up one level is the service's detail page, not the product matrix — history is a
+            sub-page of the service now that the service has a page of its own. */}
         <Link
-          to={`/deployments/${product}`}
+          to={`/deployments/${product}/${service}`}
           className="p-1.5 rounded-lg transition-colors hover:opacity-80"
           style={{ color: 'var(--text-muted)' }}
         >
@@ -36,8 +132,17 @@ export function DeploymentHistoryPage() {
           </h1>
           <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
             Deployment history for {product}/{service}
-            {environment && <span> — {displayName(environment)}</span>}
+            {environment && <span> — {getDisplayName(environment)}</span>}
           </p>
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
+          <EnvironmentFilter
+            environments={environments}
+            selected={environment}
+            displayName={getDisplayName}
+            onChange={setEnvironmentFilter}
+          />
+          <ExportMenu onCSV={exportCsv} onJSON={exportJson} disabled={history.length === 0} />
         </div>
       </div>
 
@@ -50,125 +155,249 @@ export function DeploymentHistoryPage() {
           No deployment history found
         </div>
       ) : (
-        <div className="space-y-2">
-          {history.map((evt) => (
+        <KeyboardList
+          className="space-y-1.5"
+          count={visibleHistory.length}
+          ariaLabel={`${service ?? 'Service'} deployment history`}
+        >
+          {visibleHistory.map((evt, index) => (
             <HistoryRow
               key={evt.id}
+              index={index}
               event={evt}
-              product={product}
-              isExpanded={expanded === evt.id}
-              onToggle={() => setExpanded(expanded === evt.id ? null : evt.id)}
+              detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
           ))}
-        </div>
+          {hasMore && (
+            <div className="flex flex-col items-center gap-1 pt-3">
+              <button
+                onClick={() => setDisplayCount((n) => n + PAGE_SIZE)}
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg transition-colors hover:opacity-80"
+                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+              >
+                Load more
+                <ChevronDown size={14} />
+              </button>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Showing {visibleHistory.length} of {history.length}
+              </span>
+            </div>
+          )}
+        </KeyboardList>
+      )}
+
+    </div>
+  );
+}
+
+/**
+ * One deployment in the history list. The whole row is a link to that deployment's page — a real
+ * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
+ * a reader expects of a navigation.
+ */
+function HistoryRow({ index, event: evt, detailHref }: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
+  event: DeployEvent;
+  detailHref: string;
+}) {
+  const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
+  const labels = evt.enrichment?.labels ?? {};
+
+  // The row is already an anchor, so it activates itself — see `selfActivating`. All this adds is the
+  // roving tabindex and the arrow keys.
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    selfActivating: true,
+    label: `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}`,
+  });
+
+  return (
+    <Link
+      {...rowProps}
+      to={detailHref}
+      className="card-hover rounded-lg border px-3 py-2.5 flex items-center gap-3 transition-colors"
+      style={{
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-secondary)',
+      }}
+    >
+      <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: statusColor(evt.status) }}>
+        v{evt.version}
+      </span>
+
+      <RollbackIndicator isRollback={evt.isRollback} previousVersion={evt.previousVersion} />
+
+      <StatusBadge status={evt.status} />
+
+      <EnvBadge env={evt.environment} />
+
+      {/* Reference chips — work-item key + PR number */}
+      {evt.references
+        .filter((r) => r.type === 'work-item' || r.type === 'pull-request')
+        .map((ref, i) => {
+          const Icon = REF_ICONS[ref.type];
+          const label = referenceLabel(ref);
+          const tooltip = ref.title ?? labels[ref.type === 'work-item' ? 'workItemTitle' : 'prTitle'];
+          return (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 text-[12px]"
+              style={{ color: 'var(--text-secondary)' }}
+              title={tooltip}
+            >
+              <Icon size={11} style={{ color: 'var(--text-muted)' }} />
+              {label}
+            </span>
+          );
+        })}
+
+      <span className="flex-1" />
+
+      {prAuthor?.displayName && (
+        <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          {prAuthor.displayName}
+        </span>
+      )}
+
+      <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+        {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
+      </span>
+
+      <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+    </Link>
+  );
+}
+
+// ── Status helpers ────────────────────────────────────────────────
+
+const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> = {
+  succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
+  failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
+  in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
+};
+
+function RollbackIndicator({ isRollback, previousVersion }: { isRollback?: boolean; previousVersion?: string | null }) {
+  if (!isRollback) return null;
+  const title = previousVersion ? `Rolled back from v${previousVersion}` : 'Rollback';
+  return (
+    <span title={title} aria-label={title} className="inline-flex" style={{ color: 'var(--text-muted)' }}>
+      <Undo2 size={12} />
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status?: string }) {
+  const s = STATUS_STYLES[status ?? 'succeeded'] ?? STATUS_STYLES.succeeded;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide leading-none"
+      style={{ backgroundColor: s.bg, color: s.fg }}
+    >
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: s.fg }} />
+      {s.label}
+    </span>
+  );
+}
+
+function statusColor(status?: string): string {
+  if (status === 'failed') return '#ef4444';
+  if (status === 'in_progress') return '#eab308';
+  return 'var(--text-primary)';
+}
+
+// ── Toolbar sub-components ────────────────────────────────────────
+
+function ExportMenu({ onCSV, onJSON, disabled }: { onCSV: () => void; onJSON: () => void; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        disabled={disabled}
+        className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-colors hover:opacity-80 disabled:opacity-40"
+        style={{ color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+      >
+        <Download size={13} />
+        Export
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            className="absolute right-0 top-full mt-1 z-20 rounded-lg border shadow-lg py-1 min-w-[120px]"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+          >
+            <button onClick={() => { onCSV(); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: 'var(--text-primary)' }}>
+              Export CSV
+            </button>
+            <button onClick={() => { onJSON(); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: 'var(--text-primary)' }}>
+              Export JSON
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-function HistoryRow({ event: evt, product, isExpanded, onToggle }: { event: DeployEvent; product?: string; isExpanded: boolean; onToggle: () => void; }) {
-  const { getDisplayName: rawGetDisplayName } = useSettingsStore();
-  const getDisplayName = (key: string) => rawGetDisplayName(key, product);
-  const workItem = evt.references.find((r) => r.type === 'work-item');
-  const prAuthor = evt.participants.find((p) => p.role === 'PR Author');
-  const labels = evt.enrichment?.labels ?? {};
-
+function EnvironmentFilter({ environments, selected, displayName, onChange }: {
+  environments: string[];
+  selected: string | undefined;
+  displayName: (key: string) => string;
+  onChange: (env: string | undefined) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (environments.length <= 1) return null;
   return (
-    <div
-      className="rounded-lg border p-3"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-    >
-      <div
-        className="flex items-center gap-3 cursor-pointer"
-        onClick={onToggle}
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-colors hover:opacity-80"
+        style={{ color: selected ? 'var(--accent)' : 'var(--text-muted)', border: '1px solid var(--border-color)' }}
       >
-        <span style={{ color: 'var(--text-muted)' }}>
-          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </span>
-
-        <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: 'var(--text-primary)' }}>
-          v{evt.version}
-        </span>
-
-        <span
-          className="badge text-[11px]"
-          style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
-        >
-          {getDisplayName(evt.environment)}
-        </span>
-
-        {workItem?.key && (
-          <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-            {workItem.key}
-            {labels.workItemTitle && ` — ${labels.workItemTitle}`}
-          </span>
-        )}
-
-        <span className="flex-1" />
-
-        {prAuthor?.displayName && (
-          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-            {prAuthor.displayName}
-          </span>
-        )}
-
-        <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
-          {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
-        </span>
-      </div>
-
-      {isExpanded && (
-        <div className="mt-3 pl-7 space-y-2 text-[13px]">
-          <div className="flex gap-6">
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Source: </span>
-              <span style={{ color: 'var(--text-secondary)' }}>{evt.source}</span>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Deployed: </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                {format(new Date(evt.deployedAt), 'MMM d, yyyy HH:mm')}
-              </span>
-            </div>
-            {evt.previousVersion && (
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Previous: </span>
-                <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>v{evt.previousVersion}</span>
-              </div>
-            )}
+        <Filter size={13} />
+        {selected ? <EnvLabel env={selected} /> : 'All environments'}
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            className="absolute right-0 top-full mt-1 z-20 rounded-lg border shadow-lg py-1 min-w-[160px]"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+          >
+            <button onClick={() => { onChange(undefined); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: !selected ? 'var(--accent)' : 'var(--text-primary)', fontWeight: !selected ? 600 : 400 }}>
+              All environments
+            </button>
+            {environments.map((env) => (
+              <button key={env} onClick={() => { onChange(env); setOpen(false); }} className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}>
+                <EnvDot env={env} />
+                {displayName(env)}
+              </button>
+            ))}
           </div>
-
-          {evt.references.length > 0 && (
-            <div className="flex flex-wrap gap-3">
-              {evt.references.map((ref, i) => (
-                ref.url ? (
-                  <a
-                    key={i}
-                    href={ref.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 hover:underline"
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    <ExternalLink size={11} />
-                    {ref.type === 'work-item' ? ref.key : ref.type}
-                  </a>
-                ) : null
-              ))}
-            </div>
-          )}
-
-          {[...evt.participants, ...(evt.enrichment?.participants ?? [])].length > 0 && (
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {[...evt.participants, ...(evt.enrichment?.participants ?? [])].map((p, i) => (
-                <span key={i} style={{ color: 'var(--text-muted)' }}>
-                  {p.role}: <span style={{ color: 'var(--text-secondary)' }}>{p.displayName ?? p.email}</span>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+        </>
       )}
     </div>
   );
+}
+
+// ── Export helpers ─────────────────────────────────────────────────
+
+function csvCell(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+function flattenEvent(evt: DeployEvent): Record<string, string> {
+  const workItems = evt.references.filter((r) => r.type === 'work-item').map((r) => r.key ?? r.url ?? '').join('; ');
+  const prs = evt.references.filter((r) => r.type === 'pull-request').map((r) => r.url ?? r.key ?? '').join('; ');
+  const participants = collectParticipants(evt).map((p) => `${p.role}: ${p.displayName ?? p.email ?? ''}`).join('; ');
+  return {
+    id: evt.id, product: evt.product, service: evt.service, environment: evt.environment,
+    version: evt.version, previousVersion: evt.previousVersion ?? '',
+    isRollback: evt.isRollback ? 'true' : '', status: evt.status ?? 'succeeded',
+    source: evt.source, deployedAt: evt.deployedAt, workItems, pullRequests: prs, participants,
+  };
 }

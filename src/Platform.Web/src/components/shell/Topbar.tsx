@@ -1,15 +1,38 @@
-import { Bell, Monitor, Moon, Sun, Sparkles } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Bell, EyeOff, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { NavLink } from 'react-router-dom';
 import { useConversationStore } from '@/stores/conversationStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useMyTasksCount } from '@/stores/myTasksStore';
+import { useHiddenProductCount } from '@/stores/userPrefsStore';
+import { useUiStore } from '@/stores/uiStore';
+import { isLocalAuthEnabled } from '@/lib/authConfig';
+import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
 const THEME_STORAGE_KEY = 'theme-mode';
 
+/** Cycle order for the condensed single-button theme control shown on narrow screens. */
+const THEME_CYCLE: ThemeMode[] = ['light', 'dark', 'system'];
+
+const THEME_ICONS: Record<ThemeMode, typeof Sun> = {
+  light: Sun,
+  dark: Moon,
+  system: Monitor,
+};
+
 export function Topbar() {
   const { sidebarOpen, toggleSidebar } = useConversationStore();
+  const toggleNavDrawer = useUiStore((s) => s.toggleNavDrawer);
   const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  // Promotions + work items awaiting this user. Drives the bell badge; the bell opens the
+  // My Tasks page that lists exactly these items.
+  const myTasksCount = useMyTasksCount();
+  const hiddenProductCount = useHiddenProductCount();
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
@@ -60,6 +83,17 @@ export function Topbar() {
       ? 'Always dark'
       : 'Always light';
 
+  // Close user menu on outside click
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node))
+        setUserMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [userMenuOpen]);
+
   // Keyboard shortcut: Cmd+K / Ctrl+K
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -72,29 +106,47 @@ export function Topbar() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleSidebar]);
 
+  const CycleIcon = THEME_ICONS[themeMode];
+
   return (
     <header
-      className="flex items-center h-14 px-6 border-b gap-4 shrink-0"
+      className="flex items-center h-14 px-3 sm:px-4 lg:px-6 border-b gap-2 sm:gap-3 lg:gap-4 shrink-0"
       style={{
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
       }}
     >
-      {/* AI command bar */}
+      {/* Drawer trigger. Only below `lg` — above it the sidebar is always on screen. */}
+      <button
+        onClick={toggleNavDrawer}
+        className="shrink-0 p-2 -ml-1 rounded-lg transition-colors hover:bg-[var(--bg-secondary)] lg:hidden"
+        style={{ color: 'var(--text-secondary)' }}
+        aria-label="Open navigation"
+      >
+        <Menu size={18} />
+      </button>
+
+      {/* AI command bar. Collapses to a single icon button below `sm`: the placeholder needs ~220px
+          to read as a search field, and taking that from a 375px header leaves nothing for the
+          account controls. */}
       <button
         onClick={toggleSidebar}
-        className="flex items-center flex-1 max-w-lg gap-2.5 px-3 py-[7px] rounded-lg cursor-pointer transition-all duration-150"
+        className="flex items-center shrink-0 justify-center w-9 h-9 rounded-lg cursor-pointer transition-all duration-150 sm:shrink sm:w-auto sm:h-auto sm:flex-1 sm:max-w-lg sm:justify-start sm:gap-2.5 sm:px-3 sm:py-[7px]"
         style={{
           backgroundColor: sidebarOpen ? 'var(--accent-muted)' : 'var(--bg-secondary)',
           border: `1px solid ${sidebarOpen ? 'var(--accent)' : 'var(--border-color)'}`,
         }}
+        aria-label="Ask AI assistant or search"
       >
         <Sparkles size={14} style={{ color: 'var(--accent)' }} />
-        <span className="flex-1 text-left text-[13px]" style={{ color: 'var(--text-muted)' }}>
+        <span
+          className="hidden sm:block flex-1 text-left text-[13px] truncate"
+          style={{ color: 'var(--text-muted)' }}
+        >
           Ask AI assistant or search...
         </span>
         <kbd
-          className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
+          className="hidden md:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
           style={{
             backgroundColor: 'var(--bg-primary)',
             color: 'var(--text-muted)',
@@ -107,7 +159,22 @@ export function Topbar() {
 
       {/* Right actions */}
       <div className="flex items-center gap-1 ml-auto">
-        <div className="flex items-center gap-1 px-1 py-1 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+        {/* Three side-by-side modes cost ~110px, which a phone header can't spare — below `sm` the
+            same three states are cycled through by one button instead. */}
+        <button
+          onClick={() => setThemeMode(THEME_CYCLE[(THEME_CYCLE.indexOf(themeMode) + 1) % THEME_CYCLE.length])}
+          className="sm:hidden p-2 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
+          style={{ color: 'var(--text-muted)' }}
+          title={`Theme: ${themeLabel} — tap to change`}
+          aria-label={`Theme: ${themeLabel}. Activate to change.`}
+        >
+          <CycleIcon size={16} />
+        </button>
+
+        <div
+          className="hidden sm:flex items-center gap-1 px-1 py-1 rounded-lg"
+          style={{ backgroundColor: 'var(--bg-secondary)' }}
+        >
           <button
             onClick={() => setThemeMode('light')}
             className="p-2 rounded-md transition-colors"
@@ -146,32 +213,105 @@ export function Topbar() {
           </button>
         </div>
 
-        <button
+        {/* Bell → My tasks. The badge is a real count of things awaiting this user, so an
+            empty bell renders bare rather than with a dot that means nothing. */}
+        <NavLink
+          to="/my-tasks"
           className="p-2 rounded-lg transition-colors hover:bg-[var(--bg-secondary)] relative"
-          style={{ color: 'var(--text-muted)' }}
-          title="Notifications"
+          style={({ isActive }) => ({
+            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+            backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
+          })}
+          title={
+            myTasksCount > 0
+              ? `My tasks — ${myTasksCount} awaiting you`
+              : 'My tasks — nothing awaiting you'
+          }
+          aria-label={`My tasks, ${myTasksCount} awaiting you`}
         >
           <Bell size={16} />
-          {/* Notification dot */}
-          <span
-            className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
-            style={{ backgroundColor: 'var(--danger)' }}
-          />
-        </button>
+          {myTasksCount > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full text-[10px] font-bold leading-[16px] text-center text-white"
+              style={{ backgroundColor: 'var(--danger)' }}
+            >
+              {myTasksCount > 99 ? '99+' : myTasksCount}
+            </span>
+          )}
+        </NavLink>
+
+        {/* A products filter that applies app-wide is invisible by construction: every list simply
+            comes back shorter. Without a persistent cue, "where did that promotion go?" is a very
+            long debugging session. This is the standing reminder, and the way back to the control. */}
+        {hiddenProductCount > 0 && (
+          <NavLink
+            to="/deployments"
+            className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold transition-colors"
+            style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            title={
+              `${hiddenProductCount} product(s) hidden from every list in the app. ` +
+              'Open the Deployments page to change it.'
+            }
+          >
+            <EyeOff size={12} />
+            {hiddenProductCount} hidden
+          </NavLink>
+        )}
 
         <div className="w-px h-6 mx-1.5" style={{ backgroundColor: 'var(--border-color)' }} />
 
-        <button className="flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]">
-          <div
-            className="flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold text-white"
-            style={{ backgroundColor: 'var(--accent)' }}
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setUserMenuOpen((prev) => !prev)}
+            className="flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
           >
-            {user?.initials ?? 'DU'}
-          </div>
-          <span className="hidden sm:block text-[13px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-            {user?.name?.split(' ')[0] ?? 'Dev'}
-          </span>
-        </button>
+            <div
+              className="flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold text-white"
+              style={{ backgroundColor: 'var(--accent)' }}
+            >
+              {user?.initials ?? 'DU'}
+            </div>
+            <span className="hidden sm:block text-[13px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+              {user?.name?.split(' ')[0] ?? 'Dev'}
+            </span>
+          </button>
+
+          {userMenuOpen && (
+            <div
+              className="absolute right-0 top-full mt-1 w-48 rounded-lg border shadow-lg py-1 z-50"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-secondary)',
+              }}
+            >
+              <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
+                <p className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {user?.name}
+                </p>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {user?.email}
+                </p>
+              </div>
+              {(isLocalAuthEnabled() || isMsalEnabled()) && (
+                <button
+                  onClick={() => {
+                    setUserMenuOpen(false);
+                    if (isMsalEnabled()) {
+                      void msalLogout();
+                    } else {
+                      logout();
+                    }
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-[var(--bg-primary)]"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  <LogOut size={14} />
+                  Sign out
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
