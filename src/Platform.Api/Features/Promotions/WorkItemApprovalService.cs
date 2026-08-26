@@ -247,7 +247,8 @@ public class WorkItemApprovalService
 
         _logger.LogInformation(
             "Work-item decision recorded: {Decision} on {Key} ({Product}/{Env}) by {Email}; candidate {CandidateId}",
-            decision, key, prod, env, _currentUser.Email, candidate?.Id);
+            decision, LogSanitizer.Clean(key), LogSanitizer.Clean(prod), LogSanitizer.Clean(env),
+            LogSanitizer.Clean(_currentUser.Email), candidate?.Id);
 
         // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
         // WorkItemsOnly / WorkItemsAndManual conditions are met). Issue and Block → nothing at all:
@@ -343,7 +344,8 @@ public class WorkItemApprovalService
         {
             _logger.LogWarning(ex,
                 "Webhook dispatch '{EventType}' failed for ticket {Key} ({Product}/{Env})",
-                action, workItemKey, product, targetEnv);
+                action, LogSanitizer.Clean(workItemKey), LogSanitizer.Clean(product),
+                LogSanitizer.Clean(targetEnv));
         }
     }
 
@@ -1073,7 +1075,8 @@ public class WorkItemApprovalService
                 results.Add(item with { Error = ex.Message });
                 _logger.LogWarning(ex,
                     "Orphan sweep could not sign off {Key} ({Product}/{Env})",
-                    item.WorkItemKey, item.Product, item.TargetEnv);
+                    LogSanitizer.Clean(item.WorkItemKey), LogSanitizer.Clean(item.Product),
+                    LogSanitizer.Clean(item.TargetEnv));
             }
         }
 
@@ -1085,7 +1088,7 @@ public class WorkItemApprovalService
 
         _logger.LogInformation(
             "Orphaned work-item sweep by {Email}: {Approved} approved, {Failed} failed of {Examined}",
-            _currentUser.Email, approved, failed, items.Count);
+            LogSanitizer.Clean(_currentUser.Email), approved, failed, items.Count);
 
         return new OrphanedWorkItemSweepResult(items.Count, approved, failed, DryRun: false, Items: results);
     }
