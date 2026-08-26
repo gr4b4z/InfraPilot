@@ -87,7 +87,7 @@ public class PromotionCancelApprovalTests : IDisposable
         _db.SaveChanges();
     }
 
-    private async Task<PromotionCandidate> CreateAsync(string version = "v1")
+    private async Task<PromotionCandidate> CreateAsync(string version = "v1", string? workItemKey = null)
     {
         _db.DeployEvents.Add(new DeployEvent
         {
@@ -107,7 +107,10 @@ public class PromotionCancelApprovalTests : IDisposable
         var candidate = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
             Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
             Version: version, FromRevision: null, ToRevision: null,
-            References: null, Participants: null));
+            References: workItemKey is null
+                ? null
+                : new() { new ReferenceDto("work-item", Key: workItemKey, Title: workItemKey) },
+            Participants: null));
         return candidate!;
     }
 
@@ -281,6 +284,11 @@ public class PromotionCancelApprovalTests : IDisposable
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.CancelApprovalAsync(candidate.Id, comment: null));
         Assert.Contains("without human sign-off", ex.Message);
+        // Not "reject it instead": RejectAsync only accepts Pending candidates, so that advice
+        // names an action an Approved candidate cannot take. Tightening the gate is the one
+        // that leads somewhere — cancelling works once the edge actually requires a sign-off.
+        Assert.DoesNotContain("Reject", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("staging → prod policy", ex.Message);
         Assert.Equal(PromotionStatus.Approved, _db.PromotionCandidates.Single().Status);
     }
 
@@ -351,5 +359,140 @@ public class PromotionCancelApprovalTests : IDisposable
 
         _currentUser.IsAdmin.Returns(false); // out of the approver tree
         Assert.False(await _sut.CanUserCancelApprovalAsync(approved));
+    }
+
+    // ---------------------------------------------------------------------
+    // A policy tightened after the candidate was already Approved
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Adds an approver requirement to the (acme, api, staging→prod) policy after the fact —
+    /// the "gate saved empty, then edited to add the approver" sequence.
+    /// </summary>
+    private void TightenPolicy(string approverGroup = "ops")
+    {
+        var policy = _db.PromotionPolicies.Single();
+        policy.ApprovalSteps = new List<ApprovalStep>
+        {
+            new("Approval", new()
+            {
+                new ApproverRequirement("Approvers", new() { new GroupRef(approverGroup, approverGroup) }, new(), 1),
+            }),
+        };
+        _db.SaveChanges();
+    }
+
+    [Fact]
+    public async Task Cancel_AllowedOnceTheEdgesPolicyGrowsAnApprover()
+    {
+        // The gate was saved with no approvers, the candidate auto-approved against it, and only
+        // then was the approver requirement added. RefreshPolicySnapshotsAsync re-snapshots Pending
+        // candidates only, so this one still carries the empty gate — but the approval it is
+        // carrying is one no human ever gave, and that is exactly what undo is for.
+        SeedPolicy(approverGroup: null);
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, candidate.Status);
+
+        TightenPolicy();
+
+        var result = await _sut.CancelApprovalAsync(candidate.Id, comment: null);
+        Assert.Equal(PromotionStatus.Pending, result.Candidate.Status);
+        Assert.Null(result.Candidate.ApprovedAt);
+    }
+
+    [Fact]
+    public async Task Cancel_UnderANewerPolicy_ReGatesTheCandidate()
+    {
+        SeedPolicy(approverGroup: null);
+        var candidate = await CreateAsync();
+        TightenPolicy();
+        await _sut.CancelApprovalAsync(candidate.Id, comment: null);
+
+        // The point of carrying the new snapshot across: the source system's next change-set refresh
+        // re-evaluates the gate, and against the stale empty snapshot that would auto-approve it
+        // straight back under the rules we just decided no longer apply.
+        _currentUser.IsAdmin.Returns(false);
+        var refreshed = await CreateAsync();
+        Assert.Equal(PromotionStatus.Pending, refreshed.Status);
+        Assert.Contains("Approvers", _db.PromotionCandidates.Single().ResolvedPolicyJson);
+    }
+
+    [Fact]
+    public async Task Cancel_UnderANewerPolicy_SaysSoOnTheThread()
+    {
+        SeedPolicy(approverGroup: null);
+        var candidate = await CreateAsync();
+        TightenPolicy();
+        await _sut.CancelApprovalAsync(candidate.Id, comment: null);
+
+        var comment = _db.PromotionComments
+            .Where(c => c.CandidateId == candidate.Id)
+            .AsEnumerable().Last(c => c.Body.Contains("cancelled the approval"));
+        Assert.Contains("re-gated", comment.Body);
+    }
+
+    [Fact]
+    public async Task Cancel_KeepsTheFrozenSnapshot_WhenTheEdgeWasUnEnrolled()
+    {
+        // Policy deleted outright: the live resolution is the auto-approve fallback, and trusting it
+        // would turn "someone removed the gate's configuration" into "the approval can no longer be
+        // taken back". Fall back to the snapshot the candidate was approved under.
+        var candidate = await ApprovedCandidateAsync();
+        var frozen = _db.PromotionCandidates.Single().ResolvedPolicyJson;
+        _db.PromotionPolicies.RemoveRange(_db.PromotionPolicies);
+        await _db.SaveChangesAsync();
+
+        var result = await _sut.CancelApprovalAsync(candidate.Id, comment: null);
+        Assert.Equal(PromotionStatus.Pending, result.Candidate.Status);
+        Assert.Equal(frozen, _db.PromotionCandidates.Single().ResolvedPolicyJson);
+    }
+
+    [Fact]
+    public async Task CanUserCancelApproval_TurnsTrueOnceTheGateIsTightened()
+    {
+        SeedPolicy(approverGroup: null);
+        var candidate = await CreateAsync();
+        Assert.False(await _sut.CanUserCancelApprovalAsync(candidate)); // nothing to take back yet
+
+        TightenPolicy();
+        Assert.True(await _sut.CanUserCancelApprovalAsync(candidate));
+    }
+
+    // ---------------------------------------------------------------------
+    // Still refused, when the gate really does clear itself
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task Cancel_RefusedOnAWorkItemAutoApprovePolicy_PointsAtTheWorkItems()
+    {
+        // Same refusal, different cause: the requirement tree DOES name approvers, but the
+        // work-item auto-approve rule cleared the gate before any of them was asked. Telling this
+        // caller to add an approval requirement would be useless advice — there already is one.
+        SeedPolicy();
+        var policy = _db.PromotionPolicies.Single();
+        policy.AutoApproveOnAllWorkItemsApproved = true;
+        _db.SaveChanges();
+
+        var candidate = await CreateAsync(workItemKey: "FOO-1");
+        Assert.Equal(PromotionStatus.Pending, candidate.Status); // ticket not signed off yet
+
+        _db.WorkItemApprovals.Add(new WorkItemApproval
+        {
+            Id = Guid.NewGuid(),
+            WorkItemKey = "FOO-1",
+            Product = "acme",
+            TargetEnv = "prod",
+            ApproverEmail = "qa@example.com",
+            ApproverName = "QA",
+            Decision = WorkItemDecision.Approved,
+        });
+        await _db.SaveChangesAsync();
+        var approved = await _sut.ReevaluateAsync(candidate.Id);
+        Assert.Equal(PromotionStatus.Approved, approved.Status);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.CancelApprovalAsync(candidate.Id, comment: null));
+        Assert.Contains("work item", ex.Message);
+        Assert.DoesNotContain("Add an approval requirement", ex.Message);
     }
 }
