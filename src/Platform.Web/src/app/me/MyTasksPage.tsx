@@ -24,6 +24,7 @@ import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { useAuthStore } from '@/stores/authStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { useMyTasksStore } from '@/stores/myTasksStore';
 
@@ -66,6 +67,9 @@ export function MyTasksPage() {
 
   // Built from the unfiltered lists, so picking an environment never removes the others from the
   // dropdown — the field keeps working as a browser of what's actually waiting.
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
+  const configuredEnvs = useSettingsStore((s) => s.environments);
   const envOptions = useMemo<ComboOption[]>(() => {
     const counts = new Map<string, number>();
     for (const env of [
@@ -75,10 +79,29 @@ export function MyTasksPage() {
     ]) {
       counts.set(env, (counts.get(env) ?? 0) + 1);
     }
-    return [...counts.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([value, count]) => ({ value, hint: `${count} task${count === 1 ? '' : 's'}` }));
-  }, [promotions, workItems, unassignedWorkItems]);
+    // Pipeline order, not alphabetical: the reader thinks of these as dev -> staging -> production,
+    // and it's the far end of that line they usually came here to filter on.
+    return getOrderedEnvironments([...counts.keys()]).map((value) => {
+      const count = counts.get(value) ?? 0;
+      const tasks = `${count} task${count === 1 ? '' : 's'}`;
+      // The option's headline stays the key, because that's what lands in the field and the URL;
+      // the environment's configured name goes on the hint line beside the count, so a terse key
+      // ("prd", "uat") is still recognisable in the list.
+      const name = getDisplayName(value);
+      return { value, hint: name && name !== value ? `${name} · ${tasks}` : tasks };
+    });
+    // configuredEnvs is what both store helpers read; the helpers themselves are stable references,
+    // so without it the list would keep the names and order from before settings loaded — which
+    // the dependency linter can't see, hence the exemption.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    promotions,
+    workItems,
+    unassignedWorkItems,
+    configuredEnvs,
+    getDisplayName,
+    getOrderedEnvironments,
+  ]);
 
   // Case-insensitive substring, matching how the ComboBox narrows its own dropdown — a half-typed
   // "pro" already shows the production rows instead of blanking the page until Enter.
