@@ -82,6 +82,50 @@ public static class PromotionAdminEndpoints
             });
         });
 
+        // ── Resend approved webhooks (Settings → Maintenance) ────────────────
+        // Re-announces promotion.approved for promotions stuck at Approved with no deploy behind
+        // them — the ones whose original announcement never reached the pipeline that acts on it
+        // (nothing subscribed at the time, the receiver was down past its retries, the failed rows
+        // were purged, an undo cancelled a delivery that was then re-approved).
+        //
+        // Approved-only by design: a Deploying or Deployed promotion demonstrably got its message,
+        // and a Pending, Rejected or Superseded one was never cleared to send. A promotion whose
+        // delivery is still queued is skipped rather than duplicated. See
+        // PromotionService.ResendApprovedWebhooksAsync. `dryRun=true` reports the list without
+        // queuing anything — the Maintenance card always previews first.
+        group.MapPost("/candidates/resend-approved-webhooks", async (
+            PromotionService service, EnvironmentAliasResolver environments,
+            ResendApprovedWebhooksRequest? request, CancellationToken ct) =>
+        {
+            var result = await service.ResendApprovedWebhooksAsync(
+                request?.Product,
+                await environments.ResolveFilterAsync(request?.TargetEnv, ct),
+                request?.DryRun ?? false, ct);
+
+            return Results.Ok(new
+            {
+                examined = result.Examined,
+                resent = result.Resent,
+                skipped = result.Skipped,
+                deliveries = result.Deliveries,
+                dryRun = result.DryRun,
+                promotions = result.Promotions.Select(p => new
+                {
+                    p.Id,
+                    p.Product,
+                    p.Service,
+                    p.SourceEnv,
+                    p.TargetEnv,
+                    p.Version,
+                    p.ApprovedAt,
+                    p.LastDeliveryStatus,
+                    p.LastDeliveryAt,
+                    p.Deliveries,
+                    p.SkippedReason,
+                }),
+            });
+        });
+
         // ── Stranded work items (Settings → Maintenance) ─────────────────────
         // Signs off every work item in the "No live promotion" state: its promotions were all
         // superseded or rejected, so no gate will ever consume the sign-off and no deploy will ever
@@ -495,6 +539,13 @@ public record BypassPromotionRequest(string? Reason);
 /// everything, and pass <c>DryRun</c> to see what would close without writing.
 /// </summary>
 public record ReconcileCompletionsRequest(string? Product, string? TargetEnv, bool? DryRun);
+
+/// <summary>
+/// Body for the approved-webhook resend. All optional, with the same scoping as the reconcile pass:
+/// omit <c>Product</c> / <c>TargetEnv</c> to cover every approved promotion, and pass <c>DryRun</c>
+/// to see which ones would be re-announced without queuing a thing.
+/// </summary>
+public record ResendApprovedWebhooksRequest(string? Product, string? TargetEnv, bool? DryRun);
 
 /// <summary>
 /// Body for the stranded work-item sweep. <c>DryRun</c> reports what would be signed off without

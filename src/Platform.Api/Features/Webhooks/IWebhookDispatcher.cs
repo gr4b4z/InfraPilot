@@ -6,7 +6,14 @@ public interface IWebhookDispatcher
     /// Queue webhook deliveries for all matching subscriptions.
     /// Returns immediately — actual delivery happens in background.
     /// </summary>
-    Task DispatchAsync(
+    /// <returns>
+    /// How many delivery rows were queued — one per matching subscription, so zero means nobody is
+    /// listening for this event. Ignorable at the ordinary call sites, which announce state changes
+    /// and do not care who hears; the resend maintenance action reports it, because "queued nothing"
+    /// and "queued for three receivers" are very different answers to an admin who just asked the
+    /// platform to re-announce something.
+    /// </returns>
+    Task<int> DispatchAsync(
         string eventType, object payload, WebhookEventFilters? filters = null,
         WebhookDispatchOptions? options = null);
 
