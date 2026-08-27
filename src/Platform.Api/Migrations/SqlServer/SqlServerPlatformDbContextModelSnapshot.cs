@@ -1614,13 +1614,23 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(max)")
                         .HasDefaultValue("[]");
 
-                    b.Property<string>("FilterEnvironment")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
+                    b.Property<string>("FilterEnvironmentsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
 
-                    b.Property<string>("FilterProduct")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
+                    b.Property<string>("FilterProductsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
+                    b.Property<string>("FilterServicesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
 
                     b.Property<string>("GitHubEventType")
                         .HasMaxLength(100)

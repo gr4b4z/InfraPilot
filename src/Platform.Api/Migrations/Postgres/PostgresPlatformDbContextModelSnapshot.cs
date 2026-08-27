@@ -1612,13 +1612,23 @@ namespace Platform.Api.Migrations.Postgres
                         .HasColumnType("jsonb")
                         .HasDefaultValue("[]");
 
-                    b.Property<string>("FilterEnvironment")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                    b.Property<string>("FilterEnvironmentsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
 
-                    b.Property<string>("FilterProduct")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                    b.Property<string>("FilterProductsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
+
+                    b.Property<string>("FilterServicesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
 
                     b.Property<string>("GitHubEventType")
                         .HasMaxLength(100)

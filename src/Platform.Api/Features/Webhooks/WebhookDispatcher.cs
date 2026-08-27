@@ -35,16 +35,9 @@ public class WebhookDispatcher : IWebhookDispatcher
             var events = JsonSerializer.Deserialize<List<string>>(s.EventsJson) ?? [];
             if (!events.Contains(eventType)) return false;
 
-            // Apply product/environment filters only when the event carries them
-            if (filters is not null)
-            {
-                if (!string.IsNullOrEmpty(s.FilterProduct) && s.FilterProduct != filters.Product)
-                    return false;
-                if (!string.IsNullOrEmpty(s.FilterEnvironment) && s.FilterEnvironment != filters.Environment)
-                    return false;
-            }
-
-            return true;
+            // Product / service / environment filters, each a set and each applied only when the
+            // event carries that dimension.
+            return WebhookSubscriptionFilters.Matches(s, filters);
         }).ToList();
 
         if (matching.Count == 0) return 0;

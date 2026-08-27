@@ -4,6 +4,17 @@ import { isLocalAuthEnabled } from './authConfig';
 import { getStoredToken } from './localAuth';
 
 /**
+ * A webhook subscription's filter dimensions as written. Each is a set; an omitted or empty one
+ * means "any". Sent whole — a supplied `filters` states all three, so an empty array clears a
+ * dimension rather than leaving it alone.
+ */
+export interface WebhookFilterInput {
+  products?: string[];
+  services?: string[];
+  environments?: string[];
+}
+
+/**
  * Everything the build registry read surface filters on. Shared by the list and the facet counts,
  * which take the identical query string — the counts describe the list, so they must be asked the
  * same question.
@@ -465,7 +476,7 @@ class ApiClient {
    * The msteams and discord targets reject it outright: their URL is the credential. Those two take
    * `messageTemplate` / `messageTitle` instead, and fall back to per-event defaults without them.
    */
-  createWebhook(data: { name: string; url: string; events: string[]; filters?: { product?: string; environment?: string }; targetType?: string; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
+  createWebhook(data: { name: string; url: string; events: string[]; filters?: WebhookFilterInput; targetType?: string; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
     return this.request<import('./types').WebhookSubscription>('/webhooks', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -473,11 +484,21 @@ class ApiClient {
   }
 
   /** `secret` rotates the stored credential; omit it to keep the current one. */
-  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: { product?: string; environment?: string }; active?: boolean; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
+  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: WebhookFilterInput; active?: boolean; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
     return this.request<import('./types').WebhookSubscription>(`/webhooks/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
+  }
+
+  /**
+   * Products, services and environments the platform has seen, for the filter pickers. Suggestions
+   * only — a subscription may legitimately name a value that has not deployed yet.
+   */
+  getWebhookFilterOptions() {
+    return this.request<{ products: string[]; services: string[]; environments: string[] }>(
+      '/webhooks/filter-options'
+    );
   }
 
   /**

@@ -28,6 +28,7 @@ public static class WebhookEndpoints
         group.MapPost("/deliveries/{id:guid}/retry", RetryDelivery);
         group.MapPost("/{id:guid}/test", TestSubscription);
         group.MapPost("/preview-message", PreviewMessage);
+        group.MapGet("/filter-options", GetFilterOptions);
 
         // ── Delivery maintenance (Settings → Maintenance) ────────────────────
         // Bulk counterparts to the per-delivery retry above, plus retention. The per-row button is
@@ -275,6 +276,57 @@ public static class WebhookEndpoints
             ? null
             : messageTitle.Trim();
 
+    /// <summary>
+    /// Alias-resolves every environment in a filter set. The filter is matched against the
+    /// environment stored on the event, so a subscription written for "prod" has to hold the
+    /// canonical key or it silently matches nothing — a webhook that never fires is the hardest kind
+    /// of misconfiguration to spot. Resolving can collapse two spellings onto one key, hence the
+    /// re-normalise.
+    /// </summary>
+    private static async Task<string[]> ResolveEnvironmentFilterAsync(
+        EnvironmentAliasResolver environments, string[] values)
+    {
+        if (values.Length == 0) return values;
+        var resolved = new List<string>(values.Length);
+        foreach (var value in values) resolved.Add(await environments.ResolveAsync(value));
+        return WebhookSubscriptionFilters.Normalize(resolved);
+    }
+
+    /// <summary>
+    /// Validates and writes all three filter sets onto <paramref name="sub"/>, returning an error
+    /// message instead if any dimension is too wide or holds a value that is too long. Nothing is
+    /// written when validation fails, so a rejected update leaves the stored filters untouched.
+    /// </summary>
+    private static async Task<string?> ApplyFiltersAsync(
+        WebhookSubscription sub, WebhookFilterDto filters, EnvironmentAliasResolver environments)
+    {
+        var products = filters.AllProducts();
+        var services = filters.AllServices();
+        var envs = await ResolveEnvironmentFilterAsync(environments, filters.AllEnvironments());
+
+        var error = WebhookSubscriptionFilters.Validate("products", products)
+            ?? WebhookSubscriptionFilters.Validate("services", services)
+            ?? WebhookSubscriptionFilters.Validate("environments", envs);
+        if (error is not null) return error;
+
+        sub.FilterProductsJson = WebhookSubscriptionFilters.Serialize(products);
+        sub.FilterServicesJson = WebhookSubscriptionFilters.Serialize(services);
+        sub.FilterEnvironmentsJson = WebhookSubscriptionFilters.Serialize(envs);
+        return null;
+    }
+
+    /// <summary>The filter sets as the API reports them — always all three, always arrays.</summary>
+    private static object FilterResponse(
+        string? productsJson, string? servicesJson, string? environmentsJson) => new
+        {
+            products = WebhookSubscriptionFilters.Parse(productsJson),
+            services = WebhookSubscriptionFilters.Parse(servicesJson),
+            environments = WebhookSubscriptionFilters.Parse(environmentsJson),
+        };
+
+    private static object FilterResponse(WebhookSubscription sub)
+        => FilterResponse(sub.FilterProductsJson, sub.FilterServicesJson, sub.FilterEnvironmentsJson);
+
     private static async Task<IResult> CreateSubscription(
         PlatformDbContext db,
         IDataProtectionProvider dataProtection,
@@ -310,11 +362,6 @@ public static class WebhookEndpoints
             Url = request.Url,
             EncryptedSecret = isMessaging ? "" : protector.Protect(rawSecret),
             EventsJson = JsonSerializer.Serialize(request.Events),
-            FilterProduct = request.Filters?.Product,
-            // Alias-resolved: the filter is matched against the environment stored on the event, so a
-            // subscription written for "prod" has to hold the canonical key or it silently matches
-            // nothing â€” a webhook that never fires is the hardest kind of misconfiguration to spot.
-            FilterEnvironment = await environments.ResolveFilterAsync(request.Filters?.Environment),
             TargetType = targetType,
             SignatureHeader = NormalizeSignatureHeader(targetType, request.SignatureHeader),
             GitHubEventType = NormalizeGitHubEventType(targetType, request.GitHubEventType),
@@ -322,6 +369,10 @@ public static class WebhookEndpoints
             MessageTitle = NormalizeMessageTitle(targetType, request.MessageTitle),
             Active = true,
         };
+
+        var filterError = await ApplyFiltersAsync(
+            sub, request.Filters ?? new WebhookFilterDto(), environments);
+        if (filterError is not null) return Results.BadRequest(new { error = filterError });
 
         db.WebhookSubscriptions.Add(sub);
         await db.SaveChangesAsync();
@@ -334,7 +385,7 @@ public static class WebhookEndpoints
             // Shown only once, and only when we minted it — the caller already has the others.
             secret = isGeneric ? rawSecret : null,
             events = request.Events,
-            filters = new { product = sub.FilterProduct, environment = sub.FilterEnvironment },
+            filters = FilterResponse(sub),
             targetType = sub.TargetType,
             signatureHeader = sub.SignatureHeader,
             githubEventType = sub.GitHubEventType,
@@ -355,7 +406,11 @@ public static class WebhookEndpoints
                 s.Name,
                 s.Url,
                 events = s.EventsJson,
-                filters = new { product = s.FilterProduct, environment = s.FilterEnvironment },
+                // Carried through as raw JSON and parsed below — the sets are stored as JSON, and a
+                // provider-side parse is neither available nor needed for a page of subscriptions.
+                s.FilterProductsJson,
+                s.FilterServicesJson,
+                s.FilterEnvironmentsJson,
                 targetType = s.TargetType,
                 signatureHeader = s.SignatureHeader,
                 githubEventType = s.GitHubEventType,
@@ -390,7 +445,7 @@ public static class WebhookEndpoints
             s.Name,
             s.Url,
             events = JsonSerializer.Deserialize<string[]>(s.events) ?? [],
-            s.filters,
+            filters = FilterResponse(s.FilterProductsJson, s.FilterServicesJson, s.FilterEnvironmentsJson),
             s.targetType,
             s.signatureHeader,
             s.githubEventType,
@@ -437,7 +492,7 @@ public static class WebhookEndpoints
             sub.Name,
             sub.Url,
             events = JsonSerializer.Deserialize<string[]>(sub.EventsJson) ?? [],
-            filters = new { product = sub.FilterProduct, environment = sub.FilterEnvironment },
+            filters = FilterResponse(sub),
             targetType = sub.TargetType,
             signatureHeader = sub.SignatureHeader,
             githubEventType = sub.GitHubEventType,
@@ -483,8 +538,10 @@ public static class WebhookEndpoints
         if (request.Events is not null) sub.EventsJson = JsonSerializer.Serialize(request.Events);
         if (request.Filters is not null)
         {
-            sub.FilterProduct = request.Filters.Product;
-            sub.FilterEnvironment = await environments.ResolveFilterAsync(request.Filters.Environment);
+            // Whole-object replacement, as it has always been: an omitted `filters` keeps the stored
+            // sets, and a supplied one states them in full — including empty, which clears a dimension.
+            var filterError = await ApplyFiltersAsync(sub, request.Filters, environments);
+            if (filterError is not null) return Results.BadRequest(new { error = filterError });
         }
         if (request.SignatureHeader is not null)
             sub.SignatureHeader = NormalizeSignatureHeader(sub.TargetType, request.SignatureHeader);
@@ -509,7 +566,7 @@ public static class WebhookEndpoints
             sub.Name,
             sub.Url,
             events = JsonSerializer.Deserialize<string[]>(sub.EventsJson) ?? [],
-            filters = new { product = sub.FilterProduct, environment = sub.FilterEnvironment },
+            filters = FilterResponse(sub),
             targetType = sub.TargetType,
             signatureHeader = sub.SignatureHeader,
             githubEventType = sub.GitHubEventType,
@@ -670,6 +727,38 @@ public static class WebhookEndpoints
         });
     }
 
+    /// <summary>
+    /// The vocabulary behind the filter pickers: every product, service and environment the platform
+    /// has actually seen, plus the configured environments (which exist before anything deploys to
+    /// them). Suggestions only — a filter may name a value that has not arrived yet, which is exactly
+    /// what you want when wiring a subscription ahead of the first deployment.
+    /// </summary>
+    private static async Task<IResult> GetFilterOptions(
+        PlatformDbContext db, EnvironmentAliasResolver environments, CancellationToken ct)
+    {
+        var products = await db.DeployEvents
+            .Select(d => d.Product).Distinct().OrderBy(p => p).ToListAsync(ct);
+        var services = await db.DeployEvents
+            .Select(d => d.Service).Distinct().OrderBy(s => s).ToListAsync(ct);
+        var seenEnvironments = await db.DeployEvents
+            .Select(d => d.Environment).Distinct().ToListAsync(ct);
+
+        var configured = (await environments.MapAsync(ct)).Keys;
+        var allEnvironments = configured
+            .Concat(seenEnvironments)
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(e => e, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return Results.Ok(new
+        {
+            products = products.Where(p => !string.IsNullOrWhiteSpace(p)),
+            services = services.Where(s => !string.IsNullOrWhiteSpace(s)),
+            environments = allEnvironments,
+        });
+    }
+
     private static string GenerateSecret()
     {
         var bytes = RandomNumberGenerator.GetBytes(32);
@@ -713,7 +802,28 @@ public record UpdateWebhookRequest(
     string? MessageTemplate = null,
     string? MessageTitle = null);
 
-public record WebhookFilterDto(string? Product = null, string? Environment = null);
+/// <summary>
+/// The three filter dimensions, each a set. Empty or omitted means "any".
+/// <para>The singular <paramref name="Product"/> / <paramref name="Environment"/> fields are the
+/// pre-multi-value spelling, still accepted so existing callers keep working: a value there is folded
+/// into the matching set. Responses only carry the sets — a single field cannot honestly report a
+/// filter on three products, and reporting the first would read as "only that one".</para>
+/// </summary>
+public record WebhookFilterDto(
+    string? Product = null,
+    string? Environment = null,
+    string[]? Products = null,
+    string[]? Services = null,
+    string[]? Environments = null)
+{
+    public string[] AllProducts() => Combine(Products, Product);
+    public string[] AllServices() => WebhookSubscriptionFilters.Normalize(Services);
+    public string[] AllEnvironments() => Combine(Environments, Environment);
+
+    private static string[] Combine(string[]? many, string? single)
+        => WebhookSubscriptionFilters.Normalize(
+            single is null ? many : (many ?? []).Append(single));
+}
 
 /// <summary>
 /// A template render against a sample payload — nothing is stored and nothing is sent, so this is
