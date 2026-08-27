@@ -26,6 +26,9 @@ import {
   maskNotificationUrl,
   targetLabel,
 } from './webhookTargets';
+import { WebhookFilterFields, WebhookFilterSummary } from './WebhookFilterFields';
+import { EMPTY_FILTERS, hasAnyFilter } from './webhookFilters';
+import type { WebhookFilters } from '@/lib/types';
 
 export function WebhookDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -42,8 +45,7 @@ export function WebhookDetailPage() {
   const [editName, setEditName] = useState('');
   const [editUrl, setEditUrl] = useState('');
   const [editEvents, setEditEvents] = useState<string[]>([]);
-  const [editFilterProduct, setEditFilterProduct] = useState('');
-  const [editFilterEnv, setEditFilterEnv] = useState('');
+  const [editFilters, setEditFilters] = useState<WebhookFilters>(EMPTY_FILTERS);
   const [editSignatureHeader, setEditSignatureHeader] = useState('');
   const [editGitHubEventType, setEditGitHubEventType] = useState('');
   // Never seeded from the webhook — the stored credential is write-only. Blank means "keep it".
@@ -135,8 +137,7 @@ export function WebhookDetailPage() {
     setEditName(webhook.name);
     setEditUrl(webhook.url);
     setEditEvents([...webhook.events]);
-    setEditFilterProduct(webhook.filters.product ?? '');
-    setEditFilterEnv(webhook.filters.environment ?? '');
+    setEditFilters(webhook.filters);
     setEditSignatureHeader(webhook.signatureHeader ?? '');
     setEditGitHubEventType(webhook.githubEventType ?? '');
     setEditSecret('');
@@ -156,7 +157,13 @@ export function WebhookDetailPage() {
         name: editName,
         url: editUrl,
         events: editEvents,
-        filters: { product: editFilterProduct || undefined, environment: editFilterEnv || undefined },
+        // Sent whole, including the empty dimensions — this is the editor, so clearing a field has
+        // to mean "widen it back to everything" rather than "leave the stored value alone".
+        filters: {
+          products: editFilters.products,
+          services: editFilters.services,
+          environments: editFilters.environments,
+        },
         signatureHeader: webhook.targetType === 'azure_devops' ? editSignatureHeader : undefined,
         gitHubEventType: webhook.targetType === 'github' ? editGitHubEventType : undefined,
         messageTitle: isNotification ? editMessageTitle : undefined,
@@ -404,32 +411,7 @@ export function WebhookDetailPage() {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                  Filter: Product <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-                </label>
-                <input
-                  type="text"
-                  value={editFilterProduct}
-                  onChange={(e) => setEditFilterProduct(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                  Filter: Environment <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-                </label>
-                <input
-                  type="text"
-                  value={editFilterEnv}
-                  onChange={(e) => setEditFilterEnv(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-                />
-              </div>
-            </div>
+            <WebhookFilterFields filters={editFilters} onChange={setEditFilters} editing />
 
             {/* Message template — the whole payload for a chat target, so it is edited here rather
                 than being a per-target detail tucked in beside a signature header. */}
@@ -556,11 +538,8 @@ export function WebhookDetailPage() {
             <div>
               <span style={{ color: 'var(--text-muted)' }}>Filters</span>
               <div className="mt-1" style={{ color: 'var(--text-primary)' }}>
-                {webhook.filters.product || webhook.filters.environment ? (
-                  <div className="flex gap-2">
-                    {webhook.filters.product && <span>Product: {webhook.filters.product}</span>}
-                    {webhook.filters.environment && <span>Env: {webhook.filters.environment}</span>}
-                  </div>
+                {hasAnyFilter(webhook.filters) ? (
+                  <WebhookFilterSummary filters={webhook.filters} />
                 ) : (
                   <span style={{ color: 'var(--text-muted)' }}>None</span>
                 )}

@@ -6,6 +6,9 @@ import {
   defaultMessageTemplate,
   type NotificationTargetType,
 } from './webhookTargets';
+import { WebhookFilterFields } from './WebhookFilterFields';
+import { EMPTY_FILTERS, toFilterInput } from './webhookFilters';
+import type { WebhookFilters } from '@/lib/types';
 
 /**
  * Creating a chat notification, as opposed to a machine-facing webhook. The two forms are separate
@@ -66,8 +69,7 @@ export function NotificationCreateForm({ onCancel, onCreated }: NotificationCrea
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<string[]>([]);
-  const [filterProduct, setFilterProduct] = useState('');
-  const [filterEnv, setFilterEnv] = useState('');
+  const [filters, setFilters] = useState<WebhookFilters>(EMPTY_FILTERS);
   // Null means "still following the prefill": until the operator types, changing the selected
   // events keeps the templates in step with what they picked, and after that the prefill stops
   // fighting them for the cursor. Held as an override rather than synced into state so the boxes
@@ -148,15 +150,11 @@ export function NotificationCreateForm({ onCancel, onCreated }: NotificationCrea
     setCreating(true);
     setError(null);
     try {
-      const filters =
-        filterProduct || filterEnv
-          ? { product: filterProduct || undefined, environment: filterEnv || undefined }
-          : undefined;
       await api.createWebhook({
         name: name.trim(),
         url: url.trim(),
         events: selectedEvents,
-        filters,
+        filters: toFilterInput(filters),
         targetType,
         // Always sent, even when untouched: storing the resolved template is what lets an operator
         // see and edit exactly what gets posted instead of an invisible server-side default.
@@ -446,34 +444,7 @@ export function NotificationCreateForm({ onCancel, onCreated }: NotificationCrea
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="space-y-1.5">
-          <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Filter: Product <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-          </label>
-          <input
-            type="text"
-            value={filterProduct}
-            onChange={(e) => setFilterProduct(e.target.value)}
-            placeholder="e.g. billing-platform"
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Filter: Environment <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-          </label>
-          <input
-            type="text"
-            value={filterEnv}
-            onChange={(e) => setFilterEnv(e.target.value)}
-            placeholder="e.g. production"
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
-          />
-        </div>
-      </div>
+      <WebhookFilterFields filters={filters} onChange={setFilters} />
 
       <div className="flex items-center gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
         <button
