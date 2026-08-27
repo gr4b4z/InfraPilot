@@ -21,7 +21,7 @@ public class WebhookDispatcher : IWebhookDispatcher
         _logger = logger;
     }
 
-    public async Task DispatchAsync(
+    public async Task<int> DispatchAsync(
         string eventType, object payload, WebhookEventFilters? filters = null,
         WebhookDispatchOptions? options = null)
     {
@@ -47,7 +47,7 @@ public class WebhookDispatcher : IWebhookDispatcher
             return true;
         }).ToList();
 
-        if (matching.Count == 0) return;
+        if (matching.Count == 0) return 0;
 
         // A delay is expressed as a future NextRetryAt — the worker already refuses to touch a row
         // before that moment, so the hold needs no timer, no in-memory state, and survives a restart.
@@ -90,6 +90,8 @@ public class WebhookDispatcher : IWebhookDispatcher
         {
             _logger.LogInformation("Queued {Count} webhook deliveries for event {EventType}", matching.Count, eventType);
         }
+
+        return matching.Count;
     }
 
     /// <summary>

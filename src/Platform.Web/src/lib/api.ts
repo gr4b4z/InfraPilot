@@ -725,6 +725,19 @@ class ApiClient {
   }
 
   /**
+   * Re-announces `promotion.approved` for promotions stuck at Approved with no deploy behind them —
+   * the ones whose original announcement never reached the pipeline that acts on it. Promotions
+   * whose delivery is still queued are skipped rather than duplicated. Admin-only; `dryRun` reports
+   * the list without queuing anything, which the Maintenance card always does first.
+   */
+  resendApprovedPromotionWebhooks(dryRun: boolean) {
+    return this.request<ResendApprovedWebhooksResult>(
+      `/promotions/admin/candidates/resend-approved-webhooks`,
+      { method: 'POST', body: JSON.stringify({ dryRun }) },
+    );
+  }
+
+  /**
    * Duplicate promotion candidates — residue of the pre-fix create path that minted a new row per
    * external POST instead of reusing the natural key. Same scan/remove contract as the deploy-event
    * duplicates pair; the backend excludes legitimate re-promote history from what it calls a duplicate.
@@ -2029,6 +2042,39 @@ export interface PromotionReconcileCandidate {
   at: string;
   /** For a supersede, the newer version now in the target. Null for a close. */
   landedVersion: string | null;
+}
+
+/**
+ * Result of the approved-webhook resend. `examined` is every approved-but-undeployed promotion in
+ * scope, and `resent + skipped === examined`. `deliveries` is what actually got queued — it can be
+ * 0 with a non-zero `resent` when no active subscription listens for `promotion.approved`, which
+ * the card reports rather than claiming success. Always 0 on a dry run.
+ */
+export interface ResendApprovedWebhooksResult {
+  examined: number;
+  resent: number;
+  skipped: number;
+  deliveries: number;
+  dryRun: boolean;
+  promotions: ResendApprovedWebhookPromotion[];
+}
+
+/** One approved promotion the resend looked at, with what the platform knows of its last delivery. */
+export interface ResendApprovedWebhookPromotion {
+  id: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  approvedAt: string | null;
+  /** "delivered" | "failed" | "cancelled" | "pending", or "none" when nothing is on record. */
+  lastDeliveryStatus: string;
+  lastDeliveryAt: string | null;
+  /** Rows queued by this resend. 0 on a dry run and on a skipped row. */
+  deliveries: number;
+  /** Why this promotion was left alone; null when it was (or would be) re-sent. */
+  skippedReason: string | null;
 }
 
 /**
