@@ -17,7 +17,7 @@ namespace Platform.Api.Migrations.SqlServer
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.9")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -696,6 +696,10 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("FromRevision")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FromVersion")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 

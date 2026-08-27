@@ -82,7 +82,7 @@ public static class PromotionEndpoints
             }
 
             var capability = await svc.CanUserApproveManyAsync(candidates);
-            var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
+            var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
             var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
 
@@ -90,7 +90,7 @@ public static class PromotionEndpoints
             {
                 candidates = candidates.Select(c =>
                 {
-                    targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
+                    targetVersions.TryGetValue(c.Id, out var target);
                     sourceBranches.TryGetValue((c.Product, c.Service, c.Version), out var sourceBranch);
                     decidedWorkItems.TryGetValue((c.Product, c.TargetEnv), out var decidedKeys);
                     // sourceEventReferences carries the candidate's own net change set so the list
@@ -98,7 +98,8 @@ public static class PromotionEndpoints
                     return ToDto(c, capability.GetValueOrDefault(c.Id),
                         sourceEventParticipants: Array.Empty<ParticipantDto>(),
                         sourceEventReferences: c.References,
-                        targetCurrentVersion: targetCurrent,
+                        targetCurrentVersion: target.Current,
+                        fromVersion: target.Baseline,
                         sourceBranch: sourceBranch,
                         decidedWorkItemKeys: decidedKeys);
                 }),
@@ -124,12 +125,7 @@ public static class PromotionEndpoints
             // own guards so the button appears exactly when the action would go through.
             var canCancelApproval = await svc.CanUserCancelApprovalAsync(c);
 
-            var targetCurrent = await db.DeployEvents
-                .AsNoTracking()
-                .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv)
-                .OrderByDescending(e => e.DeployedAt)
-                .Select(e => e.Version)
-                .FirstOrDefaultAsync();
+            var target = (await LoadTargetVersionsAsync(db, new[] { c })).GetValueOrDefault(c.Id);
 
             // Build-sourced candidates only — see the `sourceBranch` note on ToDto.
             var sourceBranch = c.SourceEnv == Builds.BuildPromotions.SourceEnv
@@ -212,7 +208,8 @@ public static class PromotionEndpoints
                 candidate = ToDto(c, canApprove,
                     sourceEventParticipants: Array.Empty<ParticipantDto>(),
                     sourceEventReferences: c.References,
-                    targetCurrentVersion: targetCurrent,
+                    targetCurrentVersion: target.Current,
+                    fromVersion: target.Baseline,
                     sourceBranch: sourceBranch,
                     decidedWorkItemKeys: decidedWorkItems),
                 approvals = approvals.Select(a => new
@@ -777,6 +774,7 @@ public static class PromotionEndpoints
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
         IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
         string? targetCurrentVersion = null,
+        string? fromVersion = null,
         string? sourceBranch = null,
         // Work items on this edge that already carry a decision — see LoadDecidedWorkItemKeysAsync.
         // Supplied by the read paths (list, detail), which is where completeness is rendered; the
@@ -792,9 +790,15 @@ public static class PromotionEndpoints
         // Display/traceability only — the target env's current SHA and the promoted SHA.
         fromRevision = c.FromRevision,
         toRevision = c.ToRevision,
-        // Version currently deployed in the target environment (what this promotion
-        // would replace). Null when the target has no prior deploy for this service.
+        // Version currently deployed in the target environment, right now. Null when the target
+        // has no prior deploy for this service. Note this is live state, not the promotion's:
+        // once a promotion lands it equals `version`, which is why history renders `fromVersion`.
         targetCurrentVersion,
+        // The version the target ran when this promotion was created — the left-hand side of the
+        // "v1 → v2" it describes, and the baseline its change set was computed against. Frozen, so
+        // a Deployed or Rejected promotion still says where it came from. See
+        // LoadTargetVersionsAsync for how it is resolved on candidates predating the stored field.
+        fromVersion,
         // Git ref the promoted build was produced from. Only build-sourced candidates have one:
         // "build" is a synthetic source env — nothing runs there — so the branch is the only thing
         // that says where the version actually came from. Null on every other edge, and on a
@@ -831,38 +835,92 @@ public static class PromotionEndpoints
         }),
     };
 
-    // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)
-    // triple across the candidate set. Single query; returns a dictionary keyed by the triple.
-    private static async Task<Dictionary<(string Product, string Service, string TargetEnv), string>> LoadTargetCurrentVersionsAsync(
+    /// <summary>
+    /// The two target-environment versions a promotion card shows, per candidate:
+    /// <list type="bullet">
+    ///   <item><c>Current</c> — what the target runs right now (live state).</item>
+    ///   <item><c>Baseline</c> — what it ran when the candidate was created, i.e. the "from" side of
+    ///   the promotion. This is <see cref="PromotionCandidate.FromVersion"/> when recorded.</item>
+    /// </list>
+    ///
+    /// <para>For a still-open candidate the two are the same thing. They diverge the moment the
+    /// promotion (or anything else) lands: a Deployed candidate's target now runs the promoted
+    /// version, so rendering history off <c>Current</c> reads as "v2 → v2" and loses where the
+    /// change came from — the bug this split fixes.</para>
+    ///
+    /// <para>Candidates created before <c>FromVersion</c> was recorded have no stored baseline, so
+    /// a closed one falls back to reconstructing it from deploy history: the last version deployed
+    /// to the target strictly before the candidate closed (Deployed) or was created (Rejected /
+    /// Superseded). Best-effort — deploy history is the only record left for those rows — but it is
+    /// the same answer the stored value would hold, and it makes existing history read correctly
+    /// without a backfill.</para>
+    ///
+    /// <para>One query for the whole candidate set: a coarse product/service/env IN filter, then
+    /// reduced in memory.</para>
+    /// </summary>
+    private static async Task<Dictionary<Guid, (string? Current, string? Baseline)>> LoadTargetVersionsAsync(
         PlatformDbContext db,
         IReadOnlyCollection<PromotionCandidate> candidates,
         CancellationToken ct = default)
     {
+        if (candidates.Count == 0) return new();
+
         var triples = candidates
             .Select(c => new { c.Product, c.Service, c.TargetEnv })
             .Distinct()
             .ToList();
-        if (triples.Count == 0) return new();
 
         var products = triples.Select(t => t.Product).Distinct().ToList();
         var services = triples.Select(t => t.Service).Distinct().ToList();
         var envs = triples.Select(t => t.TargetEnv).Distinct().ToList();
 
-        // Over-fetch candidates with a coarse product/service/env IN filter, then
-        // reduce in-memory to (product, service, env) -> latest version.
         var events = await db.DeployEvents
             .AsNoTracking()
             .Where(e => products.Contains(e.Product)
                      && services.Contains(e.Service)
                      && envs.Contains(e.Environment))
-            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt })
+            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt, e.Status })
             .ToListAsync(ct);
 
         var wanted = triples.Select(t => (t.Product, t.Service, t.TargetEnv)).ToHashSet();
-        return events
+        // Newest first, so "current" is the head and "as of T" is the first entry before T.
+        var history = events
             .Where(e => wanted.Contains((e.Product, e.Service, e.Environment)))
             .GroupBy(e => (e.Product, e.Service, e.Environment))
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.DeployedAt).First().Version);
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(e => e.DeployedAt)
+                      .Select(e => (e.Version, e.DeployedAt, e.Status))
+                      .ToList());
+
+        var result = new Dictionary<Guid, (string? Current, string? Baseline)>();
+        foreach (var c in candidates)
+        {
+            history.TryGetValue((c.Product, c.Service, c.TargetEnv), out var timeline);
+            var current = timeline is { Count: > 0 } ? timeline[0].Version : null;
+
+            string? baseline = c.FromVersion;
+            if (string.IsNullOrEmpty(baseline))
+            {
+                // No stored baseline. Closed candidates get one reconstructed as of the moment they
+                // closed; an open one is still measured against live state, which is correct for it.
+                DateTimeOffset? asOf = c.Status switch
+                {
+                    PromotionStatus.Deployed => c.DeployedAt ?? c.CreatedAt,
+                    PromotionStatus.Rejected or PromotionStatus.Superseded => c.CreatedAt,
+                    _ => null,
+                };
+                // Succeeded only, matching how the stored value is captured on create: a failed
+                // deploy never changed what the environment was running.
+                baseline = asOf is { } t && timeline is not null
+                    ? timeline.FirstOrDefault(e => e.DeployedAt < t && e.Status == "succeeded").Version
+                    : current;
+            }
+
+            result[c.Id] = (current, string.IsNullOrEmpty(baseline) ? null : baseline);
+        }
+
+        return result;
     }
 
     // Batch-looks up the branch each build-sourced candidate's version was built from, keyed by
@@ -885,7 +943,7 @@ public static class PromotionEndpoints
         var services = triples.Select(t => t.Service).Distinct().ToList();
         var versions = triples.Select(t => t.Version).Distinct().ToList();
 
-        // Same shape as LoadTargetCurrentVersionsAsync: a coarse IN filter, then the exact triples
+        // Same shape as LoadTargetVersionsAsync: a coarse IN filter, then the exact triples
         // reduced in memory — the extra rows a coarse filter drags in are cheap next to a query
         // per candidate.
         var builds = await db.Builds
@@ -912,7 +970,7 @@ public static class PromotionEndpoints
     /// and a signed-off item is past needing one.
     ///
     /// <para>One query for the whole candidate set, the same coarse-IN-then-reduce shape as
-    /// <see cref="LoadTargetCurrentVersionsAsync"/>. The set may name tickets these candidates don't
+    /// <see cref="LoadTargetVersionsAsync"/>. The set may name tickets these candidates don't
     /// carry (another promotion on the same edge decided them); harmless, because the consumer only
     /// ever looks up keys the candidate actually references.</para>
     /// </summary>
