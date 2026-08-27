@@ -128,6 +128,9 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   version)`; a newer version on the same edge supersedes the pending older candidate.
 - `GET /api/promotions?status=&product=&service=&targetEnv=&reference=` — list.
 - `GET /api/promotions/{id}` — detail incl. `approvalProgress` and comments.
+  Candidates carry both `fromVersion` (what the target ran when the promotion was created — the
+  "from" side of the change, frozen) and `targetCurrentVersion` (what it runs now). They differ
+  once the promotion lands, so read history off `fromVersion`.
 - `POST /api/promotions/{id}/approve` / `/reject` — human actions (body `{ "comment"?: ... }`).
 - Work-item sign-off: `POST /api/work-items/{key}/approvals` | `/issues` | `/blocks` with body
   `{ product, targetEnv, comment? }`.

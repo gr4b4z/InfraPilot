@@ -142,6 +142,15 @@ Query params (all optional): `status`, `product`, `service`, `targetEnv`, `refer
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
 current user (Pending + authorized for ≥1 open requirement + not already decided).
 
+Every candidate (list and detail alike) carries two target-env versions, which mean different
+things once the promotion is no longer open:
+
+- **`fromVersion`** — what the target ran when the candidate was created: the "from" side of the
+  change, and the baseline `references` were computed against. Frozen, so a Deployed or Rejected
+  promotion still says where it came from. `null` for a first deploy into the target.
+- **`targetCurrentVersion`** — what the target runs *right now*. Equal to `fromVersion` while the
+  promotion is open, and to `version` once it lands. Use `fromVersion` to render history.
+
 ### `GET /api/promotions/{id}` — detail
 Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress }`.
 

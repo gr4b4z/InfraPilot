@@ -19,6 +19,11 @@ const BUILD_SOURCE_ENV = 'build';
  *
  *     [Staging]  5.1.87-g0e2efdcb → 5.1.90-g3f62b443   from Staging Candidate
  *
+ * The left-hand version is the promotion's own baseline (`fromVersion`) — what the target ran when
+ * the promotion was created — not what the target runs today. They are the same thing while the
+ * promotion is open and diverge the moment it lands: a Deployed promotion rendered off live state
+ * reads as "v2 → v2" and forgets which version it came from.
+ *
  * This replaced a symmetric `source (newVersion) → target (currentVersion)` pair of pills, which
  * read as a *downgrade* to anybody scanning quickly: the higher version sat on the left and the
  * lower one on the right, because the two numbers belonged to different environments rather than
@@ -33,6 +38,7 @@ export function PromotionRoute({
   sourceEnv,
   targetEnv,
   version,
+  fromVersion,
   targetCurrentVersion,
   sourceBranch,
   size = 'sm',
@@ -44,7 +50,13 @@ export function PromotionRoute({
   targetEnv: string;
   /** The version being promoted — what `targetEnv` ends up on. */
   version: string;
-  /** What `targetEnv` runs today, or null for a first deploy there. */
+  /**
+   * What `targetEnv` ran when the promotion was created, or null for a first deploy there.
+   * Undefined (not null) on responses from an API that predates the field — then, and only then,
+   * `targetCurrentVersion` stands in for it.
+   */
+  fromVersion?: string | null;
+  /** What `targetEnv` runs today, or null if it has never been deployed to. */
   targetCurrentVersion: string | null;
   /** Full git ref, for candidates promoted straight from the build registry. */
   sourceBranch?: string | null;
@@ -52,6 +64,9 @@ export function PromotionRoute({
   size?: 'xs' | 'sm';
   className?: string;
 }) {
+  // Null is a real answer ("first deploy into the target"), so only a missing field falls back.
+  const baseline = fromVersion !== undefined ? fromVersion : targetCurrentVersion;
+
   const sourceName = useSettingsStore((s) => s.getDisplayName(sourceEnv));
   const targetName = useSettingsStore((s) => s.getDisplayName(targetEnv));
 
@@ -84,8 +99,8 @@ export function PromotionRoute({
       ? ` Built from ${branch}.`
       : ''
     : ` Build comes from ${sourceName}.`;
-  const title = targetCurrentVersion
-    ? `Promotes ${version} into ${targetName}, replacing ${targetCurrentVersion}.${provenance}`
+  const title = baseline
+    ? `Promotes ${version} into ${targetName}, replacing ${baseline}.${provenance}`
     : `Promotes ${version} into ${targetName} — first deploy there.${provenance}`;
 
   return (
@@ -98,12 +113,12 @@ export function PromotionRoute({
         className="inline-flex items-center gap-1.5 min-w-0 font-mono"
         style={{ fontSize: dims.version }}
       >
-        {targetCurrentVersion ? (
+        {baseline ? (
           <span
             className="truncate"
             style={{ color: 'var(--text-muted)' }}
           >
-            {targetCurrentVersion}
+            {baseline}
           </span>
         ) : (
           <span className="shrink-0 font-sans" style={{ color: 'var(--text-muted)' }}>

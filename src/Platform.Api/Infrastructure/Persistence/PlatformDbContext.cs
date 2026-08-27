@@ -526,6 +526,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
 
             e.Property(x => x.FromRevision).HasMaxLength(200);
             e.Property(x => x.ToRevision).HasMaxLength(200);
+            e.Property(x => x.FromVersion).HasMaxLength(200);
 
             var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
             if (jsonType != null) participantsJson.HasColumnType(jsonType);
