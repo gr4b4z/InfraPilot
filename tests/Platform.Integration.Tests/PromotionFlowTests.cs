@@ -829,6 +829,103 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
+    /// A promotion describes a move from one version to another, and it has to keep saying so after
+    /// it lands. The target env's live version is no help there: the moment the promotion deploys,
+    /// "what prod runs" IS the promoted version, so history rendered off it reads "v6.1.0 → v6.1.0"
+    /// and forgets where the change came from. The candidate records the version it was created
+    /// against and reports it as <c>fromVersion</c>, while <c>targetCurrentVersion</c> goes on
+    /// meaning live state.
+    /// </summary>
+    [Fact]
+    public async Task DeployedPromotion_StillReportsTheVersionItWasCreatedAgainst()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"basel-svc-{Guid.NewGuid():N}"[..20];
+
+        // prod is running v6.0.0 — the version the promotion below replaces.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v6.0.0", service: service));
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v6.1.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var listed = FindCandidate((await Deserialize(listResponse)).GetProperty("candidates"), "v6.1.0", "prod");
+        Assert.NotNull(listed);
+        var candidateId = listed.Value.GetProperty("id").GetString()!;
+
+        // While it is open the two agree — nothing has moved yet.
+        Assert.Equal("v6.0.0", listed.Value.GetProperty("fromVersion").GetString());
+        Assert.Equal("v6.0.0", listed.Value.GetProperty("targetCurrentVersion").GetString());
+
+        await _adminClient.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { comment = "ship it" });
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v6.1.0", service: service));
+
+        // Landed: prod now runs the promoted version, and the promotion still names its baseline.
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        var candidate = detail.GetProperty("candidate");
+        Assert.Equal("Deployed", candidate.GetProperty("status").GetString());
+        Assert.Equal("v6.1.0", candidate.GetProperty("targetCurrentVersion").GetString());
+        Assert.Equal("v6.0.0", candidate.GetProperty("fromVersion").GetString());
+
+        // …and the list says the same thing, which is where the misleading "v6.1.0 → v6.1.0" showed.
+        var deployedList = await Deserialize(
+            await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Deployed"));
+        var historical = FindCandidate(deployedList.GetProperty("candidates"), "v6.1.0", "prod");
+        Assert.NotNull(historical);
+        Assert.Equal("v6.0.0", historical.Value.GetProperty("fromVersion").GetString());
+    }
+
+    /// <summary>
+    /// Promotions created before the baseline was recorded have nothing stored, and they are exactly
+    /// the history this fix is about. For a closed one the read path reconstructs it from the target's
+    /// deploy history — the last version live there before the promotion landed — so existing rows
+    /// read correctly without a backfill.
+    /// </summary>
+    [Fact]
+    public async Task DeployedPromotion_WithNoRecordedBaseline_ReconstructsItFromDeployHistory()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"legacy-svc-{Guid.NewGuid():N}"[..20];
+
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v5.0.0", service: service));
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v5.1.0", service: service);
+
+        var listed = FindCandidate(
+            (await Deserialize(await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending")))
+                .GetProperty("candidates"), "v5.1.0", "prod");
+        Assert.NotNull(listed);
+        var candidateId = Guid.Parse(listed.Value.GetProperty("id").GetString()!);
+
+        // Age the row into a pre-FromVersion one.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.PromotionCandidates.FirstAsync(c => c.Id == candidateId);
+            row.FromVersion = null;
+            await db.SaveChangesAsync();
+        }
+
+        await _adminClient.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { comment = "ship it" });
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v5.1.0", service: service));
+
+        var candidate = (await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}")))
+            .GetProperty("candidate");
+        Assert.Equal("Deployed", candidate.GetProperty("status").GetString());
+        Assert.Equal("v5.1.0", candidate.GetProperty("targetCurrentVersion").GetString());
+        Assert.Equal("v5.0.0", candidate.GetProperty("fromVersion").GetString());
+    }
+
+    /// <summary>
     /// A closed candidate says the change shipped; <c>deploymentEventId</c> says <i>where</i> — the
     /// deploy event that put the version live in the target environment, which the detail page links
     /// "Deployed" to. Nothing stores that link (completion is matched on product/service/env/version),

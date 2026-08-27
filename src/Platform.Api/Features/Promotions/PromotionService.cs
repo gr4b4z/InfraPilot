@@ -181,7 +181,8 @@ public class PromotionService
             && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved
                 || c.Status == PromotionStatus.Deploying), ct);
         if (existing is not null)
-            return await UpdateExistingCandidateAsync(existing, dto, references, participants, ct);
+            return await UpdateExistingCandidateAsync(
+                existing, dto, references, participants, targetCurrentVersion, ct);
 
         var snapshot = await _resolver.SnapshotAsync(product, service, sourceEnv, targetEnv, ct);
 
@@ -204,6 +205,9 @@ public class PromotionService
             Version = version,
             FromRevision = dto.FromRevision,
             ToRevision = dto.ToRevision,
+            // The baseline this promotion was created against. Snapshotted rather than re-read at
+            // display time — see PromotionCandidate.FromVersion.
+            FromVersion = string.IsNullOrEmpty(targetCurrentVersion) ? null : targetCurrentVersion,
             References = references,
             Participants = participants,
             Status = effectiveAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
@@ -262,7 +266,8 @@ public class PromotionService
             _logger.LogInformation(
                 "Concurrent external create for {Product}/{Service} {Version} → reusing candidate {CandidateId}",
                 LogSanitizer.Clean(product), LogSanitizer.Clean(service), LogSanitizer.Clean(version), raced.Id);
-            return await UpdateExistingCandidateAsync(raced, dto, references, participants, ct);
+            return await UpdateExistingCandidateAsync(
+                raced, dto, references, participants, targetCurrentVersion, ct);
         }
 
         await _audit.Log(
@@ -328,11 +333,15 @@ public class PromotionService
     /// </summary>
     private async Task<PromotionCandidate> UpdateExistingCandidateAsync(
         PromotionCandidate existing, CreatePromotionDto dto,
-        List<ReferenceDto> references, List<PromotionParticipant> participants, CancellationToken ct)
+        List<ReferenceDto> references, List<PromotionParticipant> participants,
+        string? targetCurrentVersion, CancellationToken ct)
     {
         existing.References = references;
         existing.FromRevision = dto.FromRevision;
         existing.ToRevision = dto.ToRevision;
+        // Re-pushed change set, re-read baseline: the references the source system just computed are
+        // relative to whatever the target runs now, so FromVersion moves with FromRevision.
+        existing.FromVersion = string.IsNullOrEmpty(targetCurrentVersion) ? null : targetCurrentVersion;
         if (participants.Count > 0) existing.Participants = participants;
 
         // Re-sync the candidate-scoped work-item index to match the new references. Skipped wholesale
@@ -2816,6 +2825,9 @@ public class PromotionService
                 candidate.Version,
                 candidate.FromRevision,
                 candidate.ToRevision,
+                // What the target env was running when the promotion was created — the baseline the
+                // references below are the change set for.
+                candidate.FromVersion,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
                 // Who approved this candidate — approvals and any admin bypass, tagged by `via`.

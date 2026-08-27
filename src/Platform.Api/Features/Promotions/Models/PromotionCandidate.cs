@@ -36,6 +36,21 @@ public class PromotionCandidate
     public string? FromRevision { get; set; }
     public string? ToRevision { get; set; }
 
+    /// <summary>
+    /// The version the target environment was running when this candidate was created — the
+    /// baseline its <see cref="References"/> were computed against, and the left-hand side of the
+    /// "v1 → v2" the promotion describes. Captured server-side (latest succeeded deploy in
+    /// <see cref="TargetEnv"/>), refreshed alongside <see cref="FromRevision"/> when the source
+    /// system re-pushes the same candidate, and frozen from then on.
+    ///
+    /// <para>Stored rather than re-read at display time because the target env moves on: once a
+    /// promotion lands, the target's <i>current</i> version is the promoted one, so a historical
+    /// candidate rendered off live state forgets where it came from and reads as "v2 → v2".
+    /// Null on a first deploy into the target, and on candidates created before this was
+    /// recorded — read paths fall back to live state for those.</para>
+    /// </summary>
+    public string? FromVersion { get; set; }
+
     public PromotionStatus Status { get; set; } = PromotionStatus.Pending;
 
     // Resolved policy snapshot: the rules this candidate is actually gated on. Taken at creation
