@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
@@ -2597,6 +2597,140 @@ public class PromotionService
     }
 
     // ---------------------------------------------------------------------
+    // Approved-webhook resend maintenance
+    // ---------------------------------------------------------------------
+
+    /// <summary>The approval announcement, and the only event the resend pass re-emits.</summary>
+    public const string ApprovedEventType = "promotion.approved";
+
+    /// <summary>
+    /// Re-emits <c>promotion.approved</c> for every promotion sitting in
+    /// <see cref="PromotionStatus.Approved"/> — approved, and with no deploy yet to show for it.
+    ///
+    /// <para>The repair pass for an approval whose announcement never landed: nobody was subscribed
+    /// when it fired, the subscription was inactive or misconfigured, the receiver was down long
+    /// enough to exhaust its retries and the failed rows were purged, or the delivery was cancelled
+    /// by an undo the approver then reversed. In every one of those cases the promotion is correctly
+    /// Approved and the pipeline that should have picked it up never heard a thing.</para>
+    ///
+    /// <para>Deliberately scoped to Approved alone. Deploying and Deployed promotions demonstrably
+    /// got their message — something acted on it — and Pending, Rejected and Superseded ones were
+    /// never cleared to go out at all; re-announcing any of those would be inventing news.</para>
+    ///
+    /// <para>A promotion whose approval is still queued for delivery is skipped, not resent: that
+    /// covers both a fresh approval inside its <see cref="ApprovedWebhookDelay"/> undo window and a
+    /// worker running behind, and in both cases the receiver is about to be told anyway. The guard
+    /// reads the pending queue by payload rather than by cancel key, so rows queued before cancel
+    /// keys existed still count — double-firing a live pipeline is the one outcome this pass must
+    /// never produce.</para>
+    ///
+    /// <para><paramref name="dryRun"/> reports the list without queuing anything, which is how the
+    /// Maintenance card always runs it first.</para>
+    /// </summary>
+    public async Task<ResendApprovedWebhooksResult> ResendApprovedWebhooksAsync(
+        string? product = null, string? targetEnv = null, bool dryRun = false, CancellationToken ct = default)
+    {
+        var query = _db.PromotionCandidates.Where(c => c.Status == PromotionStatus.Approved);
+
+        if (!string.IsNullOrWhiteSpace(product)) query = query.Where(c => c.Product == product.Trim());
+        if (!string.IsNullOrWhiteSpace(targetEnv)) query = query.Where(c => c.TargetEnv == targetEnv.Trim());
+
+        // Oldest approval first: the longer a promotion has been waiting, the likelier it is the one
+        // that got lost, and an admin reading the preview should meet those at the top.
+        var approved = await query.OrderBy(c => c.ApprovedAt).ThenBy(c => c.CreatedAt).ToListAsync(ct);
+        if (approved.Count == 0)
+            return new ResendApprovedWebhooksResult(0, 0, 0, 0, dryRun, []);
+
+        // Every still-unsent approval delivery, whatever queued it — the skip guard, matched on the
+        // candidate id inside the envelope so pre-cancel-key rows are seen too.
+        var pendingPayloads = await _db.WebhookDeliveries.AsNoTracking()
+            .Where(d => d.EventType == ApprovedEventType && d.Status == "pending")
+            .Select(d => d.PayloadJson)
+            .ToListAsync(ct);
+
+        // Delivery history per candidate, for the preview. Keyed on the cancel key, which is indexed;
+        // an approval announced before cancel keys existed reads as "no delivery on record", which is
+        // the honest answer for a row the platform can no longer attribute.
+        var cancelKeys = approved.Select(c => ApprovedWebhookCancelKey(c.Id)).ToList();
+        var history = (await _db.WebhookDeliveries.AsNoTracking()
+                .Where(d => d.EventType == ApprovedEventType
+                         && d.CancelKey != null && cancelKeys.Contains(d.CancelKey))
+                .Select(d => new { d.CancelKey, d.Status, d.CreatedAt, d.DeliveredAt })
+                .ToListAsync(ct))
+            .GroupBy(d => d.CancelKey!)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.CreatedAt).First());
+
+        var rows = new List<ResentPromotion>();
+        var resent = 0;
+        var skipped = 0;
+        var deliveries = 0;
+
+        foreach (var candidate in approved)
+        {
+            history.TryGetValue(ApprovedWebhookCancelKey(candidate.Id), out var last);
+            var lastStatus = last?.Status ?? "none";
+            var lastAt = last is null ? null : (DateTimeOffset?)(last.DeliveredAt ?? last.CreatedAt);
+
+            var id = candidate.Id.ToString();
+            if (pendingPayloads.Any(p => p.Contains(id, StringComparison.OrdinalIgnoreCase)))
+            {
+                skipped++;
+                rows.Add(new ResentPromotion(
+                    candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                    candidate.TargetEnv, candidate.Version, candidate.ApprovedAt,
+                    lastStatus, lastAt, 0,
+                    "A delivery for this approval is still queued — it has not been given up on yet."));
+                continue;
+            }
+
+            if (dryRun)
+            {
+                resent++;
+                rows.Add(new ResentPromotion(
+                    candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                    candidate.TargetEnv, candidate.Version, candidate.ApprovedAt,
+                    lastStatus, lastAt, 0, null));
+                continue;
+            }
+
+            // No hold: the undo window exists to catch a mis-click on a decision just made, and this
+            // decision was made long ago. The cancel key is kept all the same, so cancelling the
+            // approval still stops a resend that has not gone out.
+            var queued = await DispatchWebhookAsync(
+                candidate, ApprovedEventType, ct,
+                change: new { changeType = "approved.resent", resentBy = _currentUser.Email },
+                options: new WebhookDispatchOptions(
+                    Delay: TimeSpan.Zero, CancelKey: ApprovedWebhookCancelKey(candidate.Id)));
+
+            resent++;
+            deliveries += queued;
+
+            StageSystemComment(candidate.Id,
+                $"{Actor} re-sent the approval webhook — {queued} "
+                + $"{(queued == 1 ? "delivery" : "deliveries")} queued.");
+            await _db.SaveChangesAsync(ct);
+
+            await _audit.Log(
+                "promotions", "promotion.approved.webhook.resent",
+                _currentUser.Id, _currentUser.Name, "user",
+                "PromotionCandidate", candidate.Id, null,
+                new { deliveries = queued, lastDeliveryStatus = lastStatus });
+
+            rows.Add(new ResentPromotion(
+                candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                candidate.TargetEnv, candidate.Version, candidate.ApprovedAt,
+                lastStatus, lastAt, queued, null));
+        }
+
+        _logger.LogInformation(
+            "Approved-webhook resend examined {Examined} approved promotion(s): {Resent} re-sent "
+            + "({Deliveries} deliveries queued), {Skipped} skipped as still queued (dryRun={DryRun})",
+            approved.Count, resent, deliveries, skipped, dryRun);
+
+        return new ResendApprovedWebhooksResult(approved.Count, resent, skipped, deliveries, dryRun, rows);
+    }
+
+    // ---------------------------------------------------------------------
     // Webhook dispatch (called after state transitions)
     // ---------------------------------------------------------------------
 
@@ -2624,9 +2758,11 @@ public class PromotionService
 
     /// <summary>
     /// Dispatches a webhook event for a promotion state change. Non-fatal: logs a warning on
-    /// failure but never throws — the state transition has already been persisted.
+    /// failure but never throws — the state transition has already been persisted. Returns how many
+    /// delivery rows were queued (0 when nobody subscribes, and 0 when the dispatch itself failed);
+    /// every caller but the resend maintenance pass ignores it.
     /// </summary>
-    private async Task DispatchWebhookAsync(
+    private async Task<int> DispatchWebhookAsync(
         PromotionCandidate candidate, string eventType, CancellationToken ct, object? change = null,
         (string Name, string Email, DateTimeOffset At, string Reason)? bypass = null,
         WebhookDispatchOptions? options = null)
@@ -2693,13 +2829,14 @@ public class PromotionService
 
             var filters = new WebhookEventFilters(Product: candidate.Product, Environment: candidate.TargetEnv);
 
-            await _webhookDispatcher.DispatchAsync(eventType, payload, filters, options);
+            return await _webhookDispatcher.DispatchAsync(eventType, payload, filters, options);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "Webhook dispatch '{EventType}' failed for candidate {Id}",
                 eventType, candidate.Id);
+            return 0;
         }
     }
 
@@ -3195,6 +3332,42 @@ public record ReconciledCandidate(
     string Action,
     DateTimeOffset At,
     string? LandedVersion);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ResendApprovedWebhooksAsync"/>. <c>Examined</c> is every
+/// approved-but-undeployed promotion in scope; <c>Resent</c> and <c>Skipped</c> account for all of
+/// them. <c>Deliveries</c> is the honest measure of whether anything actually left the building —
+/// promotions can be re-sent and still queue nothing when no active subscription listens for
+/// <c>promotion.approved</c>, which is worth telling the admin rather than reporting success.
+/// Always 0 on a dry run.
+/// </summary>
+public record ResendApprovedWebhooksResult(
+    int Examined,
+    int Resent,
+    int Skipped,
+    int Deliveries,
+    bool DryRun,
+    IReadOnlyList<ResentPromotion> Promotions);
+
+/// <param name="LastDeliveryStatus">
+/// Status of the most recent approval delivery on record — delivered, failed, cancelled, pending —
+/// or "none" when the platform has no attributable delivery for this approval at all.
+/// </param>
+/// <param name="LastDeliveryAt">When that delivery landed, or was queued if it never did.</param>
+/// <param name="Deliveries">Rows queued by this resend. 0 on a dry run and on a skipped row.</param>
+/// <param name="SkippedReason">Why this promotion was left alone; null when it was (or would be) re-sent.</param>
+public record ResentPromotion(
+    Guid Id,
+    string Product,
+    string Service,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    DateTimeOffset? ApprovedAt,
+    string LastDeliveryStatus,
+    DateTimeOffset? LastDeliveryAt,
+    int Deliveries,
+    string? SkippedReason);
 
 /// <summary>
 /// Thrown by <see cref="PromotionService.ApproveAsync"/> when the caller did not specify which

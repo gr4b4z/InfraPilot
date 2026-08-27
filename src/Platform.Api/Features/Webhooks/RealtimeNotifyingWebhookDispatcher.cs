@@ -34,7 +34,7 @@ public class RealtimeNotifyingWebhookDispatcher : IWebhookDispatcher
         _logger = logger;
     }
 
-    public async Task DispatchAsync(
+    public async Task<int> DispatchAsync(
         string eventType, object payload, WebhookEventFilters? filters = null,
         WebhookDispatchOptions? options = null)
     {
@@ -51,7 +51,7 @@ public class RealtimeNotifyingWebhookDispatcher : IWebhookDispatcher
         // The realtime broadcast is NOT delayed even when the delivery is: the browser is showing
         // the state the transition just wrote, and holding the UI back for a webhook grace period
         // would make the page lie about what the database says.
-        await _inner.DispatchAsync(eventType, payload, filters, options);
+        return await _inner.DispatchAsync(eventType, payload, filters, options);
     }
 
     public Task<int> CancelPendingAsync(string cancelKey, CancellationToken ct = default)

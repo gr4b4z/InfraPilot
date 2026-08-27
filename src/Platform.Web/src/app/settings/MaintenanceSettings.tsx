@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Trash2, Check, ArrowRight, RotateCcw, Undo2, Unlink } from 'lucide-react';
+import { Trash2, Check, ArrowRight, RotateCcw, Send, Undo2, Unlink } from 'lucide-react';
 import { api } from '@/lib/api';
 import type {
   DeletedService,
   OrphanedWorkItem,
   OrphanedWorkItemSweepResult,
   PromotionReconcileResult,
+  ResendApprovedWebhookPromotion,
+  ResendApprovedWebhooksResult,
 } from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
 
@@ -43,6 +45,7 @@ export function MaintenanceSettings() {
         remove={() => api.removePromotionDuplicates()}
       />
       <WebhookDeliveriesCard />
+      <ResendApprovedWebhooksCard />
     </div>
   );
 }
@@ -981,6 +984,237 @@ function WebhookDeliveriesCard() {
       {error && <CardError message={error} />}
     </section>
   );
+}
+
+// ── Approved-webhook resend ─────────────────────────────────────────────────────────────────
+
+/**
+ * Re-announces `promotion.approved` for promotions stuck at Approved with no deploy behind them.
+ *
+ * <p>Same preview-then-apply contract as the rest of the page, and it matters more here than
+ * anywhere else on it: every other card repairs data, this one pokes the pipelines that act on an
+ * approval. The preview is what turns "re-send everything approved" into a reviewed list.</p>
+ */
+function ResendApprovedWebhooksCard() {
+  const [preview, setPreview] = useState<ResendApprovedWebhooksResult | null>(null);
+  const [applied, setApplied] = useState<ResendApprovedWebhooksResult | null>(null);
+  const [running, setRunning] = useState<'preview' | 'apply' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (dryRun: boolean) => {
+    setRunning(dryRun ? 'preview' : 'apply');
+    setError(null);
+    try {
+      const result = await api.resendApprovedPromotionWebhooks(dryRun);
+      if (dryRun) {
+        setApplied(null);
+        setPreview(result);
+      } else {
+        setPreview(null);
+        setApplied(result);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Resend failed');
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  const shown = preview ?? applied;
+
+  return (
+    <section
+      className="rounded-xl border p-5 space-y-4"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      <div>
+        <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          Unheard promotion approvals
+        </h2>
+        <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          A promotion approved but never deployed is often one whose <code>promotion.approved</code>{' '}
+          webhook never reached the pipeline that acts on it — nothing was subscribed at the time, the
+          receiver was down past its retries, or an undo cancelled the delivery and the approval was
+          then reinstated. This re-sends that announcement, with the promotion’s original payload.
+          Promotions that are deploying or deployed are not touched (something clearly heard), nor are
+          pending, rejected or superseded ones (they were never cleared to send), and an approval whose
+          delivery is still queued is skipped rather than fired twice.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        {!preview && (
+          <button
+            onClick={() => void run(true)}
+            disabled={running !== null}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium px-4 py-2 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
+            style={{ backgroundColor: 'var(--accent)' }}
+          >
+            {running === 'preview' ? 'Scanning…' : 'Scan approved promotions'}
+          </button>
+        )}
+
+        {preview && preview.resent === 0 && (
+          <>
+            <span className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+              {preview.examined === 0
+                ? 'Nothing to re-send — no promotion is sitting approved and undeployed.'
+                : `Nothing to re-send — all ${preview.examined} approved ${
+                    preview.examined === 1 ? 'promotion' : 'promotions'
+                  } still have a delivery queued.`}
+            </span>
+            <button
+              onClick={() => setPreview(null)}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Dismiss
+            </button>
+          </>
+        )}
+
+        {preview && preview.resent > 0 && (
+          <>
+            <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+              <strong>{preview.resent}</strong> of {preview.examined} approved{' '}
+              {preview.examined === 1 ? 'promotion' : 'promotions'} would be re-announced
+              {preview.skipped > 0 && (
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {' '}
+                  — {preview.skipped} skipped, delivery still queued
+                </span>
+              )}
+              .
+            </span>
+            <button
+              onClick={() => void run(false)}
+              disabled={running !== null}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg text-white transition-colors hover:opacity-90 disabled:opacity-50"
+              style={{ backgroundColor: 'var(--accent)' }}
+            >
+              <Send size={14} />
+              {running === 'apply' ? 'Re-sending…' : `Re-send ${preview.resent}`}
+            </button>
+            <button
+              onClick={() => setPreview(null)}
+              disabled={running !== null}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Cancel
+            </button>
+          </>
+        )}
+
+        {/* Re-sent but queued nothing means no active subscription listens for promotion.approved.
+            Reporting that as a success would leave an admin waiting on a pipeline that was never
+            going to be told. */}
+        {applied && applied.resent > 0 && applied.deliveries === 0 && (
+          <span className="text-[13px]" style={{ color: 'var(--danger, #dc2626)' }}>
+            Re-announced {applied.resent}{' '}
+            {applied.resent === 1 ? 'promotion' : 'promotions'}, but no delivery was queued — no
+            active webhook subscription listens for promotion.approved on these products and
+            environments.
+          </span>
+        )}
+
+        {applied && (applied.resent === 0 || applied.deliveries > 0) && (
+          <span className="inline-flex items-center gap-1.5 text-[13px]" style={{ color: 'var(--success)' }}>
+            <Check size={14} />
+            Re-announced {applied.resent} of {applied.examined} approved{' '}
+            {applied.examined === 1 ? 'promotion' : 'promotions'} — {applied.deliveries}{' '}
+            {applied.deliveries === 1 ? 'delivery' : 'deliveries'} queued
+            {applied.skipped > 0 && (
+              <span style={{ color: 'var(--text-muted)' }}>, {applied.skipped} skipped</span>
+            )}
+            .
+          </span>
+        )}
+      </div>
+
+      {/* The reviewed list is the point of the preview step. Its last-delivery column is what tells
+          an admin whether these approvals were genuinely lost or merely un-acted-on. */}
+      {shown && shown.promotions.length > 0 && <ResendApprovedTable promotions={shown.promotions} />}
+
+      {error && <CardError message={error} />}
+    </section>
+  );
+}
+
+function ResendApprovedTable({ promotions }: { promotions: ResendApprovedWebhookPromotion[] }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr
+            className="text-left text-[11px] uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <th className="px-3 py-2 font-semibold">Promotion</th>
+            <th className="px-3 py-2 font-semibold">Edge</th>
+            <th className="px-3 py-2 font-semibold">Version</th>
+            <th className="px-3 py-2 font-semibold">Approved</th>
+            <th className="px-3 py-2 font-semibold">Last delivery</th>
+          </tr>
+        </thead>
+        <tbody>
+          {promotions.map((p) => (
+            <tr
+              key={p.id}
+              className="border-t"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+            >
+              <td className="px-3 py-2 whitespace-nowrap">
+                <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {p.product} / {p.service}
+                </span>
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                <span className="inline-flex items-center gap-1">
+                  <EnvBadge env={p.sourceEnv} />
+                  <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+                  <EnvBadge env={p.targetEnv} />
+                </span>
+              </td>
+              <td className="px-3 py-2 font-mono whitespace-nowrap">{p.version}</td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {p.approvedAt ? new Date(p.approvedAt).toLocaleDateString() : '—'}
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                {p.skippedReason ? (
+                  <span style={{ color: 'var(--text-muted)' }}>{p.skippedReason}</span>
+                ) : (
+                  <LastDelivery promotion={p} />
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * What the platform knows of this approval's previous announcement — the evidence behind the
+ * re-send. "No delivery on record" also covers approvals announced before deliveries were
+ * attributable to their promotion, so it means "cannot tell", not "definitely never sent".
+ */
+function LastDelivery({ promotion }: { promotion: ResendApprovedWebhookPromotion }) {
+  const when = promotion.lastDeliveryAt
+    ? ` ${new Date(promotion.lastDeliveryAt).toLocaleDateString()}`
+    : '';
+
+  switch (promotion.lastDeliveryStatus) {
+    case 'delivered':
+      return <span style={{ color: 'var(--success)' }}>Delivered{when} — never acted on</span>;
+    case 'failed':
+      return <span style={{ color: 'var(--danger, #dc2626)' }}>Failed{when} — retries exhausted</span>;
+    case 'cancelled':
+      return <span style={{ color: 'var(--text-muted)' }}>Cancelled{when} by an undo</span>;
+    default:
+      return <span style={{ color: 'var(--text-muted)' }}>No delivery on record</span>;
+  }
 }
 
 // ── Shared bits ─────────────────────────────────────────────────────────────────────────────
