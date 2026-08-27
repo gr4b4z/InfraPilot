@@ -294,7 +294,8 @@ public class DeploymentService
             // status="failed".
             runUrl = dto.Run?.JobUrl ?? dto.Run?.RunUrl,
             failureReason = dto.Run?.FailureReason,
-        }, new WebhookEventFilters(deployEvent.Product, deployEvent.Environment));
+        }, new WebhookEventFilters(
+            deployEvent.Product, deployEvent.Environment, deployEvent.Service));
 
         // Fire-and-observe: generate promotion candidates / close in-flight ones. The hook is
         // feature-flag gated internally and swallows its own failures so ingestion stays

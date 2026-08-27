@@ -26,7 +26,17 @@ public interface IWebhookDispatcher
     Task<int> CancelPendingAsync(string cancelKey, CancellationToken ct = default);
 }
 
-public record WebhookEventFilters(string? Product = null, string? Environment = null);
+/// <summary>
+/// What the event says about itself, matched against each subscription's filter sets. A dimension the
+/// event cannot state is left null and is not filtered on — most events are product-wide and name no
+/// single service.
+/// </summary>
+/// <param name="Service">
+/// Declared last so the two long-standing positional call sites keep compiling; only the
+/// per-service events (deploy ingest, promotions) can fill it in.
+/// </param>
+public record WebhookEventFilters(
+    string? Product = null, string? Environment = null, string? Service = null);
 
 /// <summary>
 /// Per-dispatch delivery controls.

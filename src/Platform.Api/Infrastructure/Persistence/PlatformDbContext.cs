@@ -395,8 +395,18 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.EncryptedSecret).IsRequired();
             var eventsJson = e.Property(x => x.EventsJson).HasDefaultValue("[]");
             if (jsonType != null) eventsJson.HasColumnType(jsonType);
-            e.Property(x => x.FilterProduct).HasMaxLength(200);
-            e.Property(x => x.FilterEnvironment).HasMaxLength(100);
+            // Filter dimensions are sets, stored the same way the event list is. "[]" is the stored
+            // default as well as the CLR one so a row written before a dimension existed reads back
+            // as "any" rather than null.
+            var filterProducts = e.Property(x => x.FilterProductsJson).HasDefaultValue("[]");
+            var filterServices = e.Property(x => x.FilterServicesJson).HasDefaultValue("[]");
+            var filterEnvironments = e.Property(x => x.FilterEnvironmentsJson).HasDefaultValue("[]");
+            if (jsonType != null)
+            {
+                filterProducts.HasColumnType(jsonType);
+                filterServices.HasColumnType(jsonType);
+                filterEnvironments.HasColumnType(jsonType);
+            }
             // Store default (not just a CLR default) so subscriptions created before target types
             // existed read back as "generic" — that is what keeps their delivery shape unchanged.
             e.Property(x => x.TargetType).HasMaxLength(30).IsRequired()

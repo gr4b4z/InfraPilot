@@ -55,10 +55,16 @@ public class WebhookSubscription
     public string EncryptedSecret { get; set; } = "";
     /// <summary>Event types this subscription listens to (JSON array stored as text).</summary>
     public string EventsJson { get; set; } = "[]";
-    /// <summary>Optional product filter for deployment events.</summary>
-    public string? FilterProduct { get; set; }
-    /// <summary>Optional environment filter for deployment events.</summary>
-    public string? FilterEnvironment { get; set; }
+    /// <summary>
+    /// Products this subscription listens for (JSON array stored as text). Empty means every
+    /// product. A dimension is only tested against events that actually carry it — see
+    /// <see cref="WebhookSubscriptionFilters"/>.
+    /// </summary>
+    public string FilterProductsJson { get; set; } = "[]";
+    /// <summary>Services this subscription listens for (JSON array stored as text). Empty means every service.</summary>
+    public string FilterServicesJson { get; set; } = "[]";
+    /// <summary>Environments this subscription listens for (JSON array stored as text). Empty means every environment.</summary>
+    public string FilterEnvironmentsJson { get; set; } = "[]";
     /// <summary>One of <see cref="WebhookTargetTypes"/>. Immutable after creation.</summary>
     public string TargetType { get; set; } = WebhookTargetTypes.Generic;
     /// <summary>

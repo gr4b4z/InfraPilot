@@ -2839,7 +2839,8 @@ public class PromotionService
                 change,
             };
 
-            var filters = new WebhookEventFilters(Product: candidate.Product, Environment: candidate.TargetEnv);
+            var filters = new WebhookEventFilters(
+                Product: candidate.Product, Environment: candidate.TargetEnv, Service: candidate.Service);
 
             return await _webhookDispatcher.DispatchAsync(eventType, payload, filters, options);
         }

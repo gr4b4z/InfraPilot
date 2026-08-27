@@ -33,6 +33,9 @@ import {
   type WebhookTargetType,
 } from './webhookTargets';
 import { NotificationCreateForm } from './NotificationCreateForm';
+import { WebhookFilterFields, WebhookFilterSummary } from './WebhookFilterFields';
+import { EMPTY_FILTERS, toFilterInput } from './webhookFilters';
+import type { WebhookFilters } from '@/lib/types';
 
 export function WebhookListPage() {
   const [webhooks, setWebhooks] = useState<WebhookSubscription[]>([]);
@@ -49,8 +52,7 @@ export function WebhookListPage() {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<string[]>([]);
-  const [filterProduct, setFilterProduct] = useState('');
-  const [filterEnv, setFilterEnv] = useState('');
+  const [filters, setFilters] = useState<WebhookFilters>(EMPTY_FILTERS);
   const [creating, setCreating] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
 
@@ -88,8 +90,7 @@ export function WebhookListPage() {
     setName('');
     setUrl('');
     setSelectedEvents([]);
-    setFilterProduct('');
-    setFilterEnv('');
+    setFilters(EMPTY_FILTERS);
     setTargetType('generic');
     setSecret('');
     setSignatureHeader(DEFAULT_ADO_SIGNATURE_HEADER);
@@ -125,15 +126,11 @@ export function WebhookListPage() {
     setCreating(true);
     setError(null);
     try {
-      const filters =
-        filterProduct || filterEnv
-          ? { product: filterProduct || undefined, environment: filterEnv || undefined }
-          : undefined;
       const result = await api.createWebhook({
         name,
         url: composedUrl,
         events: selectedEvents,
-        filters,
+        filters: toFilterInput(filters),
         targetType,
         // Only generic mints its own secret; the others reuse what the receiver already holds.
         secret: secretRequired ? secret.trim() : undefined,
@@ -585,42 +582,7 @@ export function WebhookListPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                Filter: Product <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={filterProduct}
-                onChange={(e) => setFilterProduct(e.target.value)}
-                placeholder="e.g. billing-platform"
-                className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                }}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                Filter: Environment <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={filterEnv}
-                onChange={(e) => setFilterEnv(e.target.value)}
-                placeholder="e.g. production"
-                className="w-full px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                }}
-              />
-            </div>
-          </div>
+          <WebhookFilterFields filters={filters} onChange={setFilters} />
 
           <div className="flex items-center gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
             <button
@@ -708,20 +670,10 @@ export function WebhookListPage() {
                         {targetLabel(wh.targetType)}
                       </span>
                     )}
-                    {(wh.filters.product || wh.filters.environment) && (
-                      <div className="flex gap-1.5 mt-1">
-                        {wh.filters.product && (
-                          <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-muted)' }}>
-                            {wh.filters.product}
-                          </span>
-                        )}
-                        {wh.filters.environment && (
-                          <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-muted)' }}>
-                            {wh.filters.environment}
-                          </span>
-                        )}
-                      </div>
-                    )}
+                    <WebhookFilterSummary
+                      filters={wh.filters}
+                      className="flex flex-wrap gap-1.5 mt-1"
+                    />
                   </td>
                   <td className="px-4 py-3" style={{ borderBottom: '1px solid var(--border-color)' }}>
                     <div className="flex flex-wrap gap-1">
