@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.ReleaseNotes;
 using Platform.Api.Features.Settings.Models;
+using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
@@ -367,10 +368,7 @@ public class EnvironmentMergeService
 
         var (rollbackPolicies, rollbackPolicyConflicts) = await MergeRollbackPoliciesAsync(from, into, apply, ct);
 
-        var webhooks = await MoveAsync(
-            _db.WebhookSubscriptions.Where(x => x.FilterEnvironment == from),
-            (rows, c) => rows.ExecuteUpdateAsync(s => s.SetProperty(x => x.FilterEnvironment, into), c),
-            apply, ct);
+        var webhooks = await MergeWebhookEnvironmentFiltersAsync(from, into, apply, ct);
 
         return new MergeCounts(
             Deployments: deployments,
@@ -399,6 +397,35 @@ public class EnvironmentMergeService
     /// tens of thousands of rows, and pulling them through the change tracker to set one string each
     /// is how this operation times out.
     /// </summary>
+    /// <summary>
+    /// Rewrites the merged environment inside each subscription's environment filter set. The set is
+    /// a JSON column, so this cannot be one <c>ExecuteUpdate</c> — and a subscription already naming
+    /// the surviving environment must end up with one entry, not two, which is a decision no SQL
+    /// rewrite would make either. Loaded whole because subscriptions number in the tens and the
+    /// dispatcher already reads them the same way.
+    /// </summary>
+    private async Task<int> MergeWebhookEnvironmentFiltersAsync(
+        string from, string into, bool apply, CancellationToken ct)
+    {
+        var subscriptions = await _db.WebhookSubscriptions.ToListAsync(ct);
+        var affected = 0;
+
+        foreach (var sub in subscriptions)
+        {
+            var environments = WebhookSubscriptionFilters.Parse(sub.FilterEnvironmentsJson);
+            if (!environments.Contains(from, StringComparer.Ordinal)) continue;
+
+            affected++;
+            if (!apply) continue;
+            sub.FilterEnvironmentsJson = WebhookSubscriptionFilters.Serialize(
+                environments.Select(e => string.Equals(e, from, StringComparison.Ordinal) ? into : e));
+            sub.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        if (apply && affected > 0) await _db.SaveChangesAsync(ct);
+        return affected;
+    }
+
     private static async Task<int> MoveAsync<T>(
         IQueryable<T> rows,
         Func<IQueryable<T>, CancellationToken, Task<int>> update,

@@ -347,7 +347,11 @@ export interface WebhookSubscription {
   url: string;
   secret?: string; // only returned on create, and only for generic targets
   events: string[];
-  filters: { product: string | null; environment: string | null };
+  /**
+   * Each dimension is a set, and an empty one means "any". A dimension is only matched against
+   * events that carry it, so a service filter does not mute the product-wide events.
+   */
+  filters: WebhookFilters;
   /** How the delivery is framed on the wire. Fixed at creation time. */
   targetType: 'generic' | 'azure_devops' | 'github' | 'msteams' | 'msteams_html' | 'discord';
   /** azure_devops only — the header carrying the HMAC-SHA1 checksum. */
@@ -370,6 +374,12 @@ export interface WebhookSubscription {
     lastStatus: string | null;
   };
   recentDeliveries?: WebhookDelivery[];
+}
+
+export interface WebhookFilters {
+  products: string[];
+  services: string[];
+  environments: string[];
 }
 
 export interface WebhookDelivery {

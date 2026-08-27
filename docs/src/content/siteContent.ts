@@ -2029,6 +2029,7 @@ Content-Type: application/json
         { method: '`GET`', path: '`/api/webhooks/{id}/deliveries`', auth: 'Catalog admin', description: 'List deliveries with pagination.' },
         { method: '`POST`', path: '`/api/webhooks/deliveries/{id}/retry`', auth: 'Catalog admin', description: 'Retry one failed delivery.' },
         { method: '`POST`', path: '`/api/webhooks/{id}/test`', auth: 'Catalog admin', description: 'Queue a ping delivery for testing.' },
+        { method: '`GET`', path: '`/api/webhooks/filter-options`', auth: 'Catalog admin', description: 'Products, services and environments seen so far, for the filter pickers.' },
       ],
     },
     {
@@ -2091,9 +2092,17 @@ Content-Type: application/json
         { field: '`name`', type: 'string', required: 'Yes', description: 'Subscription display name.' },
         { field: '`url`', type: 'string', required: 'Yes', description: 'Destination URL.' },
         { field: '`events`', type: 'string[]', required: 'Yes', description: 'At least one event type is required.' },
-        { field: '`filters.product`', type: 'string', required: 'No', description: 'Optional product filter.' },
-        { field: '`filters.environment`', type: 'string', required: 'No', description: 'Optional environment filter.' },
+        { field: '`filters.products`', type: 'string[]', required: 'No', description: 'Products to listen for. Empty or omitted means every product.' },
+        { field: '`filters.services`', type: 'string[]', required: 'No', description: 'Services to listen for. Empty or omitted means every service.' },
+        { field: '`filters.environments`', type: 'string[]', required: 'No', description: 'Environments to listen for. Alias-resolved on write; empty or omitted means every environment.' },
+        { field: '`filters.product`', type: 'string', required: 'No', description: 'Deprecated single-value form of `filters.products`, still accepted and folded into the set.' },
+        { field: '`filters.environment`', type: 'string', required: 'No', description: 'Deprecated single-value form of `filters.environments`, still accepted and folded into the set.' },
       ],
+    },
+    {
+      title: 'How filters match',
+      description:
+        'Each dimension is a set and the three are ANDed: `products: ["billing"]` with `environments: ["prod", "preprod"]` delivers the two upper environments of billing and nothing else. An empty set means every value. A dimension is only tested against events that state it — most events are product-wide and name no single service, so a `services` filter narrows the per-service events (`deployment.*`, `promotion.*`) without silencing the product-wide ones such as release notes and rollbacks. Responses always report all three as arrays.',
     },
     {
       title: 'Update request body',
@@ -2102,7 +2111,7 @@ Content-Type: application/json
         { field: '`name`', type: 'string', required: 'No', description: 'Optional replacement name.' },
         { field: '`url`', type: 'string', required: 'No', description: 'Optional replacement URL.' },
         { field: '`events`', type: 'string[]', required: 'No', description: 'Optional replacement event list.' },
-        { field: '`filters`', type: 'object', required: 'No', description: 'Optional replacement filters object.' },
+        { field: '`filters`', type: 'object', required: 'No', description: 'Optional replacement filters object. Applied whole — a supplied object states all three dimensions, so an omitted or empty one clears that dimension back to "any".' },
         { field: '`active`', type: 'boolean', required: 'No', description: 'Optional active-state change.' },
       ],
     },
@@ -2123,8 +2132,9 @@ Content-Type: application/json
   "url": "https://example.com/infrapilot/webhook",
   "events": ["deployment.created"],
   "filters": {
-    "product": "ticketing-platform",
-    "environment": "production"
+    "products": ["ticketing-platform", "billing-platform"],
+    "services": ["api", "worker"],
+    "environments": ["production", "preprod"]
   }
 }`,
     },
@@ -2138,8 +2148,9 @@ Content-Type: application/json
   "secret": "whsec_base64value",
   "events": ["deployment.created"],
   "filters": {
-    "product": "ticketing-platform",
-    "environment": "production"
+    "products": ["ticketing-platform", "billing-platform"],
+    "services": ["api", "worker"],
+    "environments": ["production", "preprod"]
   },
   "targetType": "generic",
   "signatureHeader": null,
@@ -2419,7 +2430,7 @@ function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
     },
     {
       title: 'Webhook events',
-      description: 'Two events fire on every publish — subscribe to whichever payload matches your consumer. Both honour the standard `Product` / `Environment` subscription filters. The HTML is rendered server-side once via Markdig (advanced pipeline — tables, autolinks, task lists) and reused across all subscribers.',
+      description: 'Two events fire on every publish — subscribe to whichever payload matches your consumer. Both honour the standard `products` / `environments` subscription filters (a release note is product-wide, so a `services` filter does not narrow it). The HTML is rendered server-side once via Markdig (advanced pipeline — tables, autolinks, task lists) and reused across all subscribers.',
       columns: [
         { key: 'event',   label: 'Event' },
         { key: 'payload', label: 'Payload' },
