@@ -313,6 +313,67 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_RecordsTheTargetVersionItIsReplacing()
+    {
+        // The "from" side of the promotion, captured at creation because the target env moves on:
+        // once this candidate lands, prod's current version IS v1.2.3 and the promotion would have
+        // no record of coming from v1.0.0.
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.Equal("v1.0.0", c!.FromVersion);
+    }
+
+    [Fact]
+    public async Task Create_FirstDeployIntoTarget_HasNoFromVersion()
+    {
+        // Nothing has ever run in prod, so there is no version to replace — null, not "".
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.Null(c!.FromVersion);
+    }
+
+    [Fact]
+    public async Task Create_RepeatForSameVersion_RefreshesFromVersion()
+    {
+        // The source system re-pushes the same candidate after prod took a hotfix. The change set it
+        // just computed is relative to the hotfix, so the recorded baseline has to move with it.
+        var t0 = DateTimeOffset.UtcNow.AddHours(-2);
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", deployedAt: t0);
+
+        var first = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+        Assert.Equal("v1.0.0", first!.FromVersion);
+
+        SeedDeploy(env: "prod", version: "v1.0.1", service: "api", status: "succeeded",
+            deployedAt: t0.AddHours(1));
+
+        var second = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.Equal(first.Id, second!.Id);
+        Assert.Equal("v1.0.1", second.FromVersion);
+    }
+
+    [Fact]
     public async Task Create_VersionAlreadyDeployedAndTargetMovedOn_ClosesAsDeployed()
     {
         // The stranded-promotion case, and the reason completion can't only live on the ingest path.

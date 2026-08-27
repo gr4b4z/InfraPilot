@@ -1501,8 +1501,17 @@ export interface PromotionCandidate {
    */
   fromRevision?: string | null;
   toRevision?: string | null;
-  /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
+  /**
+   * Version deployed in `targetEnv` right now — live state, not this promotion's. Once the
+   * promotion lands it equals `version`, so render history off `fromVersion` instead.
+   */
   targetCurrentVersion: string | null;
+  /**
+   * The version `targetEnv` ran when this promotion was created: the "from" side of the change it
+   * describes, and the baseline its change set was computed against. Null for a first deploy into
+   * the target, and absent on responses from an older API.
+   */
+  fromVersion?: string | null;
   /**
    * Git ref this version was built from (`refs/heads/…`). Only candidates whose source is the
    * synthetic `build` env carry one — everywhere else the source environment is the provenance.

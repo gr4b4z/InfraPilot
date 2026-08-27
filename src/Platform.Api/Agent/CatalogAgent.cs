@@ -1028,6 +1028,9 @@ public class CatalogAgent
                             candidate.Version,
                             candidate.FromRevision,
                             candidate.ToRevision,
+                            // What the target ran when the promotion was created — the "from" side
+                            // of the change, which live target state no longer tells you once it lands.
+                            candidate.FromVersion,
                             status = candidate.Status.ToString(),
                             candidate.ExternalRunUrl,
                             candidate.CreatedAt,
