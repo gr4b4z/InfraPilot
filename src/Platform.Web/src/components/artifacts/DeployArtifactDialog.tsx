@@ -9,12 +9,12 @@ import { BranchBadge } from './BranchBadge';
 import type { BuildSummary, BuildTarget } from '@/lib/types';
 
 /**
- * "Deploy a build": pick any registered build of this service — main or feature branch — and a
- * target environment with a `build → *` policy, and open a promotion for it. The server assembles
- * the change set from the build's manifest; this dialog only chooses. On success it navigates to
+ * "Deploy an artifact": pick any registered artifact of this service — main or feature branch — and
+ * a target environment with a `build → *` policy, and open a promotion for it. The server assembles
+ * the change set from the artifact's manifest; this dialog only chooses. On success it navigates to
  * the new promotion, which is where approval (if the edge has one) and progress live.
  */
-export function DeployBuildDialog({
+export function DeployArtifactDialog({
   product,
   service,
   targets,
@@ -26,10 +26,10 @@ export function DeployBuildDialog({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const [builds, setBuilds] = useState<BuildSummary[]>([]);
+  const [artifacts, setArtifacts] = useState<BuildSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [branchFilter, setBranchFilter] = useState('');
-  const [selectedBuild, setSelectedBuild] = useState<string | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
   const [targetEnv, setTargetEnv] = useState<string | null>(targets.length === 1 ? targets[0].targetEnv : null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,12 +41,12 @@ export function DeployBuildDialog({
         .listBuilds({ product, service, branch: branchFilter.trim() || undefined, limit: 30 })
         .then((r) => {
           if (cancelled) return;
-          setBuilds(r.results);
+          setArtifacts(r.results);
           setLoading(false);
         })
         .catch(() => {
           if (cancelled) return;
-          setBuilds([]);
+          setArtifacts([]);
           setLoading(false);
         });
     }, 200);
@@ -62,11 +62,11 @@ export function DeployBuildDialog({
   );
 
   const submit = async () => {
-    if (!selectedBuild || !targetEnv || submitting) return;
+    if (!selectedArtifact || !targetEnv || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      const created = await api.createPromotionFromBuild(selectedBuild, targetEnv);
+      const created = await api.createPromotionFromBuild(selectedArtifact, targetEnv);
       onClose();
       navigate(`/promotions/${created.id}`);
     } catch (e) {
@@ -77,15 +77,15 @@ export function DeployBuildDialog({
   };
 
   return (
-    <Dialog onClose={onClose} ariaLabel={`Deploy a build of ${service}`} width={640}>
+    <Dialog onClose={onClose} ariaLabel={`Deploy an artifact of ${service}`} width={640}>
       <div className="p-4 space-y-4">
         <div className="flex items-start gap-2">
           <div>
             <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-              Deploy a build
+              Deploy an artifact
             </h2>
             <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              Any registered build of {service} — the branch badge says what you're shipping
+              Any registered artifact of {service} — the branch badge says what you're shipping
             </p>
           </div>
           <button
@@ -99,7 +99,7 @@ export function DeployBuildDialog({
           </button>
         </div>
 
-        {/* Build picker — newest first, filterable by branch. */}
+        {/* Artifact picker — newest first, filterable by branch. */}
         <div className="relative">
           <Search
             size={13}
@@ -111,7 +111,7 @@ export function DeployBuildDialog({
             value={branchFilter}
             onChange={(e) => setBranchFilter(e.target.value)}
             placeholder="Filter by branch — e.g. MPT-1234"
-            aria-label="Filter builds by branch"
+            aria-label="Filter artifacts by branch"
             className="w-full rounded-lg border pl-7 pr-3 py-1.5 text-[13px]"
             style={{
               borderColor: 'var(--border-color)',
@@ -125,29 +125,31 @@ export function DeployBuildDialog({
           className="rounded-lg border max-h-64 overflow-y-auto divide-y"
           style={{ borderColor: 'var(--border-color)' }}
           role="radiogroup"
-          aria-label="Registered builds"
+          aria-label="Registered artifacts"
         >
           {loading ? (
             <div className="flex items-center justify-center py-10">
               <Loader2 className="animate-spin" size={18} style={{ color: 'var(--text-muted)' }} />
             </div>
-          ) : builds.length === 0 ? (
+          ) : artifacts.length === 0 ? (
             <div className="flex flex-col items-center py-8 text-center">
               <Package size={24} style={{ color: 'var(--text-muted)' }} />
               <p className="mt-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                {branchFilter ? 'No builds match this branch filter' : 'No registered builds for this service yet'}
+                {branchFilter
+                  ? 'No artifacts match this branch filter'
+                  : 'No registered artifacts for this service yet'}
               </p>
             </div>
           ) : (
-            builds.map((build) => {
-              const selected = selectedBuild === build.id;
+            artifacts.map((artifact) => {
+              const selected = selectedArtifact === artifact.id;
               return (
                 <button
-                  key={build.id}
+                  key={artifact.id}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  onClick={() => setSelectedBuild(build.id)}
+                  onClick={() => setSelectedArtifact(artifact.id)}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
                   style={{
                     borderColor: 'var(--border-color)',
@@ -162,12 +164,12 @@ export function DeployBuildDialog({
                     }}
                   />
                   <span className="font-mono text-[12px]" style={{ color: 'var(--text-primary)' }}>
-                    {build.version}
+                    {artifact.version}
                   </span>
-                  <BranchBadge branch={build.branch} />
+                  <BranchBadge branch={artifact.branch} />
                   <span className="flex-1" />
                   <span className="text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
-                    {formatDistanceToNow(new Date(build.createdAt), { addSuffix: true })}
+                    {formatDistanceToNow(new Date(artifact.createdAt), { addSuffix: true })}
                   </span>
                 </button>
               );
@@ -223,7 +225,7 @@ export function DeployBuildDialog({
           <button
             type="button"
             onClick={submit}
-            disabled={!selectedBuild || !targetEnv || submitting}
+            disabled={!selectedArtifact || !targetEnv || submitting}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
             style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
           >

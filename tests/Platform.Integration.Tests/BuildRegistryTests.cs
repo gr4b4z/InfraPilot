@@ -375,6 +375,56 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
         Assert.Equal(0, FacetCount(facets, "products", "bld-facetq-drop"));
     }
 
+    // ── Link to the deploy ledger ─────────────────────────────────────────
+
+    [Fact]
+    public async Task ListedBuilds_CarryTheDeploymentsThatShippedThem()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds", MakePayload("bld-shipped", "svc", "1.2.3-gship"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds", MakePayload("bld-shipped", "svc", "1.2.4-gnever"));
+
+        await IngestDeploy("bld-shipped", "svc", "staging", "1.2.3-gship");
+        await IngestDeploy("bld-shipped", "svc", "production", "1.2.3-gship");
+        // Same service, a version nobody registered — it must not attach itself to a neighbouring row.
+        await IngestDeploy("bld-shipped", "svc", "development", "9.9.9-gother");
+        // Same version under a different service — the join is on the whole triple, not on version.
+        await IngestDeploy("bld-shipped", "other-svc", "staging", "1.2.3-gship");
+
+        var list = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?product=bld-shipped");
+        var byVersion = list.GetProperty("results").EnumerateArray()
+            .ToDictionary(b => b.GetProperty("version").GetString()!, b => b.GetProperty("deployments"));
+
+        var shipped = byVersion["1.2.3-gship"].EnumerateArray().ToList();
+        Assert.Equal(
+            ["production", "staging"],
+            shipped.Select(d => d.GetProperty("environment").GetString()).OrderBy(e => e));
+
+        // A build nothing has carried says so with an empty list rather than a missing field — the
+        // page renders "never deployed" from it.
+        Assert.Empty(byVersion["1.2.4-gnever"].EnumerateArray());
+
+        // The id is the link the UI follows: it has to resolve to the deploy event it names.
+        var eventId = shipped.Single(d => d.GetProperty("environment").GetString() == "production")
+            .GetProperty("eventId").GetString();
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>($"/api/deployments/events/{eventId}");
+        Assert.Equal("1.2.3-gship", detail.GetProperty("event").GetProperty("version").GetString());
+    }
+
+    /// <summary>Records a deploy of one version into one environment, the way a pipeline would.</summary>
+    private async Task IngestDeploy(string product, string service, string environment, string version)
+    {
+        var response = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", new
+        {
+            product,
+            service,
+            environment,
+            version,
+            source = "ci",
+            deployedAt = "2026-04-16T10:00:00Z",
+        });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
     /// <summary>The count a facet reports for one value, or 0 when it isn't in the list at all.</summary>
     private static int FacetCount(JsonElement facets, string facet, string value) =>
         facets.GetProperty(facet).EnumerateArray()

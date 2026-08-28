@@ -26,6 +26,22 @@ public record RegisterBuildDto(
 
 // --- Output DTOs ---
 
+/// <summary>
+/// Where a registered build actually landed: one entry per environment that has a deploy event for
+/// the same (product, service, version), newest deploy of that environment winning.
+///
+/// The registry and the deploy ledger stay separate stores — a build says nothing about deployment,
+/// which is the ledger's job — so this is a *join*, not a field the producer reports. It is computed
+/// for the returned page rather than looked up per row because the list is the artifact view, and a
+/// per-row lookup would be one request per row.
+/// </summary>
+public record BuildDeploymentDto(
+    Guid EventId,
+    string Environment,
+    string Status,
+    bool IsRollback,
+    DateTimeOffset DeployedAt);
+
 /// <summary>List-row projection — everything but the manifest, which can be large.</summary>
 public record BuildSummaryDto(
     Guid Id,
@@ -39,7 +55,8 @@ public record BuildSummaryDto(
     string? ArtifactRef,
     string? ArtifactDigest,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? UpdatedAt);
+    DateTimeOffset? UpdatedAt,
+    IReadOnlyList<BuildDeploymentDto> Deployments);
 
 /// <summary>Detail projection — the summary plus the inline manifest.</summary>
 public record BuildDetailDto(

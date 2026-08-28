@@ -1,24 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { format, formatDistanceToNow } from 'date-fns';
 import { Package, Loader2, Search, X, ExternalLink } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import { BranchBadge, shortBranch } from '@/components/builds/BranchBadge';
+import { BranchBadge, shortBranch } from '@/components/artifacts/BranchBadge';
+import { EnvBadge } from '@/components/environments/EnvBadge';
 import { ComboBox, type ComboOption } from '@/components/ui/ComboBox';
 import { FilterPanel } from '@/components/ui/FilterPanel';
 import { ListEmptyState, type ActiveFilterChip } from '@/components/ui/ListEmptyState';
 import { RovingGroup } from '@/components/ui/RovingGroup';
-import type { BuildFacets, BuildSummary } from '@/lib/types';
+import type { BuildDeployment, BuildFacets, BuildSummary } from '@/lib/types';
 import {
   TIME_PRESETS,
   countActiveFilters,
   describeTimeFilter,
   isFiltered,
-  parseBuildFilters,
+  parseArtifactFilters,
   timeWindow,
-  type BuildFilters,
-} from './buildFilterParams';
+  type ArtifactFilters,
+} from './artifactFilterParams';
 
 /** One page of the registry. Newest first, so the cut is always "older than what you can see". */
 const PAGE_SIZE = 100;
@@ -26,9 +27,9 @@ const PAGE_SIZE = 100;
 const NO_FACETS: BuildFacets = { products: [], services: [], branches: [] };
 
 /**
- * The build registry — every published build, from any branch, newest first. This page answers
- * "what builds exist, and which branch produced them"; deploying one is the promotion surface's
- * job (plan: feature-branch-builds, Phase C), not this page's.
+ * The artifact registry — every published artifact, from any branch, newest first. This page answers
+ * "what artifacts exist, which branch produced them, and where each one landed"; deploying one is
+ * the promotion surface's job (plan: feature-branch-builds, Phase C), not this page's.
  *
  * Three kinds of narrowing, because people arrive with three kinds of question. The search box is
  * for a half-remembered word ("aws") and matches it as a substring across every column, so the
@@ -37,18 +38,22 @@ const NO_FACETS: BuildFacets = { products: [], services: [], branches: [] };
  * actually holds, with counts, because nobody remembers a feature branch's full name. The time
  * range is for "what did we build on the 14th", which no name filter can express.
  */
-export function BuildsPage() {
-  const [builds, setBuilds] = useState<BuildSummary[]>([]);
+export function ArtifactsPage() {
+  const [artifacts, setArtifacts] = useState<BuildSummary[]>([]);
   const [facets, setFacets] = useState<BuildFacets>(NO_FACETS);
   const [loading, setLoading] = useState(true);
   // The filters live in the URL, not in component state, so a filtered registry is a link — which
-  // is what lets a promotion point at the one build it was cut from. `replace` keeps a burst of
+  // is what lets a promotion point at the one artifact it was cut from. `replace` keeps a burst of
   // keystrokes from filling the back stack with half-typed filters.
   const [searchParams, setSearchParams] = useSearchParams();
-  const filters = useMemo(() => parseBuildFilters(searchParams), [searchParams]);
+  const filters = useMemo(() => parseArtifactFilters(searchParams), [searchParams]);
+  // Deploy-event links carry the filtered registry as their back-link, so following one and coming
+  // back lands on the view the reader built rather than on the unfiltered list.
+  const location = useLocation();
+  const backHere = `${location.pathname}${location.search}`;
 
   const setFilter = useCallback(
-    (updates: Partial<Record<keyof BuildFilters, string>>) => {
+    (updates: Partial<Record<keyof ArtifactFilters, string>>) => {
       setSearchParams(
         (current) => {
           const next = new URLSearchParams(current);
@@ -68,7 +73,7 @@ export function BuildsPage() {
 
   const hasFilter = isFiltered(filters);
   const timeLabel = describeTimeFilter(filters);
-  useDocumentTitle([filters.q.trim() || filters.product || filters.service || null, 'Builds']);
+  useDocumentTitle([filters.q.trim() || filters.product || filters.service || null, 'Artifacts']);
 
   // The one place the URL turns into an API query. Both requests take the same filters: the facet
   // counts describe the list, so they have to be asked the same question.
@@ -95,7 +100,7 @@ export function BuildsPage() {
         api.getBuildFacets(query).catch(() => NO_FACETS),
       ]).then(([list, nextFacets]) => {
         if (cancelled) return;
-        setBuilds(list.results);
+        setArtifacts(list.results);
         setFacets(nextFacets);
         setLoading(false);
       });
@@ -133,10 +138,10 @@ export function BuildsPage() {
       <div className="flex flex-wrap items-start gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Builds
+            Artifacts
           </h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
-            Registered builds from all branches — newest first
+            Registered artifacts from all branches — newest first
           </p>
         </div>
       </div>
@@ -164,8 +169,8 @@ export function BuildsPage() {
         <ComboBox
           value={filters.branch}
           onChange={(v) => setFilter({ branch: v })}
-          // Short names: the filter is a substring match, so `feature/MPT-1234` selects the builds
-          // off `refs/heads/feature/MPT-1234` without the reader typing the ref prefix.
+          // Short names: the filter is a substring match, so `feature/MPT-1234` selects the
+          // artifacts off `refs/heads/feature/MPT-1234` without the reader typing the ref prefix.
           options={facetOptions(facets.branches, shortBranch)}
           placeholder="Any branch"
           ariaLabel="Branch"
@@ -174,7 +179,7 @@ export function BuildsPage() {
         />
         {/* Exact, and kept in the bar rather than folded into the search box: a promotion's
            "built from …" link arrives with a version set, and a narrowing the reader can't see is
-           how a one-row registry reads as a registry with one build in it. */}
+           how a one-row registry reads as a registry with one artifact in it. */}
         <VersionInput value={filters.version} onChange={(v) => setFilter({ version: v })} />
         <TimeRangeFilter filters={filters} onChange={setFilter} />
       </FilterPanel>
@@ -183,15 +188,15 @@ export function BuildsPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="animate-spin" size={24} style={{ color: 'var(--text-muted)' }} />
         </div>
-      ) : builds.length === 0 ? (
+      ) : artifacts.length === 0 ? (
         <ListEmptyState
           icon={Package}
           tone={hasFilter ? 'filtered' : 'neutral'}
-          title={hasFilter ? 'No builds match these filters' : 'No builds registered yet'}
+          title={hasFilter ? 'No artifacts match these filters' : 'No artifacts registered yet'}
           body={
             hasFilter
-              ? 'The registry holds builds, but none under every narrowing below. Widen the time range or drop a filter.'
-              : 'Publish pipelines register their builds here, so this fills up with the first publish that reports one.'
+              ? 'The registry holds artifacts, but none under every narrowing below. Widen the time range or drop a filter.'
+              : 'Publish pipelines register their artifacts here, so this fills up with the first publish that reports one.'
           }
           filters={activeChips}
           onClearFilters={clearAll}
@@ -210,49 +215,53 @@ export function BuildsPage() {
                   <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Version</th>
                   <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Branch</th>
                   <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Commit</th>
+                  <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Deployed</th>
                   <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>Registered</th>
                 </tr>
               </thead>
               <tbody>
-                {builds.map((build) => (
-                  <tr key={build.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                {artifacts.map((artifact) => (
+                  <tr key={artifact.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
                     <td className="px-4 py-2.5 font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {build.product}
+                      {artifact.product}
                     </td>
-                    <td className="px-4 py-2.5" style={{ color: 'var(--text-primary)' }}>{build.service}</td>
+                    <td className="px-4 py-2.5" style={{ color: 'var(--text-primary)' }}>{artifact.service}</td>
                     <td className="px-4 py-2.5">
-                      {build.buildUrl ? (
+                      {artifact.buildUrl ? (
                         <a
-                          href={build.buildUrl}
+                          href={artifact.buildUrl}
                           target="_blank"
                           rel="noreferrer"
                           className="inline-flex items-center gap-1 font-mono text-[12px] hover:underline"
                           style={{ color: 'var(--accent)' }}
                           title="Open the CI run"
                         >
-                          {build.version}
+                          {artifact.version}
                           <ExternalLink size={11} />
                         </a>
                       ) : (
                         <span className="font-mono text-[12px]" style={{ color: 'var(--text-primary)' }}>
-                          {build.version}
+                          {artifact.version}
                         </span>
                       )}
                     </td>
                     <td className="px-4 py-2.5">
-                      <BranchBadge branch={build.branch} />
+                      <BranchBadge branch={artifact.branch} />
                     </td>
                     <td className="px-4 py-2.5 font-mono text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                      {build.commitSha ? build.commitSha.slice(0, 8) : '—'}
+                      {artifact.commitSha ? artifact.commitSha.slice(0, 8) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <DeployedCell deployments={artifact.deployments ?? []} backTo={backHere} />
                     </td>
                     {/* Relative for scanning, absolute in the tooltip — "3 days ago" is the wrong
                        unit the moment someone is checking what one specific date produced. */}
                     <td
                       className="px-4 py-2.5 whitespace-nowrap"
                       style={{ color: 'var(--text-muted)' }}
-                      title={format(new Date(build.createdAt), 'PPpp')}
+                      title={format(new Date(artifact.createdAt), 'PPpp')}
                     >
-                      {formatDistanceToNow(new Date(build.createdAt), { addSuffix: true })}
+                      {formatDistanceToNow(new Date(artifact.createdAt), { addSuffix: true })}
                     </td>
                   </tr>
                 ))}
@@ -261,9 +270,9 @@ export function BuildsPage() {
           </div>
 
           {/* A capped page that says nothing reads as the whole registry, which is how someone
-             concludes a build doesn't exist when it is merely older than the cut. */}
+             concludes an artifact doesn't exist when it is merely older than the cut. */}
           <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-            {builds.length < PAGE_SIZE ? countLine(builds.length, hasFilter) : capLine()}
+            {artifacts.length < PAGE_SIZE ? countLine(artifacts.length, hasFilter) : capLine()}
           </p>
         </>
       )}
@@ -271,25 +280,62 @@ export function BuildsPage() {
   );
 }
 
-/** "3 builds match these filters" — the reading of the list the current filters produced. */
+/**
+ * Where an artifact actually ran: one pill per environment that has a deploy event for this exact
+ * (product, service, version), linked to that event.
+ *
+ * The registry and the deploy ledger are separate records — an artifact is a fact about CI, a
+ * deployment a fact about an environment — and this column is the join between them, so "was this
+ * ever shipped, and where?" stops being a question you answer by hand. An em dash means nothing has
+ * carried this version yet, which for a feature-branch artifact is the ordinary answer.
+ */
+function DeployedCell({ deployments, backTo }: { deployments: BuildDeployment[]; backTo: string }) {
+  if (deployments.length === 0) {
+    return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  }
+  const back = `from=${encodeURIComponent(backTo)}&fromLabel=${encodeURIComponent('Artifacts')}`;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {deployments.map((d) => (
+        <Link
+          key={d.eventId}
+          to={`/deployments/events/${d.eventId}?${back}`}
+          className="inline-flex transition-opacity hover:opacity-80"
+          // A failed deploy still says something true — this version reached that environment and
+          // didn't take — so it stays in the row, dimmed, with the outcome in the tooltip rather
+          // than being silently dropped into "never deployed".
+          style={{ opacity: d.status === 'succeeded' ? 1 : 0.55 }}
+          title={`${d.status === 'succeeded' ? 'Deployed' : `Deploy ${d.status}`} ${formatDistanceToNow(
+            new Date(d.deployedAt),
+            { addSuffix: true },
+          )}${d.isRollback ? ' (rollback)' : ''} — open the deployment`}
+        >
+          <EnvBadge env={d.environment} size="xs" />
+        </Link>
+      ))}
+    </span>
+  );
+}
+
+/** "3 artifacts match these filters" — the reading of the list the current filters produced. */
 function countLine(count: number, filtered: boolean): string {
-  const builds = `${count} build${count === 1 ? '' : 's'}`;
-  if (!filtered) return builds;
-  return `${builds} ${count === 1 ? 'matches' : 'match'} these filters`;
+  const artifacts = `${count} artifact${count === 1 ? '' : 's'}`;
+  if (!filtered) return artifacts;
+  return `${artifacts} ${count === 1 ? 'matches' : 'match'} these filters`;
 }
 
 function capLine(): string {
-  return `Showing the ${PAGE_SIZE} newest builds — narrow the time range or the filters to reach older ones`;
+  return `Showing the ${PAGE_SIZE} newest artifacts — narrow the time range or the filters to reach older ones`;
 }
 
-/** Facet values as combo-box options, each carrying how many builds picking it would show. */
+/** Facet values as combo-box options, each carrying how many artifacts picking it would show. */
 function facetOptions(
   values: { value: string; count: number }[],
   display: (value: string) => string = (v) => v,
 ): ComboOption[] {
   return values.map((v) => ({
     value: display(v.value),
-    hint: `${v.count} build${v.count === 1 ? '' : 's'}`,
+    hint: `${v.count} artifact${v.count === 1 ? '' : 's'}`,
   }));
 }
 
@@ -311,7 +357,7 @@ function SearchInput({ value, onChange }: { value: string; onChange: (v: string)
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search product, service, version, branch…"
-        aria-label="Search builds"
+        aria-label="Search artifacts"
         className="w-full rounded-lg border pl-7 pr-7 py-1.5 text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
         style={{
           borderColor: 'var(--border-color)',
@@ -367,7 +413,7 @@ function VersionInput({ value, onChange }: { value: string; onChange: (v: string
 }
 
 /**
- * When a build was registered: presets for "recently", a date range for a specific day.
+ * When an artifact was registered: presets for "recently", a date range for a specific day.
  *
  * The presets are the common case and stay one click each; the range is what answers "what did we
  * build on the 14th?", which no relative window can express. Picking "Any time" drops the bounds so
@@ -378,8 +424,8 @@ function TimeRangeFilter({
   filters,
   onChange,
 }: {
-  filters: BuildFilters;
-  onChange: (updates: Partial<Record<keyof BuildFilters, string>>) => void;
+  filters: ArtifactFilters;
+  onChange: (updates: Partial<Record<keyof ArtifactFilters, string>>) => void;
 }) {
   return (
     <>
