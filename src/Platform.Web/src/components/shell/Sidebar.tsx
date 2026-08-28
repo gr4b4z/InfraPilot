@@ -84,9 +84,9 @@ const navGroups: NavGroup[] = [
     label: 'Deployments',
     items: [
       { to: '/deployments', label: 'Deployments', icon: Rocket },
-      { to: '/builds', label: 'Builds', icon: Package },
       { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
+      { to: '/artifacts', label: 'Artifacts', icon: Package },
     ],
   },
   {

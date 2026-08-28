@@ -13,6 +13,7 @@ import {
   GitPullRequest,
   History,
   Loader2,
+  Package,
   PlayCircle,
   PlusCircle,
   ScrollText,
@@ -24,6 +25,8 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
+import { BranchBadge } from '@/components/artifacts/BranchBadge';
+import { artifactRegistryPath } from '@/lib/artifactPath';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { DeploymentLogViewer } from '@/components/deployments/DeploymentLogViewer';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -40,6 +43,7 @@ import { providerLabel, workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { collectParticipants } from '@/lib/types';
 import type {
+  BuildSummary,
   DeployParticipant,
   DeployReference,
   DeployRun,
@@ -90,6 +94,9 @@ export function DeploymentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const [detail, setDetail] = useState<DeploymentDetail | null>(null);
+  // Keyed by the event it was looked up for, so a stale answer can never be painted against the
+  // deployment the reader navigated to next.
+  const [artifact, setArtifact] = useState<{ eventId: string; build: BuildSummary | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showManualForm, setShowManualForm] = useState(false);
@@ -118,6 +125,30 @@ export function DeploymentDetailPage() {
   });
 
   useEffect(() => { void load(); }, [load, realtimeTick]);
+
+  // The registry row this deployment shipped, looked up on the triple the two records share
+  // (product, service, version). A separate request rather than part of the event payload: the
+  // registry is its own store, and a deployment reads perfectly well without it — plenty of deploys
+  // predate the registry or come from pipelines that never register anything, and those must not
+  // hold up the page or turn into an error on it.
+  useEffect(() => {
+    const evt = detail?.event;
+    if (!evt) return;
+    let cancelled = false;
+    api
+      .listBuilds({ product: evt.product, service: evt.service, version: evt.version, limit: 1 })
+      .then((r) => {
+        if (!cancelled) setArtifact({ eventId: evt.id, build: r.results[0] ?? null });
+      })
+      .catch(() => {
+        // A registry that can't be reached is not a fact about this deployment — the card simply
+        // doesn't render, the same as for a version nobody registered.
+        if (!cancelled) setArtifact({ eventId: evt.id, build: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail]);
 
   // Before the early returns below, so the hook order is the same on every render. A deploy event is
   // the most-pasted link in the app ("this is the one that failed"), and until it loads the id is
@@ -159,6 +190,9 @@ export function DeploymentDetailPage() {
   // The release repository's record of what this version is built from. The version number hangs off
   // this link, so "which chart and images is v6.0.14 actually made of" is one click from the header.
   const manifest = evt.references.find((r) => r.type === 'build-manifest');
+
+  // Only the answer that was looked up for *this* event (see the state above).
+  const deployedArtifact = artifact?.eventId === evt.id ? artifact.build : null;
 
   // `from` lets a reader who arrived from a promotion or work item get back where they were instead
   // of into the deployments matrix. It rides in the URL so a refresh keeps the trail.
@@ -261,6 +295,8 @@ export function DeploymentDetailPage() {
           </Card>
 
           <CreationCard event={evt} />
+
+          {deployedArtifact && <ArtifactCard artifact={deployedArtifact} />}
 
           {evt.references.length > 0 && <ReferencesCard references={evt.references} />}
 
@@ -639,6 +675,73 @@ function CreationCard({ event: evt }: { event: DeploymentDetail['event'] }) {
 }
 
 /**
+ * What was deployed, as the artifact registry recorded it when the publishing pipeline registered
+ * it: which branch it was cut from, which commit, when.
+ *
+ * This is the other half of a question the deploy event can only half answer. The event says a
+ * version reached an environment; the registry says what that version *is* — and the branch is the
+ * part nobody can infer, because a feature-branch artifact and a main-line one look identical once
+ * they're just a version string. The link goes to the registry filtered to this exact artifact.
+ */
+function ArtifactCard({ artifact }: { artifact: BuildSummary }) {
+  const registryHref = artifactRegistryPath({
+    product: artifact.product,
+    service: artifact.service,
+    version: artifact.version,
+  });
+  return (
+    <Card
+      title="Artifact"
+      icon={Package}
+      action={
+        <Link
+          to={registryHref}
+          className="text-[12px] font-medium hover:underline"
+          style={{ color: 'var(--accent)' }}
+        >
+          Open in registry
+        </Link>
+      }
+    >
+      <div className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
+        <Row label="Version">
+          <Link to={registryHref} className="font-mono hover:underline" style={{ color: 'var(--accent)' }}>
+            {artifact.version}
+          </Link>
+        </Row>
+        <Row label="Branch">
+          <BranchBadge branch={artifact.branch} />
+        </Row>
+        {artifact.commitSha && (
+          <Row label="Commit">
+            <span className="font-mono" title={artifact.commitSha}>{artifact.commitSha.slice(0, 8)}</span>
+          </Row>
+        )}
+        <Row label="Registered">
+          <span title={format(new Date(artifact.createdAt), 'PPpp')}>
+            {formatDistanceToNow(new Date(artifact.createdAt), { addSuffix: true })}
+          </span>
+        </Row>
+        {artifact.buildUrl && (
+          <Row label="CI run">
+            <a
+              href={artifact.buildUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 hover:underline"
+              style={{ color: 'var(--accent)' }}
+            >
+              {artifact.buildId ? `#${artifact.buildId}` : 'Open'}
+              <ExternalLink size={11} />
+            </a>
+          </Row>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/**
  * The references the producer attached: repository, commits, PRs, tickets, the build manifest, the
  * build pipeline. Work items appear in their own card too — there they're links into the sign-off
  * flow, here they're part of the raw record of what was attached.
@@ -733,7 +836,7 @@ function PromotionsCard({ promotions, environment }: { promotions: RelatedPromot
     <Card title="Promotions" icon={ArrowRight}>
       {promotions.length === 0 ? (
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-          No promotion carries this version. One appears once this build is put forward for the next
+          No promotion carries this version. One appears once this artifact is put forward for the next
           environment.
         </p>
       ) : (

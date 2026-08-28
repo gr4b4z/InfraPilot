@@ -27,6 +27,9 @@ public class BuildService
         _logger = logger;
     }
 
+    /// <summary>The registry's unique triple — the key a build and its deploy events share.</summary>
+    private record struct BuildKey(string Product, string Service, string Version);
+
     /// <summary>Outcome of a registration: the stored build plus whether it replaced an existing row.</summary>
     public record RegisterResult(Build Build, bool Replayed);
 
@@ -133,16 +136,85 @@ public class BuildService
     /// <summary>
     /// Newest-first list for the UI picker and the read API. Every narrowing lives in
     /// <see cref="BuildQuery"/>, which documents why each field matches the way it does.
+    ///
+    /// Each row carries where it was deployed (see <see cref="DeploymentsForAsync"/>) — the one
+    /// question a registry row cannot answer about itself, and the reason the list can link a build
+    /// to the deploy events that shipped it.
     /// </summary>
     public async Task<List<BuildSummaryDto>> ListAsync(
-        BuildQuery query, int limit, CancellationToken ct = default) =>
-        await Filter(_db.Builds.AsNoTracking(), query)
+        BuildQuery query, int limit, CancellationToken ct = default)
+    {
+        // Projected rather than materialised as entities: the manifest is large and no caller of the
+        // list wants it.
+        var rows = await Filter(_db.Builds.AsNoTracking(), query)
             .OrderByDescending(b => b.CreatedAt)
             .Take(limit)
-            .Select(b => new BuildSummaryDto(
+            .Select(b => new
+            {
                 b.Id, b.Product, b.Service, b.Version, b.Branch, b.CommitSha, b.BuildId, b.BuildUrl,
-                b.ArtifactRef, b.ArtifactDigest, b.CreatedAt, b.UpdatedAt))
+                b.ArtifactRef, b.ArtifactDigest, b.CreatedAt, b.UpdatedAt,
+            })
             .ToListAsync(ct);
+
+        var deployments = await DeploymentsForAsync(
+            rows.Select(r => new BuildKey(r.Product, r.Service, r.Version)).ToList(), ct);
+
+        return rows
+            .Select(r => new BuildSummaryDto(
+                r.Id, r.Product, r.Service, r.Version, r.Branch, r.CommitSha, r.BuildId, r.BuildUrl,
+                r.ArtifactRef, r.ArtifactDigest, r.CreatedAt, r.UpdatedAt,
+                deployments.TryGetValue(new BuildKey(r.Product, r.Service, r.Version), out var d) ? d : []))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The deploy events that shipped each of the given builds, keyed by the registry's natural
+    /// triple and reduced to the newest deploy per environment.
+    ///
+    /// One query for the whole page, not one per row: the three value sets are sent as separate IN
+    /// lists (so the database can use the (Product, Service, …) index) and the exact triples are
+    /// re-checked here, because the cross product of the three lists is wider than the set of builds
+    /// actually asked about.
+    ///
+    /// Matching is exact on all three fields, deliberately: a build and the deploy event for the same
+    /// version resolve their product through the same <see cref="ServiceProductOverrideService"/>, so
+    /// a case-insensitive match would buy nothing and cost the index.
+    /// </summary>
+    private async Task<Dictionary<BuildKey, IReadOnlyList<BuildDeploymentDto>>> DeploymentsForAsync(
+        IReadOnlyList<BuildKey> builds, CancellationToken ct)
+    {
+        if (builds.Count == 0) return [];
+
+        var products = builds.Select(b => b.Product).Distinct().ToList();
+        var services = builds.Select(b => b.Service).Distinct().ToList();
+        var versions = builds.Select(b => b.Version).Distinct().ToList();
+        var wanted = builds.ToHashSet();
+
+        var events = await _db.DeployEvents.AsNoTracking()
+            .Where(d => products.Contains(d.Product)
+                && services.Contains(d.Service)
+                && versions.Contains(d.Version))
+            .Select(d => new
+            {
+                d.Id, d.Product, d.Service, d.Version, d.Environment, d.Status, d.IsRollback, d.DeployedAt,
+            })
+            .ToListAsync(ct);
+
+        return events
+            .Where(e => wanted.Contains(new BuildKey(e.Product, e.Service, e.Version)))
+            .GroupBy(e => new BuildKey(e.Product, e.Service, e.Version))
+            .ToDictionary(
+                g => g.Key,
+                IReadOnlyList<BuildDeploymentDto> (g) => g
+                    // One entry per environment — a version redeployed to staging five times is still
+                    // "in staging", and the newest of those is the one worth linking to.
+                    .GroupBy(e => e.Environment)
+                    .Select(byEnv => byEnv.OrderByDescending(e => e.DeployedAt).First())
+                    .OrderByDescending(e => e.DeployedAt)
+                    .Select(e => new BuildDeploymentDto(
+                        e.Id, e.Environment, e.Status, e.IsRollback, e.DeployedAt))
+                    .ToList());
+    }
 
     /// <summary>
     /// The pick lists behind the registry's filter combo boxes: which products, services and

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Layout } from '@/components/shell/Layout';
 import { CatalogPage } from '@/app/catalog/CatalogPage';
 import { RequestPage } from '@/app/catalog/RequestPage';
@@ -11,7 +11,7 @@ import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
-import { BuildsPage } from '@/app/builds/BuildsPage';
+import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
@@ -41,6 +41,12 @@ import { AdminRoute } from '@/components/auth/AdminRoute';
 import { FeatureRoute } from '@/components/auth/FeatureRoute';
 import { FeatureFlag } from '@/stores/featureFlagsStore';
 
+/** `/builds?product=x` → `/artifacts?product=x`. See the route it serves. */
+function LegacyBuildsRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/artifacts${search}`} replace />;
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -60,9 +66,12 @@ function App() {
           <Route path="/approvals" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalsPage /></FeatureRoute>} />
           <Route path="/approvals/:id" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalDetailPage /></FeatureRoute>} />
           <Route path="/deployments" element={<DeploymentsPage />} />
-          {/* The build registry — all published builds, any branch. Sits beside /deployments:
-              a build is a fact about CI, not about any environment. */}
-          <Route path="/builds" element={<BuildsPage />} />
+          {/* The artifact registry — all published artifacts, any branch. Sits beside
+              /deployments: an artifact is a fact about CI, not about any environment. */}
+          <Route path="/artifacts" element={<ArtifactsPage />} />
+          {/* The old name. A filtered registry is a link people paste and bookmark, so the rename
+              carries the query string across rather than dropping them on the unfiltered list. */}
+          <Route path="/builds" element={<LegacyBuildsRedirect />} />
           {/* Deploy-event detail. Keyed on the event id alone — product and service are properties of
               the event, not of its identity — and ranked above /deployments/:product by the router's
               static-segment-wins rule, so "events" can't be read as a product name. */}

@@ -99,8 +99,28 @@ How each filter matches:
 value first. Each list is counted with every filter applied *except its own field*, so picking a
 product narrows the service and branch lists while the product list still offers the alternatives.
 
+Every row from `GET /api/builds` also carries **where it was deployed**:
+
+```json
+"deployments": [
+  { "eventId": "…", "environment": "production", "status": "succeeded",
+    "isRollback": false, "deployedAt": "2026-08-27T09:12:00Z" }
+]
+```
+
+One entry per environment that has a deploy event for the same `(product, service, version)` —
+the newest deploy of that environment when a version was shipped there more than once, newest
+environment first. Empty means nothing has carried the build yet, which for a feature-branch
+build is the ordinary answer. It is a join the API computes, not something the publishing
+pipeline reports: the registry and the deploy ledger stay separate records. Matching is exact on
+all three fields (a build and the deploy event for the same version resolve their product through
+the same service→product override, so they cannot disagree). `GET /api/builds/{id}` does **not**
+carry it.
+
 Read endpoints accept the same auth as the rest of the API (signed-in user or API key).
-The web UI lists the registry under **Deployments → Builds**.
+The web UI lists the registry under **Deployments → Artifacts** (`/artifacts`; `/builds`
+redirects there, query string intact) — the UI calls a registered build an *artifact*, while the
+API keeps the `builds` vocabulary.
 
 ## Promotions from builds (Phase C)
 
@@ -127,5 +147,5 @@ GET  /api/promotions/build-targets?product=&service=  — { targets: [{ targetEn
 POST /api/promotions/from-build                        — { buildId, targetEnv } → 201 { id, status }
 ```
 
-The web UI exposes this as **Deploy a build** on the Service Details page (shown only when a
+The web UI exposes this as **Deploy an artifact** on the Service Details page (shown only when a
 `build → *` policy resolves for the service).

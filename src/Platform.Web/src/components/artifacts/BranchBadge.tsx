@@ -4,9 +4,9 @@ export function shortBranch(branch: string) {
 }
 
 /**
- * The branch a build came from, prominent by design — the build registry exists so a feature build
- * is never mistaken for main. Trunk and release refs read as the stable spine (accent); anything
- * else is a feature branch and stays visually distinct (warning).
+ * The branch an artifact came from, prominent by design — the artifact registry exists so a feature
+ * build is never mistaken for main. Trunk and release refs read as the stable spine (accent);
+ * anything else is a feature branch and stays visually distinct (warning).
  */
 export function BranchBadge({ branch }: { branch: string }) {
   const short = shortBranch(branch);
