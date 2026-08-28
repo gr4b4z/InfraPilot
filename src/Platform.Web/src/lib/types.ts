@@ -397,7 +397,23 @@ export interface WebhookDelivery {
   nextRetryAt: string | null;
 }
 
-/** One registered build — a row in the build registry (all published builds, any branch). */
+/**
+ * One environment a registered build actually reached — the deploy event that shipped this exact
+ * (product, service, version), newest one per environment.
+ *
+ * Computed by the API as a join against the deploy ledger, not reported by the publishing pipeline:
+ * a build knows nothing about deployment, which is what makes this the link between the two.
+ */
+export interface BuildDeployment {
+  /** The deploy event — the key for linking to its detail page. */
+  eventId: string;
+  environment: string;
+  status: string;
+  isRollback: boolean;
+  deployedAt: string;
+}
+
+/** One registered build — a row in the artifact registry (all published builds, any branch). */
 export interface BuildSummary {
   id: string;
   product: string;
@@ -412,6 +428,8 @@ export interface BuildSummary {
   artifactDigest: string | null;
   createdAt: string;
   updatedAt: string | null;
+  /** Where this artifact was deployed. Absent on responses from an API that predates the join. */
+  deployments?: BuildDeployment[];
 }
 
 /** One value a build filter can take, with how many builds the current view holds for it. */

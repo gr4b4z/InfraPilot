@@ -1,11 +1,11 @@
 /**
- * The build registry's filter state, as it lives in the URL.
+ * The artifact registry's filter state, as it lives in the URL.
  *
  * The filters are in the query string rather than component state so a filtered registry is a link:
- * that is what lets a promotion point at the one build it was cut from (`buildRegistryPath`), and
- * what lets someone answer "which builds went out on the 14th?" by sending the answer rather than
- * the recipe. Parsing and serialising live here so the page and the link builder cannot disagree
- * about what a parameter means.
+ * that is what lets a promotion point at the one artifact it was cut from (`artifactRegistryPath`),
+ * and what lets someone answer "which artifacts went out on the 14th?" by sending the answer rather
+ * than the recipe. Parsing and serialising live here so the page and the link builder cannot
+ * disagree about what a parameter means.
  */
 
 /** The time presets, in the order the control shows them. */
@@ -23,13 +23,13 @@ export function isTimePreset(value: string | null): value is TimePreset {
   return value !== null && TIME_PRESETS.some((p) => p.key === value);
 }
 
-export interface BuildFilters {
+export interface ArtifactFilters {
   /** Free-text search, matched as a substring across every column a reader might half-remember. */
   q: string;
   product: string;
   service: string;
   branch: string;
-  /** Exact — it is how a link points at ONE build. */
+  /** Exact — it is how a link points at ONE artifact. */
   version: string;
   time: TimePreset;
   /** `datetime-local` values ("2026-08-14T09:30"), only meaningful while `time` is `custom`. */
@@ -37,7 +37,7 @@ export interface BuildFilters {
   to: string;
 }
 
-export const EMPTY_FILTERS: BuildFilters = {
+export const EMPTY_FILTERS: ArtifactFilters = {
   q: '',
   product: '',
   service: '',
@@ -48,7 +48,7 @@ export const EMPTY_FILTERS: BuildFilters = {
   to: '',
 };
 
-export function parseBuildFilters(params: URLSearchParams): BuildFilters {
+export function parseArtifactFilters(params: URLSearchParams): ArtifactFilters {
   const time = params.get('time');
   return {
     q: params.get('q') ?? '',
@@ -67,13 +67,13 @@ export function parseBuildFilters(params: URLSearchParams): BuildFilters {
  * `until` exclusive.
  *
  * A custom range's bounds are `datetime-local` strings, so they are read in the reader's own time
- * zone: someone asking for builds on the 14th means their 14th. A bound left empty is simply
+ * zone: someone asking for artifacts on the 14th means their 14th. A bound left empty is simply
  * open — "from the 14th onwards" is a question people ask as often as a closed range.
  *
  * Recomputed per fetch rather than pinned when the preset is picked: "the last 24 hours" should
  * still mean that after the page has been open for an hour.
  */
-export function timeWindow(filters: BuildFilters): { since?: string; until?: string } {
+export function timeWindow(filters: ArtifactFilters): { since?: string; until?: string } {
   if (filters.time === 'custom') {
     return {
       since: localInputToIso(filters.from),
@@ -96,12 +96,12 @@ function localInputToIso(value: string): string | undefined {
  * not — which matters, because the empty list it can produce must not be blamed on a time range
  * that isn't actually set.
  */
-export function isFiltered(filters: BuildFilters): boolean {
+export function isFiltered(filters: ArtifactFilters): boolean {
   return countActiveFilters(filters) > 0;
 }
 
 /** How many narrowings are in effect — the number the collapsed filter panel reports. */
-export function countActiveFilters(filters: BuildFilters): number {
+export function countActiveFilters(filters: ArtifactFilters): number {
   const window = timeWindow(filters);
   return [
     filters.q.trim(),
@@ -114,7 +114,7 @@ export function countActiveFilters(filters: BuildFilters): number {
 }
 
 /** How a custom range reads in a chip or a browser tab: "14 Aug 09:30 → 15 Aug". */
-export function describeTimeFilter(filters: BuildFilters): string | null {
+export function describeTimeFilter(filters: ArtifactFilters): string | null {
   if (filters.time !== 'custom') {
     const preset = TIME_PRESETS.find((p) => p.key === filters.time);
     return filters.time === 'all' ? null : `last ${preset?.label ?? filters.time}`;
