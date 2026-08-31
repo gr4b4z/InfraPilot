@@ -32,6 +32,8 @@ export function Topbar() {
   // Promotions + work items awaiting this user. Drives the bell badge; the bell opens the
   // My Tasks page that lists exactly these items.
   const myTasksCount = useMyTasksCount();
+  // The bell opens /my-tasks, a QA/Admin-only page — for anyone else it's a door to a redirect.
+  const canSeeTasks = (user?.isQA ?? false) || (user?.isAdmin ?? false);
   const hiddenProductCount = useHiddenProductCount();
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -215,30 +217,32 @@ export function Topbar() {
 
         {/* Bell → My tasks. The badge is a real count of things awaiting this user, so an
             empty bell renders bare rather than with a dot that means nothing. */}
-        <NavLink
-          to="/my-tasks"
-          className="p-2 rounded-lg transition-colors hover:bg-[var(--bg-secondary)] relative"
-          style={({ isActive }) => ({
-            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-            backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
-          })}
-          title={
-            myTasksCount > 0
-              ? `My tasks — ${myTasksCount} awaiting you`
-              : 'My tasks — nothing awaiting you'
-          }
-          aria-label={`My tasks, ${myTasksCount} awaiting you`}
-        >
-          <Bell size={16} />
-          {myTasksCount > 0 && (
-            <span
-              className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full text-[10px] font-bold leading-[16px] text-center text-white"
-              style={{ backgroundColor: 'var(--danger)' }}
-            >
-              {myTasksCount > 99 ? '99+' : myTasksCount}
-            </span>
-          )}
-        </NavLink>
+        {canSeeTasks && (
+          <NavLink
+            to="/my-tasks"
+            className="p-2 rounded-lg transition-colors hover:bg-[var(--bg-secondary)] relative"
+            style={({ isActive }) => ({
+              color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+              backgroundColor: isActive ? 'var(--accent-subtle)' : undefined,
+            })}
+            title={
+              myTasksCount > 0
+                ? `My tasks — ${myTasksCount} awaiting you`
+                : 'My tasks — nothing awaiting you'
+            }
+            aria-label={`My tasks, ${myTasksCount} awaiting you`}
+          >
+            <Bell size={16} />
+            {myTasksCount > 0 && (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full text-[10px] font-bold leading-[16px] text-center text-white"
+                style={{ backgroundColor: 'var(--danger)' }}
+              >
+                {myTasksCount > 99 ? '99+' : myTasksCount}
+              </span>
+            )}
+          </NavLink>
+        )}
 
         {/* A products filter that applies app-wide is invisible by construction: every list simply
             comes back shorter. Without a persistent cue, "where did that promotion go?" is a very
