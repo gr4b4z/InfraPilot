@@ -39,7 +39,9 @@ import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
 import { AdminRoute } from '@/components/auth/AdminRoute';
 import { FeatureRoute } from '@/components/auth/FeatureRoute';
+import { QaRoute } from '@/components/auth/QaRoute';
 import { FeatureFlag } from '@/stores/featureFlagsStore';
+import { useAuthStore } from '@/stores/authStore';
 
 /** `/builds?product=x` → `/artifacts?product=x`. See the route it serves. */
 function LegacyBuildsRedirect() {
@@ -47,18 +49,33 @@ function LegacyBuildsRedirect() {
   return <Navigate to={`/artifacts${search}`} replace />;
 }
 
+/**
+ * Role-aware landing page. QA and Admins land on "My tasks" — the "is anything waiting on me?"
+ * page. Plain users can't act on tasks, so their home is Deployments, the page they actually
+ * come here to read.
+ */
+function HomeRedirect() {
+  const user = useAuthStore((s) => s.user);
+  const isLoading = useAuthStore((s) => s.isLoading);
+
+  // Wait for the auth fetch so we don't send a QA user to Deployments during boot.
+  if (isLoading) return null;
+
+  const canSeeTasks = (user?.isQA ?? false) || (user?.isAdmin ?? false);
+  return <Navigate to={canSeeTasks ? '/my-tasks' : '/deployments'} replace />;
+}
+
 function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
-          {/* Land on "My tasks": it's the one page every user has (not feature-gated), and it
-              answers the question a returning user actually has — "is anything waiting on me?" */}
-          <Route path="/" element={<Navigate to="/my-tasks" replace />} />
+          <Route path="/" element={<HomeRedirect />} />
           {/* "My tasks" — the topbar bell's destination: everything awaiting the signed-in user,
-              across promotions and work items. Not feature-gated: it degrades to an empty page
-              when Promotions is off, and it's the target of a permanent shell affordance. */}
-          <Route path="/my-tasks" element={<MyTasksPage />} />
+              across promotions and work items. QA/Admin only — plain users have nothing assignable
+              to them, so for them the page is gone rather than permanently empty. Not feature-gated:
+              it degrades to an empty page when Promotions is off. */}
+          <Route path="/my-tasks" element={<QaRoute><MyTasksPage /></QaRoute>} />
           <Route path="/catalog" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><CatalogPage /></FeatureRoute>} />
           <Route path="/catalog/:slug" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestPage /></FeatureRoute>} />
           <Route path="/requests" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestsPage /></FeatureRoute>} />
