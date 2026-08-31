@@ -288,6 +288,11 @@ export function ArtifactsPage() {
  * deployment a fact about an environment — and this column is the join between them, so "was this
  * ever shipped, and where?" stops being a question you answer by hand. An em dash means nothing has
  * carried this version yet, which for a feature-branch artifact is the ordinary answer.
+ *
+ * A pill in colour is a live fact — this artifact is what that environment runs right now. A grey
+ * pill is history: the environment has since moved to another version. Both stay in the row,
+ * because "where did this ever land?" and "where does this run now?" are both questions the
+ * registry gets asked, but only the second deserves the environment's colour.
  */
 function DeployedCell({ deployments, backTo }: { deployments: BuildDeployment[]; backTo: string }) {
   if (deployments.length === 0) {
@@ -303,12 +308,19 @@ function DeployedCell({ deployments, backTo }: { deployments: BuildDeployment[];
           className="inline-flex transition-opacity hover:opacity-80"
           // A failed deploy still says something true — this version reached that environment and
           // didn't take — so it stays in the row, dimmed, with the outcome in the tooltip rather
-          // than being silently dropped into "never deployed".
-          style={{ opacity: d.status === 'succeeded' ? 1 : 0.55 }}
+          // than being silently dropped into "never deployed". `isCurrent === false` greys the pill
+          // out entirely (an older API omits the field, and unknown must not read as stale).
+          style={
+            d.isCurrent === false
+              ? { filter: 'grayscale(1)', opacity: 0.45 }
+              : { opacity: d.status === 'succeeded' ? 1 : 0.55 }
+          }
           title={`${d.status === 'succeeded' ? 'Deployed' : `Deploy ${d.status}`} ${formatDistanceToNow(
             new Date(d.deployedAt),
             { addSuffix: true },
-          )}${d.isRollback ? ' (rollback)' : ''} — open the deployment`}
+          )}${d.isRollback ? ' (rollback)' : ''}${
+            d.isCurrent === false ? ' — since replaced by a newer deploy' : ''
+          } — open the deployment`}
         >
           <EnvBadge env={d.environment} size="xs" />
         </Link>

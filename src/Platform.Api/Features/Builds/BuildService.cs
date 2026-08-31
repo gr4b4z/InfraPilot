@@ -169,7 +169,8 @@ public class BuildService
 
     /// <summary>
     /// The deploy events that shipped each of the given builds, keyed by the registry's natural
-    /// triple and reduced to the newest deploy per environment.
+    /// triple and reduced to the newest deploy per environment. Each entry says whether it is still
+    /// that environment's current deploy for the service, or history a newer version has replaced.
     ///
     /// One query for the whole page, not one per row: the three value sets are sent as separate IN
     /// lists (so the database can use the (Product, Service, …) index) and the exact triples are
@@ -200,6 +201,18 @@ public class BuildService
             })
             .ToListAsync(ct);
 
+        // The newest event per (product, service, environment) across ALL versions — the same
+        // "current" the state matrix (GetState) shows. An entry above whose event isn't in this set
+        // is history: the environment has since moved on to some other version. Not filtered by
+        // version, deliberately — the version that superseded a listed build is usually one the
+        // page isn't showing.
+        var currentEventIds = (await _db.DeployEvents.AsNoTracking()
+                .Where(d => products.Contains(d.Product) && services.Contains(d.Service))
+                .GroupBy(d => new { d.Product, d.Service, d.Environment })
+                .Select(g => g.OrderByDescending(e => e.DeployedAt).Select(e => e.Id).First())
+                .ToListAsync(ct))
+            .ToHashSet();
+
         return events
             .Where(e => wanted.Contains(new BuildKey(e.Product, e.Service, e.Version)))
             .GroupBy(e => new BuildKey(e.Product, e.Service, e.Version))
@@ -212,7 +225,8 @@ public class BuildService
                     .Select(byEnv => byEnv.OrderByDescending(e => e.DeployedAt).First())
                     .OrderByDescending(e => e.DeployedAt)
                     .Select(e => new BuildDeploymentDto(
-                        e.Id, e.Environment, e.Status, e.IsRollback, e.DeployedAt))
+                        e.Id, e.Environment, e.Status, e.IsRollback, e.DeployedAt,
+                        IsCurrent: currentEventIds.Contains(e.Id)))
                     .ToList());
     }
 
