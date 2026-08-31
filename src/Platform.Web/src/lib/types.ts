@@ -411,6 +411,12 @@ export interface BuildDeployment {
   status: string;
   isRollback: boolean;
   deployedAt: string;
+  /**
+   * Whether this event is still the environment's newest deploy for the service — the same
+   * "current" the state matrix shows. False means the environment has since moved to another
+   * version: this build ran there once, but is not what runs there now.
+   */
+  isCurrent: boolean;
 }
 
 /** One registered build — a row in the artifact registry (all published builds, any branch). */
