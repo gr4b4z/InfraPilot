@@ -410,8 +410,37 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
         Assert.Equal("1.2.3-gship", detail.GetProperty("event").GetProperty("version").GetString());
     }
 
+    [Fact]
+    public async Task ListedBuilds_MarkDeploymentsAnotherVersionHasReplaced()
+    {
+        await _apiKeyClient.PostAsJsonAsync("/api/builds", MakePayload("bld-stale", "svc", "2.0.0-gold"));
+        await _apiKeyClient.PostAsJsonAsync("/api/builds", MakePayload("bld-stale", "svc", "2.1.0-gnew"));
+
+        // staging moved on from 2.0.0 to 2.1.0; production still runs 2.0.0.
+        await IngestDeploy("bld-stale", "svc", "staging", "2.0.0-gold", deployedAt: "2026-04-16T10:00:00Z");
+        await IngestDeploy("bld-stale", "svc", "staging", "2.1.0-gnew", deployedAt: "2026-04-17T10:00:00Z");
+        await IngestDeploy("bld-stale", "svc", "production", "2.0.0-gold", deployedAt: "2026-04-16T12:00:00Z");
+
+        var list = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?product=bld-stale");
+        var byVersion = list.GetProperty("results").EnumerateArray()
+            .ToDictionary(b => b.GetProperty("version").GetString()!, b => b.GetProperty("deployments"));
+
+        var old = byVersion["2.0.0-gold"].EnumerateArray()
+            .ToDictionary(d => d.GetProperty("environment").GetString()!, d => d.GetProperty("isCurrent").GetBoolean());
+        // The superseded entry stays in the list — the build DID reach staging — but says it is
+        // no longer what staging runs.
+        Assert.False(old["staging"]);
+        Assert.True(old["production"]);
+
+        Assert.True(byVersion["2.1.0-gnew"].EnumerateArray()
+            .Single(d => d.GetProperty("environment").GetString() == "staging")
+            .GetProperty("isCurrent").GetBoolean());
+    }
+
     /// <summary>Records a deploy of one version into one environment, the way a pipeline would.</summary>
-    private async Task IngestDeploy(string product, string service, string environment, string version)
+    private async Task IngestDeploy(
+        string product, string service, string environment, string version,
+        string deployedAt = "2026-04-16T10:00:00Z")
     {
         var response = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", new
         {
@@ -420,7 +449,7 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
             environment,
             version,
             source = "ci",
-            deployedAt = "2026-04-16T10:00:00Z",
+            deployedAt,
         });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }

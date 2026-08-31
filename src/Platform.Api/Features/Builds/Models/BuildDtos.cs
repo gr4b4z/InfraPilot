@@ -40,7 +40,11 @@ public record BuildDeploymentDto(
     string Environment,
     string Status,
     bool IsRollback,
-    DateTimeOffset DeployedAt);
+    DateTimeOffset DeployedAt,
+    // Whether this event is still the environment's newest deploy for the service — the same
+    // "current" the state matrix shows. False means the environment has since moved to another
+    // version, so the entry is history: this build ran there once, but is not what runs there now.
+    bool IsCurrent);
 
 /// <summary>List-row projection — everything but the manifest, which can be large.</summary>
 public record BuildSummaryDto(
