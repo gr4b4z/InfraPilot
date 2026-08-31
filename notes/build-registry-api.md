@@ -104,7 +104,7 @@ Every row from `GET /api/builds` also carries **where it was deployed**:
 ```json
 "deployments": [
   { "eventId": "…", "environment": "production", "status": "succeeded",
-    "isRollback": false, "deployedAt": "2026-08-27T09:12:00Z" }
+    "isRollback": false, "deployedAt": "2026-08-27T09:12:00Z", "isCurrent": true }
 ]
 ```
 
@@ -116,6 +116,11 @@ pipeline reports: the registry and the deploy ledger stay separate records. Matc
 all three fields (a build and the deploy event for the same version resolve their product through
 the same service→product override, so they cannot disagree). `GET /api/builds/{id}` does **not**
 carry it.
+
+`isCurrent` says whether that event is still the environment's newest deploy for the service —
+the same "current" the state matrix reports. `false` means the environment has since moved to
+another version: the build ran there once but is not what runs there now, and the UI greys the
+entry out.
 
 Read endpoints accept the same auth as the rest of the API (signed-in user or API key).
 The web UI lists the registry under **Deployments → Artifacts** (`/artifacts`; `/builds`
