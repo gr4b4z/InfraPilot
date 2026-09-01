@@ -23,6 +23,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { DeployArtifactDialog } from '@/components/artifacts/DeployArtifactDialog';
+import { ReleaseTimeline } from './ReleaseTimeline';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import type {
@@ -240,6 +241,17 @@ export function ServiceDetailPage() {
           ))}
         </KeyboardList>
       </section>
+
+      {/* ── Release timeline ── when versions landed where, on one shared time axis. Renders
+         nothing until its own history fetch returns, so the page never blocks on it. */}
+      {product && service && (
+        <ReleaseTimeline
+          product={product}
+          service={service}
+          backHref={backHref}
+          refreshTick={deploymentsTick}
+        />
+      )}
 
       {/* ── Promotions ── above the version list: an open promotion is a decision somebody still
          has to make, a version list is a record. Gated exactly like everywhere else. */}
