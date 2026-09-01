@@ -31,6 +31,8 @@ export interface NavTarget {
   icon: React.ComponentType<{ size?: number; className?: string }>;
   featureFlag?: string;
   adminOnly?: boolean;
+  /** Visible to QA and Admins only — the roles tasks can actually be assigned to. */
+  qaOnly?: boolean;
 }
 
 export const NAV_TARGETS: NavTarget[] = [
@@ -39,7 +41,7 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: 'p', label: 'Promotions', to: '/promotions', icon: GitPullRequest, featureFlag: FeatureFlag.Promotions },
   { key: 'w', label: 'Work items queue', to: '/me/work-items', icon: Inbox, featureFlag: FeatureFlag.Promotions },
   { key: 'u', label: 'Promotions audit', to: '/promotions/audit', icon: History, featureFlag: FeatureFlag.Promotions },
-  { key: 't', label: 'My tasks', to: '/my-tasks', icon: CheckCircle },
+  { key: 't', label: 'My tasks', to: '/my-tasks', icon: CheckCircle, qaOnly: true },
   { key: 'c', label: 'Service catalog', to: '/catalog', icon: LayoutGrid, featureFlag: FeatureFlag.ServiceCatalog },
   { key: 'q', label: 'My requests', to: '/requests', icon: FileText, featureFlag: FeatureFlag.ServiceCatalog },
   { key: 'a', label: 'Approvals', to: '/approvals', icon: CheckCircle, featureFlag: FeatureFlag.Approvals },

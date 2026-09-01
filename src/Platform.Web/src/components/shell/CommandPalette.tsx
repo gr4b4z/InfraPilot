@@ -20,6 +20,7 @@ import { NAV_TARGETS } from './navTargets';
 export function CommandPalette({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  const isQA = useAuthStore((s) => s.user?.isQA ?? false);
   const flags = useFeatureFlagsStore((s) => s.flags);
   const [highlighted, setHighlighted] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -29,10 +30,11 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     () =>
       NAV_TARGETS.filter((t) => {
         if (t.adminOnly && !isAdmin) return false;
+        if (t.qaOnly && !isQA && !isAdmin) return false;
         if (t.featureFlag && flags[t.featureFlag] === false) return false;
         return true;
       }),
-    [isAdmin, flags],
+    [isAdmin, isQA, flags],
   );
 
   useEffect(() => {
