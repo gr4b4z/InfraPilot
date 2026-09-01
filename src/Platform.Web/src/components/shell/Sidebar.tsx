@@ -51,6 +51,8 @@ interface NavItem {
    */
   activeExcept?: string[];
   adminOnly?: boolean;
+  /** Visible to QA and Admins only — the roles tasks can actually be assigned to. */
+  qaOnly?: boolean;
   featureFlag?: string;
 }
 
@@ -58,15 +60,18 @@ interface NavGroup {
   label: string;
   featureFlag?: string;
   adminOnly?: boolean;
+  qaOnly?: boolean;
   items: NavItem[];
 }
 
 const navGroups: NavGroup[] = [
   {
     // No header: this is the "everything waiting on you" entry above the product areas, not an
-    // area of its own. Not feature-gated for the same reason the /my-tasks route isn't — it
-    // degrades to an empty page when Promotions is off.
+    // area of its own. QA/Admin only — plain users have no tasks to wait on them. Not
+    // feature-gated for the same reason the /my-tasks route isn't — it degrades to an empty
+    // page when Promotions is off.
     label: '',
+    qaOnly: true,
     items: [
       { to: '/my-tasks', label: 'My Tasks', icon: ListTodo, counter: 'myTasksTotal' },
     ],
@@ -127,6 +132,8 @@ export function Sidebar() {
   const appName = getAppName();
   const appSubtitle = getAppSubtitle();
   const isAdmin = user?.isAdmin ?? false;
+  // Admins see everything QA does — qaOnly means "can be assigned tasks", not "QA and no one else".
+  const canSeeTasks = (user?.isQA ?? false) || isAdmin;
   const flags = useFeatureFlagsStore((s) => s.flags);
   const promotionsAwaitingMe = useMyTasksStore((s) => s.promotions.length);
   // Both attention slices of the work-items queue: the items this user is answerable for, plus the
@@ -146,6 +153,7 @@ export function Sidebar() {
   const visibleGroups = navGroups
     .filter((g) => {
       if (g.adminOnly && !isAdmin) return false;
+      if (g.qaOnly && !canSeeTasks) return false;
       if (g.featureFlag && flags[g.featureFlag] === false) return false;
       return true;
     })
@@ -153,6 +161,7 @@ export function Sidebar() {
       ...g,
       items: g.items.filter((item) => {
         if (item.adminOnly && !isAdmin) return false;
+        if (item.qaOnly && !canSeeTasks) return false;
         if (item.featureFlag && flags[item.featureFlag] === false) return false;
         return true;
       }),
