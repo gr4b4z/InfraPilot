@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { format } from 'date-fns';
+import { format, subMonths } from 'date-fns';
 import { api } from '@/lib/api';
 import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -18,12 +18,16 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 /**
- * Releases over time, one lane per environment — when did versions land where, at a glance.
- * A dot is a deploy event placed on a shared linear time axis and wearing its environment's
- * colour (redundant with the lane label on purpose: operator-configured hues may collide, the
- * label is what identifies the lane). Failure and rollback override the shape/colour instead of
- * adding a second axis: failed fills danger, a rollback is a hollow ring. The hover readout sits
- * in the header row, never over the marks — same contract as DeployTrendChart.
+ * Releases over the last month, one lane per environment — when did versions land where, at a
+ * glance. A dot is a deploy event placed on a shared linear time axis and wearing its
+ * environment's colour (redundant with the lane label on purpose: operator-configured hues may
+ * collide, the label is what identifies the lane). Failure and rollback override the shape/colour
+ * instead of adding a second axis: failed fills danger, a rollback is a hollow ring. The hover
+ * readout sits in the header row, never over the marks — same contract as DeployTrendChart.
+ *
+ * The window is fixed to the trailing month rather than fitted to the data: a sparse right edge
+ * or an empty left half is itself information (cadence slowed), which a data-fitted axis would
+ * silently stretch away.
  */
 export function ReleaseTimeline({ product, service, backHref, refreshTick }: {
   product: string;
@@ -34,7 +38,9 @@ export function ReleaseTimeline({ product, service, backHref, refreshTick }: {
   refreshTick: number;
 }) {
   const { getOrderedEnvironments, getDisplayName } = useSettingsStore();
-  const [events, setEvents] = useState<DeployEvent[]>([]);
+  // "Now" is captured when the fetch lands, not during render (render must stay pure); the
+  // realtime tick refetches, so the window's right edge tracks reality closely enough.
+  const [history, setHistory] = useState<{ events: DeployEvent[]; asOf: number } | null>(null);
   const [hovered, setHovered] = useState<DeployEvent | null>(null);
 
   useEffect(() => {
@@ -42,20 +48,39 @@ export function ReleaseTimeline({ product, service, backHref, refreshTick }: {
     api
       .getDeploymentHistory(product, service, { limit: HISTORY_LIMIT })
       .then((evts) => {
-        if (!cancelled) setEvents(evts);
+        if (!cancelled) setHistory({ events: evts, asOf: Date.now() });
       })
       .catch(() => {
         // The page's own fetch reports failure; a missing diagram shouldn't add a second error.
-        if (!cancelled) setEvents([]);
+        if (!cancelled) setHistory(null);
       });
     return () => {
       cancelled = true;
     };
   }, [product, service, refreshTick]);
 
+  // The trailing-month domain, padded so edge dots don't sit on the border. The right edge
+  // stretches to cover a clock-skewed event stamped slightly in the future rather than clipping it.
+  const domain = useMemo(() => {
+    if (!history || history.events.length === 0) return null;
+    const newest = Math.max(...history.events.map((e) => new Date(e.deployedAt).getTime()));
+    const end = Math.max(history.asOf, newest);
+    const cutoff = subMonths(end, 1).getTime();
+    const pad = (end - cutoff) * 0.02;
+    return { start: cutoff - pad, end: end + pad, cutoff };
+  }, [history]);
+
+  const visible = useMemo(
+    () =>
+      domain && history
+        ? history.events.filter((e) => new Date(e.deployedAt).getTime() >= domain.cutoff)
+        : [],
+    [history, domain],
+  );
+
   const lanes = useMemo(() => {
     const byEnv = new Map<string, DeployEvent[]>();
-    for (const e of events) {
+    for (const e of visible) {
       let lane = byEnv.get(e.environment);
       if (!lane) byEnv.set(e.environment, (lane = []));
       lane.push(e);
@@ -66,57 +91,70 @@ export function ReleaseTimeline({ product, service, backHref, refreshTick }: {
       env,
       events: byEnv.get(env)!,
     }));
-  }, [events, getOrderedEnvironments]);
+  }, [visible, getOrderedEnvironments]);
 
-  // Linear time domain over the fetched window, padded so edge dots don't sit on the border.
-  // A degenerate range (single event, or one burst ingested with identical timestamps) still
-  // needs width to place a dot in the middle, hence the one-hour floor.
-  const domain = useMemo(() => {
-    if (events.length === 0) return null;
-    const times = events.map((e) => new Date(e.deployedAt).getTime());
-    const min = Math.min(...times);
-    const max = Math.max(...times);
-    const pad = Math.max((max - min) * 0.04, 60 * 60 * 1000);
-    return { start: min - pad, end: max + pad };
-  }, [events]);
+  // No history at all: nothing to draw and nothing to say. But history that is merely older than
+  // the window gets a note instead — a silently vanished section would read as a bug.
+  if (!domain) return null;
 
-  if (!domain || lanes.length === 0) return null;
+  const header = (
+    <div className="flex items-baseline gap-3 mb-2">
+      <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+        Release timeline
+      </h2>
+      {/* Readout lives up here so hovering a dot never covers its neighbours. */}
+      <span className="text-[12px] truncate min-w-0" style={{ color: 'var(--text-muted)' }}>
+        {hovered ? (
+          <>
+            <EnvLabel env={hovered.environment} className="font-semibold" />
+            {' · '}
+            <b className="font-mono" style={{ color: 'var(--text-primary)' }}>
+              v{hovered.version}
+            </b>
+            {' · '}
+            {STATUS_LABEL[hovered.status] ?? hovered.status}
+            {hovered.isRollback ? ' · rollback' : ''}
+            {' · '}
+            {format(new Date(hovered.deployedAt), 'd MMM yyyy, HH:mm')}
+          </>
+        ) : (
+          'last month · hover a release for details'
+        )}
+      </span>
+    </div>
+  );
+
+  if (lanes.length === 0) {
+    return (
+      <section>
+        {header}
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          No releases in the last month —{' '}
+          <Link
+            to={`${backHref}/history`}
+            className="font-medium transition-opacity hover:opacity-80"
+            style={{ color: 'var(--accent)' }}
+          >
+            see the full history
+          </Link>{' '}
+          for older deploys.
+        </p>
+      </section>
+    );
+  }
 
   const positionOf = (e: DeployEvent) =>
     ((new Date(e.deployedAt).getTime() - domain.start) / (domain.end - domain.start)) * 100;
 
   const spansYears =
-    new Date(domain.start).getFullYear() !== new Date(domain.end).getFullYear();
+    new Date(domain.cutoff).getFullYear() !== new Date(domain.end).getFullYear();
   const axisFormat = spansYears ? 'd MMM yyyy' : 'd MMM';
-  const hasFailures = events.some((e) => e.status === 'failed');
-  const hasRollbacks = events.some((e) => e.isRollback);
+  const hasFailures = visible.some((e) => e.status === 'failed');
+  const hasRollbacks = visible.some((e) => e.isRollback);
 
   return (
     <section>
-      <div className="flex items-baseline gap-3 mb-2">
-        <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Release timeline
-        </h2>
-        {/* Readout lives up here so hovering a dot never covers its neighbours. */}
-        <span className="text-[12px] truncate min-w-0" style={{ color: 'var(--text-muted)' }}>
-          {hovered ? (
-            <>
-              <EnvLabel env={hovered.environment} className="font-semibold" />
-              {' · '}
-              <b className="font-mono" style={{ color: 'var(--text-primary)' }}>
-                v{hovered.version}
-              </b>
-              {' · '}
-              {STATUS_LABEL[hovered.status] ?? hovered.status}
-              {hovered.isRollback ? ' · rollback' : ''}
-              {' · '}
-              {format(new Date(hovered.deployedAt), 'd MMM yyyy, HH:mm')}
-            </>
-          ) : (
-            'hover a release for details'
-          )}
-        </span>
-      </div>
+      {header}
 
       <div
         className="rounded-xl border px-3 py-2"
@@ -169,14 +207,14 @@ export function ReleaseTimeline({ product, service, backHref, refreshTick }: {
            date sits exactly under the 50% gridline rather than in the leftover flex space. */}
         <div className="relative flex items-center gap-3 mt-1 ml-20 sm:ml-28">
           <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {format(new Date(domain.start), axisFormat)}
+            {format(new Date(domain.cutoff), axisFormat)}
           </span>
           <span className="flex-1" />
           <span
             className="absolute left-1/2 -translate-x-1/2 text-[10px] hidden sm:block"
             style={{ color: 'var(--text-muted)' }}
           >
-            {format(new Date((domain.start + domain.end) / 2), axisFormat)}
+            {format(new Date((domain.cutoff + domain.end) / 2), axisFormat)}
           </span>
           {(hasFailures || hasRollbacks) && (
             <span
@@ -204,7 +242,7 @@ export function ReleaseTimeline({ product, service, backHref, refreshTick }: {
             </span>
           )}
           <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {format(new Date(domain.end), axisFormat)}
+            today
           </span>
         </div>
       </div>
