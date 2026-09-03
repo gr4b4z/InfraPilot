@@ -70,22 +70,25 @@ Logs and pid files go to `.local/` (gitignored).
 ### Syncing MPT Versions
 
 ```bash
-./scripts/sync-mpt-versions.ps1 -ApiKey $env:INFRAPILOT_API_KEY -WhatIf
+./scripts/sync-mpt-versions.ps1 -WhatIf
 ```
 
-Reads the version manifests MPT publishes for
+Catches InfraPortal up after an outage or a restore. Reads the version manifests MPT publishes for
 [staging](https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json) and
-[production](https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json), diffs them
-against what InfraPilot already believes is deployed, and records a manual deployment for every
-component whose version has moved. Components InfraPilot has never seen are seeded through the
-ingest endpoint first, since a manual entry is built from its predecessor and needs one to exist.
+[production](https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json), confirms
+each version against the AKS cluster behind the environment (`mpt-staging-r1-aks`,
+`mpt-prod-r1-aks`), and records a manual deployment for every component whose version has moved
+forward. It never creates services, never records an older version, and never writes a version the
+cluster disagrees with; each of those is reported instead. Services are updated under the product
+InfraPortal already files them under (`mpt`, or whatever an admin's service product override says),
+never under the manifest's obsolete `marketplace`.
 
-Only the drift is written, so re-running it changes nothing. `-WhatIf` prints what it would record,
-`-Target staging|production` limits it to one environment, and `-Service 'mpt-web-*'` to a subset of
-components. Unlike the scripts above this one talks to any InfraPilot instance — pass `-ApiBaseUrl`
-— and needs credentials: an API key (`-ApiKey`, or `INFRAPILOT_API_KEY`) or an admin
-`-BearerToken`, which can update but not seed. `Get-Help ./scripts/sync-mpt-versions.ps1 -Full` has
-the rest.
+Only the drift is written, so re-running it changes nothing. Unlike the scripts above this one talks
+to a real instance: connection comes from `DEPLOYMENTS_URL` and `DEPLOYMENTS_API_KEY` (or
+`-ApiBaseUrl` / `-ApiKey`), and the cluster check needs kubectl credentials for both clusters
+(`az aks get-credentials`) or `-NoClusterCheck`. `-WhatIf` prints what it would record, `-Target
+staging|production` limits it to one environment, and `-Service 'mpt-web-*'` to a subset of
+components. `Get-Help ./scripts/sync-mpt-versions.ps1 -Full` has the rest.
 
 ## What Runs Locally
 

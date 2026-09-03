@@ -1,113 +1,136 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-    Records manual deployments in InfraPilot from the MPT staging and production version manifests.
+    Catches InfraPortal up with what MPT staging and production are actually running.
 
 .DESCRIPTION
-    Each MPT environment publishes what it is currently running as a public blob:
+    Pipelines normally report every deploy to InfraPortal as it happens. When InfraPortal was down for
+    a while, or a backup had to be restored, the deploys that happened in between are missing and the
+    matrix shows versions that are no longer live. This script closes that gap from two sources:
 
-        staging     https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json
-        production  https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json
+      1. The version manifest each environment publishes as a public blob:
 
-    Both have the same shape — a product name, a flat `components` map of service → version, and the
-    manifest's own release version:
+             staging     https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json
+             production  https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json
 
-        { "product": "marketplace",
-          "components": { "mpt-billing": "5.0.347-g495d92f0", ... },
-          "version": "5.0.5921-g18427fa4" }
+         Both have the same shape — a flat `components` map of service → version:
 
-    This script diffs each manifest against what InfraPilot already believes is deployed
-    (`GET /api/deployments/state`) and records the difference:
+             { "product": "marketplace",
+               "components": { "mpt-billing": "5.0.348-gabbe9ae2", ... },
+               "version": "..." }
 
-      * version differs        → POST /api/deployments/manual   (a manual deployment entry)
-      * service unknown here   → POST /api/deployments/events   (seeds a baseline, see below)
-      * version matches        → nothing, and nothing is logged as changed
+         The manifest's own `product` ("marketplace") is an obsolete name and is ignored; see -Product.
+
+      2. The AKS cluster behind each environment (mpt-staging-r1-aks, mpt-prod-r1-aks). Every backend
+         component is a Helm release in the `mp-platform` namespace whose workloads carry the version in
+         the `app.kubernetes.io/version` label, grouped by `app.kubernetes.io/instance`. The cluster is
+         read to confirm the manifest before anything is written: a component whose manifest version
+         differs from what the cluster runs is reported and left alone, never recorded. Micro-frontends
+         (mpt-web-*, swo-web-*) are static sites and are not in the cluster; those are recorded from the
+         manifest alone, and their notes say so.
+
+    For each component the script compares the manifest version with what InfraPortal currently shows
+    for that service in that environment (`GET /api/deployments/state`) and records the difference
+    with `POST /api/deployments/manual`, which creates a new deploy event for an existing service. Three
+    rules keep a catch-up from rewriting history:
+
+      * Existing services only. A component InfraPortal has never seen is listed, not created — the
+        pipeline that owns it registers it, with the references and participants this script cannot
+        know. Rows under obsolete products don't count as "seen" (see -IgnoreProduct).
+      * Forward only. A manifest version older than InfraPortal's current one is reported and skipped —
+        during a catch-up InfraPortal is behind, never ahead, so "older" means the manifest or the
+        comparison is wrong, not that a rollback happened. Equal version numbers are unchanged, even
+        when the git suffix differs.
+      * Confirmed only. See the cluster check above. -NoClusterCheck turns it off for a machine without
+        kubectl access; the run then trusts the manifest.
 
     Only the drift is written, so the script is safe to run repeatedly — a second run right after the
-    first is a no-op.
-
-    Why two endpoints. `/manual` builds the new entry *from the latest existing one* for that
-    product/service/environment: it carries the references and participants over, stamps
-    Source="manual", sets triggered-by to the caller, and attaches the note. That means it needs a
-    predecessor, and returns 404 when there isn't one. A component appearing in the manifest for the
-    first time therefore has nothing to base a manual entry on, so it is seeded through the ingest
-    endpoint instead (Source="mpt-manifest"), and every later run of this script updates it through
-    `/manual` like everything else. Pass -NoSeed to report those instead of creating them.
-
-    Authentication. -ApiKey (X-Api-Key) is the mode this is built for and the only one that can seed:
-    the ingest endpoint accepts API keys exclusively. -BearerToken works for the manual entries alone,
-    and the token's user must be an admin. A product-scoped API key must include the manifest's
-    product ("marketplace") or every write comes back 403.
+    first is a no-op. -WhatIf prints every entry it would record and writes nothing.
 
 .PARAMETER ApiBaseUrl
-    Root of the InfraPilot API. Defaults to the local dev API (http://localhost:5259).
+    Root of the InfraPortal API. Defaults to the DEPLOYMENTS_URL environment variable.
 
 .PARAMETER ApiKey
-    API key sent as X-Api-Key. Falls back to the INFRAPILOT_API_KEY environment variable.
-
-.PARAMETER BearerToken
-    Entra access token, used instead of an API key. Cannot seed services InfraPilot has never seen.
+    API key sent as X-Api-Key. Defaults to the DEPLOYMENTS_API_KEY environment variable (then
+    INFRAPILOT_API_KEY). The key must not be product-scoped more narrowly than the products the MPT
+    services are filed under — mpt, mpt-extensions, mpt-jenkins-tools today — or those writes come
+    back 403.
 
 .PARAMETER Target
-    Which manifest(s) to sync: staging, production, or all (default).
+    Which environment(s) to sync: staging, production, or all (default).
 
 .PARAMETER Product
-    Overrides the product name. By default the manifest's own `product` field is used, so the two
-    environments stay under whatever the manifests call themselves.
+    The product MPT services belong to by default: mpt. A service InfraPortal already files under
+    another product (because an admin configured a service product override, or its pipeline posts
+    under mpt-extensions directly) is updated where it lives; the server applies the same overrides on
+    write, so the admin's mapping wins either way. When a service appears under more than one product,
+    this one is preferred; otherwise the service is reported as ambiguous and skipped.
+
+.PARAMETER IgnoreProduct
+    Products whose rows are treated as if they didn't exist. Default: marketplace — the obsolete name
+    an earlier version of this script wrote under. Nothing is ever written there, and a service tracked
+    only under an ignored product counts as unknown.
 
 .PARAMETER Note
-    The note recorded on every manual entry — the endpoint requires one. Defaults to a line naming
-    the environment and the manifest's release version.
+    The note recorded on every manual entry — the endpoint requires one. The default names the source
+    manifest and whether the cluster confirmed the version.
 
 .PARAMETER Service
-    Restricts the sync to these component names (wildcards allowed, e.g. `mpt-web-*`). Everything
-    else in the manifest is left alone.
+    Restricts the sync to these component names (wildcards allowed, e.g. `mpt-web-*`).
 
-.PARAMETER IncludeManifestVersion
-    Also record the manifest's own top-level `version` as a service of its own (see
-    -ManifestVersionService). Off by default — it is a rollup, not a deployable component.
-
-.PARAMETER ManifestVersionService
-    Service name used for the manifest's own version. Default: marketplace-release.
-
-.PARAMETER NoSeed
-    Don't create baselines for components InfraPilot has never seen; list them and move on.
+.PARAMETER NoClusterCheck
+    Skip reading the AKS clusters and trust the manifests as they are. For machines without kubectl or
+    without access to the clusters.
 
 .PARAMETER StagingManifestUrl
 .PARAMETER ProductionManifestUrl
-    Override the manifest locations. A path to a saved copy on disk works as well as a URL, for
-    replaying a specific release or running without reaching the blob endpoints.
+    Override the manifest locations. A path to a saved copy on disk works as well as a URL.
+
+.PARAMETER StagingCluster
+.PARAMETER ProductionCluster
+    kubectl context names for the two clusters. Defaults: mpt-staging-r1-aks, mpt-prod-r1-aks — the
+    names `az aks get-credentials` creates.
+
+.PARAMETER ClusterNamespace
+    Namespace the MPT Helm releases live in. Default: mp-platform.
 
 .PARAMETER StagingEnvironment
 .PARAMETER ProductionEnvironment
-    Environment names to write under. Defaults: staging, production.
+    InfraPortal environment names to read and write under. Defaults: staging, production. InfraPortal
+    resolves its own aliases (production → prod), so these stay as the manifests call them.
 
 .EXAMPLE
-    .\scripts\sync-mpt-versions.ps1 -ApiKey $env:INFRAPILOT_API_KEY -WhatIf
+    .\scripts\sync-mpt-versions.ps1 -WhatIf
 
-    Dry run against the local API: prints every deployment it would record, writes nothing.
-
-.EXAMPLE
-    .\scripts\sync-mpt-versions.ps1 -ApiBaseUrl https://infrapilot.example.com -Target production
+    Dry run with DEPLOYMENTS_URL / DEPLOYMENTS_API_KEY from the environment: reads both manifests,
+    both clusters and InfraPortal, prints every entry it would record, writes nothing.
 
 .EXAMPLE
-    .\scripts\sync-mpt-versions.ps1 -Service 'mpt-web-*' -Note 'Post-release reconciliation'
+    .\scripts\sync-mpt-versions.ps1
+
+    The real thing. Run after an outage or a restore.
+
+.EXAMPLE
+    .\scripts\sync-mpt-versions.ps1 -Target production -Service 'swo-web-*' -NoClusterCheck
+
+    Only the production micro-frontends, which the cluster cannot confirm anyway.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ApiBaseUrl,
-    [string]$ApiKey = $env:INFRAPILOT_API_KEY,
-    [string]$BearerToken,
+    [string]$ApiBaseUrl = $env:DEPLOYMENTS_URL,
+    [string]$ApiKey,
     [ValidateSet('staging', 'production', 'all')]
     [string]$Target = 'all',
-    [string]$Product,
+    [string]$Product = 'mpt',
+    [string[]]$IgnoreProduct = @('marketplace'),
     [string]$Note,
     [string[]]$Service,
-    [switch]$IncludeManifestVersion,
-    [string]$ManifestVersionService = 'marketplace-release',
-    [switch]$NoSeed,
+    [switch]$NoClusterCheck,
     [string]$StagingManifestUrl = 'https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json',
     [string]$ProductionManifestUrl = 'https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json',
+    [string]$StagingCluster = 'mpt-staging-r1-aks',
+    [string]$ProductionCluster = 'mpt-prod-r1-aks',
+    [string]$ClusterNamespace = 'mp-platform',
     [string]$StagingEnvironment = 'staging',
     [string]$ProductionEnvironment = 'production'
 )
@@ -115,21 +138,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Dot-sourced for the Write-Step/Ok/Detail/Note helpers and $ApiPort, so this script prints like the
-# rest of scripts/. Loading it defines the local-dev Docker/Postgres settings too, but nothing runs
-# until it's called, and this script never calls any of it.
+# Dot-sourced for the Write-Step/Ok/Detail/Note helpers, so this script prints like the rest of
+# scripts/. Loading it defines the local-dev Docker/Postgres settings too, but nothing runs until
+# it's called, and this script never calls any of it.
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-if (-not $ApiBaseUrl) { $ApiBaseUrl = "http://localhost:$ApiPort" }
+if (-not $ApiBaseUrl) {
+    throw 'No InfraPortal URL. Set DEPLOYMENTS_URL (e.g. https://infraportal.example.com) or pass -ApiBaseUrl.'
+}
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 
-if (-not $ApiKey -and -not $BearerToken) {
-    throw 'No credentials. Pass -ApiKey (or set INFRAPILOT_API_KEY), or -BearerToken for an admin user.'
+if (-not $ApiKey) { $ApiKey = $env:DEPLOYMENTS_API_KEY }
+if (-not $ApiKey) { $ApiKey = $env:INFRAPILOT_API_KEY }
+if (-not $ApiKey) {
+    throw 'No API key. Set DEPLOYMENTS_API_KEY or pass -ApiKey.'
 }
-
-$AuthHeaders = @{}
-if ($ApiKey)      { $AuthHeaders['X-Api-Key']     = $ApiKey }
-if ($BearerToken) { $AuthHeaders['Authorization'] = "Bearer $BearerToken" }
+$AuthHeaders = @{ 'X-Api-Key' = $ApiKey }
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────────────────────
 
@@ -151,7 +175,7 @@ function Invoke-Api {
         Method             = $Method
         Headers            = $AuthHeaders
         SkipHttpErrorCheck = $true
-        TimeoutSec         = 60
+        TimeoutSec         = 120
     }
     if ($null -ne $Body) {
         $request['Body']        = ($Body | ConvertTo-Json -Depth 10 -Compress)
@@ -178,6 +202,8 @@ function Get-ApiError {
     if ($Result.Raw) { return $Result.Raw.Substring(0, [Math]::Min(200, $Result.Raw.Length)) }
     return "HTTP $($Result.Status)"
 }
+
+# ── Sources ──────────────────────────────────────────────────────────────────────────────────
 
 <#
     Fetches a manifest, over HTTP or from a file on disk — a saved copy is how you replay a specific
@@ -216,130 +242,222 @@ function Get-ManifestComponents {
     return $components
 }
 
-# ── Sync ─────────────────────────────────────────────────────────────────────────────────────
+<#
+    What the cluster runs, as a hashtable of component → distinct version strings. Reads every workload
+    kind a Helm release here produces (the mpt-nav-stats release is a CronJob and nothing else) and
+    groups by `app.kubernetes.io/instance`, which is the Helm release name and matches the manifest's
+    component names. Versions come from `app.kubernetes.io/version`; a workload without the label
+    falls back to its first container's image tag.
+
+    More than one distinct version for a component means a rollout is in progress (or a release is
+    half-applied) — the caller treats that as "unconfirmed" rather than picking one.
+
+    kubectl failing is thrown, not swallowed: the check exists to stop wrong versions being recorded,
+    so silently running without it would defeat the purpose. -NoClusterCheck is the explicit opt-out.
+#>
+function Get-ClusterVersions {
+    param(
+        [Parameter(Mandatory)][string]$Context,
+        [Parameter(Mandatory)][string]$Namespace
+    )
+
+    $output = & kubectl --context $Context get deployments,statefulsets,daemonsets,cronjobs `
+        --namespace $Namespace --output json 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "kubectl failed against context '$Context': $($output -join ' ')`nRun 'az aks get-credentials' for the cluster, or pass -NoClusterCheck to trust the manifest."
+    }
+    $items = ($output -join "`n" | ConvertFrom-Json).items
+
+    $versions = @{}   # case-insensitive, like the service-name lookups below
+    foreach ($item in @($items)) {
+        $labels = $item.metadata.PSObject.Properties['labels'] ? $item.metadata.labels : $null
+        if (-not $labels) { continue }
+        $instance = $labels.PSObject.Properties['app.kubernetes.io/instance'] ? "$($labels.'app.kubernetes.io/instance')" : ''
+        if (-not $instance) { continue }
+
+        $version = $labels.PSObject.Properties['app.kubernetes.io/version'] ? "$($labels.'app.kubernetes.io/version')".Trim() : ''
+        if (-not $version) {
+            # CronJobs nest the pod template one level deeper than Deployments do.
+            $spec = $item.spec
+            $template = $spec.PSObject.Properties['template'] ? $spec.template : $spec.jobTemplate.spec.template
+            $image = "$($template.spec.containers[0].image)"
+            if ($image -match ':([^:/]+)$') { $version = $Matches[1] }
+        }
+        if (-not $version) { continue }
+
+        if (-not $versions.ContainsKey($instance)) { $versions[$instance] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $versions[$instance].Contains($version)) { $versions[$instance].Add($version) }
+    }
+    return $versions
+}
+
+# ── Versions ─────────────────────────────────────────────────────────────────────────────────
 
 <#
-    Diffs one manifest against InfraPilot's current state for that environment and records what
-    differs. Returns a summary hashtable; per-service progress goes to the console as it happens.
+    Orders two MPT version strings. Returns 1 when $A is newer than $B, -1 when older, 0 when they are
+    the same version number, and $null when either can't be read.
+
+    MPT versions are `major.minor.patch-g<hash>` (5.0.348-gabbe9ae2) or, for the Jenkins-built
+    tools, `major.minor.patch-<build>.<hash>` (0.1.0-50.9f068d23). The numeric parts decide; the hash
+    never does — two builds with the same number and different hashes are the same version for the
+    purpose of "is InfraPortal behind?", and recording one over the other would be noise.
+#>
+function Compare-MptVersion {
+    param(
+        [Parameter(Mandatory)][string]$Left,
+        [Parameter(Mandatory)][string]$Right
+    )
+    # Locals below are deliberately not $a/$b: PowerShell variable names are case-insensitive, so
+    # `$a = ...` would overwrite a `$A` parameter (and inherit its [string] constraint).
+    # The optional fourth number is a build counter (`-50.`), never the start of a git hash (`-g…`,
+    # or a hash that happens to begin with digits): the lookahead refuses a hex character after it.
+    $pattern = [regex]'^v?(\d+)\.(\d+)\.(\d+)(?:[-.](\d+)(?![0-9a-fA-F]))?'
+    $parse = {
+        param([string]$v)
+        $m = $pattern.Match($v)
+        if (-not $m.Success) { return $null }
+        $build = if ($m.Groups[4].Success) { [int]$m.Groups[4].Value } else { 0 }
+        return ,@([int]$m.Groups[1].Value, [int]$m.Groups[2].Value, [int]$m.Groups[3].Value, $build)
+    }
+    $l = & $parse $Left
+    $r = & $parse $Right
+    if ($null -eq $l -or $null -eq $r) { return $null }
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($l[$i] -gt $r[$i]) { return 1 }
+        if ($l[$i] -lt $r[$i]) { return -1 }
+    }
+    return 0
+}
+
+# ── Sync ─────────────────────────────────────────────────────────────────────────────────────
+
+function New-Summary {
+    param([string]$Environment)
+    return [ordered]@{
+        Environment = $Environment
+        Updated = 0; Unchanged = 0; Older = 0; Mismatched = 0; Unknown = 0; Skipped = 0; Failed = 0
+    }
+}
+
+<#
+    Diffs one environment — manifest, cluster, InfraPortal — and records what differs. Returns a
+    summary; per-service progress goes to the console as it happens.
 #>
 function Sync-Environment {
     param(
         [Parameter(Mandatory)][string]$Environment,
-        [Parameter(Mandatory)][string]$Url
+        [Parameter(Mandatory)][string]$ManifestUrl,
+        [Parameter(Mandatory)][string]$Cluster
     )
 
-    Write-Step "$Environment — $Url"
-    $manifest = Get-Manifest -Url $Url
-
-    $productName = if ($Product) {
-        $Product
-    } elseif ($manifest.PSObject.Properties['product']) {
-        "$($manifest.product)"
-    } else {
-        ''
-    }
-    if (-not $productName) {
-        throw "The $Environment manifest names no product. Pass -Product to name it explicitly."
-    }
-
-    $manifestVersion = if ($manifest.PSObject.Properties['version']) { "$($manifest.version)" } else { '' }
+    Write-Step "$Environment"
+    Write-Detail "manifest  $ManifestUrl"
+    $manifest = Get-Manifest -Url $ManifestUrl
     $components = Get-ManifestComponents -Manifest $manifest
-    if ($IncludeManifestVersion -and $manifestVersion) {
-        if (-not $Service -or ($Service | Where-Object { $ManifestVersionService -like $_ })) {
-            $components[$ManifestVersionService] = $manifestVersion
-        }
-    }
-    Write-Detail "product '$productName', $($components.Count) component(s), manifest version $(if ($manifestVersion) { $manifestVersion } else { 'n/a' })"
+    $summary = New-Summary -Environment $Environment
 
     if ($components.Count -eq 0) {
         Write-Note 'Nothing to sync — the manifest had no components (or -Service matched none).'
-        return @{ Environment = $Environment; Updated = 0; Seeded = 0; Unchanged = 0; Skipped = 0; Failed = 0 }
+        return $summary
     }
 
-    $noteText = if ($Note) {
-        $Note
-    } elseif ($manifestVersion) {
-        "Synced from the MPT $Environment manifest (versions.json), release $manifestVersion"
+    $runningVersions = $null   # not $cluster: that would overwrite the $Cluster parameter (names are case-insensitive)
+    if (-not $NoClusterCheck) {
+        Write-Detail "cluster   $Cluster / $ClusterNamespace"
+        $runningVersions = Get-ClusterVersions -Context $Cluster -Namespace $ClusterNamespace
+        Write-Detail "$($components.Count) component(s) in the manifest, $($runningVersions.Count) release(s) in the cluster"
     } else {
-        "Synced from the MPT $Environment manifest (versions.json)"
+        Write-Detail "$($components.Count) component(s) in the manifest; cluster check off"
     }
 
-    # Current state, as one call — /state returns the latest event per (product, service, environment).
-    $stateResult = Invoke-Api -Method GET -Path "/api/deployments/state?product=$([Uri]::EscapeDataString($productName))&environment=$([Uri]::EscapeDataString($Environment))"
+    # Current state across every product — a service is looked up by name and the product it is filed
+    # under is whatever InfraPortal says, not what the manifest says. /state returns the latest event
+    # per (product, service, environment); rows under ignored products are dropped here so an obsolete
+    # product can neither be updated nor make a service look "known".
+    $stateResult = Invoke-Api -Method GET -Path "/api/deployments/state?environment=$([Uri]::EscapeDataString($Environment))"
     if ($stateResult.Status -ne 200) {
         throw "Reading current state failed (HTTP $($stateResult.Status)): $(Get-ApiError $stateResult)"
     }
-    $current = @{}   # PowerShell hashtables are case-insensitive, which is what we want for service names
+    $current = @{}   # service → list of @{ Product; Version }; PowerShell hashtables are case-insensitive
     foreach ($row in @($stateResult.Body)) {
-        if ($row) { $current[$row.service] = "$($row.version)" }
+        if (-not $row) { continue }
+        if ($IgnoreProduct -contains $row.product) { continue }
+        if (-not $current.ContainsKey($row.service)) { $current[$row.service] = [System.Collections.Generic.List[hashtable]]::new() }
+        $current[$row.service].Add(@{ Product = "$($row.product)"; Version = "$($row.version)" })
     }
-    Write-Detail "InfraPilot knows $($current.Count) service(s) in $productName/$Environment"
-
-    $summary = @{ Environment = $Environment; Updated = 0; Seeded = 0; Unchanged = 0; Skipped = 0; Failed = 0 }
+    Write-Detail "InfraPortal tracks $($current.Count) service(s) in $Environment"
 
     foreach ($name in $components.Keys) {
         $version = $components[$name]
-        $known = $current.ContainsKey($name)
-        $live = if ($known) { $current[$name] } else { $null }
 
-        if ($known -and $live -eq $version) {
+        # 1. Existing services only.
+        if (-not $current.ContainsKey($name)) {
+            $summary.Unknown++
+            Write-Note "$name — not tracked by InfraPortal in $Environment; not created (manifest says $version)"
+            continue
+        }
+        $rows = $current[$name]
+        $row = if ($rows.Count -eq 1) {
+            $rows[0]
+        } else {
+            $preferred = @($rows | Where-Object { $_.Product -eq $Product })
+            if ($preferred.Count -eq 1) { $preferred[0] } else { $null }
+        }
+        if ($null -eq $row) {
+            $summary.Skipped++
+            Write-Warning "$name — filed under several products ($(($rows | ForEach-Object { $_.Product }) -join ', ')) and none is '$Product'; skipped"
+            continue
+        }
+        $live = $row.Version
+
+        # 2. Forward only.
+        $order = Compare-MptVersion -Left $version -Right $live
+        if ($null -eq $order) {
+            $summary.Skipped++
+            Write-Warning "$name — can't order versions '$version' (manifest) and '$live' (InfraPortal); skipped"
+            continue
+        }
+        if ($order -eq 0) {
             $summary.Unchanged++
-            Write-Verbose "$name unchanged at $version"
+            Write-Verbose "$name unchanged at $live"
+            continue
+        }
+        if ($order -lt 0) {
+            $summary.Older++
+            Write-Note "$name — manifest $version is older than InfraPortal's $live; not recorded"
             continue
         }
 
-        if (-not $known) {
-            if ($NoSeed) {
-                $summary.Skipped++
-                Write-Note "$name — not in InfraPilot yet, skipped (-NoSeed). Would have been seeded at $version."
-                continue
+        # 3. Confirmed by the cluster, when it runs there.
+        $confirmation = 'manifest only (not deployed to the cluster)'
+        if ($null -ne $runningVersions) {
+            if ($runningVersions.ContainsKey($name)) {
+                $running = $runningVersions[$name]
+                if ($running.Count -ne 1) {
+                    $summary.Mismatched++
+                    Write-Warning "$name — cluster runs several versions ($($running -join ', ')); rollout in progress? Not recorded."
+                    continue
+                }
+                if ($running[0] -ne $version) {
+                    $summary.Mismatched++
+                    Write-Warning "$name — manifest says $version but $Cluster runs $($running[0]); not recorded"
+                    continue
+                }
+                $confirmation = "version confirmed on $Cluster"
             }
-            if (-not $ApiKey) {
-                $summary.Skipped++
-                Write-Note "$name — not in InfraPilot yet and seeding needs an API key (ingest rejects bearer tokens). Skipped."
-                continue
-            }
-            if (-not $PSCmdlet.ShouldProcess("$productName/$name in $Environment", "seed baseline $version")) {
-                $summary.Skipped++
-                continue
-            }
-
-            # Baseline only — DeployedAt is the manifest read, which is the closest honest timestamp
-            # we have (the manifest says what is running, not when it got there). Source distinguishes
-            # these from the manual entries every later run writes, and the manifest reference is
-            # carried onto all of them by /manual, so each entry points back at its source of truth.
-            #
-            # Metadata stays deliberately thin: /manual copies the predecessor's metadata forward and
-            # only overwrites `note`, so anything release-specific put here (the manifest's own
-            # version, say) would be inherited unchanged and read as a lie on every later entry.
-            $result = Invoke-Api -Method POST -Path '/api/deployments/events' -Body @{
-                product     = $productName
-                service     = $name
-                environment = $Environment
-                version     = $version
-                source      = 'mpt-manifest'
-                deployedAt  = (Get-Date).ToUniversalTime().ToString('o')
-                status      = 'succeeded'
-                references  = @(@{ type = 'manifest'; url = $Url; key = "$productName/$Environment" })
-                metadata    = @{ note = $noteText }
-            }
-            if ($result.Status -in 200, 201) {
-                $summary.Seeded++
-                Write-Ok "$name — seeded at $version"
-            } else {
-                $summary.Failed++
-                Write-Warning "$name — seeding failed (HTTP $($result.Status)): $(Get-ApiError $result)"
-            }
-            continue
+        } else {
+            $confirmation = 'cluster check skipped'
         }
 
-        if (-not $PSCmdlet.ShouldProcess("$productName/$name in $Environment", "record manual deployment $live -> $version")) {
+        $what = "$($row.Product)/$name in $Environment"
+        if (-not $PSCmdlet.ShouldProcess($what, "record $live -> $version ($confirmation)")) {
             $summary.Skipped++
             continue
         }
 
+        $noteText = if ($Note) { $Note } else { "Catch-up sync from the MPT $Environment manifest (versions.json); $confirmation" }
         $result = Invoke-Api -Method POST -Path '/api/deployments/manual' -Body @{
-            product     = $productName
+            product     = $row.Product
             service     = $name
             environment = $Environment
             version     = $version
@@ -350,13 +468,20 @@ function Sync-Environment {
             { $_ -in 200, 201 } {
                 $summary.Updated++
                 Write-Ok "$name — $live -> $version"
+                # /manual bases the entry on the server's own idea of the latest event, which an admin
+                # override can point at a different product than the row compared against above. The
+                # response says what it actually superseded; a disagreement is worth a look.
+                $previous = $result.Body.PSObject.Properties['previousVersion'] ? "$($result.Body.previousVersion)" : ''
+                if ($previous -and $previous -ne $live) {
+                    Write-Warning "$name — InfraPortal based the entry on $previous, not the $live compared against; check the product it is filed under"
+                }
             }
             404 {
-                # /manual found no predecessor although /state listed one: the state read is a snapshot,
-                # so this is the race (or a service filtered out of state by an admin action) rather
-                # than a bug. Report it — seeding here would create a second, contradictory baseline.
+                # /state listed the service but /manual found nothing to base the entry on: an override
+                # redirects the write to a product where the service has no history yet, or the state
+                # read is a stale snapshot. Either way, report rather than guess.
                 $summary.Failed++
-                Write-Warning "$name — /manual found no predecessor to base the entry on: $(Get-ApiError $result)"
+                Write-Warning "$name — no predecessor to base the entry on: $(Get-ApiError $result)"
             }
             default {
                 $summary.Failed++
@@ -365,12 +490,15 @@ function Sync-Environment {
         }
     }
 
-    # Informational: services InfraPilot tracks that the manifest doesn't mention. Not touched — the
+    # Informational: services InfraPortal tracks that the manifest doesn't mention. Not touched — the
     # manifest is authoritative about what it lists, not about what it omits.
     if (-not $Service) {
-        $orphans = @($current.Keys | Where-Object { -not $components.Contains($_) } | Sort-Object)
+        $orphans = @($current.Keys |
+            Where-Object { -not $components.Contains($_) } |
+            Where-Object { $svc = $_; @($current[$svc] | Where-Object { $_.Product -like 'mpt*' }).Count -gt 0 } |
+            Sort-Object)
         if ($orphans.Count -gt 0) {
-            Write-Detail "Not in the manifest, left untouched: $($orphans -join ', ')"
+            Write-Detail "Tracked under an mpt* product but not in the manifest, left untouched: $($orphans -join ', ')"
         }
     }
 
@@ -380,27 +508,31 @@ function Sync-Environment {
 # ── Run ──────────────────────────────────────────────────────────────────────────────────────
 
 $environments = @()
-if ($Target -in 'staging', 'all')    { $environments += @{ Environment = $StagingEnvironment;    Url = $StagingManifestUrl } }
-if ($Target -in 'production', 'all') { $environments += @{ Environment = $ProductionEnvironment; Url = $ProductionManifestUrl } }
+if ($Target -in 'staging', 'all') {
+    $environments += @{ Environment = $StagingEnvironment; ManifestUrl = $StagingManifestUrl; Cluster = $StagingCluster }
+}
+if ($Target -in 'production', 'all') {
+    $environments += @{ Environment = $ProductionEnvironment; ManifestUrl = $ProductionManifestUrl; Cluster = $ProductionCluster }
+}
 
-Write-Step "InfraPilot $ApiBaseUrl (auth: $(if ($ApiKey) { 'API key' } else { 'bearer token' }))"
+Write-Step "InfraPortal $ApiBaseUrl"
 if ($WhatIfPreference) { Write-Note 'Dry run (-WhatIf) — nothing will be written.' }
 
 $summaries = @()
 foreach ($source in $environments) {
-    $summaries += Sync-Environment -Environment $source.Environment -Url $source.Url
+    $summaries += Sync-Environment -Environment $source.Environment -ManifestUrl $source.ManifestUrl -Cluster $source.Cluster
 }
 
 Write-Host ''
 Write-Step 'Summary'
-$failures = 0
+$attention = 0
 foreach ($s in $summaries) {
-    Write-Detail ("{0,-12} updated {1,-4} seeded {2,-4} unchanged {3,-4} skipped {4,-4} failed {5}" -f `
-        $s.Environment, $s.Updated, $s.Seeded, $s.Unchanged, $s.Skipped, $s.Failed)
-    $failures += $s.Failed
+    Write-Detail ("{0,-12} updated {1,-4} unchanged {2,-4} older {3,-4} mismatched {4,-4} unknown {5,-4} skipped {6,-4} failed {7}" -f `
+        $s.Environment, $s.Updated, $s.Unchanged, $s.Older, $s.Mismatched, $s.Unknown, $s.Skipped, $s.Failed)
+    $attention += $s.Failed + $s.Mismatched
 }
 
-if ($failures -gt 0) {
-    Write-Note "$failures component(s) failed — see the warnings above."
+if ($attention -gt 0) {
+    Write-Note "$attention component(s) failed or disagreed with the cluster — see the warnings above."
     exit 1
 }
