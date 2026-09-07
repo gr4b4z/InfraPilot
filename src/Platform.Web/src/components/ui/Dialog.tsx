@@ -85,7 +85,11 @@ export function Dialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1100] flex items-start justify-center p-4 sm:pt-[12vh]"
+      // The overlay scrolls, not an inner pane: a dialog taller than the viewport (a long form) has
+      // to be reachable, and a fixed-height scroll pane inside the panel would clip the dropdowns of
+      // every combo box and directory picker near its bottom edge. Shorter dialogs are unaffected —
+      // nothing overflows, so no scrollbar appears.
+      className="fixed inset-0 z-[1100] flex items-start justify-center overflow-y-auto p-4 sm:pt-[12vh]"
       style={{ backgroundColor: 'var(--bg-overlay)' }}
       onMouseDown={(event) => {
         // Only a click on the backdrop itself closes — a drag that ends outside the panel shouldn't.
