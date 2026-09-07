@@ -1,0 +1,95 @@
+---
+title: "Infrastructure Portal — the QA Manager's release process"
+---
+flowchart TD
+    classDef qam fill:#1f6feb,stroke:#0d419d,color:#fff
+    classDef qa fill:#6f42c1,stroke:#4c2889,color:#fff
+    classDef gate fill:#9e6a03,stroke:#7d4e00,color:#fff
+    classDef good fill:#238636,stroke:#196c2e,color:#fff
+    classDef bad fill:#a40e26,stroke:#7a0b1c,color:#fff
+    classDef quiet fill:#3d444d,stroke:#6e7681,color:#fff
+
+    START["`A component is built and reaches an environment`"]
+    START --> WHICH{"`Which move is this?`"}:::gate
+    WHICH -->|"`Dev to Test — early internal moves`"| SILENT["`Goes through on its own.
+Nothing reaches the QA Manager.`"]:::quiet
+    WHICH -->|"`Stable or Test to Staging,
+or Staging to Production`"| PROMO
+
+    PROMO["`A **Promotion** appears in the portal —
+one component waiting for release.
+The changes inside it are its **Work Items**.`"]
+    PROMO --> LOOK
+    NEW["`A newer build of the same component
+arrives before this one is approved —
+it replaces the older Promotion,
+but sign-offs already given still count.`"]:::quiet
+    NEW -.-> PROMO
+
+    LOOK["`**QA Manager** opens **Promotions** and picks an
+environment to see what is waiting there. Each row
+shows how many changes are verified, and with what result.`"]:::qam
+    LOOK --> OWNERS
+
+    OWNERS{"`Does every change
+have a **QA Owner**?`"}:::gate
+    OWNERS -->|"`Yes — taken automatically from Jira`"| REVIEW
+    OWNERS -->|"`No`"| VOL["`Unassigned changes sit under
+**Work items queue → Not assigned**.
+QA Manager asks for volunteers, or uses
+**Assign** to put someone on as QA Owner.`"]:::qam
+    VOL --> REVIEW
+
+    REVIEW["`Each QA Owner tests their change on Staging from
+**Work items queue → Assigned to me**
+and records one of three results.`"]:::qa
+    REVIEW --> R1["`**Approve** ✔
+it works`"]:::good
+    REVIEW --> R2["`**Issue** ⚠
+a problem was found,
+but it does not block release`"]:::bad
+    REVIEW --> R3["`**Block** ⛔
+the change is harmful`"]:::bad
+
+    R2 --> HELD
+    R3 --> HELD
+    HELD["`The change counts as **not cleared**. A comment
+explains why, with a link to Jira. The Promotion is
+not cancelled — it waits, and the reviewer
+can change their mind later.`"]:::quiet
+    HELD -.->|"`fixed and re-tested`"| REVIEW
+
+    R1 --> TARGET
+    HELD --> TARGET
+    TARGET{"`Where is this
+Promotion going?`"}:::gate
+
+    TARGET -->|"`To **Staging**`"| SOFT["`QA Manager may approve at any time.
+Verification is visible here, but not required.`"]:::qam
+    TARGET -->|"`To **Production**`"| HARD
+    HARD{"`Is **every** change
+inside it Approved?`"}:::gate
+    HARD -->|"`No`"| WAIT["`**Approve** stays locked. The portal names
+the changes still outstanding, so the
+QA Manager knows who to chase.`"]:::bad
+    WAIT -.->|"`last outstanding change approved`"| HARD
+    HARD -->|"`Yes`"| CLEAR["`**Approve** unlocks. Only **Pawel Krainski** or
+**Tatyana Velikanova** may give this
+approval — one of them is enough.`"]:::good
+
+    SOFT --> DECIDE
+    CLEAR --> DECIDE
+    DECIDE{"`QA Manager's decision`"}:::qam
+    DECIDE -->|"`Reject`"| REJ["`The Promotion is stopped.
+It will not be deployed.`"]:::bad
+    DECIDE -->|"`Approve`"| UNDO
+
+    UNDO["`Approved.
+A short grace period follows, so the approval
+can still be taken back if it was a mis-click.`"]:::gate
+    UNDO -.->|"`taken back`"| DECIDE
+    UNDO -->|"`grace period passes`"| SHIP["`The deployment starts automatically.
+Nobody has to trigger it by hand.`"]:::good
+    SHIP --> DONE["`Once the component is confirmed running on the
+target environment, the Promotion closes
+itself as **Deployed**.`"]:::good
