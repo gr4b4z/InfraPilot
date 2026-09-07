@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { Fragment, useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
@@ -10,11 +10,14 @@ import {
   type PromotionPolicyRequirement,
   type UpsertPromotionPolicyPayload,
 } from '@/lib/api';
-import { AlertTriangle, Plus, Trash2, Check, Pencil, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Package, Plus, Trash2, Check, Pencil, X } from 'lucide-react';
 // Directory pickers and form styling are shared with the rollback policy editor — both configure
 // approvers from the same group/user vocabulary under the same server-side matching rules.
 import { UserPicker, GroupPicker } from './approverPickers';
 import { ComboBox, type ComboOption } from '@/components/ui/ComboBox';
+import { Dialog } from '@/components/ui/Dialog';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { envColorStyles } from '@/lib/envColor';
 import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
 
 /** The synthetic source env for promotions straight from the build registry. */
@@ -52,22 +55,136 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   approvedWebhookDelaySeconds: null,
 };
 
-/** Summarise a step tree for the policy table. */
+/** Who has to sign one step off, as one line: `Platform Admins, ada@x.com (2) + SREs (1)`. */
+function describeRequirements(step: PromotionPolicyStep): string {
+  return step.requirements
+    .map((r) => {
+      const approvers = [...r.groups.map((g) => g.name), ...r.users];
+      const who = approvers.length > 0 ? approvers.join(', ') : '—';
+      return `${who} (${r.minApprovers})`;
+    })
+    .join(' + ');
+}
+
+const stepName = (step: PromotionPolicyStep, index: number) =>
+  step.name?.trim() || `Step ${index + 1}`;
+
+/** The whole step tree as plain text — the table renders it as chips, this is its tooltip. */
 function summarizeSteps(steps: PromotionPolicyStep[]): string {
   if (!steps || steps.length === 0) return 'auto-approve';
   return steps
-    .map((s, i) => {
-      const reqs = s.requirements
-        .map((r) => {
-          const approvers = [...r.groups.map((g) => g.name), ...r.users];
-          const who = approvers.length > 0 ? approvers.join(', ') : '—';
-          return `${who} (${r.minApprovers})`;
-        })
-        .join(' + ');
-      const name = s.name?.trim() || `Step ${i + 1}`;
-      return `${name}: ${reqs}`;
-    })
+    .map((s, i) => `${stepName(s, i)}: ${describeRequirements(s)}`)
     .join('  →  ');
+}
+
+/**
+ * Small tinted pill, mixed the same way {@link EnvBadge} mixes an environment colour, so a role
+ * chip and an environment badge in neighbouring columns read as one family rather than two
+ * unrelated badge styles. Takes any CSS colour — the theme tokens (`var(--accent)`) included.
+ */
+function Chip({
+  color,
+  title,
+  children,
+}: {
+  color: string;
+  title?: string;
+  children: ReactNode;
+}) {
+  const { fg, bg, border } = envColorStyles(color);
+  return (
+    <span
+      className="inline-flex items-center gap-1 font-semibold rounded-full whitespace-nowrap"
+      title={title}
+      style={{
+        fontSize: 10,
+        padding: '1px 6px',
+        lineHeight: '16px',
+        letterSpacing: '0.02em',
+        color: fg,
+        backgroundColor: bg,
+        border: `1px solid ${border}`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The edge a policy gates, as coloured pills: `[Staging] → [Production]`. Environments are the axis
+ * an admin scans this table by ("which policies guard prod?"), and the colours are the ones they
+ * already picked in Settings → Environments, so the answer is available without reading.
+ *
+ * The synthetic `build` source gets its own chip rather than an `EnvBadge`: it is not an environment
+ * anybody configures, and dressing it as one sends admins looking for it in the environment list.
+ */
+function PolicyEdge({ sourceEnv, targetEnv }: { sourceEnv: string; targetEnv: string }) {
+  const fromBuild = sourceEnv.trim().toLowerCase() === BUILD_SOURCE_ENV;
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      {fromBuild ? (
+        <Chip color="var(--accent)" title="The build registry — promotes registered builds directly">
+          <Package size={10} />
+          Build
+        </Chip>
+      ) : (
+        <EnvSlot env={sourceEnv} />
+      )}
+      <ArrowRight size={12} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
+      <EnvSlot env={targetEnv} />
+    </span>
+  );
+}
+
+/** `staging → production`, for the labels screen readers get in place of the pills. */
+const describeEdge = (sourceEnv: string, targetEnv: string) =>
+  `${sourceEnv.trim() || 'unset'} → ${targetEnv.trim() || 'unset'}`;
+
+/**
+ * One side of an edge. A blank environment says so rather than rendering an empty pill: the API
+ * requires both ends, so a policy missing one came in around the form and matches no promotion at
+ * all — worth seeing in the table instead of reading as a stray space.
+ */
+function EnvSlot({ env }: { env: string }) {
+  if (!env.trim()) {
+    return (
+      <Chip color="var(--danger)" title="No environment set — this policy matches no promotion">
+        <AlertTriangle size={10} />
+        not set
+      </Chip>
+    );
+  }
+  return <EnvBadge env={env} size="xs" />;
+}
+
+/** Approval steps as a chain of named chips, each followed by who signs it off. */
+function StepsSummary({ steps }: { steps: PromotionPolicyStep[] }) {
+  if (!steps || steps.length === 0) {
+    return (
+      <Chip color="var(--success)" title="No approval steps — promotions on this edge auto-approve">
+        auto-approve
+      </Chip>
+    );
+  }
+  return (
+    <span
+      className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-1"
+      title={summarizeSteps(steps)}
+    >
+      {steps.map((s, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <ArrowRight size={11} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
+          )}
+          <Chip color="var(--accent)">{stepName(s, i)}</Chip>
+          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            {describeRequirements(s)}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
 }
 
 /** Per-requirement validation errors keyed by `${stepIdx}:${reqIdx}`. */
@@ -252,12 +369,15 @@ export function PromotionSettings() {
   // How many pending promotions the last save re-gated (null until a save reports it).
   const [reapplied, setReapplied] = useState<number | null>(null);
 
-  // ── Form state (inline add/edit) ──
+  // ── Form state (add/edit dialog) ──
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<UpsertPromotionPolicyPayload>(emptyForm);
   const [formSaving, setFormSaving] = useState(false);
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
+  // A failed save has to report inside the dialog: the list's own error line sits behind the
+  // overlay, where the person who just pressed Save will never see it.
+  const [formError, setFormError] = useState<string | null>(null);
 
   // ── Delete confirm ──
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
@@ -274,6 +394,7 @@ export function PromotionSettings() {
     services: [],
   });
   const environments = useSettingsStore((s) => s.environments);
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
 
   // ── Load data ──
   useEffect(() => {
@@ -328,6 +449,47 @@ export function PromotionSettings() {
     };
   }, [isAdmin, showForm, formProduct]);
 
+  // ── Table order ──
+  // Rank an environment on the pipeline order an admin configured in Settings → Environments
+  // (unconfigured keys fall back to the name-based stage order), with the synthetic `build` source
+  // ahead of every real environment: a `build → dev` edge is where the pipeline starts, and ranking
+  // it by name would drop it somewhere in the middle.
+  const envRank = useMemo(() => {
+    const isBuild = (key: string) => key.trim().toLowerCase() === BUILD_SOURCE_ENV;
+    // Configured environments seed the order too, so the ranking is the full pipeline rather than
+    // whichever subset of it happens to have a policy.
+    const keys = Array.from(
+      new Set([
+        ...environments.map((e) => e.key),
+        ...policies.flatMap((p) => [p.sourceEnv, p.targetEnv]),
+      ]),
+    ).filter((k) => !isBuild(k));
+    const order = new Map(getOrderedEnvironments(keys).map((k, i) => [k, i + 1]));
+    return (key: string) => (isBuild(key) ? 0 : (order.get(key) ?? order.size + 1));
+  }, [environments, policies, getOrderedEnvironments]);
+
+  // Product → service → edge. The list is read as "everything that governs this product", so the
+  // product blocks come first and the edges inside one run in pipeline order — the same order the
+  // versions themselves travel in.
+  const sortedPolicies = useMemo(
+    () =>
+      [...policies].sort(
+        (a, b) =>
+          a.product.localeCompare(b.product) ||
+          // The product default (no service) heads its product's block: it's the rule every
+          // service below it falls back to.
+          Number(Boolean(a.service)) - Number(Boolean(b.service)) ||
+          (a.service ?? '').localeCompare(b.service ?? '') ||
+          envRank(a.sourceEnv) - envRank(b.sourceEnv) ||
+          envRank(a.targetEnv) - envRank(b.targetEnv) ||
+          // Two environments the settings rank equally (both unconfigured, same stage) still need a
+          // stable order, or the rows shuffle between renders.
+          a.sourceEnv.localeCompare(b.sourceEnv) ||
+          a.targetEnv.localeCompare(b.targetEnv),
+      ),
+    [policies, envRank],
+  );
+
   if (!isAdmin) return null;
 
   // ── Combo-box option lists ──
@@ -365,6 +527,7 @@ export function PromotionSettings() {
   const openAddForm = () => {
     setForm(emptyForm);
     setStepErrors({});
+    setFormError(null);
     setEditingId(null);
     setShowForm(true);
   };
@@ -396,6 +559,7 @@ export function PromotionSettings() {
       approvedWebhookDelaySeconds: p.approvedWebhookDelaySeconds ?? null,
     });
     setStepErrors({});
+    setFormError(null);
     setEditingId(p.id);
     setShowForm(true);
   };
@@ -405,6 +569,7 @@ export function PromotionSettings() {
     setEditingId(null);
     setForm(emptyForm);
     setStepErrors({});
+    setFormError(null);
   };
 
   const handleSavePolicy = async () => {
@@ -415,6 +580,7 @@ export function PromotionSettings() {
     }
     setStepErrors({});
     setFormSaving(true);
+    setFormError(null);
     setPolError(null);
     setPolSaved(false);
     try {
@@ -431,7 +597,7 @@ export function PromotionSettings() {
       setReapplied(result.reappliedCandidates ?? 0);
       setTimeout(() => setPolSaved(false), 4000);
     } catch (e) {
-      setPolError(e instanceof Error ? e.message : 'Failed to save policy');
+      setFormError(e instanceof Error ? e.message : 'Failed to save policy');
     } finally {
       setFormSaving(false);
     }
@@ -565,49 +731,76 @@ export function PromotionSettings() {
                     </tr>
                   </thead>
                   <tbody>
-                    {policies.map((p) => (
+                    {sortedPolicies.map((p, i) => {
+                      // Sorting groups a product's policies together, so only the first row of each
+                      // block repeats the name — the rest would be the same word four times down a
+                      // column, which is what makes a grouped table hard to scan rather than easy.
+                      const startsProduct = i === 0 || sortedPolicies[i - 1].product !== p.product;
+                      return (
                       <tr
                         key={p.id}
                         className="border-t"
-                        style={{ borderColor: 'var(--border-color)' }}
+                        style={{
+                          borderColor: 'var(--border-color)',
+                          // A thicker rule where a new product starts, so the blocks are visible
+                          // before the (dimmed) repeated names are read.
+                          borderTopWidth: startsProduct && i > 0 ? 2 : 1,
+                        }}
                       >
-                        <td className="py-2 pr-3">{p.product}</td>
                         <td
-                          className="py-2 pr-3"
-                          style={{ color: p.service ? undefined : 'var(--text-muted)' }}
+                          className="py-2 pr-3 font-medium"
+                          // Repeats stay readable but recede, so a product's policies read as one
+                          // block without the name shouting four times down the column.
+                          style={{ opacity: startsProduct ? 1 : 0.35 }}
                         >
-                          {p.service || '—'}
+                          {p.product}
                         </td>
-                        <td className="py-2 pr-3">{p.sourceEnv} → {p.targetEnv}</td>
-                        <td
-                          className="py-2 pr-3"
-                          style={{
-                            color: p.steps?.length ? undefined : 'var(--text-muted)',
-                          }}
-                        >
-                          {summarizeSteps(p.steps)}
+                        <td className="py-2 pr-3">
+                          {p.service ? (
+                            p.service
+                          ) : (
+                            <Chip
+                              color="var(--text-muted)"
+                              title="Covers every service of this product that has no policy of its own"
+                            >
+                              product default
+                            </Chip>
+                          )}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <PolicyEdge sourceEnv={p.sourceEnv} targetEnv={p.targetEnv} />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <StepsSummary steps={p.steps} />
                         </td>
                         {/* "No work items" wins over the role list: it's the reason the roles don't
                            apply, and it's the row's most important property when set. */}
-                        <td
-                          className="py-2 pr-3"
-                          style={{
-                            color:
-                              p.tracksWorkItems === false || !p.requiredWorkItemRoles?.length
-                                ? 'var(--text-muted)'
-                                : undefined,
-                          }}
-                        >
-                          {p.tracksWorkItems === false
-                            ? 'no work items'
-                            : p.requiredWorkItemRoles?.length
-                              ? p.requiredWorkItemRoles.map((r) => roleDisplay({ role: r })).join(', ')
-                              : '—'}
+                        <td className="py-2 pr-3">
+                          {p.tracksWorkItems === false ? (
+                            <Chip
+                              color="var(--text-muted)"
+                              title="This edge creates no work items, so required roles don't apply"
+                            >
+                              no work items
+                            </Chip>
+                          ) : p.requiredWorkItemRoles?.length ? (
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              {p.requiredWorkItemRoles.map((r) => (
+                                <Chip key={r} color="var(--warning)" title={r}>
+                                  {roleDisplay({ role: r })}
+                                </Chip>
+                              ))}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
                         </td>
                         <td className="py-2">
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => openEditForm(p)}
+                              aria-label={`Edit the ${describeEdge(p.sourceEnv, p.targetEnv)} policy for ${p.product}`}
+                              title="Edit policy"
                               className="p-1 rounded-lg transition-colors hover:opacity-80"
                               style={{ color: 'var(--text-muted)' }}
                             >
@@ -615,12 +808,16 @@ export function PromotionSettings() {
                             </button>
                             <button
                               onClick={() => handleDeletePolicy(p.id)}
-                              className="p-1 rounded-lg transition-colors hover:opacity-80"
+                              aria-label={`Delete the ${describeEdge(p.sourceEnv, p.targetEnv)} policy for ${p.product}`}
+                              title="Delete policy"
+                              className="inline-flex items-center p-1 rounded-lg transition-colors hover:opacity-80"
                               style={{
                                 color:
                                   deleteConfirm === p.id
-                                    ? 'var(--danger, #dc2626)'
+                                    ? 'var(--danger)'
                                     : 'var(--text-muted)',
+                                backgroundColor:
+                                  deleteConfirm === p.id ? 'var(--danger-bg)' : undefined,
                               }}
                             >
                               <Trash2 size={14} />
@@ -631,7 +828,8 @@ export function PromotionSettings() {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -644,29 +842,53 @@ export function PromotionSettings() {
             )}
 
             {/* Add Policy button */}
-            {!showForm && (
-              <button
-                onClick={openAddForm}
-                className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
-              >
-                <Plus size={14} />
-                Add Policy
-              </button>
-            )}
+            <button
+              onClick={openAddForm}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+            >
+              <Plus size={14} />
+              Add Policy
+            </button>
 
-            {/* Inline form */}
+            {/* Editor — a modal rather than a panel grown out of the button. The form is long
+                enough (four scope fields, a step tree, three option blocks) that inline it pushed
+                the table it belongs to off-screen, and left no answer to "which row am I editing?".
+                Over the page it keeps one job on screen at a time and Escape/backdrop cancel it. */}
             {showForm && (
-              <div
-                className="rounded-lg border p-4 space-y-3"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-primary)',
-                }}
+              <Dialog
+                onClose={formSaving ? () => {} : cancelForm}
+                ariaLabel={editingId ? 'Edit promotion policy' : 'New promotion policy'}
+                width={760}
               >
-                <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {editingId ? 'Edit Policy' : 'New Policy'}
-                </h4>
+              <div className="p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <div>
+                    <h4
+                      className="text-[14px] font-semibold"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      {editingId ? 'Edit Policy' : 'New Policy'}
+                    </h4>
+                    {/* The edge is the policy's identity — on an edit it says which of a product's
+                        several policies this dialog is actually changing. */}
+                    {form.sourceEnv.trim() && form.targetEnv.trim() && (
+                      <div className="mt-1">
+                        <PolicyEdge sourceEnv={form.sourceEnv} targetEnv={form.targetEnv} />
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={cancelForm}
+                    disabled={formSaving}
+                    aria-label="Close"
+                    className="ml-auto p-1 rounded transition-opacity hover:opacity-80 disabled:opacity-40"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
 
                 <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
                   A policy gates one promotion edge: who may move <em>this product</em> (optionally
@@ -1194,6 +1416,15 @@ export function PromotionSettings() {
                   </label>
                 </div>
 
+                {formError && (
+                  <div
+                    className="text-[13px] rounded-lg px-3 py-2"
+                    style={{ color: 'var(--danger)', backgroundColor: 'var(--danger-bg)' }}
+                  >
+                    {formError}
+                  </div>
+                )}
+
                 {/* Form actions */}
                 <div className="flex items-center gap-2 pt-1">
                   <button
@@ -1220,6 +1451,7 @@ export function PromotionSettings() {
                   rules they were approved under.
                 </p>
               </div>
+              </Dialog>
             )}
 
             {polSaved && (
