@@ -311,6 +311,7 @@ export function DeploymentDetailPage() {
             <WorkItemsCard
               workItems={workItems}
               product={evt.product}
+              service={evt.service}
               environment={evt.environment}
             />
           )}
@@ -937,13 +938,15 @@ function WorkItemLine({
 
 /**
  * The work items this deployment carries, linked into their sign-off pages. Sign-off is keyed on
- * (key, product, targetEnv), so a link needs a target environment — the server supplies the ones the
- * ticket is actually gated for. With none (no promotion yet) the ticket still shows, linked to its
- * source system instead of to a sign-off page that wouldn't have a gate to display.
+ * (key, product, service, targetEnv): the service is this deployment's, and the target environment
+ * comes from the server, which supplies the ones the ticket is actually gated for. With none (no
+ * promotion yet) the ticket still shows, linked to its source system instead of to a sign-off page
+ * that wouldn't have a gate to display.
  */
-function WorkItemsCard({ workItems, product, environment }: {
+function WorkItemsCard({ workItems, product, service, environment }: {
   workItems: RelatedWorkItem[];
   product: string;
+  service: string;
   environment: string;
 }) {
   const { getDisplayName } = useSettingsStore();
@@ -967,7 +970,7 @@ function WorkItemsCard({ workItems, product, environment }: {
               <WorkItemLine key={wi.key} index={index} hasGate={!!targetEnv}>
                 {targetEnv ? (
                   <Link
-                    to={workItemDetailPath(wi.key, product, targetEnv)}
+                    to={workItemDetailPath(wi.key, product, service, targetEnv)}
                     className="flex items-baseline gap-2 text-[13px] hover:underline"
                     style={{ color: 'var(--accent)' }}
                   >

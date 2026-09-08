@@ -60,6 +60,14 @@ public static class WorkItemRoleRequirements
         => TryReadSnapshot(candidate)?.TracksWorkItems ?? true;
 
     /// <summary>
+    /// Whether this candidate's gate judges a work item by the ticket's overall status across every
+    /// service instance (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>)
+    /// rather than by its own instance. Defaults to <c>false</c> for a candidate with no readable snapshot.
+    /// </summary>
+    public static bool RequiresAllInstances(PromotionCandidate candidate)
+        => TryReadSnapshot(candidate)?.RequireAllWorkItemInstancesApproved ?? false;
+
+    /// <summary>
     /// Best-effort snapshot read. Returns <c>null</c> when the candidate has no snapshot or its JSON
     /// won't parse — this type only ever answers presentational questions, so a data problem should
     /// degrade to "no requirement" rather than fail a list request.

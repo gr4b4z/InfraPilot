@@ -240,7 +240,8 @@ public record RelatedPromotionDto(
 /// <summary>
 /// A work item this deployment carries. <c>SignOffTargetEnvs</c> lists the environments the ticket is
 /// gated for, taken from the promotions on this version — the work-item detail page keys sign-off on
-/// (key, product, targetEnv), so a link needs one of them. Empty when no promotion exists yet.
+/// (key, product, service, targetEnv); the service is the event's own, so a link needs one of these
+/// environments. Empty when no promotion exists yet.
 /// </summary>
 public record RelatedWorkItemDto(
     string Key,
@@ -404,6 +405,8 @@ public record ServiceProductRemapDto(
     int Promotions,
     int OpenPromotions,
     int PromotionWorkItems,
+    int TicketApprovals,
+    int TicketComments,
     int Retirements,
     int RetirementMerges,
     int StrandedTicketApprovals);

@@ -92,7 +92,7 @@ public static class PromotionEndpoints
                 {
                     targetVersions.TryGetValue(c.Id, out var target);
                     sourceBranches.TryGetValue((c.Product, c.Service, c.Version), out var sourceBranch);
-                    decidedWorkItems.TryGetValue((c.Product, c.TargetEnv), out var decidedKeys);
+                    decidedWorkItems.TryGetValue((c.Product, c.Service, c.TargetEnv), out var decidedKeys);
                     // sourceEventReferences carries the candidate's own net change set so the list
                     // card keeps rendering refs without a deploy-event join (D14 dropped the link).
                     return ToDto(c, capability.GetValueOrDefault(c.Id),
@@ -140,7 +140,7 @@ public static class PromotionEndpoints
 
             // Work items on this edge that have already been ruled on — they report no role gap.
             var decidedWorkItems = (await LoadDecidedWorkItemKeysAsync(db, new[] { c }))
-                .GetValueOrDefault((c.Product, c.TargetEnv));
+                .GetValueOrDefault((c.Product, c.Service, c.TargetEnv));
 
             // Surface an admin bypass, if any. A bypass records NO approval row, so without this a
             // force-approved candidate would show an empty approval trail with no trace of who did it
@@ -963,8 +963,9 @@ public static class PromotionEndpoints
     }
 
     /// <summary>
-    /// The work items already ruled on, per <c>(product, targetEnv)</c> — the grain a work-item
-    /// decision keys on, and therefore shared by every candidate on the same edge. Feeds
+    /// The work items already ruled on, per <c>(product, service, targetEnv)</c> — the grain a
+    /// work-item decision keys on, and therefore shared by every candidate of that service on the
+    /// same edge. Feeds
     /// <see cref="WorkItemRoleRequirements.Evaluate(PromotionCandidate, IReadOnlySet{string})"/>, which
     /// drops a decided item from the "needs attention" gaps: the affordance asks for an assignment,
     /// and a signed-off item is past needing one.
@@ -974,34 +975,36 @@ public static class PromotionEndpoints
     /// carry (another promotion on the same edge decided them); harmless, because the consumer only
     /// ever looks up keys the candidate actually references.</para>
     /// </summary>
-    private static async Task<Dictionary<(string Product, string TargetEnv), HashSet<string>>> LoadDecidedWorkItemKeysAsync(
+    private static async Task<Dictionary<(string Product, string Service, string TargetEnv), HashSet<string>>> LoadDecidedWorkItemKeysAsync(
         PlatformDbContext db,
         IReadOnlyCollection<PromotionCandidate> candidates,
         CancellationToken ct = default)
     {
-        var pairs = candidates
-            .Select(c => (c.Product, c.TargetEnv))
+        var triples = candidates
+            .Select(c => (c.Product, c.Service, c.TargetEnv))
             .Distinct()
             .ToList();
-        if (pairs.Count == 0) return new();
+        if (triples.Count == 0) return new();
 
-        var products = pairs.Select(p => p.Product).Distinct().ToList();
-        var envs = pairs.Select(p => p.TargetEnv).Distinct().ToList();
+        var products = triples.Select(p => p.Product).Distinct().ToList();
+        var services = triples.Select(p => p.Service).Distinct().ToList();
+        var envs = triples.Select(p => p.TargetEnv).Distinct().ToList();
 
         var decisions = await db.WorkItemApprovals
             .AsNoTracking()
-            .Where(a => products.Contains(a.Product) && envs.Contains(a.TargetEnv))
-            .Select(a => new { a.Product, a.TargetEnv, a.WorkItemKey })
+            .Where(a => products.Contains(a.Product) && services.Contains(a.Service) && envs.Contains(a.TargetEnv))
+            .Select(a => new { a.Product, a.Service, a.TargetEnv, a.WorkItemKey })
             .Distinct()
             .ToListAsync(ct);
 
-        var wanted = pairs.ToHashSet();
-        var result = new Dictionary<(string Product, string TargetEnv), HashSet<string>>();
+        var wanted = triples.ToHashSet();
+        var result = new Dictionary<(string Product, string Service, string TargetEnv), HashSet<string>>();
         foreach (var d in decisions)
         {
-            if (!wanted.Contains((d.Product, d.TargetEnv))) continue;
-            if (!result.TryGetValue((d.Product, d.TargetEnv), out var keys))
-                result[(d.Product, d.TargetEnv)] = keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var id = (d.Product, d.Service, d.TargetEnv);
+            if (!wanted.Contains(id)) continue;
+            if (!result.TryGetValue(id, out var keys))
+                result[id] = keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             keys.Add(d.WorkItemKey);
         }
         return result;

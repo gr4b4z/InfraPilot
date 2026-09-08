@@ -621,7 +621,7 @@ export function PromotionsPage() {
           const ctxs = await Promise.all(
             tickets.map((t) =>
               api
-                .getWorkItemContext(t.key ?? '', c.product, c.targetEnv)
+                .getWorkItemContext(t.key ?? '', c.product, c.service, c.targetEnv)
                 .then((ctx) => ({ key: t.key ?? '', ctx }))
                 .catch(() => ({ key: t.key ?? '', ctx: null })),
             ),
@@ -1160,6 +1160,7 @@ function CandidateCard({
                         to={workItemDetailPath(
                           workItemKey,
                           candidate.product,
+                          candidate.service,
                           candidate.targetEnv,
                           candidate.id,
                         )}

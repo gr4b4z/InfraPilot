@@ -10,8 +10,8 @@ namespace Platform.Api.Features.Promotions.Models;
 /// <para>This is the candidate analogue of <see cref="Deployments.Models.DeployEventWorkItem"/>:
 /// that table stays keyed on the deploy event for deploy-history ("which builds carry ticket X").
 /// This one is keyed on the candidate and feeds the promotion gate. Approvals on tickets still live
-/// in <c>WorkItemApproval</c> keyed on <c>(WorkItemKey, Product, TargetEnv)</c> so they survive a
-/// supersede.</para>
+/// in <c>WorkItemApproval</c> keyed on <c>(WorkItemKey, Product, Service, TargetEnv)</c> so they
+/// survive a supersede.</para>
 /// </summary>
 public class PromotionWorkItem
 {
@@ -21,9 +21,15 @@ public class PromotionWorkItem
     // The ticket key, e.g. "FOO-123". Required.
     public string WorkItemKey { get; set; } = "";
 
-    // Product / target env carried over from the parent candidate so approval queries can scope
-    // by (key, product, env) without joining back. Denormalised on purpose.
+    // Product / service / target env carried over from the parent candidate so approval queries can
+    // scope by (key, product, service, env) without joining back. Denormalised on purpose.
+    //
+    // Service is part of the work item's identity: the same Jira ticket carried by two services of
+    // one product is two work items — mpt-helpdesk/MPT-1 and mpt-platform/MPT-1 — each with its own
+    // sign-off, thread and assignments. Two promotions of the SAME service (a new version, a second
+    // edge into the same env) still share one work item.
     public string Product { get; set; } = "";
+    public string Service { get; set; } = "";
     public string TargetEnv { get; set; } = "";
 
     public string? Provider { get; set; }

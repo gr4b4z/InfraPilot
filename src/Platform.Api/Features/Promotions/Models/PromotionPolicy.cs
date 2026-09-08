@@ -89,7 +89,7 @@ public class PromotionPolicy
     }
 
     // ── Work-item-gate options ─────────────────────────────────────────────────
-    // These three flags are independent and can be combined freely.
+    // These flags are independent and can be combined freely.
 
     /// <summary>
     /// When <c>true</c>, a human approver cannot approve the promotion until every work item
@@ -97,6 +97,21 @@ public class PromotionPolicy
     /// contains no work items (nothing to wait for).
     /// </summary>
     public bool RequireAllWorkItemsApproved { get; set; } = false;
+
+    /// <summary>
+    /// What "approved" means for a work item on this edge's gate. A work item is per service
+    /// (<c>mpt-helpdesk/MPT-1</c> and <c>mpt-platform/MPT-1</c> are two work items), so by default a
+    /// promotion of <c>mpt-helpdesk</c> waits only for <i>its</i> instance of the ticket. When
+    /// <c>true</c> it waits for the ticket's <b>overall</b> status instead — every service's instance
+    /// in the target environment approved, none holding an issue or block (see
+    /// <see cref="WorkItemOverallStatus"/>). For a team that reads a ticket as done-or-not rather than
+    /// done-per-service.
+    ///
+    /// <para>Qualifies <see cref="RequireAllWorkItemsApproved"/> and
+    /// <see cref="AutoApproveOnAllWorkItemsApproved"/>; on its own it changes nothing, because
+    /// without either of those the gate never looks at work items.</para>
+    /// </summary>
+    public bool RequireAllWorkItemInstancesApproved { get; set; } = false;
 
     /// <summary>
     /// When <c>true</c>, the candidate is automatically promoted the moment all work items

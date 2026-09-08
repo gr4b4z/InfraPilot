@@ -70,7 +70,8 @@ export function promotionSearchScope(): SearchScope {
  *
  * The server matched the *candidate* — a bundle can carry ten work items where one matched — so
  * without this the list would offer nine items the user didn't ask for. De-duplicated on
- * (key, product, targetEnv), the triple a decision keys on.
+ * (key, product, service, targetEnv), the identity a decision keys on — the same ticket on two
+ * services is two hits, because it is two work items.
  */
 function expandWorkItems(candidates: PromotionCandidate[], query: string): SearchHit[] {
   const needle = query.toLowerCase();
@@ -85,14 +86,20 @@ function expandWorkItems(candidates: PromotionCandidate[], query: string): Searc
       const matches = key.toLowerCase().includes(needle)
         || (title ?? '').toLowerCase().includes(needle);
       if (!matches) continue;
-      const identity = `${key}|${candidate.product}|${candidate.targetEnv}`;
+      const identity = `${key}|${candidate.product}|${candidate.service}|${candidate.targetEnv}`;
       if (seen.has(identity)) continue;
       seen.add(identity);
       hits.push({
         id: identity,
         title: title ? `${key} — ${title}` : key,
-        subtitle: `${candidate.product} · ${candidate.targetEnv}`,
-        to: workItemDetailPath(key, candidate.product, candidate.targetEnv, candidate.id),
+        subtitle: `${candidate.product} / ${candidate.service} · ${candidate.targetEnv}`,
+        to: workItemDetailPath(
+          key,
+          candidate.product,
+          candidate.service,
+          candidate.targetEnv,
+          candidate.id,
+        ),
       });
     }
   }

@@ -1,7 +1,7 @@
 namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
-/// A sign-off decision on one work item, for one <c>(product, targetEnv)</c>.
+/// A sign-off decision on one work item, for one <c>(product, service, targetEnv)</c>.
 ///
 /// <para>Only <see cref="Approved"/> releases the promotion gate. <see cref="Issue"/> and
 /// <see cref="Blocked"/> are both "not approved": they leave the item unresolved, which stalls the

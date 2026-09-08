@@ -8,6 +8,13 @@ namespace Platform.Api.Features.Promotions;
 /// same CanApprove policy as <see cref="PromotionEndpoints"/> — any authenticated user can hit
 /// these and per-action authority is enforced server-side.
 ///
+/// <para>A work item is identified by <c>(key, product, service, targetEnv)</c>. The key rides in
+/// the path; the other three are query parameters on reads and body fields on writes. The service
+/// is not optional: the same Jira ticket carried by two services of one product is two work items
+/// (<c>mpt-helpdesk/MPT-1</c>, <c>mpt-platform/MPT-1</c>), and a request that names only the ticket
+/// cannot say which one it means. Links minted before the service joined the identity resolve
+/// through <c>GET /{key}/instances</c>, which lists the services carrying the ticket.</para>
+///
 /// <para>Recording an approval here only persists a row; it does not transition any
 /// PromotionCandidate. The PR3 gate evaluator consumes these rows.</para>
 ///
@@ -79,6 +86,32 @@ public static class WorkItemEndpoints
             });
         });
 
+        // The ticket across every service in one (product, targetEnv): each instance with its own
+        // sign-off state, plus the overall roll-up. Every instance page shows this, and it is the
+        // resolver for links minted before the service was part of the identity: the client asks
+        // which services carry the ticket, then goes to that instance (or offers the choice).
+        group.MapGet("/{key}/instances", async (
+            WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
+            string key,
+            string product,
+            string targetEnv,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
+            var overall = (await svc.GetOverallStatusAsync(decoded, product, targetEnv, ct))?.ToSummary();
+            return Results.Ok(new
+            {
+                workItemKey = decoded,
+                product,
+                targetEnv,
+                // Null when no promotion has carried the ticket in that product/env.
+                overall,
+                instances = overall?.InstanceStatuses ?? Array.Empty<WorkItemInstanceSummary>(),
+            });
+        });
+
         // Full detail for the work-item page: display fields, people, decision trail, comment
         // thread, and every candidate carrying the ticket. Mounted before /{key} so "detail" is
         // never swallowed as a key segment (it wouldn't be — the shapes differ — but keeping the
@@ -88,38 +121,42 @@ public static class WorkItemEndpoints
             EnvironmentAliasResolver environments,
             string key,
             string product,
+            string service,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
-            // Sign-offs are keyed on (key, product, targetEnv), so the environment is resolved on
-            // the way in â€” here and on every route below. A decision recorded against "production"
-            // has to be the one a caller asking about "prod" sees, or the same reviewer is asked to
-            // sign the same ticket off twice.
+            if (string.IsNullOrWhiteSpace(service)) return MissingService();
+            // Sign-offs are keyed on (key, product, service, targetEnv), so the environment is
+            // resolved on the way in — here and on every route below. A decision recorded against
+            // "production" has to be the one a caller asking about "prod" sees, or the same reviewer
+            // is asked to sign the same ticket off twice.
             targetEnv = await environments.ResolveAsync(targetEnv, ct);
-            var detail = await svc.GetDetailAsync(decoded, product, targetEnv, ct);
+            var detail = await svc.GetDetailAsync(decoded, product, service, targetEnv, ct);
             return detail is null
-                ? Results.NotFound(new { error = $"Work item '{decoded}' not found for {product}/{targetEnv}" })
+                ? Results.NotFound(new { error = $"Work item '{decoded}' not found for {product}/{service}/{targetEnv}" })
                 : Results.Ok(ToDetailDto(detail));
         });
 
-        // Ticket context — authority + decision history for a specific (key, product, env).
+        // Ticket context — authority + decision history for a specific (key, product, service, env).
         group.MapGet("/{key}", async (
             WorkItemApprovalService svc,
             EnvironmentAliasResolver environments,
             string key,
             string product,
+            string service,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            if (string.IsNullOrWhiteSpace(service)) return MissingService();
             targetEnv = await environments.ResolveAsync(targetEnv, ct);
-            var ctx = await svc.GetTicketContextAsync(decoded, product, targetEnv, ct);
+            var ctx = await svc.GetTicketContextAsync(decoded, product, service, targetEnv, ct);
             return Results.Ok(ToContextDto(ctx));
         });
 
-        // Record approval. Body carries (product, targetEnv, comment?). Returns the row + the
-        // candidate id it was attached to so the UI can deep-link back.
+        // Record approval. Body carries (product, service, targetEnv, comment?). Returns the row +
+        // the candidate id it was attached to so the UI can deep-link back.
         group.MapPost("/{key}/approvals", async (
             WorkItemApprovalService svc,
             EnvironmentAliasResolver environments,
@@ -130,7 +167,7 @@ public static class WorkItemEndpoints
             var decoded = Uri.UnescapeDataString(key ?? "");
             var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.ApproveAsync(
-                decoded, body.Product ?? "", env, body.Comment, ct));
+                decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
         });
 
         // Raise an issue — flags a problem on the item without calling it undeliverable.
@@ -144,7 +181,7 @@ public static class WorkItemEndpoints
             var decoded = Uri.UnescapeDataString(key ?? "");
             var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.RaiseIssueAsync(
-                decoded, body.Product ?? "", env, body.Comment, ct));
+                decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
         });
 
         // Record a block — holds the item back. Neither this nor /issues vetoes the promotion, and
@@ -163,11 +200,11 @@ public static class WorkItemEndpoints
             var decoded = Uri.UnescapeDataString(key ?? "");
             var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.BlockAsync(
-                decoded, body.Product ?? "", env, body.Comment, ct));
+                decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
         });
 
         // ── Comment thread ────────────────────────────────────────────────
-        // Keyed by (key, product, targetEnv) like the decisions, so the thread survives a
+        // Keyed by (key, product, service, targetEnv) like the decisions, so the thread survives a
         // superseded candidate. Edit/delete route by comment id — no key in the path — because the
         // id alone identifies the row and the author check is the only authorisation that matters.
 
@@ -176,12 +213,14 @@ public static class WorkItemEndpoints
             EnvironmentAliasResolver environments,
             string key,
             string product,
+            string service,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            if (string.IsNullOrWhiteSpace(service)) return MissingService();
             targetEnv = await environments.ResolveAsync(targetEnv, ct);
-            var comments = await svc.GetCommentsAsync(decoded, product, targetEnv, ct);
+            var comments = await svc.GetCommentsAsync(decoded, product, service, targetEnv, ct);
             return Results.Ok(new { comments = comments.Select(ToCommentDto) });
         });
 
@@ -196,7 +235,7 @@ public static class WorkItemEndpoints
             try
             {
                 var comment = await svc.AddCommentAsync(
-                    decoded, body.Product ?? "",
+                    decoded, body.Product ?? "", body.Service ?? "",
                     await environments.ResolveAsync(body.TargetEnv, ct),
                     body.Body ?? "", ct);
                 return Results.Ok(ToCommentDto(comment));
@@ -239,6 +278,17 @@ public static class WorkItemEndpoints
     }
 
     /// <summary>
+    /// The 400 for a read that names a ticket without saying which service's instance it means. The
+    /// message points at the resolver so a caller holding a pre-service link knows where to go.
+    /// </summary>
+    private static IResult MissingService()
+        => Results.BadRequest(new
+        {
+            error = "service is required — a work item is identified by (key, product, service, targetEnv). "
+                  + "Use GET /api/work-items/{key}/instances?product=&targetEnv= to list the services carrying the ticket.",
+        });
+
+    /// <summary>
     /// Maps the <c>roleRequirement</c> query value onto the filter. Unknown values fall back to
     /// <see cref="WorkItemRoleRequirementFilter.Any"/> rather than 400: the parameter only narrows a
     /// read, so a typo should return the unnarrowed queue, not fail the page.
@@ -273,6 +323,7 @@ public static class WorkItemEndpoints
         id = a.Id,
         workItemKey = a.WorkItemKey,
         product = a.Product,
+        service = a.Service,
         targetEnv = a.TargetEnv,
         approverEmail = a.ApproverEmail,
         approverName = a.ApproverName,
@@ -286,6 +337,7 @@ public static class WorkItemEndpoints
     {
         workItemKey = ctx.WorkItemKey,
         product = ctx.Product,
+        service = ctx.Service,
         targetEnv = ctx.TargetEnv,
         pendingCandidateId = ctx.PendingCandidateId,
         canApprove = ctx.CanApprove,
@@ -299,6 +351,7 @@ public static class WorkItemEndpoints
         id = c.Id,
         workItemKey = c.WorkItemKey,
         product = c.Product,
+        service = c.Service,
         targetEnv = c.TargetEnv,
         authorEmail = c.AuthorEmail,
         authorName = c.AuthorName,
@@ -314,6 +367,9 @@ public static class WorkItemEndpoints
     {
         workItemKey = d.WorkItemKey,
         product = d.Product,
+        // Identity: this page is about the ticket's change in THIS service. The same ticket on a
+        // sibling service is a different work item with its own page.
+        service = d.Service,
         targetEnv = d.TargetEnv,
         // Where the change is actually running — the environments a reviewer can exercise it in.
         // Resolved from deploy events matching the carrying version, not from the promotion edge.
@@ -377,11 +433,17 @@ public static class WorkItemEndpoints
             createdAt = c.CreatedAt,
             isPrimary = c.IsPrimary,
         }),
+        // The ticket across every service carrying it in this product/env, and whether this
+        // promotion's gate waits for all of them (policy) or for this instance alone.
+        overall = d.Overall,
+        gateRequiresAllInstances = d.GateRequiresAllInstances,
     };
 }
 
-public record WorkItemDecisionRequest(string? Product, string? TargetEnv, string? Comment);
+/// <summary>Body for a work-item decision. All three of product, service and targetEnv complete
+/// the work item's identity and are required.</summary>
+public record WorkItemDecisionRequest(string? Product, string? Service, string? TargetEnv, string? Comment);
 
-/// <summary>Body for posting/editing a work-item comment. Product/TargetEnv are required on
+/// <summary>Body for posting/editing a work-item comment. Product/Service/TargetEnv are required on
 /// create (they complete the thread key) and ignored on edit.</summary>
-public record WorkItemCommentRequest(string? Product, string? TargetEnv, string? Body);
+public record WorkItemCommentRequest(string? Product, string? Service, string? TargetEnv, string? Body);

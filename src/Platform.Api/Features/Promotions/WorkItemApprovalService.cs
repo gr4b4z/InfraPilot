@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
@@ -18,14 +18,21 @@ namespace Platform.Api.Features.Promotions;
 /// Records ticket-level (work-item) approvals. Persistent state only —
 /// the gate evaluator that auto-promotes candidates when all tickets are
 /// signed lives in PR3. Approvals carry across superseded builds because
-/// they key on (workItemKey, product, targetEnv), not on the candidate.
+/// they key on (workItemKey, product, service, targetEnv), not on the candidate.
+///
+/// <para><b>The service is part of a work item's identity.</b> One Jira ticket carried by three
+/// services of a product is three work items — <c>mpt-helpdesk/MPT-1</c>, <c>mpt-platform/MPT-1</c>,
+/// <c>mpt-currency/MPT-1</c> — each signed off, discussed and assigned separately, because each is a
+/// different change to a different deployable. Promotions of the <i>same</i> service (a newer version,
+/// or a second source edge into the same target) still share one work item, so a sign-off survives a
+/// supersede exactly as before.</para>
 ///
 /// <para>Authority: work-item sign-off is the QA role's jurisdiction (Admin included), on any work
-/// item the platform has seen for that (product, targetEnv) — including one whose promotion has
-/// died, since an orphaned item still needs resolving. The only refusal is an auto-approve policy,
-/// where there is no human gate to sign against. One signoff per ticket per
-/// (product, env, approver) — enforced by unique index plus an in-app duplicate check that returns
-/// a friendly 400 instead of a DB exception.</para>
+/// item the platform has seen for that (product, service, targetEnv) — including one whose promotion
+/// has died, since an orphaned item still needs resolving. The only refusal is an auto-approve
+/// policy, where there is no human gate to sign against. One signoff per ticket per
+/// (product, service, env, approver) — enforced by unique index plus an in-app duplicate check that
+/// returns a friendly 400 instead of a DB exception.</para>
 ///
 /// <para>No decision cascades to the promotion. Approve feeds the gate (and can auto-promote);
 /// Issue and Block both simply leave the item unresolved, which stalls the gate without terminating
@@ -87,8 +94,9 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     public Task<WorkItemApproval> ApproveAsync(
-        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, WorkItemDecision.Approved, ct);
+        string workItemKey, string product, string service, string targetEnv, string? comment,
+        CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Approved, ct);
 
     /// <summary>
     /// Flags something wrong with the work item. The candidate stays Pending and the gate treats the
@@ -96,8 +104,9 @@ public class WorkItemApprovalService
     /// <see cref="BlockAsync"/> — the two differ only in what the reviewer is saying.
     /// </summary>
     public Task<WorkItemApproval> RaiseIssueAsync(
-        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, WorkItemDecision.Issue, ct);
+        string workItemKey, string product, string service, string targetEnv, string? comment,
+        CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Issue, ct);
 
     /// <summary>
     /// Holds the work item back. Says more than <see cref="RaiseIssueAsync"/> and does exactly the
@@ -105,8 +114,9 @@ public class WorkItemApprovalService
     /// <see cref="PromotionService.RejectAsync"/>, which terminates a candidate.
     /// </summary>
     public Task<WorkItemApproval> BlockAsync(
-        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, WorkItemDecision.Blocked, ct);
+        string workItemKey, string product, string service, string targetEnv, string? comment,
+        CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Blocked, ct);
 
     /// <summary>
     /// Records a ticket-level decision after authority checks, then drives the candidate side:
@@ -122,7 +132,7 @@ public class WorkItemApprovalService
     /// <para>A missing Pending candidate is <i>not</i> a blocker: an orphaned work item (its
     /// promotion superseded or rejected) still needs resolving, and refusing the sign-off would
     /// strand it in the queue forever. The item does have to be one the platform has seen for that
-    /// (product, targetEnv), so an arbitrary key can't seed rows.</para>
+    /// (product, service, targetEnv), so an arbitrary key can't seed rows.</para>
     ///
     /// <para>Throws <see cref="InvalidOperationException"/> for "unknown work item", "already
     /// recorded that decision", or "auto-approve policy" so endpoints map them to 400. Throws
@@ -130,27 +140,30 @@ public class WorkItemApprovalService
     /// to 403.</para>
     /// </summary>
     private async Task<WorkItemApproval> RecordAsync(
-        string workItemKey, string product, string targetEnv,
+        string workItemKey, string product, string service, string targetEnv,
         string? comment, WorkItemDecision decision, CancellationToken ct)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
         if (string.IsNullOrEmpty(key))
             throw new InvalidOperationException("workItemKey is required");
         if (string.IsNullOrEmpty(prod))
             throw new InvalidOperationException("product is required");
+        if (string.IsNullOrEmpty(svc))
+            throw new InvalidOperationException("service is required");
         if (string.IsNullOrEmpty(env))
             throw new InvalidOperationException("targetEnv is required");
 
-        var candidate = await FindPendingCandidateForTicketAsync(key, prod, env, ct);
+        var candidate = await FindPendingCandidateForTicketAsync(key, prod, svc, env, ct);
         if (candidate is null)
         {
             // Orphaned sign-off — no live promotion needs the item. Allowed, but only for items the
-            // platform actually knows about in this (product, env).
-            if (!await IsKnownWorkItemAsync(key, prod, env, ct))
+            // platform actually knows about in this (product, service, env).
+            if (!await IsKnownWorkItemAsync(key, prod, svc, env, ct))
                 throw new InvalidOperationException(
-                    $"Work item '{key}' is not known for {prod}/{env}");
+                    $"Work item '{key}' is not known for {prod}/{svc}/{env}");
         }
         // Auto-approve has no human gate; a ticket signoff against it is meaningless.
         else if (ReadSnapshot(candidate).IsAutoApprove)
@@ -164,12 +177,14 @@ public class WorkItemApprovalService
         if (!(_currentUser.IsQA || _currentUser.IsAdmin))
             throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
 
-        // The unique index holds one row per (ticket, product, env, approver). Load the caller's
-        // row (tracked) so a change of mind updates it rather than colliding with the constraint.
+        // The unique index holds one row per (ticket, product, service, env, approver). Load the
+        // caller's row (tracked) so a change of mind updates it rather than colliding with the
+        // constraint.
         var existing = await _db.WorkItemApprovals
             .FirstOrDefaultAsync(a =>
                 a.WorkItemKey == key &&
                 a.Product == prod &&
+                a.Service == svc &&
                 a.TargetEnv == env &&
                 a.ApproverEmail == _currentUser.Email, ct);
         if (existing is not null && existing.Decision == decision)
@@ -184,6 +199,7 @@ public class WorkItemApprovalService
                 Id = Guid.NewGuid(),
                 WorkItemKey = key,
                 Product = prod,
+                Service = svc,
                 TargetEnv = env,
                 ApproverEmail = _currentUser.Email,
                 ApproverName = _currentUser.Name,
@@ -209,6 +225,7 @@ public class WorkItemApprovalService
             Id = Guid.NewGuid(),
             WorkItemKey = key,
             Product = prod,
+            Service = svc,
             TargetEnv = env,
             AuthorEmail = _currentUser.Email,
             AuthorName = _currentUser.Name,
@@ -238,17 +255,17 @@ public class WorkItemApprovalService
             "promotions", legacyAction,
             _currentUser.Id, _currentUser.Name, "user",
             "WorkItemApproval", row.Id, null,
-            new { workItemKey = key, product = prod, targetEnv = env, candidateId = candidate?.Id, comment });
+            new { workItemKey = key, product = prod, service = svc, targetEnv = env, candidateId = candidate?.Id, comment });
 
         // Ticket-level audit + webhook: attached to the live candidate when there is one, and emitted
         // with a null candidate id for an orphaned sign-off — the payload identifies the ticket by
-        // (workItemKey, product, targetEnv) either way.
-        await EmitTicketEventsAsync(decision, key, prod, env, candidate?.Id, comment, ct);
+        // (workItemKey, product, service, targetEnv) either way.
+        await EmitTicketEventsAsync(decision, key, prod, svc, env, candidate?.Id, comment, ct);
 
         _logger.LogInformation(
-            "Work-item decision recorded: {Decision} on {Key} ({Product}/{Env}) by {Email}; candidate {CandidateId}",
-            decision, LogSanitizer.Clean(key), LogSanitizer.Clean(prod), LogSanitizer.Clean(env),
-            LogSanitizer.Clean(_currentUser.Email), candidate?.Id);
+            "Work-item decision recorded: {Decision} on {Key} ({Product}/{Service}/{Env}) by {Email}; candidate {CandidateId}",
+            decision, LogSanitizer.Clean(key), LogSanitizer.Clean(prod), LogSanitizer.Clean(svc),
+            LogSanitizer.Clean(env), LogSanitizer.Clean(_currentUser.Email), candidate?.Id);
 
         // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
         // WorkItemsOnly / WorkItemsAndManual conditions are met). Issue and Block → nothing at all:
@@ -258,11 +275,13 @@ public class WorkItemApprovalService
         // only ever promotes.)
         if (decision == WorkItemDecision.Approved)
         {
-            // A ticket approval is shared across every candidate carrying it (WorkItemApproval is
-            // keyed by key+product+targetEnv, not by candidate), so re-evaluate ALL pending
-            // candidates that reference this ticket — not just the one the row was attributed to —
-            // so every gate the sign-off satisfies auto-promotes immediately. ReevaluateAsync is
-            // idempotent and no-ops for candidates that aren't Pending or whose gate isn't met.
+            // A ticket approval is shared across every candidate of this service carrying it
+            // (WorkItemApproval is keyed by key+product+service+targetEnv, not by candidate), so
+            // re-evaluate ALL pending candidates that reference this ticket — not just the one the
+            // row was attributed to — so every gate the sign-off satisfies auto-promotes immediately.
+            // Other services' candidates are included too: a policy gating on the ticket's overall
+            // status may have been waiting for exactly this instance. ReevaluateAsync is idempotent
+            // and no-ops for candidates that aren't Pending or whose gate isn't met.
             var affected = await FindPendingCandidateIdsForTicketAsync(key, prod, env, ct);
             foreach (var affectedId in affected)
                 await TryReevaluateCandidateAsync(affectedId, ct);
@@ -294,7 +313,7 @@ public class WorkItemApprovalService
     /// </summary>
     private async Task EmitTicketEventsAsync(
         WorkItemDecision decision,
-        string workItemKey, string product, string targetEnv,
+        string workItemKey, string product, string service, string targetEnv,
         Guid? candidateId, string? comment, CancellationToken ct)
     {
         // Subscriber-visible contract. As with the audit actions above, the two non-approval names
@@ -311,7 +330,7 @@ public class WorkItemApprovalService
         // No dedicated ticket entity exists; the audit row attaches to the candidate when one
         // is known so the UI can deep-link. When the cascade has no live candidate (future),
         // entityType remains "PromotionCandidate" with a null entity id — the payload still
-        // identifies the ticket via workItemKey + product + targetEnv.
+        // identifies the ticket via workItemKey + product + service + targetEnv.
         await _audit.Log(
             "promotions", action,
             _currentUser.Id, _currentUser.Name, "user",
@@ -320,6 +339,7 @@ public class WorkItemApprovalService
             {
                 workItemKey,
                 product,
+                service,
                 targetEnv,
                 candidateId,
                 approver = _currentUser.Email,
@@ -332,6 +352,7 @@ public class WorkItemApprovalService
             {
                 workItemKey,
                 product,
+                service,
                 targetEnv,
                 candidateId,
                 approver = _currentUser.Email,
@@ -343,9 +364,9 @@ public class WorkItemApprovalService
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
-                "Webhook dispatch '{EventType}' failed for ticket {Key} ({Product}/{Env})",
+                "Webhook dispatch '{EventType}' failed for ticket {Key} ({Product}/{Service}/{Env})",
                 action, LogSanitizer.Clean(workItemKey), LogSanitizer.Clean(product),
-                LogSanitizer.Clean(targetEnv));
+                LogSanitizer.Clean(service), LogSanitizer.Clean(targetEnv));
         }
     }
 
@@ -374,10 +395,11 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     public async Task<List<WorkItemApproval>> GetForKeyAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
     {
         return await _db.WorkItemApprovals.AsNoTracking()
-            .Where(a => a.WorkItemKey == workItemKey && a.Product == product && a.TargetEnv == targetEnv)
+            .Where(a => a.WorkItemKey == workItemKey && a.Product == product && a.Service == service
+                     && a.TargetEnv == targetEnv)
             .OrderBy(a => a.CreatedAt)
             .ToListAsync(ct);
     }
@@ -390,19 +412,21 @@ public class WorkItemApprovalService
     /// the platform knows the item.
     /// </summary>
     public async Task<TicketContext> GetTicketContextAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
+        var complete = key.Length > 0 && prod.Length > 0 && svc.Length > 0 && env.Length > 0;
 
-        var approvals = (key.Length == 0 || prod.Length == 0 || env.Length == 0)
-            ? new List<WorkItemApproval>()
-            : await GetForKeyAsync(key, prod, env, ct);
+        var approvals = complete
+            ? await GetForKeyAsync(key, prod, svc, env, ct)
+            : new List<WorkItemApproval>();
 
-        var candidate = (key.Length == 0 || prod.Length == 0 || env.Length == 0)
-            ? null
-            : await FindPendingCandidateForTicketAsync(key, prod, env, ct);
+        var candidate = complete
+            ? await FindPendingCandidateForTicketAsync(key, prod, svc, env, ct)
+            : null;
 
         // Build BlockedReason in the same order as the throwing path so the UI message matches
         // what the user would see if they tried to act. An existing decision by the caller is NOT
@@ -422,9 +446,9 @@ public class WorkItemApprovalService
         {
             blockedReason = "Work-item sign-off requires the QA or Admin role";
         }
-        else if (candidate is null && !await IsKnownWorkItemAsync(key, prod, env, ct))
+        else if (candidate is null && !await IsKnownWorkItemAsync(key, prod, svc, env, ct))
         {
-            blockedReason = "This work item is not known for that product and environment";
+            blockedReason = "This work item is not known for that product, service and environment";
         }
         else
         {
@@ -434,6 +458,7 @@ public class WorkItemApprovalService
         return new TicketContext(
             WorkItemKey: key,
             Product: prod,
+            Service: svc,
             TargetEnv: env,
             PendingCandidateId: candidate?.Id,
             CanApprove: canApprove,
@@ -458,7 +483,8 @@ public class WorkItemApprovalService
     /// nobody has approved. Dropping them would silently lose the work, so they stay — their row
     /// reports the dead candidate's status so the UI can flag it. The scan over dead candidates is
     /// capped at <see cref="OrphanScanLimit"/> newest-first; a Pending candidate always wins the
-    /// row for a given ticket, because Pending is iterated first and rows dedupe on the triple.</para>
+    /// row for a given ticket, because Pending is iterated first and rows dedupe on the
+    /// (key, product, service, env) identity.</para>
     ///
     /// <para>Returns the rendered ticket list along with the (email, role) → count assignee
     /// summary built from the authorized list <i>before</i> the person filter is applied.
@@ -542,13 +568,13 @@ public class WorkItemApprovalService
             return new PendingQueueResult(new(), new());
         }
 
-        // Group user's existing decisions: (key, product, env) tuples to skip.
+        // Group user's existing decisions: (key, product, service, env) tuples to skip.
         var decided = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => a.ApproverEmail == _currentUser.Email)
-            .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv })
+            .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv })
             .ToListAsync(ct);
         var decidedSet = decided
-            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+            .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
             .ToHashSet();
 
         // Every decision anyone has recorded, and the approvals among them. Two uses:
@@ -559,14 +585,14 @@ public class WorkItemApprovalService
         //    item isn't waiting for an assignment, so it reports no missing roles and drops out of the
         //    "Not assigned" narrowing below.
         var allDecisions = await _db.WorkItemApprovals.AsNoTracking()
-            .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv, a.Decision })
+            .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision })
             .ToListAsync(ct);
         var approvedByAnyone = allDecisions
             .Where(a => a.Decision == WorkItemDecision.Approved)
-            .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
+            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
             .ToHashSet();
         var decidedByAnyone = allDecisions
-            .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
+            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
             .ToHashSet();
 
         // Work-item management (view / assign / sign off) is the QA role's jurisdiction (Admin
@@ -587,8 +613,13 @@ public class WorkItemApprovalService
             .GroupBy(w => w.CandidateId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // Build (key, product, targetEnv) -> count of Pending candidates carrying it.
-        var blockingCount = new Dictionary<(string Key, string Product, string Env), int>();
+        // The ticket's roll-up across every service instance, for the "2 of 3 services" the row shows
+        // beside its own state. One batch for the whole queue.
+        var overall = await WorkItemOverallStatus.LoadAsync(_db,
+            workItems.Select(w => new WorkItemTicketId(w.WorkItemKey, w.Product, w.TargetEnv)), ct);
+
+        // Build (key, product, service, targetEnv) -> count of Pending candidates carrying it.
+        var blockingCount = new Dictionary<(string Key, string Product, string Service, string Env), int>();
         foreach (var c in pending)
         {
             var keys = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
@@ -596,16 +627,18 @@ public class WorkItemApprovalService
                 .Distinct();
             foreach (var k in keys)
             {
-                var tup = (k, c.Product, c.TargetEnv);
+                var tup = (k, c.Product, c.Service, c.TargetEnv);
                 blockingCount[tup] = blockingCount.GetValueOrDefault(tup) + 1;
             }
         }
 
         var result = new List<PendingTicketView>();
-        // Dedup by (key, product, targetEnv) — the grain at which a work-item sign-off actually
-        // happens (WorkItemApproval is keyed the same way). One shared decision ⇒ one row, even when
-        // the ticket backs several Pending candidates; the row's BlockingPromotions surfaces the count.
-        var emitted = new HashSet<(string Key, string Product, string Env)>();
+        // Dedup by (key, product, service, targetEnv) — the grain at which a work-item sign-off
+        // actually happens (WorkItemApproval is keyed the same way). One shared decision ⇒ one row,
+        // even when the ticket backs several Pending candidates of that service; the row's
+        // BlockingPromotions surfaces the count. The same ticket on a second SERVICE is a second row:
+        // it is a different work item with its own sign-off.
+        var emitted = new HashSet<(string Key, string Product, string Service, string Env)>();
 
         // (email, role) → count + best displayName seen. Counts feed the assignee summary;
         // displayName is taken from the first non-empty value seen.
@@ -638,7 +671,7 @@ public class WorkItemApprovalService
 
             foreach (var w in bundleItems)
             {
-                var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
+                var tup = (w.WorkItemKey, c.Product, c.Service, c.TargetEnv);
                 if (decidedSet.Contains(tup)) continue;
                 // An orphan someone already approved is resolved, not stranded — retire it.
                 if (isOrphanSource && approvedByAnyone.Contains(tup)) continue;
@@ -753,7 +786,9 @@ public class WorkItemApprovalService
                     // is what tells the UI to render it as stranded rather than actionable-as-usual.
                     CandidateStatus: c.Status.ToString(),
                     RequiredRoles: requiredRoles,
-                    MissingRoles: missingRoles));
+                    MissingRoles: missingRoles,
+                    Overall: overall.GetValueOrDefault(
+                        new WorkItemTicketId(w.WorkItemKey, c.Product, c.TargetEnv))?.ToSummary()));
             }
         }
 
@@ -839,12 +874,15 @@ public class WorkItemApprovalService
                 return new PendingQueueResult(new(), deciderRows);
         }
 
-        // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
+        // Candidate-scoped work-item rows for every (key, product, service, targetEnv) the decisions
+        // touch.
         var keys = approvals.Select(a => a.WorkItemKey).Distinct().ToList();
         var products = approvals.Select(a => a.Product).Distinct().ToList();
+        var services = approvals.Select(a => a.Service).Distinct().ToList();
         var envs = approvals.Select(a => a.TargetEnv).Distinct().ToList();
         var workItems = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => keys.Contains(w.WorkItemKey) && products.Contains(w.Product) && envs.Contains(w.TargetEnv))
+            .Where(w => keys.Contains(w.WorkItemKey) && products.Contains(w.Product)
+                     && services.Contains(w.Service) && envs.Contains(w.TargetEnv))
             .ToListAsync(ct);
 
         // The candidates referenced by those rows — pulled in full (small set) so we can pick the
@@ -860,13 +898,17 @@ public class WorkItemApprovalService
         var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
             candidatesById.Values.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct);
 
+        var overall = await WorkItemOverallStatus.LoadAsync(_db,
+            approvals.Select(a => new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv)), ct);
+
         var result = new List<PendingTicketView>();
         foreach (var a in approvals)
         {
-            // Candidate rows carrying this exact (key, product, env), newest candidate first.
+            // Candidate rows carrying this exact (key, product, service, env), newest candidate first.
             var rows = workItems
                 .Where(w => string.Equals(w.WorkItemKey, a.WorkItemKey, StringComparison.OrdinalIgnoreCase)
                          && string.Equals(w.Product, a.Product, StringComparison.Ordinal)
+                         && string.Equals(w.Service, a.Service, StringComparison.Ordinal)
                          && string.Equals(w.TargetEnv, a.TargetEnv, StringComparison.Ordinal))
                 .Select(w => (Row: w, Candidate: candidatesById.GetValueOrDefault(w.CandidateId)))
                 .Where(t => t.Candidate is not null)
@@ -897,7 +939,8 @@ public class WorkItemApprovalService
                 Title: wi?.Title,
                 SubTitle: wi?.SubTitle,
                 CandidateId: c2?.Id ?? Guid.Empty,
-                Service: c2?.Service ?? "",
+                // Identity, so it comes from the decision row — the candidate (when found) agrees.
+                Service: a.Service,
                 Version: c2?.Version ?? "",
                 Environments: c2 is null
                     ? new List<WorkItemEnvironmentView>()
@@ -913,17 +956,19 @@ public class WorkItemApprovalService
                 DecidedAt: a.CreatedAt,
                 DecidedByEmail: a.ApproverEmail,
                 DecidedByName: a.ApproverName,
-                DecisionComment: a.Comment));
+                DecisionComment: a.Comment,
+                Overall: overall.GetValueOrDefault(
+                    new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv))?.ToSummary()));
         }
 
         return new PendingQueueResult(result, deciderRows);
     }
 
     /// <summary>
-    /// Everything the work-item detail page renders for one <c>(key, product, targetEnv)</c>:
+    /// Everything the work-item detail page renders for one <c>(key, product, service, targetEnv)</c>:
     /// display fields, the people assigned to it, the decision trail, the comment thread, and every
-    /// promotion candidate that carries it. Returns <c>null</c> when no candidate has ever carried
-    /// the ticket in that product/env — the caller maps that to 404.
+    /// promotion candidate of that service that carries it. Returns <c>null</c> when no candidate has
+    /// ever carried the ticket in that product/service/env — the caller maps that to 404.
     ///
     /// <para>The <i>primary</i> candidate is the newest Pending one, falling back to the newest that
     /// isn't superseded, then to the newest of any status. It's the candidate that participant
@@ -936,15 +981,16 @@ public class WorkItemApprovalService
     /// resolution, so a ticket whose only candidates are superseded keeps a write target for people.</para>
     /// </summary>
     public async Task<WorkItemDetail?> GetDetailAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
-        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return null;
+        if (key.Length == 0 || prod.Length == 0 || svc.Length == 0 || env.Length == 0) return null;
 
         var rows = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => w.WorkItemKey == key && w.Product == prod && w.TargetEnv == env)
+            .Where(w => w.WorkItemKey == key && w.Product == prod && w.Service == svc && w.TargetEnv == env)
             .ToListAsync(ct);
         if (rows.Count == 0) return null;
 
@@ -968,8 +1014,11 @@ public class WorkItemApprovalService
         var url = primaryRow?.Url ?? rows.Select(w => w.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
         var provider = primaryRow?.Provider ?? rows.Select(w => w.Provider).FirstOrDefault(p => !string.IsNullOrEmpty(p));
 
-        var ctx = await GetTicketContextAsync(key, prod, env, ct);
-        var comments = await GetCommentsAsync(key, prod, env, ct);
+        var ctx = await GetTicketContextAsync(key, prod, svc, env, ct);
+        var comments = await GetCommentsAsync(key, prod, svc, env, ct);
+        // The ticket across every service — what "is MPT-1 done" means to somebody who does not
+        // think per service. Shown beside this instance's own state.
+        var overall = await WorkItemOverallStatus.LoadOneAsync(_db, key, prod, env, ct);
 
         // The change that carried this ticket. Resolved from the primary candidate, falling back to
         // the newest candidate that actually records commits for the ticket — same "prefer primary,
@@ -1004,6 +1053,7 @@ public class WorkItemApprovalService
         return new WorkItemDetail(
             WorkItemKey: key,
             Product: prod,
+            Service: svc,
             TargetEnv: env,
             Environments: environments,
             Title: title,
@@ -1032,7 +1082,9 @@ public class WorkItemApprovalService
                 .Select(c => new WorkItemCandidateRef(
                     c.Id, c.Service, c.Version, c.SourceEnv, c.TargetEnv,
                     c.Status.ToString(), c.CreatedAt, c.Id == primary.Id))
-                .ToList());
+                .ToList(),
+            Overall: overall?.ToSummary(),
+            GateRequiresAllInstances: WorkItemRoleRequirements.RequiresAllInstances(primary));
     }
 
     // ---------------------------------------------------------------------
@@ -1080,7 +1132,7 @@ public class WorkItemApprovalService
         {
             try
             {
-                await ApproveAsync(item.WorkItemKey, item.Product, item.TargetEnv, SweepComment, ct);
+                await ApproveAsync(item.WorkItemKey, item.Product, item.Service, item.TargetEnv, SweepComment, ct);
                 approved++;
                 results.Add(item);
             }
@@ -1091,9 +1143,9 @@ public class WorkItemApprovalService
                 failed++;
                 results.Add(item with { Error = ex.Message });
                 _logger.LogWarning(ex,
-                    "Orphan sweep could not sign off {Key} ({Product}/{Env})",
+                    "Orphan sweep could not sign off {Key} ({Product}/{Service}/{Env})",
                     LogSanitizer.Clean(item.WorkItemKey), LogSanitizer.Clean(item.Product),
-                    LogSanitizer.Clean(item.TargetEnv));
+                    LogSanitizer.Clean(item.Service), LogSanitizer.Clean(item.TargetEnv));
             }
         }
 
@@ -1146,24 +1198,24 @@ public class WorkItemApprovalService
             .ToListAsync(ct);
         var live = (await _db.PromotionWorkItems.AsNoTracking()
                 .Where(w => liveIds.Contains(w.CandidateId))
-                .Select(w => new { w.WorkItemKey, w.Product, w.TargetEnv })
+                .Select(w => new { w.WorkItemKey, w.Product, w.Service, w.TargetEnv })
                 .ToListAsync(ct))
-            .Select(w => (w.WorkItemKey, w.Product, w.TargetEnv))
+            .Select(w => (w.WorkItemKey, w.Product, w.Service, w.TargetEnv))
             .ToHashSet();
 
         // Any decision at all — an approval means resolved, an Issue or Block means someone is
         // deliberately holding the item. Both are left alone.
         var decided = (await _db.WorkItemApprovals.AsNoTracking()
-                .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv })
+                .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv })
                 .ToListAsync(ct))
-            .Select(a => (a.WorkItemKey, a.Product, a.TargetEnv))
+            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
             .ToHashSet();
 
         var workItemsByCandidate = workItems
             .GroupBy(w => w.CandidateId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        var emitted = new HashSet<(string Key, string Product, string Env)>();
+        var emitted = new HashSet<(string Key, string Product, string Service, string Env)>();
         var result = new List<OrphanedWorkItemView>();
         foreach (var c in stranded)
         {
@@ -1173,7 +1225,7 @@ public class WorkItemApprovalService
 
             foreach (var w in workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
             {
-                var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
+                var tup = (w.WorkItemKey, c.Product, c.Service, c.TargetEnv);
                 if (live.Contains(tup)) continue;
                 if (decided.Contains(tup)) continue;
                 if (!emitted.Add(tup)) continue;
@@ -1195,20 +1247,21 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
     // Comments
     //
-    // Keyed by (workItemKey, product, targetEnv) — the same grain as the decision rows — so the
-    // thread outlives the candidate that happened to be live when it started.
+    // Keyed by (workItemKey, product, service, targetEnv) — the same grain as the decision rows — so
+    // the thread outlives the candidate that happened to be live when it started.
     // ---------------------------------------------------------------------
 
     public async Task<List<WorkItemComment>> GetCommentsAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
-        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return new();
+        if (key.Length == 0 || prod.Length == 0 || svc.Length == 0 || env.Length == 0) return new();
 
         return await _db.WorkItemComments.AsNoTracking()
-            .Where(c => c.WorkItemKey == key && c.Product == prod && c.TargetEnv == env)
+            .Where(c => c.WorkItemKey == key && c.Product == prod && c.Service == svc && c.TargetEnv == env)
             .OrderBy(c => c.CreatedAt)
             .ToListAsync(ct);
     }
@@ -1219,25 +1272,29 @@ public class WorkItemApprovalService
     /// the ticket must be one the platform has actually seen, so an arbitrary key can't seed rows.
     /// </summary>
     public async Task<WorkItemComment> AddCommentAsync(
-        string workItemKey, string product, string targetEnv, string body, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, string body,
+        CancellationToken ct = default)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
         var trimmed = (body ?? "").Trim();
         if (key.Length == 0) throw new InvalidOperationException("workItemKey is required");
         if (prod.Length == 0) throw new InvalidOperationException("product is required");
+        if (svc.Length == 0) throw new InvalidOperationException("service is required");
         if (env.Length == 0) throw new InvalidOperationException("targetEnv is required");
         if (trimmed.Length == 0) throw new InvalidOperationException("Comment body is required");
 
-        if (!await IsKnownWorkItemAsync(key, prod, env, ct))
-            throw new KeyNotFoundException($"Work item '{key}' is not known for {prod}/{env}");
+        if (!await IsKnownWorkItemAsync(key, prod, svc, env, ct))
+            throw new KeyNotFoundException($"Work item '{key}' is not known for {prod}/{svc}/{env}");
 
         var comment = new WorkItemComment
         {
             Id = Guid.NewGuid(),
             WorkItemKey = key,
             Product = prod,
+            Service = svc,
             TargetEnv = env,
             AuthorEmail = _currentUser.Email,
             AuthorName = _currentUser.Name,
@@ -1251,14 +1308,14 @@ public class WorkItemApprovalService
             "promotions", "work-item.comment.added",
             _currentUser.Id, _currentUser.Name, "user",
             "WorkItemComment", comment.Id, null,
-            new { workItemKey = key, product = prod, targetEnv = env });
+            new { workItemKey = key, product = prod, service = svc, targetEnv = env });
 
         // Comments are conversation, not a subscriber-facing contract event — realtime only,
         // so an open work-item view shows the new entry without a reload.
         await _events.PublishEntityChanged(new EntityChangedEvent
         {
             Entity = "work-item", Action = "commented",
-            Key = key, Product = prod, Environment = env,
+            Key = key, Product = prod, Service = svc, Environment = env,
         });
 
         return comment;
@@ -1282,12 +1339,13 @@ public class WorkItemApprovalService
             "promotions", "work-item.comment.updated",
             _currentUser.Id, _currentUser.Name, "user",
             "WorkItemComment", comment.Id, null,
-            new { comment.WorkItemKey, comment.Product, comment.TargetEnv });
+            new { comment.WorkItemKey, comment.Product, comment.Service, comment.TargetEnv });
 
         await _events.PublishEntityChanged(new EntityChangedEvent
         {
             Entity = "work-item", Action = "commented",
-            Key = comment.WorkItemKey, Product = comment.Product, Environment = comment.TargetEnv,
+            Key = comment.WorkItemKey, Product = comment.Product, Service = comment.Service,
+            Environment = comment.TargetEnv,
         });
 
         return comment;
@@ -1306,12 +1364,13 @@ public class WorkItemApprovalService
             "promotions", "work-item.comment.deleted",
             _currentUser.Id, _currentUser.Name, "user",
             "WorkItemComment", commentId, null,
-            new { comment.WorkItemKey, comment.Product, comment.TargetEnv });
+            new { comment.WorkItemKey, comment.Product, comment.Service, comment.TargetEnv });
 
         await _events.PublishEntityChanged(new EntityChangedEvent
         {
             Entity = "work-item", Action = "commented",
-            Key = comment.WorkItemKey, Product = comment.Product, Environment = comment.TargetEnv,
+            Key = comment.WorkItemKey, Product = comment.Product, Service = comment.Service,
+            Environment = comment.TargetEnv,
         });
     }
 
@@ -1329,28 +1388,47 @@ public class WorkItemApprovalService
     }
 
     /// <summary>
-    /// Whether the platform has ever seen this work item on a promotion for that (product, env).
-    /// The gate on writing anything — a decision or a comment — against an arbitrary key.
+    /// Whether the platform has ever seen this work item on a promotion for that
+    /// (product, service, env). The gate on writing anything — a decision or a comment — against an
+    /// arbitrary key.
     /// </summary>
     private async Task<bool> IsKnownWorkItemAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct)
         => await _db.PromotionWorkItems.AsNoTracking()
-            .AnyAsync(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv, ct);
+            .AnyAsync(w => w.WorkItemKey == workItemKey && w.Product == product && w.Service == service
+                        && w.TargetEnv == targetEnv, ct);
+
+    /// <summary>
+    /// The ticket's overall status in one <c>(product, targetEnv)</c>: every service instance with its
+    /// own sign-off state, and the roll-up across them (<see cref="WorkItemOverallStatus"/>). Every
+    /// instance page shows this beside the instance's own state, and it is what a policy with
+    /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> gates on. Also the
+    /// resolver for links minted before the service joined the identity —
+    /// <c>/work-items/{key}?product=&amp;targetEnv=</c> — which the client resolves to one instance (or
+    /// offers the list). Null when the ticket is unknown for that product/env.
+    /// </summary>
+    public async Task<WorkItemOverallStatus?> GetOverallStatusAsync(
+        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return null;
+        return await WorkItemOverallStatus.LoadOneAsync(_db, key, prod, env, ct);
+    }
 
     // ---------------------------------------------------------------------
     // Private helpers
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Picks the candidate whose policy will gate the decision. A ticket can appear on multiple
-    /// Pending candidates (different services or envs); we pick the most recently created Pending
-    /// candidate in <c>(product, targetEnv)</c> whose <see cref="PromotionWorkItem"/> rows include
-    /// the ticket. Most-recent because it represents the freshest state of the world.
-    /// </summary>
-    /// <summary>
-    /// All Pending candidates (in the ticket's product/targetEnv) that carry this work item. A ticket
-    /// can back several promotions at once, and one shared approval counts for all of them — this is
-    /// the fan-out used to re-evaluate every affected gate after a sign-off.
+    /// All Pending candidates in the ticket's (product, targetEnv) that carry this ticket — on any
+    /// service. A ticket can back several promotions of one service at once (a second source edge
+    /// into the same target), and one shared approval counts for all of them; a promotion of another
+    /// service may be gating on the ticket's overall status
+    /// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) and be waiting for
+    /// this very instance. This is the fan-out used to re-evaluate every affected gate after a
+    /// sign-off; re-evaluation is idempotent, so over-reaching is harmless.
     /// </summary>
     private async Task<IReadOnlyList<Guid>> FindPendingCandidateIdsForTicketAsync(
         string workItemKey, string product, string targetEnv, CancellationToken ct)
@@ -1372,20 +1450,22 @@ public class WorkItemApprovalService
     }
 
     private async Task<PromotionCandidate?> FindPendingCandidateForTicketAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct)
     {
-        // 1. Candidate ids whose work-item index carries this ticket for (product, targetEnv).
+        // 1. Candidate ids whose work-item index carries this ticket for (product, service, targetEnv).
         var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv)
+            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.Service == service
+                     && w.TargetEnv == targetEnv)
             .Select(w => w.CandidateId)
             .Distinct()
             .ToListAsync(ct);
         if (candidateIds.Count == 0) return null;
 
-        // 2. Among those, the most recently created Pending candidate in (product, targetEnv).
+        // 2. Among those, the most recently created Pending candidate in (product, service, targetEnv).
         return await _db.PromotionCandidates.AsNoTracking()
             .Where(c => candidateIds.Contains(c.Id)
                      && c.Product == product
+                     && c.Service == service
                      && c.TargetEnv == targetEnv
                      && c.Status == PromotionStatus.Pending)
             .OrderByDescending(c => c.CreatedAt)
@@ -1613,13 +1693,14 @@ public enum WorkItemRoleRequirementFilter
 }
 
 /// <summary>
-/// Authority + history snapshot for a single ticket × (product, targetEnv) pair.
+/// Authority + history snapshot for a single ticket × (product, service, targetEnv).
 /// <para><c>BlockedReason</c> mirrors the failure modes of the throwing decision path so the
 /// UI can surface the same wording it would see on a failed POST.</para>
 /// </summary>
 public record TicketContext(
     string WorkItemKey,
     string Product,
+    string Service,
     string TargetEnv,
     Guid? PendingCandidateId,
     bool CanApprove,
@@ -1636,6 +1717,11 @@ public record TicketContext(
 public record WorkItemDetail(
     string WorkItemKey,
     string Product,
+    /// <summary>
+    /// The service whose change this work item is. Part of the identity: the same ticket on another
+    /// service of the product is a different work item with its own page.
+    /// </summary>
+    string Service,
     /// <summary>
     /// The promotion edge this sign-off gates. Part of the work item's identity (decisions and
     /// comments key on it) but not something the page presents as a property of the work item —
@@ -1685,7 +1771,19 @@ public record WorkItemDetail(
     IReadOnlyList<WorkItemCommitRef> Commits,
     /// <summary>The pull requests those commits merged. Derived via commit → PR revision.</summary>
     IReadOnlyList<WorkItemPullRequestRef> PullRequests,
-    IReadOnlyList<WorkItemCandidateRef> Candidates);
+    IReadOnlyList<WorkItemCandidateRef> Candidates,
+    /// <summary>
+    /// The ticket's status across every service instance in this product/env — see
+    /// <see cref="WorkItemOverallStatus"/>. Null only when no instance is indexed, which the 404
+    /// above already rules out.
+    /// </summary>
+    WorkItemOverallSummary? Overall = null,
+    /// <summary>
+    /// Whether the primary candidate's policy gates on <see cref="Overall"/> rather than on this
+    /// instance alone (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) — the
+    /// page says so, or a sign-off here that does not release the promotion reads as a bug.
+    /// </summary>
+    bool GateRequiresAllInstances = false);
 
 /// <summary>
 /// One commit that carried a work item. <see cref="Hash"/> is always present — it's what the producer
@@ -1723,6 +1821,7 @@ public record WorkItemEnvironmentView(
 /// <summary>Identity of a shipped build — the grain deploy environments are resolved at.</summary>
 public readonly record struct DeployedVersionKey(string Product, string Service, string Version);
 
+
 /// <summary>One promotion candidate carrying a work item, as listed on the detail page.</summary>
 public record WorkItemCandidateRef(
     Guid Id,
@@ -1751,6 +1850,8 @@ public record PendingTicketView(
     /// <summary>Secondary display line — see <see cref="WorkItemDetail.SubTitle"/>.</summary>
     string? SubTitle,
     Guid CandidateId,
+    /// <summary>Part of the work item's identity (see <see cref="WorkItemDetail.Service"/>), and
+    /// the service of the candidate the row represents — the two always agree.</summary>
     string Service,
     string Version,
     /// <summary>Environments the carrying version is deployed to, newest deploy first — where the
@@ -1778,7 +1879,12 @@ public record PendingTicketView(
     /// The subset of <see cref="RequiredRoles"/> nobody holds. Non-empty ⇒ the work item is incomplete
     /// and the UI asks for someone to be put on those roles.
     /// </summary>
-    IReadOnlyList<string>? MissingRoles = null);
+    IReadOnlyList<string>? MissingRoles = null,
+    /// <summary>
+    /// The ticket's roll-up across every service instance (<see cref="WorkItemOverallStatus"/>) — the
+    /// "2 of 3 services" beside the row's own state. Null when it could not be resolved.
+    /// </summary>
+    WorkItemOverallSummary? Overall = null);
 
 /// <summary>
 /// One row of the assignee summary for the My-queue endpoint. Aggregated by (email, role)

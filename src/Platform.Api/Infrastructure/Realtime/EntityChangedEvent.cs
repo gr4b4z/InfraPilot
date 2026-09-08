@@ -24,6 +24,13 @@ public sealed record EntityChangedEvent
 
     public string? Product { get; init; }
 
+    /// <summary>
+    /// Service for work-item events — part of the work item's identity alongside
+    /// <see cref="Key"/>, <see cref="Product"/> and <see cref="Environment"/>. Null on events that
+    /// are not about one service.
+    /// </summary>
+    public string? Service { get; init; }
+
     public string? Environment { get; init; }
 
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;

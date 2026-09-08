@@ -160,6 +160,7 @@ public static class PromotionSeedData
                 CandidateId = candidate.Id,
                 WorkItemKey = r.Key!,
                 Product = candidate.Product,
+                Service = candidate.Service,
                 TargetEnv = candidate.TargetEnv,
                 Provider = r.Provider,
                 Url = r.Url,
@@ -421,9 +422,10 @@ public static class PromotionSeedData
     private static void SeedWorkItemDecisions(
         PlatformDbContext db, List<PromotionCandidate> candidates, Random rand)
     {
-        // A decision is keyed on (key, product, targetEnv) — not on the candidate — so the same ticket
-        // carried by two promotions must not be decided twice.
-        var decided = new HashSet<(string Key, string Product, string Env)>();
+        // A decision is keyed on (key, product, service, targetEnv) — not on the candidate — so the
+        // same ticket carried by two promotions of one service must not be decided twice. The same
+        // ticket on another service is a separate work item and gets its own decision.
+        var decided = new HashSet<(string Key, string Product, string Service, string Env)>();
 
         // Pending first, so the spread below claims the tickets that drive the queue before a historic
         // candidate carrying the same key can blanket-approve them.
@@ -441,7 +443,7 @@ public static class PromotionSeedData
 
             foreach (var key in keys)
             {
-                var tuple = (key, candidate.Product, candidate.TargetEnv);
+                var tuple = (key, candidate.Product, candidate.Service, candidate.TargetEnv);
                 if (!decided.Add(tuple)) continue;
 
                 var outcome = PickOutcome(candidate.Status, rand);
@@ -459,6 +461,7 @@ public static class PromotionSeedData
                     Id = Guid.NewGuid(),
                     WorkItemKey = key,
                     Product = candidate.Product,
+                    Service = candidate.Service,
                     TargetEnv = candidate.TargetEnv,
                     ApproverEmail = email,
                     ApproverName = name,
@@ -472,6 +475,7 @@ public static class PromotionSeedData
                     Id = Guid.NewGuid(),
                     WorkItemKey = key,
                     Product = candidate.Product,
+                    Service = candidate.Service,
                     TargetEnv = candidate.TargetEnv,
                     AuthorEmail = email,
                     AuthorName = name,
@@ -491,6 +495,7 @@ public static class PromotionSeedData
                         Id = Guid.NewGuid(),
                         WorkItemKey = key,
                         Product = candidate.Product,
+                        Service = candidate.Service,
                         TargetEnv = candidate.TargetEnv,
                         AuthorEmail = replyEmail,
                         AuthorName = replyName,

@@ -795,22 +795,36 @@ class ApiClient {
   }
 
   // ── Work-item (ticket) approvals ───────────────────────────────────────
+  // A work item is (key, product, service, targetEnv): the same ticket carried by two services of
+  // one product is two work items, each with its own sign-off, thread and people. Every call here
+  // names all four.
 
-  // Authority + decision history for a single (key, product, env). Drives the
+  // Authority + decision history for a single (key, product, service, env). Drives the
   // TicketsCard row state on the promotion detail page. Returns canApprove +
   // blockedReason mirroring the throwing decision path so the UI surfaces the
   // same wording the user would see on a failed POST.
-  getWorkItemContext(key: string, product: string, targetEnv: string) {
-    const params = new URLSearchParams({ product, targetEnv });
+  getWorkItemContext(key: string, product: string, service: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, service, targetEnv });
     return this.request<WorkItemContext>(
       `/work-items/${encodeURIComponent(key)}?${params.toString()}`,
     );
   }
 
-  approveWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+  /**
+   * The services whose promotions carry a ticket in one (product, targetEnv) — the resolver for a
+   * link that predates the service being part of the identity. Empty when the ticket is unknown.
+   */
+  getWorkItemInstances(key: string, product: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, targetEnv });
+    return this.request<WorkItemInstancesResponse>(
+      `/work-items/${encodeURIComponent(key)}/instances?${params.toString()}`,
+    );
+  }
+
+  approveWorkItem(key: string, product: string, service: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
       `/work-items/${encodeURIComponent(key)}/approvals`,
-      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, comment }) },
     );
   }
 
@@ -818,10 +832,10 @@ class ApiClient {
    * Flag a problem on the work item. The promotion stays Pending and the same user can call
    * `approveWorkItem` later to release the item.
    */
-  raiseWorkItemIssue(key: string, product: string, targetEnv: string, comment?: string) {
+  raiseWorkItemIssue(key: string, product: string, service: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
       `/work-items/${encodeURIComponent(key)}/issues`,
-      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, comment }) },
     );
   }
 
@@ -830,40 +844,40 @@ class ApiClient {
    * promotion stays Pending, nothing is vetoed, and the decision can be changed later. Vetoing is a
    * promotion-level action (`rejectPromotion`), never something done to one work item.
    */
-  blockWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+  blockWorkItem(key: string, product: string, service: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
       `/work-items/${encodeURIComponent(key)}/blocks`,
-      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, comment }) },
     );
   }
 
   /**
    * Everything the work-item detail page renders in one call: display fields, assigned people,
    * decision trail, comment thread, and every promotion candidate carrying the ticket. 404s when
-   * the platform has never seen the key for that (product, targetEnv).
+   * the platform has never seen the key for that (product, service, targetEnv).
    */
-  getWorkItemDetail(key: string, product: string, targetEnv: string) {
-    const params = new URLSearchParams({ product, targetEnv });
+  getWorkItemDetail(key: string, product: string, service: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, service, targetEnv });
     return this.request<WorkItemDetail>(
       `/work-items/${encodeURIComponent(key)}/detail?${params.toString()}`,
     );
   }
 
   // ── Work-item comments ────────────────────────────────────────────────
-  // Threads key on (key, product, targetEnv) — the same grain as the decisions — so they survive
-  // a superseded candidate. Edit/delete address the comment by id alone.
+  // Threads key on (key, product, service, targetEnv) — the same grain as the decisions — so they
+  // survive a superseded candidate. Edit/delete address the comment by id alone.
 
-  listWorkItemComments(key: string, product: string, targetEnv: string) {
-    const params = new URLSearchParams({ product, targetEnv });
+  listWorkItemComments(key: string, product: string, service: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, service, targetEnv });
     return this.request<{ comments: WorkItemComment[] }>(
       `/work-items/${encodeURIComponent(key)}/comments?${params.toString()}`,
     );
   }
 
-  addWorkItemComment(key: string, product: string, targetEnv: string, body: string) {
+  addWorkItemComment(key: string, product: string, service: string, targetEnv: string, body: string) {
     return this.request<WorkItemComment>(
       `/work-items/${encodeURIComponent(key)}/comments`,
-      { method: 'POST', body: JSON.stringify({ product, targetEnv, body }) },
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, body }) },
     );
   }
 
@@ -878,7 +892,7 @@ class ApiClient {
     return this.request<void>(`/work-items/comments/${commentId}`, { method: 'DELETE' });
   }
 
-  // The current user's pending work items across all (product, targetEnv) pairs.
+  // The current user's pending work items across all (product, service, targetEnv) identities.
   // Powers the /me/work-items queue page.
   //
   // Optional `assignee` narrows the list (display only — server-side authorisation is
@@ -1681,6 +1695,7 @@ export interface WorkItemApproval {
   id: string;
   workItemKey: string;
   product: string;
+  service: string;
   targetEnv: string;
   approverEmail: string;
   approverName: string;
@@ -1694,6 +1709,7 @@ export interface WorkItemApproval {
 export interface WorkItemContext {
   workItemKey: string;
   product: string;
+  service: string;
   targetEnv: string;
   /** Null when no live promotion carries the item — orphaned, but still signable. */
   pendingCandidateId: string | null;
@@ -1705,11 +1721,12 @@ export interface WorkItemContext {
   approvals: WorkItemApproval[];
 }
 
-/** One entry in a work item's thread. Keyed by (workItemKey, product, targetEnv). */
+/** One entry in a work item's thread. Keyed by (workItemKey, product, service, targetEnv). */
 export interface WorkItemComment {
   id: string;
   workItemKey: string;
   product: string;
+  service: string;
   targetEnv: string;
   authorEmail: string;
   authorName: string;
@@ -1749,10 +1766,58 @@ export interface WorkItemEnvironment {
   deployedAt: string;
 }
 
+/**
+ * The sign-off state of one work item instance, derived from its decisions with the gate's precedence:
+ * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
+ */
+export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
+
+/** One per-service instance of a ticket, from `GET /api/work-items/{key}/instances`. */
+export interface WorkItemInstance {
+  service: string;
+  /** The newest title any candidate of that service recorded for the ticket. */
+  title: string | null;
+  state: WorkItemInstanceState;
+}
+
+/**
+ * The ticket across every service carrying it in one (product, targetEnv): what "is MPT-1 done"
+ * means to somebody who does not think per service. `state` follows the gate's precedence across
+ * instances — any block → Blocked, else any issue → Issue, else all approved → Approved, else
+ * Pending. A policy with `requireAllWorkItemInstancesApproved` gates on this instead of on the
+ * promotion's own instance.
+ */
+export interface WorkItemOverallStatus {
+  state: WorkItemInstanceState;
+  instances: number;
+  approved: number;
+  issues: number;
+  blocked: number;
+  pending: number;
+  /** Every instance with its own state, sorted by service. */
+  instanceStatuses: WorkItemInstance[];
+}
+
+/** Response shape for `GET /api/work-items/{key}/instances`. */
+export interface WorkItemInstancesResponse {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  /** Null when no promotion has carried the ticket in that product/env. */
+  overall: WorkItemOverallStatus | null;
+  /** Sorted by service name. Empty when no promotion has carried the ticket in that product/env. */
+  instances: WorkItemInstance[];
+}
+
 /** Full response shape for `GET /api/work-items/{key}/detail`. */
 export interface WorkItemDetail {
   workItemKey: string;
   product: string;
+  /**
+   * The service whose change this work item is. Part of the identity — the same ticket on a sibling
+   * service of the product is a different work item with its own page, sign-off and thread.
+   */
+  service: string;
   /**
    * The promotion edge this sign-off gates. Identity (it keys the decisions and comments), not a
    * property of the work item to present — `environments` is what says where the change is live.
@@ -1796,6 +1861,13 @@ export interface WorkItemDetail {
   /** Pull requests those commits merged — derived server-side via commit hash → PR revision. */
   pullRequests: WorkItemPullRequestRef[];
   candidates: WorkItemCandidateRef[];
+  /** The ticket across every service instance in this product/env. Null only if nothing is indexed. */
+  overall: WorkItemOverallStatus | null;
+  /**
+   * Whether the primary promotion's policy waits for `overall` to be approved rather than for this
+   * instance alone — the page says so, or a sign-off that releases nothing reads as a bug.
+   */
+  gateRequiresAllInstances: boolean;
 }
 
 /**
@@ -1834,6 +1906,7 @@ export interface PendingTicket {
   /** Secondary display line — see `WorkItemDetail.subTitle`. */
   subTitle?: string | null;
   candidateId: string;
+  /** Part of the work item's identity (see `WorkItemDetail.service`) and the row's candidate. */
   service: string;
   version: string;
   /** Environments this version is deployed to, newest deploy first — where the item can be tested. */
@@ -1861,6 +1934,8 @@ export interface PendingTicket {
   decidedByEmail?: string | null;
   decidedByName?: string | null;
   decisionComment?: string | null;
+  /** The ticket across every service instance — the "2 of 3 services" beside the row's own state. */
+  overall?: WorkItemOverallStatus | null;
 }
 
 /**
@@ -2009,6 +2084,11 @@ export interface PromotionWorkItemGate {
   satisfied: boolean;
   /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
   autoApprove: boolean;
+  /**
+   * True when the policy judges each work item by the ticket's overall status across every service
+   * instance (requireAllWorkItemInstancesApproved), so `approved` means "approved on every service".
+   */
+  allInstances?: boolean;
 }
 
 export interface PromotionStepProgress {
@@ -2182,10 +2262,9 @@ export interface ServiceProductOverride {
  * `applied` is what tells them apart.
  *
  * `buildConflicts` are builds left where they are because the target product already has that
- * service+version. `strandedTicketApprovals` are recorded ticket approvals that do NOT move: they
- * key on (ticket, product, target env) with no service, so a ticket spanning two services can't be
- * attributed to one. Together with `openPromotions` that is the reason to prefer remapping when
- * nothing is in flight.
+ * service+version. `ticketApprovals` / `ticketComments` are this service's work-item sign-offs and
+ * thread entries, which follow it (work items are keyed per service). `strandedTicketApprovals` are
+ * legacy approvals that were never attributed to a service and therefore stay put.
  */
 export interface ServiceProductRemap {
   overrideId: string;
@@ -2200,6 +2279,8 @@ export interface ServiceProductRemap {
   promotions: number;
   openPromotions: number;
   promotionWorkItems: number;
+  ticketApprovals: number;
+  ticketComments: number;
   retirements: number;
   retirementMerges: number;
   strandedTicketApprovals: number;
@@ -2225,6 +2306,11 @@ export interface PromotionPolicy {
   requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
+  /**
+   * Judge each work item by the ticket's overall status across every service instance in the target
+   * environment, instead of by this promotion's own service instance. Qualifies the two gate flags.
+   */
+  requireAllWorkItemInstancesApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
@@ -2251,6 +2337,7 @@ export interface UpsertPromotionPolicyPayload {
   requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
+  requireAllWorkItemInstancesApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
