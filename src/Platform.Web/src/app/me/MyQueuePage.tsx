@@ -333,7 +333,7 @@ export function MyQueuePage() {
             id: `${t.workItemKey}-${t.candidateId}`,
             title: t.title ? `${t.workItemKey} — ${t.title}` : t.workItemKey,
             subtitle: `${t.product} / ${t.service} · ${t.targetEnv}`,
-            to: workItemDetailPath(t.workItemKey, t.product, t.targetEnv),
+            to: workItemDetailPath(t.workItemKey, t.product, t.service, t.targetEnv),
           }));
       },
     },
@@ -1013,7 +1013,12 @@ function TicketRow({
   // service/version shown belongs to a promotion that is no longer going anywhere.
   const orphaned =
     !decided && !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
-  const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
+  const detailPath = workItemDetailPath(
+    ticket.workItemKey,
+    ticket.product,
+    ticket.service,
+    ticket.targetEnv,
+  );
 
   const rowProps = useKeyboardListRow(index, () => navigate(detailPath), {
     label: `${ticket.workItemKey} — ${ticket.product} / ${ticket.service}, ${

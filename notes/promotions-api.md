@@ -274,7 +274,25 @@ Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
 
 ### Work-item sign-off — `/api/work-items/{key}`
 
-Three decisions, each its own POST with body `{ product, targetEnv, comment? }`:
+**A work item is `(key, product, service, targetEnv)`.** The same Jira ticket carried by three
+services of one product is three work items — `mpt-helpdesk/MPT-1`, `mpt-platform/MPT-1`,
+`mpt-currency/MPT-1` — each with its own sign-off, comment thread and assigned people, because each
+is a different change to a different deployable. Promotions of the *same* service (a newer version,
+a second source edge into the same target) share one work item, so a decision still survives a
+supersede. The UI route mirrors this: `/work-items/{service}/{key}?product=&targetEnv=`.
+
+Reads take `product`, `service` and `targetEnv` as query parameters; writes carry them in the body.
+`service` is required everywhere — a request that names only the ticket cannot say which instance it
+means and gets a `400` pointing at the resolver:
+
+- `GET /{key}/instances?product=&targetEnv=` → `{ instances: [{ service, title }] }`, the services
+  whose promotions carry the ticket. This is how a link minted before the service joined the identity
+  (`/work-items/{key}?product=&targetEnv=`) finds its way to one instance, or to a picker.
+- `GET /{key}?product=&service=&targetEnv=` — sign-off context (authority, decision history).
+- `GET /{key}/detail?product=&service=&targetEnv=` — everything the work-item page renders.
+- `GET|POST /{key}/comments` — the thread, keyed the same way.
+
+Three decisions, each its own POST with body `{ product, service, targetEnv, comment? }`:
 
 | Route | Stored decision | Event |
 |---|---|---|
@@ -286,6 +304,11 @@ Only an approval releases the gate. An issue ("something's wrong") and a block (
 mechanically identical — both leave the item unresolved, which stalls the gate without terminating
 the candidate, and both are reversible; a new version of the promotion clears them and asks again.
 Vetoing is candidate-level (`POST /api/promotions/{id}/reject`), never something done to one ticket.
+
+The `promotion.ticket.*` webhook payloads and audit rows carry `service` alongside `workItemKey`,
+`product` and `targetEnv`. Rows written before the `AddWorkItemService` migration have no `service`
+in their payload; the migration duplicated every existing decision and comment once per service that
+carried the ticket (status as-is), so the stored state is per service even where the history is not.
 
 **Renamed from Block/Reject.** These decisions were once named on a shift of one: today's issue was
 `Blocked` (`POST /blocks`, `promotion.ticket.blocked`) and today's block was `Rejected`

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
   PromotionSourceEventParticipant,
@@ -7,6 +7,7 @@ import type {
   WorkItemComment,
   WorkItemDecision,
   WorkItemDetail,
+  WorkItemInstance,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -15,6 +16,7 @@ import {
   providerLabel,
   referringCandidateId,
   shortHash,
+  workItemDetailPath,
 } from '@/lib/workItem';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { Linkified } from '@/lib/linkify';
@@ -49,11 +51,12 @@ import {
  * Work-item detail page — the one place a work item is managed end to end: sign it off (Approve /
  * Issue / Block), discuss it, and assign the people responsible for it.
  *
- * Identity is the triple `(key, product, targetEnv)` — the grain decisions and comments key on —
- * with product and target env arriving as query params. Everything renders from a single
- * `GET /api/work-items/{key}/detail` call; every mutation refetches it, because an approval can
- * cascade (it may satisfy a gate and auto-promote the candidate) and the page must show the new truth
- * rather than a guess at it.
+ * Identity is `(key, product, service, targetEnv)` — the grain decisions and comments key on. The
+ * service is a path segment and product / target env are query params. The same ticket carried by a
+ * sibling service is a *different* work item with its own page; the header lists those siblings so a
+ * tester can hop between them. Everything renders from a single `GET /api/work-items/{key}/detail`
+ * call; every mutation refetches it, because an approval can cascade (it may satisfy a gate and
+ * auto-promote the candidate) and the page must show the new truth rather than a guess at it.
  */
 
 const CANDIDATE_STATUS_COLOR: Record<PromotionStatus, string> = {
@@ -65,10 +68,127 @@ const CANDIDATE_STATUS_COLOR: Record<PromotionStatus, string> = {
   Rejected: 'var(--danger)',
 };
 
-export function WorkItemDetailPage() {
+/**
+ * Target of the pre-service link shape, `/work-items/{key}?product=&targetEnv=` — bookmarks, chat
+ * messages and webhook consumers minted before the service was part of a work item's identity. Asks
+ * the server which services carry the ticket: one → redirect straight to it; several → a picker,
+ * because the choice is exactly the information the old link lacked; none → the same not-found the
+ * detail page would show.
+ */
+export function LegacyWorkItemRedirect() {
   const { key: rawKey } = useParams<{ key: string }>();
   const [searchParams] = useSearchParams();
   const workItemKey = rawKey ?? '';
+  const product = searchParams.get('product') ?? '';
+  const targetEnv = searchParams.get('targetEnv') ?? '';
+  const fromCandidateId = referringCandidateId(searchParams.get('from'));
+
+  const [instances, setInstances] = useState<WorkItemInstance[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const incomplete = !workItemKey || !product || !targetEnv;
+  const error = incomplete ? 'This link is missing the product or target environment.' : loadError;
+
+  useEffect(() => {
+    if (incomplete) return;
+    let cancelled = false;
+    api
+      .getWorkItemInstances(workItemKey, product, targetEnv)
+      .then((res) => {
+        if (!cancelled) setInstances(res.instances);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Failed to resolve work item');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [incomplete, workItemKey, product, targetEnv]);
+
+  useDocumentTitle([workItemKey, scopeTitle({ product, targetEnv }), 'Work item']);
+
+  if (instances && instances.length === 1) {
+    return (
+      <Navigate
+        to={workItemDetailPath(workItemKey, product, instances[0].service, targetEnv, fromCandidateId)}
+        replace
+      />
+    );
+  }
+
+  if (!instances && !error) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="skeleton h-64" />
+      </div>
+    );
+  }
+
+  if (error || !instances || instances.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-2">
+        <XCircle size={24} style={{ color: 'var(--danger)' }} />
+        <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
+          {error ?? `Work item ${workItemKey} is not known for ${product} → ${targetEnv}`}
+        </p>
+        <Link
+          to={fromCandidateId ? `/promotions/${fromCandidateId}` : '/me/work-items'}
+          className="text-[13px] font-medium"
+          style={{ color: 'var(--accent)' }}
+        >
+          {fromCandidateId ? 'Back to promotion' : 'Back to work items'}
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      <div className="flex items-center gap-2">
+        <Ticket size={16} style={{ color: 'var(--text-muted)' }} />
+        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+          {workItemKey}
+        </h1>
+      </div>
+      <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+        This ticket is carried by {instances.length} services in{' '}
+        <span className="font-medium">{product}</span> → <EnvBadge env={targetEnv} size="xs" />.
+        Each is signed off, discussed and assigned on its own — pick the one you mean.
+      </p>
+      <div className="space-y-2">
+        {instances.map((i) => (
+          <Link
+            key={i.service}
+            to={workItemDetailPath(workItemKey, product, i.service, targetEnv, fromCandidateId)}
+            className="block p-3 rounded-lg border transition-opacity hover:opacity-80"
+            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                {i.service}
+                <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+                  {' '}/ {workItemKey}
+                </span>
+              </span>
+              <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
+            </div>
+            {i.title && (
+              <p className="text-[12px] mt-1 truncate" style={{ color: 'var(--text-secondary)' }}>
+                {i.title}
+              </p>
+            )}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function WorkItemDetailPage() {
+  const { service: rawService, key: rawKey } = useParams<{ service: string; key: string }>();
+  const [searchParams] = useSearchParams();
+  const workItemKey = rawKey ?? '';
+  const service = rawService ?? '';
   const product = searchParams.get('product') ?? '';
   const targetEnv = searchParams.get('targetEnv') ?? '';
   // Set when we were opened from a promotion — drives the breadcrumb back to it.
@@ -80,13 +200,13 @@ export function WorkItemDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!workItemKey || !product || !targetEnv) {
-      setError('This link is missing the product or target environment.');
+    if (!workItemKey || !service || !product || !targetEnv) {
+      setError('This link is missing the service, product or target environment.');
       setLoading(false);
       return;
     }
     try {
-      const next = await api.getWorkItemDetail(workItemKey, product, targetEnv);
+      const next = await api.getWorkItemDetail(workItemKey, product, service, targetEnv);
       setDetail(next);
       setError(null);
     } catch (err) {
@@ -94,25 +214,28 @@ export function WorkItemDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [workItemKey, product, targetEnv]);
+  }, [workItemKey, service, product, targetEnv]);
 
   // Sign-offs, comments and promotion changes from other sessions land here live. Promotion
-  // events don't carry the work-item key, so only work-item events are narrowed by it.
+  // events don't carry the work-item key, so only work-item events are narrowed by it — and by
+  // service, since the same ticket on a sibling service is somebody else's page.
   const realtimeTick = useEntityRefresh(['work-item', 'promotion'], {
-    filter: (evt) => evt.entity === 'promotion' || !evt.key || evt.key === workItemKey,
+    filter: (evt) =>
+      evt.entity === 'promotion'
+      || ((!evt.key || evt.key === workItemKey) && (!evt.service || evt.service === service)),
   });
 
   useEffect(() => {
     void load();
   }, [load, realtimeTick]);
 
-  // Above the early returns, so the hook order is stable. The (product, targetEnv) pair is in the
-  // title for the same reason it's in the URL: it's part of this page's identity, and the same work
-  // item key is a different page for a different promotion edge. The key alone is enough while the
-  // detail loads — it's the one thing a link always carries.
+  // Above the early returns, so the hook order is stable. The (product, service, targetEnv) scope is
+  // in the title for the same reason it's in the URL: it's part of this page's identity, and the
+  // same work item key is a different page for a different service or promotion edge. The key alone
+  // is enough while the detail loads — it's the one thing a link always carries.
   useDocumentTitle([
     detail?.title ? `${workItemKey} — ${detail.title}` : workItemKey,
-    scopeTitle({ product, targetEnv }),
+    scopeTitle({ product, service, targetEnv }),
     'Work item',
   ]);
 
@@ -193,6 +316,10 @@ export function WorkItemDetailPage() {
                 className="text-xl font-semibold tracking-tight"
                 style={{ color: 'var(--text-primary)' }}
               >
+                {/* The service is half the name: this page is about the ticket's change in ONE
+                    service, and the same ticket on a sibling is a different work item. */}
+                <span style={{ color: 'var(--text-secondary)' }}>{detail.service}</span>
+                <span style={{ color: 'var(--text-muted)' }}> / </span>
                 {detail.workItemKey}
               </h1>
             </div>
@@ -251,10 +378,22 @@ export function WorkItemDetailPage() {
               <span className="font-medium">{detail.product}</span>
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <span>
+              <span style={{ color: 'var(--text-muted)' }}>Service:</span>{' '}
+              <span className="font-medium">{detail.service}</span>
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
             {/* Where the change can be exercised — not where the promotion is headed. The promotion
                 edges themselves are in the Promotions card, which is where they belong. */}
             <WorkItemEnvironments environments={detail.environments ?? []} />
           </div>
+          <SiblingInstances
+            workItemKey={workItemKey}
+            product={product}
+            service={service}
+            targetEnv={targetEnv}
+            fromCandidateId={fromCandidateId}
+          />
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           {/* Incompleteness reads alongside the sign-off state, not instead of it: an item can be
@@ -311,6 +450,68 @@ export function WorkItemDetailPage() {
           <ChangeSetCard detail={detail} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The same ticket riding in other services of this product — separate work items, each with its own
+ * sign-off — listed so a tester working through MPT-1 can reach every copy without going back to the
+ * queue. Owns its own fetch: this is navigation, not the item's state, so a failure here must not
+ * blank the page, and a refetch of the detail must not refetch this.
+ */
+function SiblingInstances({
+  workItemKey,
+  product,
+  service,
+  targetEnv,
+  fromCandidateId,
+}: {
+  workItemKey: string;
+  product: string;
+  service: string;
+  targetEnv: string;
+  fromCandidateId: string | null;
+}) {
+  const [siblings, setSiblings] = useState<WorkItemInstance[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getWorkItemInstances(workItemKey, product, targetEnv)
+      .then((res) => {
+        if (!cancelled) setSiblings(res.instances.filter((i) => i.service !== service));
+      })
+      .catch(() => {
+        if (!cancelled) setSiblings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workItemKey, service, product, targetEnv]);
+
+  if (siblings.length === 0) return null;
+
+  return (
+    <div
+      className="flex items-center gap-1.5 flex-wrap mt-1.5 text-[12px]"
+      style={{ color: 'var(--text-secondary)' }}
+    >
+      <span style={{ color: 'var(--text-muted)' }}>Also on:</span>
+      {siblings.map((s) => (
+        <Link
+          key={s.service}
+          to={workItemDetailPath(workItemKey, product, s.service, targetEnv, fromCandidateId)}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium transition-opacity hover:opacity-80"
+          style={{ borderColor: 'var(--border-color)', color: 'var(--accent)' }}
+          title={s.title ? `${s.service} / ${workItemKey} — ${s.title}` : `${s.service} / ${workItemKey}`}
+        >
+          {s.service}
+          <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+            / {workItemKey}
+          </span>
+        </Link>
+      ))}
     </div>
   );
 }
@@ -516,9 +717,9 @@ function PromotionsCard({ detail }: { detail: WorkItemDetail }) {
       </div>
       {primary && detail.candidates.length > 1 && (
         <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          A sign-off here counts for every promotion above. People are assigned on{' '}
-          <span className="font-medium">{primary.service}</span> (the newest one). Superseded builds
-          aren&rsquo;t listed.
+          A sign-off here counts for every <span className="font-medium">{primary.service}</span>{' '}
+          promotion above. People are assigned on the newest one. Superseded builds aren&rsquo;t
+          listed.
         </p>
       )}
     </div>
@@ -701,7 +902,13 @@ function DecisionCard({
     setBusy(decision);
     onError(null);
     try {
-      const args = [detail.workItemKey, detail.product, detail.targetEnv, comment || undefined] as const;
+      const args = [
+        detail.workItemKey,
+        detail.product,
+        detail.service,
+        detail.targetEnv,
+        comment || undefined,
+      ] as const;
       if (decision === 'Approved') await api.approveWorkItem(...args);
       else if (decision === 'Issue') await api.raiseWorkItemIssue(...args);
       else await api.blockWorkItem(...args);
@@ -889,8 +1096,8 @@ function DecisionTrail({ detail }: { detail: WorkItemDetail }) {
 /**
  * The work item's thread: free-text discussion interleaved with the decision entries the API writes
  * on every Approve / Issue / Block (and the system entry when a new version resets one). Everything
- * keys on (workItemKey, product, targetEnv), so the thread outlives the candidate that was live when
- * it started.
+ * keys on (workItemKey, product, service, targetEnv), so the thread outlives the candidate that was
+ * live when it started.
  *
  * Decision and system entries are tinted by outcome and carry no edit/delete — they are the record of
  * what happened, not someone's remark about it. Only a human comment the caller authored is editable.
@@ -928,6 +1135,7 @@ function CommentsCard({
       const created = await api.addWorkItemComment(
         detail.workItemKey,
         detail.product,
+        detail.service,
         detail.targetEnv,
         text,
       );

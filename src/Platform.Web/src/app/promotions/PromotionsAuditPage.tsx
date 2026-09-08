@@ -920,7 +920,13 @@ function AuditRow({ index, entry }: { index: number; entry: PromotionAuditEntry 
               /* Straight to the ticket — a work-item row is almost always read in order to go and
                  look at the ticket it names. stopPropagation so it doesn't also open the promotion. */
               <Link
-                to={workItemDetailPath(entry.workItemKey, entry.product, entry.targetEnv, entry.candidateId)}
+                to={workItemDetailPath(
+                  entry.workItemKey,
+                  entry.product,
+                  entry.service,
+                  entry.targetEnv,
+                  entry.candidateId,
+                )}
                 onClick={(e) => e.stopPropagation()}
                 className="font-medium underline decoration-dotted underline-offset-2"
                 style={{ color: 'var(--accent)' }}

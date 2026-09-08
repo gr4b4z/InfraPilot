@@ -2,9 +2,11 @@ import type { PromotionSourceEventParticipant, WorkItemDecision } from '@/lib/ap
 import { roleDisplay } from '@/lib/roleLabel';
 
 /**
- * In-app route to a work item's detail page. A work item's identity for sign-off is the triple
- * (key, product, targetEnv) — the same grain the decisions and comments key on — so product and
- * target env travel as query params alongside the key.
+ * In-app route to a work item's detail page. A work item's identity for sign-off is
+ * (key, product, service, targetEnv) — the same grain the decisions and comments key on. The service
+ * is a path segment (`/work-items/mpt-helpdesk/MPT-1`) because it is the half of the name a reader
+ * sees: the same ticket on another service is a different work item with its own page. Product and
+ * target env travel as query params alongside.
  *
  * Pass `fromCandidateId` when linking out of a promotion: the detail page turns it into a "Back to
  * promotion" breadcrumb so a reviewer who came in to sign something off lands back where they were
@@ -14,12 +16,13 @@ import { roleDisplay } from '@/lib/roleLabel';
 export function workItemDetailPath(
   key: string,
   product: string,
+  service: string,
   targetEnv: string,
   fromCandidateId?: string | null,
 ): string {
   const params = new URLSearchParams({ product, targetEnv });
   if (fromCandidateId) params.set('from', fromCandidateId);
-  return `/work-items/${encodeURIComponent(key)}?${params.toString()}`;
+  return `/work-items/${encodeURIComponent(service)}/${encodeURIComponent(key)}?${params.toString()}`;
 }
 
 /**

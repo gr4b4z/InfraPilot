@@ -2,13 +2,18 @@ namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
 /// A QA / approver decision on a specific work-item for a specific
-/// (product, target environment). Approvals carry across superseded builds —
-/// they're attached to the work item, not the candidate. The promotion gate
+/// (product, service, target environment). Approvals carry across superseded builds —
+/// they're attached to the work item, not the candidate.
+///
+/// <para>The service is part of the identity: the same tracker ticket riding in two services of one
+/// product is two separate work items (<c>mpt-helpdesk/MPT-1</c> and <c>mpt-platform/MPT-1</c>), each
+/// signed off, discussed and assigned on its own. Promotions of the same service — a newer version,
+/// or a second source edge into the same target — share one work item.</para> The promotion gate
 /// evaluator (PR3) reads this table to decide whether the active candidate
 /// can transition to Approved under WorkItemsOnly / WorkItemsAndManual modes.
 ///
 /// One signoff per work item is enough (MVP). The unique index on
-/// (WorkItemKey, Product, TargetEnv, ApproverEmail) holds a single row per user per work item;
+/// (WorkItemKey, Product, Service, TargetEnv, ApproverEmail) holds a single row per user per work item;
 /// re-deciding (Approve ↔ Block, say) updates that row in place rather than appending, so
 /// <see cref="UpdatedAt"/> is the only trace of the earlier value on the row itself — the audit
 /// log keeps the full sequence. Multi-approver-per-work-item is a future policy.
@@ -22,6 +27,7 @@ public class WorkItemApproval
     public Guid Id { get; set; }
     public string WorkItemKey { get; set; } = "";
     public string Product { get; set; } = "";
+    public string Service { get; set; } = "";
     public string TargetEnv { get; set; } = "";
     public string ApproverEmail { get; set; } = "";
     public string ApproverName { get; set; } = "";

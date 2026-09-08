@@ -1,4 +1,4 @@
-﻿using System.Data.Common;
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -172,11 +172,11 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         // Hold the item back on that build.
         var block = await _adminClient.PostAsJsonAsync("/api/work-items/RESET-1/blocks",
-            new { product = "acme", targetEnv = "prod" });
+            new { product = "acme", service = "api", targetEnv = "prod" });
         Assert.Equal(HttpStatusCode.OK, block.StatusCode);
 
         var beforeCtx = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/RESET-1?product=acme&targetEnv=prod");
+            "/api/work-items/RESET-1?product=acme&service=api&targetEnv=prod");
         Assert.Single(beforeCtx.GetProperty("approvals").EnumerateArray());
 
         // A new version carrying the same work item lands.
@@ -184,13 +184,13 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
 
         var afterCtx = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/RESET-1?product=acme&targetEnv=prod");
+            "/api/work-items/RESET-1?product=acme&service=api&targetEnv=prod");
         Assert.Empty(afterCtx.GetProperty("approvals").EnumerateArray());
         Assert.True(afterCtx.GetProperty("canApprove").GetBoolean());
 
         // The thread carries both the block and the reset that undid it.
         var thread = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/RESET-1/comments?product=acme&targetEnv=prod");
+            "/api/work-items/RESET-1/comments?product=acme&service=api&targetEnv=prod");
         var bodies = thread.GetProperty("comments").EnumerateArray()
             .Select(c => c.GetProperty("body").GetString() ?? "")
             .ToList();
@@ -214,13 +214,13 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         await CreatePromotionAsync("staging", "prod", "v8.0.0", references: workItemRef);
         var approve = await _adminClient.PostAsJsonAsync("/api/work-items/KEEP-1/approvals",
-            new { product = "acme", targetEnv = "prod" });
+            new { product = "acme", service = "api", targetEnv = "prod" });
         Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
 
         await CreatePromotionAsync("staging", "prod", "v8.1.0", references: workItemRef);
 
         var ctx = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/KEEP-1?product=acme&targetEnv=prod");
+            "/api/work-items/KEEP-1?product=acme&service=api&targetEnv=prod");
         Assert.Single(ctx.GetProperty("approvals").EnumerateArray());
         Assert.Equal("Approved", ctx.GetProperty("myDecision").GetString());
     }
@@ -276,7 +276,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         // Ticket A: its own commit and its own PR — not the other ticket's.
         var a = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/MPT-23574/detail?product=acme&targetEnv=prod");
+            "/api/work-items/MPT-23574/detail?product=acme&service=api&targetEnv=prod");
 
         var aCommits = a.GetProperty("commits").EnumerateArray().ToList();
         Assert.Single(aCommits);
@@ -294,7 +294,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         // Ticket B resolves to the other pair — no cross-contamination between tickets.
         var b = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/MPT-23640/detail?product=acme&targetEnv=prod");
+            "/api/work-items/MPT-23640/detail?product=acme&service=api&targetEnv=prod");
         Assert.Equal(shaB, b.GetProperty("commits").EnumerateArray().Single().GetProperty("hash").GetString());
         Assert.Equal("149496", b.GetProperty("pullRequests").EnumerateArray().Single().GetProperty("key").GetString());
 
@@ -336,7 +336,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 
         var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/MPT-24001/detail?product=acme&targetEnv=prod");
+            "/api/work-items/MPT-24001/detail?product=acme&service=api&targetEnv=prod");
         Assert.Equal("Duplicate offboarding requests", detail.GetProperty("title").GetString());
         // "Merged PR 150001: " is gone; the commit's own subject is not.
         Assert.Equal(
@@ -428,7 +428,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 
         var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/DONE-1/detail?product=acme&targetEnv=prod");
+            "/api/work-items/DONE-1/detail?product=acme&service=api&targetEnv=prod");
 
         // Still somebody's to sign off: nothing was decided on their behalf.
         Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
@@ -467,7 +467,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         }
 
         var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/IDEM-1/detail?product=acme&targetEnv=prod");
+            "/api/work-items/IDEM-1/detail?product=acme&service=api&targetEnv=prod");
         Assert.Single(detail.GetProperty("comments").EnumerateArray());
         Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
     }
@@ -489,7 +489,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             (await CreatePromotionAsync("staging", "prod", "v7.6.0", references: open)).StatusCode);
 
         var block = await _adminClient.PostAsJsonAsync("/api/work-items/HELD-1/blocks",
-            new { product = "acme", targetEnv = "prod", comment = "not going out" });
+            new { product = "acme", service = "api", targetEnv = "prod", comment = "not going out" });
         Assert.Equal(HttpStatusCode.OK, block.StatusCode);
 
         // Same version re-posted, now reported closed upstream. Re-posting the same version is an
@@ -503,7 +503,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             (await CreatePromotionAsync("staging", "prod", "v7.6.0", references: closed)).StatusCode);
 
         var ctx = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/HELD-1?product=acme&targetEnv=prod");
+            "/api/work-items/HELD-1?product=acme&service=api&targetEnv=prod");
         var decision = Assert.Single(ctx.GetProperty("approvals").EnumerateArray());
         Assert.Equal("Blocked", decision.GetProperty("decision").GetString());
         Assert.Equal("admin@localhost", decision.GetProperty("approverEmail").GetString());
@@ -527,7 +527,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             (await CreatePromotionAsync("staging", "prod", "v7.8.0", references: references)).StatusCode);
 
         var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/OPEN-1/detail?product=acme&targetEnv=prod");
+            "/api/work-items/OPEN-1/detail?product=acme&service=api&targetEnv=prod");
         Assert.Empty(detail.GetProperty("comments").EnumerateArray());
         Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
         Assert.True(detail.GetProperty("canApprove").GetBoolean());
@@ -560,7 +560,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 
         var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
-            "/api/work-items/MPT-23508/detail?product=acme&targetEnv=prod");
+            "/api/work-items/MPT-23508/detail?product=acme&service=api&targetEnv=prod");
 
         var commits = detail.GetProperty("commits").EnumerateArray().ToList();
         Assert.Equal(2, commits.Count);

@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
@@ -493,8 +493,9 @@ public class DeploymentService
             .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle })
             .ToListAsync(ct);
 
-        // Sign-off is keyed on (key, product, targetEnv), so a link needs a target env. Take them
-        // from the promotions carrying this version — those are the gates the ticket is actually in.
+        // Sign-off is keyed on (key, product, service, targetEnv); the service is this event's, so a
+        // link only still needs a target env. Take them from the promotions carrying this version —
+        // those are the gates the ticket is actually in.
         var signOffEnvs = promotionDtos
             .Select(p => p.TargetEnv)
             .Distinct(StringComparer.OrdinalIgnoreCase)

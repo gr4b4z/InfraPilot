@@ -574,7 +574,12 @@ function WorkItemTaskRow({
 }) {
   const navigate = useNavigate();
   const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
-  const detailPath = workItemDetailPath(ticket.workItemKey, ticket.product, ticket.targetEnv);
+  const detailPath = workItemDetailPath(
+    ticket.workItemKey,
+    ticket.product,
+    ticket.service,
+    ticket.targetEnv,
+  );
   // Which hat the user is wearing on this item — the reason it's in their list at all.
   const myRoles = (ticket.participants ?? [])
     .filter((p) => (p.email ?? '').toLowerCase() === currentUserEmail.toLowerCase())

@@ -482,6 +482,7 @@ public class PromotionCancelApprovalTests : IDisposable
             Id = Guid.NewGuid(),
             WorkItemKey = "FOO-1",
             Product = "acme",
+            Service = "api",
             TargetEnv = "prod",
             ApproverEmail = "qa@example.com",
             ApproverName = "QA",

@@ -233,6 +233,8 @@ public static class DeploymentAdminEndpoints
                     plan.Counts.Builds,
                     plan.Counts.BuildConflicts,
                     plan.Counts.Promotions,
+                    plan.Counts.TicketApprovals,
+                    plan.Counts.TicketComments,
                     plan.Counts.StrandedTicketApprovals,
                 });
 
@@ -266,6 +268,6 @@ public static class DeploymentAdminEndpoints
         new(plan.OverrideId, plan.Service, plan.TargetProduct, plan.FromProducts, plan.Applied,
             plan.Counts.Deployments, plan.Counts.DeployWorkItems, plan.Counts.Builds,
             plan.Counts.BuildConflicts, plan.Counts.Promotions, plan.Counts.OpenPromotions,
-            plan.Counts.PromotionWorkItems, plan.Counts.Retirements, plan.Counts.RetirementMerges,
-            plan.Counts.StrandedTicketApprovals);
+            plan.Counts.PromotionWorkItems, plan.Counts.TicketApprovals, plan.Counts.TicketComments,
+            plan.Counts.Retirements, plan.Counts.RetirementMerges, plan.Counts.StrandedTicketApprovals);
 }

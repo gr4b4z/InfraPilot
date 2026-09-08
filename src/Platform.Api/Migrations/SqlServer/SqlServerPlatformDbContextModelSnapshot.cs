@@ -924,6 +924,13 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
                     b.Property<string>("SubTitle")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
@@ -950,7 +957,7 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasIndex("CandidateId");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "Service");
 
                     b.ToTable("promotion_work_items", (string)null);
                 });
@@ -988,6 +995,13 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1005,9 +1019,9 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasIndex("Product", "TargetEnv");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+                    b.HasIndex("WorkItemKey", "Product", "Service", "TargetEnv");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "ApproverEmail")
+                    b.HasIndex("WorkItemKey", "Product", "Service", "TargetEnv", "ApproverEmail")
                         .IsUnique();
 
                     b.ToTable("work_item_approvals", (string)null);
@@ -1046,6 +1060,13 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1061,7 +1082,7 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasKey("Id");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "CreatedAt");
+                    b.HasIndex("WorkItemKey", "Product", "Service", "TargetEnv", "CreatedAt");
 
                     b.ToTable("work_item_comments", (string)null);
                 });

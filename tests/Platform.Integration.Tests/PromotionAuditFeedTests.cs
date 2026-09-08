@@ -280,7 +280,7 @@ public class PromotionAuditFeedTests : IClassFixture<PromotionAuditFeedTests.Aud
         await CreatePromotionAsync(product, "staging", "prod", "v5.0.0", references: references);
 
         var signoff = await _adminClient.PostAsJsonAsync("/api/work-items/AUDIT-1/approvals",
-            new { product, targetEnv = "prod", comment = "tested" });
+            new { product, service = "api", targetEnv = "prod", comment = "tested" });
         signoff.EnsureSuccessStatusCode();
 
         var feed = await FeedAsync($"?product={product}&category=work-item");
