@@ -835,6 +835,11 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("DeploysOnApproval")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<string>("EscalationGroup")
                         .HasMaxLength(400)
                         .HasColumnType("character varying(400)");

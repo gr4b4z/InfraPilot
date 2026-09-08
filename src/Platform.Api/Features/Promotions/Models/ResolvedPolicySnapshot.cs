@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
@@ -75,7 +77,38 @@ public record ResolvedPolicySnapshot(
     /// original undo window.</remarks>
     public int? ApprovedWebhookDelaySeconds { get; init; }
 
+    /// <inheritdoc cref="PromotionPolicy.DeploysOnApproval"/>
+    /// <remarks>Defaults to <c>true</c> so snapshot JSON written before this field existed reads as
+    /// the automatic path — what every edge did at the time it was written.</remarks>
+    public bool DeploysOnApproval { get; init; } = true;
+
     /// <summary>Flattened requirement set across every step — the unit of gate satisfaction.</summary>
     public IReadOnlyList<ApproverRequirement> AllRequirements =>
         ApprovalSteps.SelectMany(s => s.Requirements).ToList();
+
+    /// <summary>
+    /// Lenient read of a candidate's <see cref="PromotionCandidate.ResolvedPolicyJson"/>:
+    /// <c>null</c> when there is no snapshot or it will not parse, so a display path can fall back
+    /// to a field's default instead of throwing on one bad row. Gate evaluation reads the snapshot
+    /// strictly (see <c>PromotionService.ReadSnapshot</c>) — a decision must never be made against
+    /// rules that failed to load.
+    /// </summary>
+    public static ResolvedPolicySnapshot? TryRead(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<ResolvedPolicySnapshot>(json, ReadOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static readonly JsonSerializerOptions ReadOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+    };
 }

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
@@ -34,12 +33,6 @@ namespace Platform.Api.Features.Promotions;
 /// </summary>
 public static class WorkItemRoleRequirements
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-    };
-
     /// <summary>
     /// The canonical roles a candidate's work items must each have somebody in, read off the
     /// candidate's own policy snapshot. Best-effort: a missing or unparseable snapshot yields an empty
@@ -73,18 +66,7 @@ public static class WorkItemRoleRequirements
     /// degrade to "no requirement" rather than fail a list request.
     /// </summary>
     private static ResolvedPolicySnapshot? TryReadSnapshot(PromotionCandidate candidate)
-    {
-        if (string.IsNullOrEmpty(candidate.ResolvedPolicyJson)) return null;
-        try
-        {
-            return JsonSerializer.Deserialize<ResolvedPolicySnapshot>(
-                candidate.ResolvedPolicyJson, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
+        => ResolvedPolicySnapshot.TryRead(candidate.ResolvedPolicyJson);
 
     /// <summary>
     /// Canonicalises and dedupes a snapshot's required roles. The admin endpoint already stores them
