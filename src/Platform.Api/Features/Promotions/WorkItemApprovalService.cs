@@ -279,9 +279,10 @@ public class WorkItemApprovalService
             // (WorkItemApproval is keyed by key+product+service+targetEnv, not by candidate), so
             // re-evaluate ALL pending candidates that reference this ticket — not just the one the
             // row was attributed to — so every gate the sign-off satisfies auto-promotes immediately.
-            // ReevaluateAsync is idempotent and no-ops for candidates that aren't Pending or whose
-            // gate isn't met.
-            var affected = await FindPendingCandidateIdsForTicketAsync(key, prod, svc, env, ct);
+            // Other services' candidates are included too: a policy gating on the ticket's overall
+            // status may have been waiting for exactly this instance. ReevaluateAsync is idempotent
+            // and no-ops for candidates that aren't Pending or whose gate isn't met.
+            var affected = await FindPendingCandidateIdsForTicketAsync(key, prod, env, ct);
             foreach (var affectedId in affected)
                 await TryReevaluateCandidateAsync(affectedId, ct);
         }
@@ -612,6 +613,11 @@ public class WorkItemApprovalService
             .GroupBy(w => w.CandidateId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
+        // The ticket's roll-up across every service instance, for the "2 of 3 services" the row shows
+        // beside its own state. One batch for the whole queue.
+        var overall = await WorkItemOverallStatus.LoadAsync(_db,
+            workItems.Select(w => new WorkItemTicketId(w.WorkItemKey, w.Product, w.TargetEnv)), ct);
+
         // Build (key, product, service, targetEnv) -> count of Pending candidates carrying it.
         var blockingCount = new Dictionary<(string Key, string Product, string Service, string Env), int>();
         foreach (var c in pending)
@@ -780,7 +786,9 @@ public class WorkItemApprovalService
                     // is what tells the UI to render it as stranded rather than actionable-as-usual.
                     CandidateStatus: c.Status.ToString(),
                     RequiredRoles: requiredRoles,
-                    MissingRoles: missingRoles));
+                    MissingRoles: missingRoles,
+                    Overall: overall.GetValueOrDefault(
+                        new WorkItemTicketId(w.WorkItemKey, c.Product, c.TargetEnv))?.ToSummary()));
             }
         }
 
@@ -890,6 +898,9 @@ public class WorkItemApprovalService
         var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
             candidatesById.Values.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct);
 
+        var overall = await WorkItemOverallStatus.LoadAsync(_db,
+            approvals.Select(a => new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv)), ct);
+
         var result = new List<PendingTicketView>();
         foreach (var a in approvals)
         {
@@ -945,7 +956,9 @@ public class WorkItemApprovalService
                 DecidedAt: a.CreatedAt,
                 DecidedByEmail: a.ApproverEmail,
                 DecidedByName: a.ApproverName,
-                DecisionComment: a.Comment));
+                DecisionComment: a.Comment,
+                Overall: overall.GetValueOrDefault(
+                    new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv))?.ToSummary()));
         }
 
         return new PendingQueueResult(result, deciderRows);
@@ -1003,6 +1016,9 @@ public class WorkItemApprovalService
 
         var ctx = await GetTicketContextAsync(key, prod, svc, env, ct);
         var comments = await GetCommentsAsync(key, prod, svc, env, ct);
+        // The ticket across every service — what "is MPT-1 done" means to somebody who does not
+        // think per service. Shown beside this instance's own state.
+        var overall = await WorkItemOverallStatus.LoadOneAsync(_db, key, prod, env, ct);
 
         // The change that carried this ticket. Resolved from the primary candidate, falling back to
         // the newest candidate that actually records commits for the ticket — same "prefer primary,
@@ -1066,7 +1082,9 @@ public class WorkItemApprovalService
                 .Select(c => new WorkItemCandidateRef(
                     c.Id, c.Service, c.Version, c.SourceEnv, c.TargetEnv,
                     c.Status.ToString(), c.CreatedAt, c.Id == primary.Id))
-                .ToList());
+                .ToList(),
+            Overall: overall?.ToSummary(),
+            GateRequiresAllInstances: WorkItemRoleRequirements.RequiresAllInstances(primary));
     }
 
     // ---------------------------------------------------------------------
@@ -1381,33 +1399,22 @@ public class WorkItemApprovalService
                         && w.TargetEnv == targetEnv, ct);
 
     /// <summary>
-    /// The per-service instances of a ticket in one <c>(product, targetEnv)</c>: every service whose
-    /// promotions have carried it, with the display title the newest candidate gave it. Exists for
-    /// links minted before the service joined the identity — <c>/work-items/{key}?product=&amp;targetEnv=</c>
-    /// — which the client resolves to one instance (or offers the list) instead of 404ing. Empty
-    /// when the ticket is unknown for that product/env.
+    /// The ticket's overall status in one <c>(product, targetEnv)</c>: every service instance with its
+    /// own sign-off state, and the roll-up across them (<see cref="WorkItemOverallStatus"/>). Every
+    /// instance page shows this beside the instance's own state, and it is what a policy with
+    /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> gates on. Also the
+    /// resolver for links minted before the service joined the identity —
+    /// <c>/work-items/{key}?product=&amp;targetEnv=</c> — which the client resolves to one instance (or
+    /// offers the list). Null when the ticket is unknown for that product/env.
     /// </summary>
-    public async Task<List<WorkItemInstanceView>> GetInstancesAsync(
+    public async Task<WorkItemOverallStatus?> GetOverallStatusAsync(
         string workItemKey, string product, string targetEnv, CancellationToken ct = default)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
-        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return new();
-
-        var rows = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => w.WorkItemKey == key && w.Product == prod && w.TargetEnv == env && w.Service != "")
-            .OrderByDescending(w => w.CreatedAt)
-            .Select(w => new { w.Service, w.Title })
-            .ToListAsync(ct);
-
-        return rows
-            .GroupBy(r => r.Service, StringComparer.Ordinal)
-            .Select(g => new WorkItemInstanceView(
-                Service: g.Key,
-                Title: g.Select(r => r.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t))))
-            .OrderBy(i => i.Service, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return null;
+        return await WorkItemOverallStatus.LoadOneAsync(_db, key, prod, env, ct);
     }
 
     // ---------------------------------------------------------------------
@@ -1415,18 +1422,19 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// All Pending candidates (in the ticket's product/service/targetEnv) that carry this work item.
-    /// A ticket can back several promotions of one service at once (a second source edge into the
-    /// same target), and one shared approval counts for all of them — this is the fan-out used to
-    /// re-evaluate every affected gate after a sign-off. Candidates of <i>other</i> services carrying
-    /// the same ticket are different work items and are untouched.
+    /// All Pending candidates in the ticket's (product, targetEnv) that carry this ticket — on any
+    /// service. A ticket can back several promotions of one service at once (a second source edge
+    /// into the same target), and one shared approval counts for all of them; a promotion of another
+    /// service may be gating on the ticket's overall status
+    /// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) and be waiting for
+    /// this very instance. This is the fan-out used to re-evaluate every affected gate after a
+    /// sign-off; re-evaluation is idempotent, so over-reaching is harmless.
     /// </summary>
     private async Task<IReadOnlyList<Guid>> FindPendingCandidateIdsForTicketAsync(
-        string workItemKey, string product, string service, string targetEnv, CancellationToken ct)
+        string workItemKey, string product, string targetEnv, CancellationToken ct)
     {
         var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.Service == service
-                     && w.TargetEnv == targetEnv)
+            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv)
             .Select(w => w.CandidateId)
             .Distinct()
             .ToListAsync(ct);
@@ -1435,7 +1443,6 @@ public class WorkItemApprovalService
         return await _db.PromotionCandidates.AsNoTracking()
             .Where(c => candidateIds.Contains(c.Id)
                      && c.Product == product
-                     && c.Service == service
                      && c.TargetEnv == targetEnv
                      && c.Status == PromotionStatus.Pending)
             .Select(c => c.Id)
@@ -1764,7 +1771,19 @@ public record WorkItemDetail(
     IReadOnlyList<WorkItemCommitRef> Commits,
     /// <summary>The pull requests those commits merged. Derived via commit → PR revision.</summary>
     IReadOnlyList<WorkItemPullRequestRef> PullRequests,
-    IReadOnlyList<WorkItemCandidateRef> Candidates);
+    IReadOnlyList<WorkItemCandidateRef> Candidates,
+    /// <summary>
+    /// The ticket's status across every service instance in this product/env — see
+    /// <see cref="WorkItemOverallStatus"/>. Null only when no instance is indexed, which the 404
+    /// above already rules out.
+    /// </summary>
+    WorkItemOverallSummary? Overall = null,
+    /// <summary>
+    /// Whether the primary candidate's policy gates on <see cref="Overall"/> rather than on this
+    /// instance alone (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) — the
+    /// page says so, or a sign-off here that does not release the promotion reads as a bug.
+    /// </summary>
+    bool GateRequiresAllInstances = false);
 
 /// <summary>
 /// One commit that carried a work item. <see cref="Hash"/> is always present — it's what the producer
@@ -1802,12 +1821,6 @@ public record WorkItemEnvironmentView(
 /// <summary>Identity of a shipped build — the grain deploy environments are resolved at.</summary>
 public readonly record struct DeployedVersionKey(string Product, string Service, string Version);
 
-/// <summary>
-/// One per-service instance of a ticket in a <c>(product, targetEnv)</c> — see
-/// <see cref="WorkItemApprovalService.GetInstancesAsync"/>. <see cref="Title"/> is the newest title any
-/// candidate of that service recorded, for the picker a legacy link lands on.
-/// </summary>
-public record WorkItemInstanceView(string Service, string? Title);
 
 /// <summary>One promotion candidate carrying a work item, as listed on the detail page.</summary>
 public record WorkItemCandidateRef(
@@ -1866,7 +1879,12 @@ public record PendingTicketView(
     /// The subset of <see cref="RequiredRoles"/> nobody holds. Non-empty ⇒ the work item is incomplete
     /// and the UI asks for someone to be put on those roles.
     /// </summary>
-    IReadOnlyList<string>? MissingRoles = null);
+    IReadOnlyList<string>? MissingRoles = null,
+    /// <summary>
+    /// The ticket's roll-up across every service instance (<see cref="WorkItemOverallStatus"/>) — the
+    /// "2 of 3 services" beside the row's own state. Null when it could not be resolved.
+    /// </summary>
+    WorkItemOverallSummary? Overall = null);
 
 /// <summary>
 /// One row of the assignee summary for the My-queue endpoint. Aggregated by (email, role)

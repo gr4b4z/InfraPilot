@@ -1766,11 +1766,36 @@ export interface WorkItemEnvironment {
   deployedAt: string;
 }
 
+/**
+ * The sign-off state of one work item instance, derived from its decisions with the gate's precedence:
+ * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
+ */
+export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
+
 /** One per-service instance of a ticket, from `GET /api/work-items/{key}/instances`. */
 export interface WorkItemInstance {
   service: string;
   /** The newest title any candidate of that service recorded for the ticket. */
   title: string | null;
+  state: WorkItemInstanceState;
+}
+
+/**
+ * The ticket across every service carrying it in one (product, targetEnv): what "is MPT-1 done"
+ * means to somebody who does not think per service. `state` follows the gate's precedence across
+ * instances — any block → Blocked, else any issue → Issue, else all approved → Approved, else
+ * Pending. A policy with `requireAllWorkItemInstancesApproved` gates on this instead of on the
+ * promotion's own instance.
+ */
+export interface WorkItemOverallStatus {
+  state: WorkItemInstanceState;
+  instances: number;
+  approved: number;
+  issues: number;
+  blocked: number;
+  pending: number;
+  /** Every instance with its own state, sorted by service. */
+  instanceStatuses: WorkItemInstance[];
 }
 
 /** Response shape for `GET /api/work-items/{key}/instances`. */
@@ -1778,6 +1803,8 @@ export interface WorkItemInstancesResponse {
   workItemKey: string;
   product: string;
   targetEnv: string;
+  /** Null when no promotion has carried the ticket in that product/env. */
+  overall: WorkItemOverallStatus | null;
   /** Sorted by service name. Empty when no promotion has carried the ticket in that product/env. */
   instances: WorkItemInstance[];
 }
@@ -1834,6 +1861,13 @@ export interface WorkItemDetail {
   /** Pull requests those commits merged — derived server-side via commit hash → PR revision. */
   pullRequests: WorkItemPullRequestRef[];
   candidates: WorkItemCandidateRef[];
+  /** The ticket across every service instance in this product/env. Null only if nothing is indexed. */
+  overall: WorkItemOverallStatus | null;
+  /**
+   * Whether the primary promotion's policy waits for `overall` to be approved rather than for this
+   * instance alone — the page says so, or a sign-off that releases nothing reads as a bug.
+   */
+  gateRequiresAllInstances: boolean;
 }
 
 /**
@@ -1900,6 +1934,8 @@ export interface PendingTicket {
   decidedByEmail?: string | null;
   decidedByName?: string | null;
   decisionComment?: string | null;
+  /** The ticket across every service instance — the "2 of 3 services" beside the row's own state. */
+  overall?: WorkItemOverallStatus | null;
 }
 
 /**
@@ -2048,6 +2084,11 @@ export interface PromotionWorkItemGate {
   satisfied: boolean;
   /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
   autoApprove: boolean;
+  /**
+   * True when the policy judges each work item by the ticket's overall status across every service
+   * instance (requireAllWorkItemInstancesApproved), so `approved` means "approved on every service".
+   */
+  allInstances?: boolean;
 }
 
 export interface PromotionStepProgress {
@@ -2265,6 +2306,11 @@ export interface PromotionPolicy {
   requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
+  /**
+   * Judge each work item by the ticket's overall status across every service instance in the target
+   * environment, instead of by this promotion's own service instance. Qualifies the two gate flags.
+   */
+  requireAllWorkItemInstancesApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
@@ -2291,6 +2337,7 @@ export interface UpsertPromotionPolicyPayload {
   requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
+  requireAllWorkItemInstancesApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;

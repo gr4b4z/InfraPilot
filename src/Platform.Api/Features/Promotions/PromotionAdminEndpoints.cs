@@ -237,6 +237,7 @@ public static class PromotionAdminEndpoints
                 RequiredWorkItemRoles = MapRequiredRoles(request.RequiredWorkItemRoles),
                 EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup,
                 RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved,
+                RequireAllWorkItemInstancesApproved = request.RequireAllWorkItemInstancesApproved,
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
                 AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems,
                 SourceRequiresDeploy = request.SourceRequiresDeploy,
@@ -283,6 +284,7 @@ public static class PromotionAdminEndpoints
             policy.RequiredWorkItemRoles = MapRequiredRoles(request.RequiredWorkItemRoles);
             policy.EscalationGroup = string.IsNullOrWhiteSpace(request.EscalationGroup) ? null : request.EscalationGroup;
             policy.RequireAllWorkItemsApproved = request.RequireAllWorkItemsApproved;
+            policy.RequireAllWorkItemInstancesApproved = request.RequireAllWorkItemInstancesApproved;
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
             policy.AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems;
             policy.SourceRequiresDeploy = request.SourceRequiresDeploy;
@@ -357,6 +359,10 @@ public static class PromotionAdminEndpoints
         requiredWorkItemRoles = p.RequiredWorkItemRoles,
         escalationGroup = p.EscalationGroup,
         requireAllWorkItemsApproved = p.RequireAllWorkItemsApproved,
+        // Whether the two gate flags above judge a work item by its own service's instance (false) or
+        // by the ticket's overall status across every service (true). See
+        // PromotionPolicy.RequireAllWorkItemInstancesApproved.
+        requireAllWorkItemInstancesApproved = p.RequireAllWorkItemInstancesApproved,
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
         autoApproveWhenNoWorkItems = p.AutoApproveWhenNoWorkItems,
         sourceRequiresDeploy = p.SourceRequiresDeploy,
@@ -506,6 +512,12 @@ public record UpsertPolicyRequest(
     /// </summary>
     List<string>? RequiredWorkItemRoles = null,
     bool RequireAllWorkItemsApproved = false,
+    /// <summary>
+    /// Gate on the ticket's overall status across every service instance rather than on this
+    /// promotion's own instance. Defaults to <c>false</c> (per service). See
+    /// <see cref="PromotionPolicy.RequireAllWorkItemInstancesApproved"/>.
+    /// </summary>
+    bool RequireAllWorkItemInstancesApproved = false,
     bool AutoApproveOnAllWorkItemsApproved = false,
     bool AutoApproveWhenNoWorkItems = false,
     bool SourceRequiresDeploy = true,

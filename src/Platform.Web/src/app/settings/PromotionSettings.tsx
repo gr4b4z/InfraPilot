@@ -48,6 +48,7 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   requiredWorkItemRoles: [],
   escalationGroup: null,
   requireAllWorkItemsApproved: false,
+  requireAllWorkItemInstancesApproved: false,
   autoApproveOnAllWorkItemsApproved: false,
   autoApproveWhenNoWorkItems: false,
   sourceRequiresDeploy: true,
@@ -552,6 +553,7 @@ export function PromotionSettings() {
       requiredWorkItemRoles: [...(p.requiredWorkItemRoles ?? [])],
       escalationGroup: p.escalationGroup,
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
+      requireAllWorkItemInstancesApproved: p.requireAllWorkItemInstancesApproved ?? false,
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
       autoApproveWhenNoWorkItems: p.autoApproveWhenNoWorkItems ?? false,
       sourceRequiresDeploy: p.sourceRequiresDeploy ?? true,
@@ -1370,6 +1372,37 @@ export function PromotionSettings() {
                       >
                         Promotion is automatically approved the moment the last work item gets its
                         sign-off.
+                      </span>
+                    </span>
+                  </label>
+
+                  {/* Qualifies the two flags above. A work item is per service, so those normally
+                      wait for this service's instance of each ticket; this makes them wait for the
+                      ticket as a whole. Inert without either of them, which the copy says. */}
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.requireAllWorkItemInstancesApproved}
+                      onChange={(e) =>
+                        setField('requireAllWorkItemInstancesApproved', e.target.checked)
+                      }
+                      disabled={
+                        !form.tracksWorkItems
+                        || (!form.requireAllWorkItemsApproved && !form.autoApproveOnAllWorkItemsApproved)
+                      }
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      A work item counts as approved only when every service&rsquo;s instance is
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        The same ticket carried by several services is one work item per service. By
+                        default this promotion waits only for its own service&rsquo;s instance; with
+                        this on it waits for the ticket&rsquo;s overall status — approved on every
+                        service in the target environment, no issue or block anywhere. Only applies
+                        together with one of the two options above.
                       </span>
                     </span>
                   </label>

@@ -8,11 +8,14 @@ import type {
   WorkItemDecision,
   WorkItemDetail,
   WorkItemInstance,
+  WorkItemOverallStatus,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import {
   commitMessageLines,
   decisionStyle,
+  instanceStateStyle,
+  overallSummaryLabel,
   providerLabel,
   referringCandidateId,
   shortHash,
@@ -170,7 +173,15 @@ export function LegacyWorkItemRedirect() {
                   {' '}/ {workItemKey}
                 </span>
               </span>
-              <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
+              <span className="inline-flex items-center gap-2">
+                <span
+                  className="badge"
+                  style={{ backgroundColor: instanceStateStyle(i.state).bg, color: instanceStateStyle(i.state).color }}
+                >
+                  {instanceStateStyle(i.state).label}
+                </span>
+                <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
+              </span>
             </div>
             {i.title && (
               <p className="text-[12px] mt-1 truncate" style={{ color: 'var(--text-secondary)' }}>
@@ -387,12 +398,14 @@ export function WorkItemDetailPage() {
                 edges themselves are in the Promotions card, which is where they belong. */}
             <WorkItemEnvironments environments={detail.environments ?? []} />
           </div>
-          <SiblingInstances
+          <InstancesRow
             workItemKey={workItemKey}
             product={product}
             service={service}
             targetEnv={targetEnv}
             fromCandidateId={fromCandidateId}
+            overall={detail.overall}
+            gateRequiresAllInstances={detail.gateRequiresAllInstances}
           />
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -403,9 +416,24 @@ export function WorkItemDetailPage() {
             <span
               className="badge shrink-0"
               style={{ backgroundColor: headlineStyle.bg, color: headlineStyle.color }}
+              title={`${detail.service} / ${detail.workItemKey} — this service's instance`}
             >
               <DecisionIcon decision={headline.decision} size={10} />
               {headlineStyle.label}
+            </span>
+          )}
+          {/* The ticket as a whole, when it ships in more than one service. This instance's badge
+             says what QA found here; this one says whether the ticket is done. */}
+          {detail.overall && detail.overall.instances > 1 && (
+            <span
+              className="badge shrink-0"
+              style={{
+                backgroundColor: instanceStateStyle(detail.overall.state).bg,
+                color: instanceStateStyle(detail.overall.state).color,
+              }}
+              title={`${detail.workItemKey} across all services: ${overallSummaryLabel(detail.overall)}`}
+            >
+              Overall: {instanceStateStyle(detail.overall.state).label}
             </span>
           )}
         </div>
@@ -455,63 +483,124 @@ export function WorkItemDetailPage() {
 }
 
 /**
- * The same ticket riding in other services of this product — separate work items, each with its own
- * sign-off — listed so a tester working through MPT-1 can reach every copy without going back to the
- * queue. Owns its own fetch: this is navigation, not the item's state, so a failure here must not
- * blank the page, and a refetch of the detail must not refetch this.
+ * The ticket across every service carrying it in this product/env: one chip per instance with that
+ * instance's own sign-off state, the current one marked, and the roll-up in words. A tester working
+ * through MPT-1 reaches every copy from here; a manager reads whether the ticket is done without
+ * caring which service is which.
+ *
+ * Seeded from the detail payload and kept live on its own: a sign-off on a sibling instance is a
+ * work-item event for the same key on another service, which the page's own refresh deliberately
+ * ignores, so this row listens for it separately. A failure here must not blank the page.
  */
-function SiblingInstances({
+function InstancesRow({
   workItemKey,
   product,
   service,
   targetEnv,
   fromCandidateId,
+  overall: initial,
+  gateRequiresAllInstances,
 }: {
   workItemKey: string;
   product: string;
   service: string;
   targetEnv: string;
   fromCandidateId: string | null;
+  overall: WorkItemOverallStatus | null;
+  gateRequiresAllInstances: boolean;
 }) {
-  const [siblings, setSiblings] = useState<WorkItemInstance[]>([]);
+  const [overall, setOverall] = useState<WorkItemOverallStatus | null>(initial);
+
+  // Sibling instances change on their own pages; the same key on any service is this row's business.
+  const siblingTick = useEntityRefresh(['work-item'], {
+    filter: (evt) => !evt.key || evt.key === workItemKey,
+  });
 
   useEffect(() => {
     let cancelled = false;
     api
       .getWorkItemInstances(workItemKey, product, targetEnv)
       .then((res) => {
-        if (!cancelled) setSiblings(res.instances.filter((i) => i.service !== service));
+        if (!cancelled) setOverall(res.overall);
       })
       .catch(() => {
-        if (!cancelled) setSiblings([]);
+        /* keep whatever we have — the detail payload seeded it */
       });
     return () => {
       cancelled = true;
     };
-  }, [workItemKey, service, product, targetEnv]);
+  }, [workItemKey, product, targetEnv, siblingTick]);
 
-  if (siblings.length === 0) return null;
+  const instances = overall?.instanceStatuses ?? [];
+  if (instances.length <= 1) return null;
 
   return (
-    <div
-      className="flex items-center gap-1.5 flex-wrap mt-1.5 text-[12px]"
-      style={{ color: 'var(--text-secondary)' }}
-    >
-      <span style={{ color: 'var(--text-muted)' }}>Also on:</span>
-      {siblings.map((s) => (
-        <Link
-          key={s.service}
-          to={workItemDetailPath(workItemKey, product, s.service, targetEnv, fromCandidateId)}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium transition-opacity hover:opacity-80"
-          style={{ borderColor: 'var(--border-color)', color: 'var(--accent)' }}
-          title={s.title ? `${s.service} / ${workItemKey} — ${s.title}` : `${s.service} / ${workItemKey}`}
-        >
-          {s.service}
-          <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
-            / {workItemKey}
-          </span>
-        </Link>
-      ))}
+    <div className="mt-1.5 space-y-1">
+      <div
+        className="flex items-center gap-1.5 flex-wrap text-[12px]"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        <span style={{ color: 'var(--text-muted)' }}>All services:</span>
+        {instances.map((i) => {
+          const style = instanceStateStyle(i.state);
+          const current = i.service === service;
+          const label = `${i.service} / ${workItemKey}`;
+          const body = (
+            <>
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ backgroundColor: style.color }}
+                aria-hidden="true"
+              />
+              {i.service}
+              <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+                · {style.label}
+              </span>
+            </>
+          );
+          if (current) {
+            return (
+              <span
+                key={i.service}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium"
+                style={{
+                  borderColor: 'var(--accent)',
+                  color: 'var(--text-primary)',
+                  backgroundColor: 'var(--accent-muted)',
+                }}
+                title={`${label} — this page`}
+                aria-current="page"
+              >
+                {body}
+              </span>
+            );
+          }
+          return (
+            <Link
+              key={i.service}
+              to={workItemDetailPath(workItemKey, product, i.service, targetEnv, fromCandidateId)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium transition-opacity hover:opacity-80"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--accent)' }}
+              title={i.title ? `${label} — ${i.title}` : label}
+            >
+              {body}
+            </Link>
+          );
+        })}
+        <span style={{ color: 'var(--text-muted)' }}>·</span>
+        <span style={{ color: instanceStateStyle(overall!.state).color }}>
+          {overallSummaryLabel(overall)}
+        </span>
+      </div>
+      {/* Only said when it is true: by default a promotion waits for its own service's instance, and
+          a reviewer who signs this off expects it to release the gate. Under the all-instances policy
+          it will not until the siblings are approved too, and that has to be visible here. */}
+      {gateRequiresAllInstances && (
+        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          The promotion&rsquo;s policy waits for the ticket to be approved on{' '}
+          <span className="font-medium">every</span> service above, not only on {service}.
+        </p>
+      )}
     </div>
   );
 }

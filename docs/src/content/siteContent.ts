@@ -2008,6 +2008,7 @@ Content-Type: application/json
         { field: '`steps`', type: 'array', required: 'No', description: 'Ordered list of approval steps. Each step has a `name` and `requirements[]`; a requirement has a `name`, `groups[]` of `{ id, name }`, `users[]` (emails), and `minApprovers`. A requirement is satisfiable by a group member OR a listed user. All requirements in all steps must be satisfied. An empty tree auto-approves.' },
         { field: '`gate`', type: 'enum', required: 'Yes', description: 'Gate mode: `PromotionOnly` | `WorkItemsOnly` | `WorkItemsAndManual`.' },
         { field: '`requireAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Block manual approval until every work item is signed off.' },
+        { field: '`requireAllWorkItemInstancesApproved`', type: 'boolean', required: 'No', description: 'Judge each work item by the ticket's overall status across every service instance in the target environment, instead of by this promotion's own service instance. Qualifies the two gate flags; default false.' },
         { field: '`autoApproveOnAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Auto-promote once all work items are signed off.' },
         { field: '`autoApproveWhenNoWorkItems`', type: 'boolean', required: 'No', description: 'Auto-approve at create time when the payload carries no work items.' },
         { field: '`escalationGroup`', type: 'string', required: 'No', description: 'Optional escalation group.' },

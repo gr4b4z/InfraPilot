@@ -285,9 +285,13 @@ Reads take `product`, `service` and `targetEnv` as query parameters; writes carr
 `service` is required everywhere — a request that names only the ticket cannot say which instance it
 means and gets a `400` pointing at the resolver:
 
-- `GET /{key}/instances?product=&targetEnv=` → `{ instances: [{ service, title }] }`, the services
-  whose promotions carry the ticket. This is how a link minted before the service joined the identity
-  (`/work-items/{key}?product=&targetEnv=`) finds its way to one instance, or to a picker.
+- `GET /{key}/instances?product=&targetEnv=` → `{ overall, instances: [{ service, title, state }] }`:
+  every service whose promotions carry the ticket, each with its own state (`Pending` / `Approved` /
+  `Issue` / `Blocked`), and `overall` — the roll-up (`state`, `instances`, `approved`, `issues`,
+  `blocked`, `pending`): any block → Blocked, else any issue → Issue, else all approved → Approved,
+  else Pending. The detail response and queue rows carry the same `overall`. This is also how a link
+  minted before the service joined the identity (`/work-items/{key}?product=&targetEnv=`) finds its
+  way to one instance, or to a picker.
 - `GET /{key}?product=&service=&targetEnv=` — sign-off context (authority, decision history).
 - `GET /{key}/detail?product=&service=&targetEnv=` — everything the work-item page renders.
 - `GET|POST /{key}/comments` — the thread, keyed the same way.
@@ -370,6 +374,8 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
   ],
   "escalationGroup": "SRE-OnCall",      // optional
   "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed off
+  "requireAllWorkItemInstancesApproved": false, // judge a ticket by its overall status across every service
+                                               // instance (see below) instead of this service's own
   "autoApproveOnAllWorkItemsApproved": false,  // auto-promote once all work items are signed off
   "autoApproveWhenNoWorkItems": false          // auto-approve at create time when the payload has no work items
 }
@@ -387,6 +393,13 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
   snapshotted onto the candidate at creation, but *who is in a group* is always current-state.
 - **Gating is expressed by two orthogonal things**: the human approver tree (`steps[]` — an empty
   tree means no human gate) and the work-item flags below.
+- **Instance vs. overall**: a work item is per service, so by default a promotion of `mpt-helpdesk`
+  waits only for `mpt-helpdesk/MPT-1`. With `requireAllWorkItemInstancesApproved` it waits for the
+  ticket's **overall** status — every service's instance of `MPT-1` in the target environment
+  approved, none holding an issue or block. The overall status is what `GET /api/work-items/{key}/instances`
+  returns (and every instance page and queue row shows), so managers who read a ticket as
+  done-or-not and testers who sign off per service look at the same object. The flag only qualifies
+  the two gate flags below; on its own it changes nothing.
 - **Work-item gate**: when `requireAllWorkItemsApproved` is set and the candidate has work items,
   all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
   promotes automatically once every work item is approved, regardless of the human approver tree.

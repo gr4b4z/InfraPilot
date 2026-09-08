@@ -49,6 +49,11 @@ public record ResolvedPolicySnapshot(
     /// <inheritdoc cref="PromotionPolicy.RequireAllWorkItemsApproved"/>
     public bool RequireAllWorkItemsApproved { get; init; } = false;
 
+    /// <inheritdoc cref="PromotionPolicy.RequireAllWorkItemInstancesApproved"/>
+    /// <remarks>Defaults to <c>false</c> — the per-service gate — so snapshot JSON written before this
+    /// field existed keeps gating on the promotion's own instance.</remarks>
+    public bool RequireAllWorkItemInstancesApproved { get; init; } = false;
+
     /// <inheritdoc cref="PromotionPolicy.AutoApproveOnAllWorkItemsApproved"/>
     public bool AutoApproveOnAllWorkItemsApproved { get; init; } = false;
 

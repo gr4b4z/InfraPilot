@@ -217,6 +217,119 @@ public class PromotionGateTests
         }
     }
 
+    /// <summary>
+    /// RequireAllWorkItemInstancesApproved: the gate judges a ticket by its overall status across
+    /// every service carrying it, not by this promotion's own instance. Approving api/FOO-1 alone
+    /// leaves the api promotion Pending while web/FOO-1 is undecided; approving web/FOO-1 then
+    /// releases both, because the sign-off fans out to every pending candidate of the ticket.
+    /// </summary>
+    [Fact]
+    public async Task AllInstancesGate_WaitsForEveryServicesInstance_ThenPromotesAll()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid apiId, webId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, api) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "api");
+            var (_, _, web) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "web");
+            apiId = api.Id;
+            webId = web.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "api tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Own instance approved, sibling not: the ticket is 1 of 2, so neither gate opens.
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == webId)).Status);
+
+            var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
+            Assert.NotNull(overall);
+            Assert.Equal(WorkItemInstanceState.Pending, overall!.State);
+            Assert.Equal(2, overall.Instances);
+            Assert.Equal(1, overall.Approved);
+
+            // The promotion page explains the shortfall in the ticket's overall terms.
+            var promotion = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var progress = await promotion.GetApprovalProgressAsync(
+                await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId));
+            Assert.NotNull(progress.WorkItems);
+            Assert.True(progress.WorkItems!.AllInstances);
+            Assert.False(progress.WorkItems.Satisfied);
+            Assert.Equal(0, progress.WorkItems.Approved);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "web", "prod", "web tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal(PromotionStatus.Approved, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            Assert.Equal(PromotionStatus.Approved, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == webId)).Status);
+        }
+    }
+
+    /// <summary>
+    /// A hold on a sibling instance holds the ticket. With the all-instances gate, an Issue on
+    /// web/FOO-1 keeps the api promotion Pending even though api/FOO-1 is approved.
+    /// </summary>
+    [Fact]
+    public async Task AllInstancesGate_SiblingIssueHoldsThePromotion()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid apiId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, api) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "api");
+            await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "web");
+            apiId = api.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.RaiseIssueAsync("FOO-1", "acme", "web", "prod", "web is broken", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "api tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
+            Assert.Equal(WorkItemInstanceState.Issue, overall!.State);
+            Assert.Equal(1, overall.Issues);
+        }
+    }
+
     // ── 2. WorkItemsOnly_TwoTickets_DoesNotPromoteUntilAllApproved ────────────
 
     [Fact]
@@ -754,6 +867,7 @@ public class PromotionGateTests
             IEnumerable<string> workItemKeys,
             bool requireAllWorkItemsApproved = false,
             bool autoApproveOnAllWorkItemsApproved = false,
+            bool requireAllWorkItemInstancesApproved = false,
             string approverGroup = "ReleaseApprovers",
             string product = "acme",
             string service = "api",
@@ -768,7 +882,8 @@ public class PromotionGateTests
 
         var cand = NewCandidate(
             requireAllWorkItemsApproved, autoApproveOnAllWorkItemsApproved,
-            approverGroup, product, service, sourceEnv, targetEnv);
+            approverGroup, product, service, sourceEnv, targetEnv,
+            requireAllWorkItemInstancesApproved);
         if (createdAt is not null) cand.CreatedAt = createdAt.Value;
         db.PromotionCandidates.Add(cand);
 
@@ -825,7 +940,8 @@ public class PromotionGateTests
         string product = "acme",
         string service = "api",
         string sourceEnv = "staging",
-        string targetEnv = "prod")
+        string targetEnv = "prod",
+        bool requireAllWorkItemInstancesApproved = false)
     {
         // A single "any one member of <approverGroup>" requirement — the §8 rule-tree equivalent of
         // the legacy single-group / Strategy.Any / MinApprovers=1 policy. Gating on top of this
@@ -843,6 +959,7 @@ public class PromotionGateTests
             },
             RequireAllWorkItemsApproved = requireAllWorkItemsApproved,
             AutoApproveOnAllWorkItemsApproved = autoApproveOnAllWorkItemsApproved,
+            RequireAllWorkItemInstancesApproved = requireAllWorkItemInstancesApproved,
         };
 
         var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions

@@ -1444,8 +1444,9 @@ function PromotionApprovalCard({
     if (gate && gate.required && !gate.satisfied) {
       const outstanding = gate.total - gate.approved;
       const issues = (gate.issues ?? 0) > 0 ? `, ${gate.issues} flagged with issues` : '';
+      const scope = gate.allInstances ? ' on every service carrying it' : '';
       return (
-        `This promotion's policy requires every work item to be approved first. ` +
+        `This promotion's policy requires every work item to be approved${scope} first. ` +
         `${gate.approved} of ${gate.total} signed off${issues} — ` +
         `${outstanding} still outstanding. Sign them off from the work items below or the queue.`
       );
@@ -1866,7 +1867,11 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
                   ) : (
                     <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
                   )}
-                  <span className="truncate">All work items resolved</span>
+                  <span className="truncate">
+                    {workItemGate.allInstances
+                      ? 'All work items resolved on every service'
+                      : 'All work items resolved'}
+                  </span>
                 </span>
                 {workItemGate.autoApprove && (
                   <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>

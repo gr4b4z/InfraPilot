@@ -86,10 +86,10 @@ public static class WorkItemEndpoints
             });
         });
 
-        // The per-service instances of a ticket in one (product, targetEnv). This is the resolver
-        // for links minted before the service was part of the identity: the client asks which
-        // services carry the ticket, then goes to that instance (or offers the choice). Also useful
-        // in its own right — "where else is this ticket riding?" from any instance's page.
+        // The ticket across every service in one (product, targetEnv): each instance with its own
+        // sign-off state, plus the overall roll-up. Every instance page shows this, and it is the
+        // resolver for links minted before the service was part of the identity: the client asks
+        // which services carry the ticket, then goes to that instance (or offers the choice).
         group.MapGet("/{key}/instances", async (
             WorkItemApprovalService svc,
             EnvironmentAliasResolver environments,
@@ -100,13 +100,15 @@ public static class WorkItemEndpoints
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
             targetEnv = await environments.ResolveAsync(targetEnv, ct);
-            var instances = await svc.GetInstancesAsync(decoded, product, targetEnv, ct);
+            var overall = (await svc.GetOverallStatusAsync(decoded, product, targetEnv, ct))?.ToSummary();
             return Results.Ok(new
             {
                 workItemKey = decoded,
                 product,
                 targetEnv,
-                instances = instances.Select(i => new { service = i.Service, title = i.Title }),
+                // Null when no promotion has carried the ticket in that product/env.
+                overall,
+                instances = overall?.InstanceStatuses ?? Array.Empty<WorkItemInstanceSummary>(),
             });
         });
 
@@ -431,6 +433,10 @@ public static class WorkItemEndpoints
             createdAt = c.CreatedAt,
             isPrimary = c.IsPrimary,
         }),
+        // The ticket across every service carrying it in this product/env, and whether this
+        // promotion's gate waits for all of them (policy) or for this instance alone.
+        overall = d.Overall,
+        gateRequiresAllInstances = d.GateRequiresAllInstances,
     };
 }
 
