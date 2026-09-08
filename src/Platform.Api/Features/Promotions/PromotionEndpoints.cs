@@ -819,6 +819,13 @@ public static class PromotionEndpoints
         sourceEventReferences = Deployments.WorkItemDisplay.ApplyToReferences(
             sourceEventReferences ?? Array.Empty<ReferenceDto>()),
         canApprove,
+        // Whether approving is the last gate before the version is live. True (and the default for a
+        // candidate whose snapshot predates the flag) ⇒ the release automation deploys straight off
+        // the approval, so the approve button ships it; false ⇒ the run it starts stops at an
+        // approval outside InfraPortal. Read leniently: a display line is not worth failing the
+        // request over. See PromotionPolicy.DeploysOnApproval.
+        deploysOnApproval =
+            ResolvedPolicySnapshot.TryRead(c.ResolvedPolicyJson)?.DeploysOnApproval ?? true,
         // False ⇒ this edge creates no work items, so the UI drops the whole work-item affordance
         // (sign-off links, counts, completeness) and shows the references as change-set history only.
         tracksWorkItems = WorkItemRoleRequirements.TracksWorkItems(c),

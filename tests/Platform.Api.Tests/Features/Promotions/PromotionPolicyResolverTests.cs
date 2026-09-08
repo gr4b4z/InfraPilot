@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -163,5 +164,76 @@ public class PromotionPolicyResolverTests : IDisposable
         Assert.Equal(2, req.MinApprovers);
         Assert.Equal("leads", snap.EscalationGroup);
         Assert.False(snap.IsAutoApprove);
+        // Defaults, not "absent": every edge deploys off its approval unless a policy says otherwise.
+        Assert.True(snap.DeploysOnApproval);
     }
+
+    // ── DeploysOnApproval ─────────────────────────────────────────────────────
+    // Display-only, but it decides which of two opposite sentences the approve card shows, so a
+    // value that silently defaults the wrong way tells an approver their sign-off does not deploy
+    // when it does. Pinned at each of the three points it passes through: policy → snapshot,
+    // snapshot → JSON → snapshot, and JSON that predates the field.
+
+    [Fact]
+    public void Project_CarriesDeploysOnApprovalFalse()
+    {
+        var policy = new PromotionPolicy
+        {
+            Id = Guid.NewGuid(),
+            Product = "mpt",
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            ApprovalSteps = Steps("qa"),
+            DeploysOnApproval = false,
+        };
+
+        var snap = PromotionPolicyResolver.Project(policy);
+
+        Assert.False(snap.DeploysOnApproval);
+    }
+
+    [Fact]
+    public void Snapshot_SurvivesARoundTripThroughJson()
+    {
+        var policy = new PromotionPolicy
+        {
+            Id = Guid.NewGuid(),
+            Product = "mpt",
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            DeploysOnApproval = false,
+        };
+        var json = JsonSerializer.Serialize(PromotionPolicyResolver.Project(policy), SnapshotJson);
+
+        var read = ResolvedPolicySnapshot.TryRead(json);
+
+        Assert.NotNull(read);
+        Assert.False(read!.DeploysOnApproval);
+    }
+
+    [Fact]
+    public void TryRead_SnapshotJsonWithoutTheField_ReadsAsDeploysOnApproval()
+    {
+        // A candidate stamped before the flag existed. Its edge deployed off the approval then, so
+        // that is what it has to keep saying — the opposite default would have the page telling
+        // every historical approver to go and release it somewhere else.
+        var read = ResolvedPolicySnapshot.TryRead("""{"policyId":null,"approvalSteps":[]}""");
+
+        Assert.NotNull(read);
+        Assert.True(read!.DeploysOnApproval);
+    }
+
+    [Fact]
+    public void TryRead_NoSnapshotOrUnparseable_ReturnsNull()
+    {
+        Assert.Null(ResolvedPolicySnapshot.TryRead(null));
+        Assert.Null(ResolvedPolicySnapshot.TryRead(""));
+        Assert.Null(ResolvedPolicySnapshot.TryRead("{not json"));
+    }
+
+    private static readonly JsonSerializerOptions SnapshotJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+    };
 }

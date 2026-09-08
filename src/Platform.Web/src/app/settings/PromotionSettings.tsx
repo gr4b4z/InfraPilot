@@ -52,6 +52,7 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   autoApproveOnAllWorkItemsApproved: false,
   autoApproveWhenNoWorkItems: false,
   sourceRequiresDeploy: true,
+  deploysOnApproval: true,
   autoCreateFromBranches: [],
   approvedWebhookDelaySeconds: null,
 };
@@ -557,6 +558,7 @@ export function PromotionSettings() {
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
       autoApproveWhenNoWorkItems: p.autoApproveWhenNoWorkItems ?? false,
       sourceRequiresDeploy: p.sourceRequiresDeploy ?? true,
+      deploysOnApproval: p.deploysOnApproval ?? true,
       autoCreateFromBranches: [...(p.autoCreateFromBranches ?? [])],
       approvedWebhookDelaySeconds: p.approvedWebhookDelaySeconds ?? null,
     });
@@ -770,7 +772,19 @@ export function PromotionSettings() {
                           )}
                         </td>
                         <td className="py-2 pr-3">
-                          <PolicyEdge sourceEnv={p.sourceEnv} targetEnv={p.targetEnv} />
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <PolicyEdge sourceEnv={p.sourceEnv} targetEnv={p.targetEnv} />
+                            {/* Only the exception is chipped. "Deploys on approval" is the default and
+                               the majority, and a chip on nearly every row says nothing. */}
+                            {p.deploysOnApproval === false && (
+                              <Chip
+                                color="var(--info)"
+                                title="An approval here does not deploy: the run it starts stops at an approval outside InfraPortal"
+                              >
+                                external approval
+                              </Chip>
+                            )}
+                          </span>
                         </td>
                         <td className="py-2 pr-3">
                           <StepsSummary steps={p.steps} />
@@ -1231,6 +1245,49 @@ export function PromotionSettings() {
                       </div>
                     </div>
                   ))}
+                </div>
+
+                {/* ── What the approval releases ──
+                    Not a gate setting: it changes nothing about who approves or when the gate opens,
+                    only what InfraPortal tells the approver is about to happen. Kept next to the
+                    approval steps because that is the question it answers about them. */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    After approval
+                  </p>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.deploysOnApproval}
+                      onChange={(e) => setField('deploysOnApproval', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      An approval here deploys — this is the last gate
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Leave checked for edges the release automation deploys straight off the
+                        approval (the mpt-release path) — the promotion page then warns approvers that
+                        pressing Approve ships it. Uncheck for edges released by a pipeline that stops
+                        at an approval of its own, outside InfraPortal: the SDP pipeline (marketplace
+                        repo) queues a run whose staging and prod stages each wait on an Azure DevOps
+                        environment check, so the approval here is necessary but not sufficient.
+                        Display only — nothing about who approves, or when the gate opens, changes.
+                      </span>
+                    </span>
+                  </label>
                 </div>
 
                 {/* ── Work-item tracking ──

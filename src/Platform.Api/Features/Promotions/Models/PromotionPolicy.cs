@@ -136,6 +136,28 @@ public class PromotionPolicy
     /// </summary>
     public bool SourceRequiresDeploy { get; set; } = true;
 
+    // ── What an approval releases ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether an approval on this edge is the <b>last</b> gate before the version goes live.
+    ///
+    /// <para><c>true</c> (the default): the release automation acts on the approval and deploys —
+    /// nobody else has to say yes. This is the mpt-release path, where <c>promotion.approved</c>
+    /// leads straight to a deploy, so pressing Approve is effectively pressing Deploy.</para>
+    ///
+    /// <para><c>false</c>: approving hands the release to a pipeline that stops at an approval of
+    /// its own, outside InfraPortal. This is the SDP path (the marketplace repo): the approval cuts
+    /// a release branch and queues a deployment run whose staging and prod stages each wait on an
+    /// Azure DevOps environment check, so the target environment does not change until somebody
+    /// signs off there too.</para>
+    ///
+    /// <para>Display only — nothing in gate evaluation, dispatch or webhook delivery reads it. It
+    /// exists so an approver can be told which of the two they are about to do: "records my
+    /// sign-off" and "ships to production now" are very different questions to be answering, and
+    /// the promotion page could not previously tell them apart.</para>
+    /// </summary>
+    public bool DeploysOnApproval { get; set; } = true;
+
     // ── Build-registry auto-create ────────────────────────────────────────────
 
     /// <summary>

@@ -241,6 +241,7 @@ public static class PromotionAdminEndpoints
                 AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved,
                 AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems,
                 SourceRequiresDeploy = request.SourceRequiresDeploy,
+                DeploysOnApproval = request.DeploysOnApproval,
                 AutoCreateFromBranches = MapBranchPatterns(request.AutoCreateFromBranches),
                 ApprovedWebhookDelaySeconds = request.ApprovedWebhookDelaySeconds,
                 CreatedAt = now,
@@ -288,6 +289,7 @@ public static class PromotionAdminEndpoints
             policy.AutoApproveOnAllWorkItemsApproved = request.AutoApproveOnAllWorkItemsApproved;
             policy.AutoApproveWhenNoWorkItems = request.AutoApproveWhenNoWorkItems;
             policy.SourceRequiresDeploy = request.SourceRequiresDeploy;
+            policy.DeploysOnApproval = request.DeploysOnApproval;
             policy.AutoCreateFromBranches = MapBranchPatterns(request.AutoCreateFromBranches);
             policy.ApprovedWebhookDelaySeconds = request.ApprovedWebhookDelaySeconds;
             policy.UpdatedAt = DateTimeOffset.UtcNow;
@@ -366,6 +368,9 @@ public static class PromotionAdminEndpoints
         autoApproveOnAllWorkItemsApproved = p.AutoApproveOnAllWorkItemsApproved,
         autoApproveWhenNoWorkItems = p.AutoApproveWhenNoWorkItems,
         sourceRequiresDeploy = p.SourceRequiresDeploy,
+        // False ⇒ an approval here is not the last gate: the deployment run it starts stops at an
+        // approval outside InfraPortal. Display only — see PromotionPolicy.DeploysOnApproval.
+        deploysOnApproval = p.DeploysOnApproval,
         // Branch patterns that auto-create candidates from registered builds; empty ⇒ never.
         autoCreateFromBranches = p.AutoCreateFromBranches,
         approvedWebhookDelaySeconds = p.ApprovedWebhookDelaySeconds,
@@ -521,6 +526,13 @@ public record UpsertPolicyRequest(
     bool AutoApproveOnAllWorkItemsApproved = false,
     bool AutoApproveWhenNoWorkItems = false,
     bool SourceRequiresDeploy = true,
+    /// <summary>
+    /// Whether an approval on this edge is the last gate before the version goes live. Defaults to
+    /// <c>true</c> (the release automation deploys straight off the approval) so a caller that omits
+    /// it — or predates the field — keeps describing the automatic path. See
+    /// <see cref="PromotionPolicy.DeploysOnApproval"/>.
+    /// </summary>
+    bool DeploysOnApproval = true,
     /// <summary>
     /// Branch patterns (full refs, <c>*</c> wildcards) for which registered builds auto-create a
     /// candidate on this edge. Only meaningful when <c>SourceEnv</c> is the synthetic
