@@ -228,12 +228,11 @@ export function WorkItemDetailPage() {
   }, [workItemKey, service, product, targetEnv]);
 
   // Sign-offs, comments and promotion changes from other sessions land here live. Promotion
-  // events don't carry the work-item key, so only work-item events are narrowed by it — and by
-  // service, since the same ticket on a sibling service is somebody else's page.
+  // events don't carry the work-item key, so only work-item events are narrowed by it. Deliberately
+  // NOT narrowed by service: a sign-off on a sibling instance changes this page's overall status,
+  // which rides in the same detail payload, so the whole page reloads rather than a row of it.
   const realtimeTick = useEntityRefresh(['work-item', 'promotion'], {
-    filter: (evt) =>
-      evt.entity === 'promotion'
-      || ((!evt.key || evt.key === workItemKey) && (!evt.service || evt.service === service)),
+    filter: (evt) => evt.entity === 'promotion' || !evt.key || evt.key === workItemKey,
   });
 
   useEffect(() => {
@@ -488,9 +487,12 @@ export function WorkItemDetailPage() {
  * through MPT-1 reaches every copy from here; a manager reads whether the ticket is done without
  * caring which service is which.
  *
- * Seeded from the detail payload and kept live on its own: a sign-off on a sibling instance is a
- * work-item event for the same key on another service, which the page's own refresh deliberately
- * ignores, so this row listens for it separately. A failure here must not blank the page.
+ * Rendered straight from the detail payload — no state of its own. It used to seed a local copy
+ * once and refetch on its own, which went stale in two ways: moving between sibling instances keeps
+ * this component mounted with the same key/product/env, so its effect never re-ran and the old
+ * copy stayed on screen; and the page's own reload after a sign-off never reached it. The detail is
+ * reloaded on navigation, after every mutation and on any work-item event for this key, and the
+ * roll-up comes with it, so deriving from props is both simpler and always current.
  */
 function InstancesRow({
   workItemKey,
@@ -498,7 +500,7 @@ function InstancesRow({
   service,
   targetEnv,
   fromCandidateId,
-  overall: initial,
+  overall,
   gateRequiresAllInstances,
 }: {
   workItemKey: string;
@@ -509,28 +511,6 @@ function InstancesRow({
   overall: WorkItemOverallStatus | null;
   gateRequiresAllInstances: boolean;
 }) {
-  const [overall, setOverall] = useState<WorkItemOverallStatus | null>(initial);
-
-  // Sibling instances change on their own pages; the same key on any service is this row's business.
-  const siblingTick = useEntityRefresh(['work-item'], {
-    filter: (evt) => !evt.key || evt.key === workItemKey,
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getWorkItemInstances(workItemKey, product, targetEnv)
-      .then((res) => {
-        if (!cancelled) setOverall(res.overall);
-      })
-      .catch(() => {
-        /* keep whatever we have — the detail payload seeded it */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workItemKey, product, targetEnv, siblingTick]);
-
   const instances = overall?.instanceStatuses ?? [];
   if (instances.length <= 1) return null;
 
