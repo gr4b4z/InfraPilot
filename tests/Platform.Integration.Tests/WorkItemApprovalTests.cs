@@ -948,6 +948,13 @@ public class WorkItemApprovalTests
             Assert.All(queue.Tickets, t => Assert.Equal("FOO-1", t.WorkItemKey));
             Assert.All(queue.Tickets, t => Assert.Equal(1, t.BlockingPromotions));
             Assert.Equal(new[] { "a", "b" }, queue.Tickets.Select(t => t.Service).OrderBy(x => x));
+            // Each row carries the ticket's roll-up across both services.
+            Assert.All(queue.Tickets, t =>
+            {
+                Assert.NotNull(t.Overall);
+                Assert.Equal(2, t.Overall!.Instances);
+                Assert.Equal("Pending", t.Overall.State);
+            });
 
             // Signing off a/FOO-1 says nothing about b/FOO-1.
             await svc.ApproveAsync("FOO-1", "acme", "a", "prod", "a is fine", default);
@@ -969,9 +976,21 @@ public class WorkItemApprovalTests
             Assert.Single(await svc.GetCommentsAsync("FOO-1", "acme", "a", "prod", default));
             Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "b", "prod", default));
 
-            // And the resolver for pre-service links names both.
-            var instances = await svc.GetInstancesAsync("FOO-1", "acme", "prod", default);
-            Assert.Equal(new[] { "a", "b" }, instances.Select(i => i.Service));
+            // The overall status names both instances with their own state, and rolls them up: one
+            // approved of two is still Pending as a ticket.
+            var overall = await svc.GetOverallStatusAsync("FOO-1", "acme", "prod", default);
+            Assert.NotNull(overall);
+            Assert.Equal(new[] { "a", "b" }, overall!.InstanceStatuses.Select(i => i.Service));
+            Assert.Equal(WorkItemInstanceState.Approved, overall.InstanceStatuses[0].State);
+            Assert.Equal(WorkItemInstanceState.Pending, overall.InstanceStatuses[1].State);
+            Assert.Equal(WorkItemInstanceState.Pending, overall.State);
+            Assert.Equal(1, overall.Approved);
+
+            // And the detail of either instance carries it.
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "b", "prod", default);
+            Assert.Equal("Pending", detail!.Overall!.State);
+            Assert.Equal(2, detail.Overall.Instances);
+            Assert.False(detail.GateRequiresAllInstances);
         }
     }
 

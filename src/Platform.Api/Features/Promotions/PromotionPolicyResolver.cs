@@ -97,6 +97,7 @@ public class PromotionPolicyResolver
             TracksWorkItems = policy.TracksWorkItems,
             RequiredWorkItemRoles = policy.RequiredWorkItemRoles,
             RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
+            RequireAllWorkItemInstancesApproved = policy.RequireAllWorkItemInstancesApproved,
             AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
             AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
             SourceRequiresDeploy = policy.SourceRequiresDeploy,

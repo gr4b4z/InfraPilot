@@ -844,6 +844,11 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<bool>("RequireAllWorkItemInstancesApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("RequireAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")

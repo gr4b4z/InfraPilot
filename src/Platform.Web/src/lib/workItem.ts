@@ -1,4 +1,9 @@
-import type { PromotionSourceEventParticipant, WorkItemDecision } from '@/lib/api';
+import type {
+  PromotionSourceEventParticipant,
+  WorkItemDecision,
+  WorkItemInstanceState,
+  WorkItemOverallStatus,
+} from '@/lib/api';
 import { roleDisplay } from '@/lib/roleLabel';
 
 /**
@@ -225,4 +230,30 @@ export function decisionStyle(decision: WorkItemDecision): {
         bg: 'var(--danger-bg)',
       };
   }
+}
+
+/**
+ * Presentation for an instance's (or the overall) sign-off state. Decided states reuse
+ * {@link decisionStyle} so a chip on the instances row matches the badge on the page it links to;
+ * Pending takes the warning palette the queue already uses for "not signed off yet".
+ */
+export function instanceStateStyle(state: WorkItemInstanceState): { label: string; color: string; bg: string } {
+  if (state === 'Pending') {
+    return { label: 'Pending', color: 'var(--warning)', bg: 'var(--warning-bg)' };
+  }
+  const s = decisionStyle(state);
+  return { label: s.label, color: s.color, bg: s.bg };
+}
+
+/**
+ * One line for the ticket's roll-up across services: "2 of 3 services approved", with the holds
+ * named because they are what somebody has to go and clear ("1 of 3 services approved · 1 issue ·
+ * 1 blocked"). Empty for a single-instance ticket, where the instance's own state says it all.
+ */
+export function overallSummaryLabel(overall: WorkItemOverallStatus | null | undefined): string {
+  if (!overall || overall.instances <= 1) return '';
+  const parts = [`${overall.approved} of ${overall.instances} services approved`];
+  if (overall.issues > 0) parts.push(`${overall.issues} issue${overall.issues === 1 ? '' : 's'}`);
+  if (overall.blocked > 0) parts.push(`${overall.blocked} blocked`);
+  return parts.join(' · ');
 }

@@ -501,6 +501,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             if (jsonType != null) requiredRolesJson.HasColumnType(jsonType);
             e.Ignore(x => x.RequiredWorkItemRoles);
             e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.RequireAllWorkItemInstancesApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
             // Default TRUE: pre-existing edges keep requiring a source deploy event.

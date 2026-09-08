@@ -844,6 +844,11 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<bool>("RequireAllWorkItemInstancesApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("RequireAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")

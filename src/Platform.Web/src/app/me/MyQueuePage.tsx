@@ -21,7 +21,12 @@ import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
-import { decisionStyle, workItemDetailPath } from '@/lib/workItem';
+import {
+  decisionStyle,
+  instanceStateStyle,
+  overallSummaryLabel,
+  workItemDetailPath,
+} from '@/lib/workItem';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -1078,6 +1083,20 @@ function TicketRow({
                 title={`Referenced by ${ticket.blockingPromotions} pending promotion candidates`}
               >
                 ×{ticket.blockingPromotions}
+              </span>
+            )}
+            {/* The ticket as a whole when it ships in several services: this row is one service's
+                instance, the chip says how far the ticket is across all of them. */}
+            {ticket.overall && ticket.overall.instances > 1 && (
+              <span
+                className="badge shrink-0"
+                style={{
+                  backgroundColor: instanceStateStyle(ticket.overall.state).bg,
+                  color: instanceStateStyle(ticket.overall.state).color,
+                }}
+                title={`${ticket.workItemKey} across all services: ${overallSummaryLabel(ticket.overall)}`}
+              >
+                {ticket.overall.approved}/{ticket.overall.instances} services
               </span>
             )}
             {orphaned && (
