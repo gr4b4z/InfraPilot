@@ -1,4 +1,4 @@
-﻿using System.Data.Common;
+using System.Data.Common;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -59,7 +59,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "ship it", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "ship it", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -126,7 +126,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.RaiseIssueAsync("FOO-1", "acme", "prod", "waiting on test data", default);
+            await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", "waiting on test data", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -151,7 +151,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "resolved", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "resolved", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -168,31 +168,39 @@ public class PromotionGateTests
     [Fact]
     public async Task SharedTicket_ApproveOnce_AutoPromotesEveryCandidateCarryingIt()
     {
-        // The same ticket (FOO-1) backs two Pending candidates in acme/prod (different services).
-        // WorkItemApproval is keyed by (key, product, targetEnv), so ONE sign-off counts for both —
-        // and the sign-off must re-evaluate BOTH gates, not just the one the row was attributed to.
+        // The same ticket (FOO-1) backs two Pending candidates of the SAME service in acme/prod (two
+        // source edges). WorkItemApproval is keyed by (key, product, service, targetEnv), so ONE
+        // sign-off counts for both — and the sign-off must re-evaluate BOTH gates, not just the one
+        // the row was attributed to. A third candidate carries the ticket on ANOTHER service: that is
+        // a different work item, and the sign-off must leave its gate alone.
         await using var factory = new GateTestFactory();
         factory.Current.Email = "qa@example.com";
         factory.Current.Name = "QA";
         factory.Current.RolesList = new() { "InfraPortal.QA" };
 
-        Guid candA, candB;
+        Guid candA, candB, candOther;
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var (_, _, a) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
-                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true, service: "api");
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "api", sourceEnv: "staging");
             var (_, _, b) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
-                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true, service: "web");
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "api", sourceEnv: "uat");
+            var (_, _, other) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "web");
             candA = a.Id;
             candB = b.Id;
+            candOther = other.Id;
         }
 
-        // Sign the ticket off once.
+        // Sign api/FOO-1 off once.
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "ship it", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "ship it", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -200,9 +208,12 @@ public class PromotionGateTests
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var a = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candA);
             var b = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candB);
-            // Both gates satisfied by the single shared approval → both auto-promoted.
+            var other = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candOther);
+            // Both api gates satisfied by the single shared approval → both auto-promoted.
             Assert.Equal(PromotionStatus.Approved, a.Status);
             Assert.Equal(PromotionStatus.Approved, b.Status);
+            // web/FOO-1 is a separate work item nobody has signed off.
+            Assert.Equal(PromotionStatus.Pending, other.Status);
         }
     }
 
@@ -229,7 +240,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -244,7 +255,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-2", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-2", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -357,7 +368,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.BlockAsync("FOO-1", "acme", "prod", "not ready", default);
+            await svc.BlockAsync("FOO-1", "acme", "api", "prod", "not ready", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -413,7 +424,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -501,7 +512,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -543,7 +554,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "noted", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "noted", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -613,7 +624,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("T1", "acme", "prod", null, default);
+            await svc.ApproveAsync("T1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -629,7 +640,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("T2", "acme", "prod", null, default);
+            await svc.ApproveAsync("T2", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -670,7 +681,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var row = await svc.ApproveAsync("ORPH-1", "acme", "prod", null, default);
+            var row = await svc.ApproveAsync("ORPH-1", "acme", "api", "prod", null, default);
             Assert.Equal(WorkItemDecision.Approved, row.Decision);
         }
 
@@ -711,7 +722,7 @@ public class PromotionGateTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.ApproveAsync("NOPE-1", "acme", "prod", null, default));
+                svc.ApproveAsync("NOPE-1", "acme", "api", "prod", null, default));
             Assert.Contains("not known", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
 
@@ -773,6 +784,7 @@ public class PromotionGateTests
                 CandidateId = cand.Id,
                 WorkItemKey = key,
                 Product = product,
+                Service = service,
                 TargetEnv = targetEnv,
                 CreatedAt = DateTimeOffset.UtcNow,
             };

@@ -512,7 +512,7 @@ public class EnvironmentMergeService
     }
 
     /// <summary>
-    /// Ticket sign-offs, unique on <c>(WorkItemKey, Product, TargetEnv, ApproverEmail)</c>. An
+    /// Ticket sign-offs, unique on <c>(WorkItemKey, Product, Service, TargetEnv, ApproverEmail)</c>. An
     /// approver who signed the same ticket off against both names already has a decision that applies
     /// to the target; the duplicate stays where it is rather than overwriting it, because the two can
     /// disagree (approved under one name, rejected under the other) and picking a winner is not this
@@ -524,12 +524,12 @@ public class EnvironmentMergeService
         var conflicts = await _db.WorkItemApprovals.CountAsync(
             a => a.TargetEnv == from
               && _db.WorkItemApprovals.Any(t => t.WorkItemKey == a.WorkItemKey && t.Product == a.Product
-                  && t.TargetEnv == into && t.ApproverEmail == a.ApproverEmail), ct);
+                  && t.Service == a.Service && t.TargetEnv == into && t.ApproverEmail == a.ApproverEmail), ct);
 
         var moved = await MoveAsync(
             _db.WorkItemApprovals.Where(a => a.TargetEnv == from
                 && !_db.WorkItemApprovals.Any(t => t.WorkItemKey == a.WorkItemKey && t.Product == a.Product
-                    && t.TargetEnv == into && t.ApproverEmail == a.ApproverEmail)),
+                    && t.Service == a.Service && t.TargetEnv == into && t.ApproverEmail == a.ApproverEmail)),
             (rows, c) => rows.ExecuteUpdateAsync(s => s.SetProperty(a => a.TargetEnv, into), c),
             apply, ct);
 

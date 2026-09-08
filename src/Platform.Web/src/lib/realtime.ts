@@ -20,6 +20,8 @@ export interface EntityChangedEvent {
   id?: string | null;
   key?: string | null;
   product?: string | null;
+  /** Work-item events: the service half of the work item's identity. */
+  service?: string | null;
   environment?: string | null;
   timestamp?: string;
 }

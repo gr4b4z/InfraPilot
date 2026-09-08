@@ -464,6 +464,13 @@ function RemapPanel({ row, onApplied }: { row: ServiceProductOverride; onApplied
               </span>
             )}
           </li>
+          {(shown.ticketApprovals > 0 || shown.ticketComments > 0) && (
+            <li>
+              <strong>{shown.ticketApprovals}</strong> work-item sign-off
+              {shown.ticketApprovals === 1 ? '' : 's'}
+              {shown.ticketComments > 0 && <> (+{shown.ticketComments} thread entries)</>}
+            </li>
+          )}
           {(shown.retirements > 0 || shown.retirementMerges > 0) && (
             <li>
               <strong>{shown.retirements + shown.retirementMerges}</strong> retirement record
@@ -477,10 +484,9 @@ function RemapPanel({ row, onApplied }: { row: ServiceProductOverride; onApplied
       {shown.strandedTicketApprovals > 0 && (
         <p className="text-[13px]" style={{ color: 'var(--warning, #d97706)' }}>
           {shown.strandedTicketApprovals} recorded ticket approval
-          {shown.strandedTicketApprovals === 1 ? '' : 's'} will stay under the old product. Approvals
-          are keyed on ticket, product and target environment with no service, so a ticket covering
-          more than one service can't be reassigned safely. A promotion still awaiting deployment may
-          need approving again — prefer moving history when nothing is in flight.
+          {shown.strandedTicketApprovals === 1 ? '' : 's'} will stay under the old product. These
+          were recorded before work items were tracked per service and were never attributed to
+          one, so a ticket covering more than one service can&rsquo;t be reassigned safely.
         </p>
       )}
 

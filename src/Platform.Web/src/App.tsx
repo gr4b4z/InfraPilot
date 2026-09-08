@@ -19,7 +19,7 @@ import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
 import { MyQueuePage } from '@/app/me/MyQueuePage';
 import { MyTasksPage } from '@/app/me/MyTasksPage';
-import { WorkItemDetailPage } from '@/app/work-items/WorkItemDetailPage';
+import { WorkItemDetailPage, LegacyWorkItemRedirect } from '@/app/work-items/WorkItemDetailPage';
 import { SettingsPage } from '@/app/settings/SettingsPage';
 import { EnvironmentsSettings } from '@/app/settings/EnvironmentsSettings';
 import { RolesSettings } from '@/app/settings/RolesSettings';
@@ -105,9 +105,12 @@ function App() {
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — work items awaiting the current user's signoff across products/envs. */}
           <Route path="/me/work-items" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
-          {/* Work-item detail. The sign-off grain is (key, product, targetEnv), so product and
-              targetEnv ride along as query params rather than as extra path segments. */}
-          <Route path="/work-items/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><WorkItemDetailPage /></FeatureRoute>} />
+          {/* Work-item detail. The sign-off grain is (key, product, service, targetEnv): the service
+              is a path segment (it names which service's change this is), product and targetEnv ride
+              along as query params. The single-segment form is what links looked like before the
+              service joined the identity; it resolves to the right instance (or offers a choice). */}
+          <Route path="/work-items/:service/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><WorkItemDetailPage /></FeatureRoute>} />
+          <Route path="/work-items/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><LegacyWorkItemRedirect /></FeatureRoute>} />
           <Route path="/rollbacks" element={<FeatureRoute flag={FeatureFlag.Rollbacks}><RollbacksPage /></FeatureRoute>} />
           <Route path="/release-notes" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesIndexPage /></FeatureRoute>} />
           <Route path="/release-notes/:product" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesPage /></FeatureRoute>} />

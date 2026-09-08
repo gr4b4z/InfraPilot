@@ -450,6 +450,7 @@ public class AnalyticsEndpointsTests : IClassFixture<AnalyticsEndpointsTests.Ana
                 CandidateId = candidate.Id,
                 WorkItemKey = key,
                 Product = product,
+                Service = service,
                 TargetEnv = targetEnv,
                 CreatedAt = candidate.CreatedAt,
             });

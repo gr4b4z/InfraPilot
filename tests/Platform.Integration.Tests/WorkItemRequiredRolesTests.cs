@@ -90,14 +90,14 @@ public class WorkItemRequiredRolesTests
         var candidateId = await CreatePromotionAsync(
             product, "svc-detail", "DETAIL-1", referenceParticipants: null);
 
-        var before = await GetDetailAsync("DETAIL-1", product);
+        var before = await GetDetailAsync("DETAIL-1", product, "svc-detail");
         Assert.Equal(new[] { QaOwnerRole }, Strings(before, "requiredRoles"));
         Assert.Equal(new[] { QaOwnerRole }, Strings(before, "missingRoles"));
 
         // Assigning somebody to the role is what resolves it — the same write the UI's Assign performs.
         await AssignAsync(candidateId, "DETAIL-1", QaOwnerRole, "other@example.com", "Other");
 
-        var after = await GetDetailAsync("DETAIL-1", product);
+        var after = await GetDetailAsync("DETAIL-1", product, "svc-detail");
         Assert.Empty(Strings(after, "missingRoles"));
         Assert.Equal(new[] { QaOwnerRole }, Strings(after, "requiredRoles"));
     }
@@ -136,7 +136,7 @@ public class WorkItemRequiredRolesTests
         var gap = Assert.Single(RoleGaps((await ListCandidatesAsync(product))[candidateId]));
         Assert.Equal("DECIDED-1", gap.WorkItemKey);
 
-        await SignOffAsync("DECIDED-1", product);
+        await SignOffAsync("DECIDED-1", product, "svc-decided-list");
 
         Assert.Empty(RoleGaps((await ListCandidatesAsync(product))[candidateId]));
     }
@@ -152,7 +152,7 @@ public class WorkItemRequiredRolesTests
 
         Assert.Single(RoleGaps(await GetCandidateAsync(candidateId)));
 
-        await SignOffAsync("DECIDEDDETAIL-1", product);
+        await SignOffAsync("DECIDEDDETAIL-1", product, "svc-decided-detail");
 
         Assert.Empty(RoleGaps(await GetCandidateAsync(candidateId)));
     }
@@ -171,7 +171,7 @@ public class WorkItemRequiredRolesTests
         // A different reviewer decides, so the row isn't dropped by the "I already decided this"
         // rule the pending queue has always applied.
         using var qa = CreateAuthenticatedClient("qa@localhost", "qa123");
-        await SignOffAsync("QDECIDED-1", product, client: qa);
+        await SignOffAsync("QDECIDED-1", product, "svc-q-decided", client: qa);
 
         Assert.DoesNotContain("QDECIDED-1", await GetPendingAsync(roleRequirement: "missing"));
         // Still in the queue at large — somebody else's sign-off doesn't retire the row, it just
@@ -194,8 +194,8 @@ public class WorkItemRequiredRolesTests
         await CreatePromotionAsync(product, "svc-q-block", "QBLOCK-1", referenceParticipants: null);
 
         using var qa = CreateAuthenticatedClient("qa@localhost", "qa123");
-        await DecideAsync(qa, "QISSUE-1", product, "issues");
-        await DecideAsync(qa, "QBLOCK-1", product, "blocks");
+        await DecideAsync(qa, "QISSUE-1", product, "svc-q-issue", "issues");
+        await DecideAsync(qa, "QBLOCK-1", product, "svc-q-block", "blocks");
 
         var missing = await GetPendingAsync(roleRequirement: "missing");
         Assert.DoesNotContain("QISSUE-1", missing);
@@ -212,11 +212,11 @@ public class WorkItemRequiredRolesTests
 
         Assert.Equal(
             new[] { QaOwnerRole },
-            Strings(await GetDetailAsync("DECIDEDPAGE-1", product), "missingRoles"));
+            Strings(await GetDetailAsync("DECIDEDPAGE-1", product, "svc-decided-page"), "missingRoles"));
 
-        await SignOffAsync("DECIDEDPAGE-1", product);
+        await SignOffAsync("DECIDEDPAGE-1", product, "svc-decided-page");
 
-        var after = await GetDetailAsync("DECIDEDPAGE-1", product);
+        var after = await GetDetailAsync("DECIDEDPAGE-1", product, "svc-decided-page");
         Assert.Empty(Strings(after, "missingRoles"));
         // The requirement itself is unchanged — the page still names the role, it just stops warning.
         Assert.Equal(new[] { QaOwnerRole }, Strings(after, "requiredRoles"));
@@ -230,7 +230,7 @@ public class WorkItemRequiredRolesTests
         await SeedPolicyAsync(product, requiredRoles: new[] { QaOwnerRole });
         await CreatePromotionAsync(product, "svc-history", "HISTORY-1", referenceParticipants: null);
 
-        await SignOffAsync("HISTORY-1", product);
+        await SignOffAsync("HISTORY-1", product, "svc-history");
 
         var resp = await _adminClient.GetAsync("/api/work-items/me/pending?status=decided");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
@@ -400,7 +400,7 @@ public class WorkItemRequiredRolesTests
         Assert.DoesNotContain("UNTRACKED-1", await GetPendingAsync(roleRequirement: null));
         Assert.DoesNotContain("UNTRACKED-1", await GetPendingAsync(roleRequirement: "missing"));
         var detail = await _adminClient.GetAsync(
-            $"/api/work-items/UNTRACKED-1/detail?product={Uri.EscapeDataString(product)}&targetEnv=prod");
+            $"/api/work-items/UNTRACKED-1/detail?product={Uri.EscapeDataString(product)}&service=svc-untracked&targetEnv=prod");
         Assert.Equal(HttpStatusCode.NotFound, detail.StatusCode);
 
         // The promotion still records what it carries, and says the edge isn't tracked. Role
@@ -524,11 +524,11 @@ public class WorkItemRequiredRolesTests
             .ToDictionary(c => c.GetProperty("id").GetString()!, c => c);
     }
 
-    private async Task<JsonElement> GetDetailAsync(string key, string product)
+    private async Task<JsonElement> GetDetailAsync(string key, string product, string service)
     {
         var resp = await _adminClient.GetAsync(
             $"/api/work-items/{Uri.EscapeDataString(key)}/detail"
-            + $"?product={Uri.EscapeDataString(product)}&targetEnv=prod");
+            + $"?product={Uri.EscapeDataString(product)}&service={Uri.EscapeDataString(service)}&targetEnv=prod");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         return await Deserialize(resp);
     }
@@ -542,19 +542,19 @@ public class WorkItemRequiredRolesTests
     }
 
     /// <summary>Records an approval on a work item — the sign-off the UI's Approve performs.</summary>
-    private Task SignOffAsync(string key, string product, HttpClient? client = null)
-        => DecideAsync(client ?? _adminClient, key, product, "approvals");
+    private Task SignOffAsync(string key, string product, string service, HttpClient? client = null)
+        => DecideAsync(client ?? _adminClient, key, product, service, "approvals");
 
     /// <summary>
     /// Records one work-item decision. <paramref name="route"/> is the decision kind:
     /// <c>approvals</c>, <c>issues</c> or <c>blocks</c>.
     /// </summary>
     private static async Task DecideAsync(
-        HttpClient client, string key, string product, string route)
+        HttpClient client, string key, string product, string service, string route)
     {
         var resp = await client.PostAsJsonAsync(
             $"/api/work-items/{Uri.EscapeDataString(key)}/{route}",
-            new { product, targetEnv = "prod", comment = "decided in test" });
+            new { product, service, targetEnv = "prod", comment = "decided in test" });
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 

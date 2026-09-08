@@ -1,4 +1,4 @@
-﻿using System.Data.Common;
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -60,7 +60,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var row = await svc.ApproveAsync("FOO-123", "acme", "prod", "looks good", default);
+            var row = await svc.ApproveAsync("FOO-123", "acme", "api", "prod", "looks good", default);
             Assert.NotEqual(Guid.Empty, row.Id);
             Assert.Equal("FOO-123", row.WorkItemKey);
             Assert.Equal("acme", row.Product);
@@ -107,7 +107,7 @@ public class WorkItemApprovalTests
         using var scope = factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.ApproveAsync("FOO-999", "acme", "prod", null, default));
+            svc.ApproveAsync("FOO-999", "acme", "api", "prod", null, default));
         Assert.Contains("not known", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -130,6 +130,7 @@ public class WorkItemApprovalTests
                 Id = Guid.NewGuid(),
                 WorkItemKey = "FOO-1",
                 Product = "acme",
+                Service = "api",
                 TargetEnv = "prod",
                 ApproverEmail = "approver@example.com",
                 ApproverName = "Approver User",
@@ -143,7 +144,7 @@ public class WorkItemApprovalTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.ApproveAsync("FOO-1", "acme", "prod", null, default));
+                svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default));
             Assert.Contains("already", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -172,7 +173,7 @@ public class WorkItemApprovalTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
-                svc.ApproveAsync("FOO-1", "acme", "prod", null, default));
+                svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default));
             // Work-item sign-off is the QA role's jurisdiction: a user without QA/Admin (here just
             // InfraPortal.User) is refused, regardless of promotion approver-group membership.
             Assert.Contains("QA", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -198,7 +199,7 @@ public class WorkItemApprovalTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.ApproveAsync("FOO-1", "acme", "prod", null, default));
+                svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default));
             Assert.Contains("auto-approve", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -232,7 +233,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -264,7 +265,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var row = await svc.BlockAsync("FOO-1", "acme", "prod", "not going out", default);
+            var row = await svc.BlockAsync("FOO-1", "acme", "api", "prod", "not going out", default);
             Assert.Equal(WorkItemDecision.Blocked, row.Decision);
         }
 
@@ -298,7 +299,7 @@ public class WorkItemApprovalTests
                 new WorkItemApproval
                 {
                     Id = Guid.NewGuid(),
-                    WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
+                    WorkItemKey = "FOO-1", Product = "acme", Service = "api", TargetEnv = "prod",
                     ApproverEmail = "alice@example.com", ApproverName = "Alice",
                     Decision = WorkItemDecision.Approved,
                     CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
@@ -306,7 +307,7 @@ public class WorkItemApprovalTests
                 new WorkItemApproval
                 {
                     Id = Guid.NewGuid(),
-                    WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
+                    WorkItemKey = "FOO-1", Product = "acme", Service = "api", TargetEnv = "prod",
                     ApproverEmail = "bob@example.com", ApproverName = "Bob",
                     Decision = WorkItemDecision.Approved,
                     CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
@@ -317,7 +318,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ctx = await svc.GetTicketContextAsync("FOO-1", "acme", "prod", default);
+            var ctx = await svc.GetTicketContextAsync("FOO-1", "acme", "api", "prod", default);
             Assert.Equal(2, ctx.Approvals.Count);
             Assert.True(ctx.CanApprove);
             Assert.Null(ctx.BlockedReason);
@@ -345,7 +346,7 @@ public class WorkItemApprovalTests
             db.WorkItemApprovals.Add(new WorkItemApproval
             {
                 Id = Guid.NewGuid(),
-                WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
+                WorkItemKey = "FOO-1", Product = "acme", Service = "api", TargetEnv = "prod",
                 ApproverEmail = "me@example.com", ApproverName = "Me",
                 Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -356,7 +357,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ctx = await svc.GetTicketContextAsync("FOO-1", "acme", "prod", default);
+            var ctx = await svc.GetTicketContextAsync("FOO-1", "acme", "api", "prod", default);
             Assert.True(ctx.CanApprove);
             Assert.Null(ctx.BlockedReason);
             Assert.Equal("Approved", ctx.MyDecision);
@@ -389,7 +390,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var row = await svc.RaiseIssueAsync("FOO-1", "acme", "prod", "waiting on test data", default);
+            var row = await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", "waiting on test data", default);
             Assert.Equal(WorkItemDecision.Issue, row.Decision);
             Assert.Null(row.UpdatedAt);
         }
@@ -426,7 +427,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var raised = await svc.RaiseIssueAsync("FOO-1", "acme", "prod", "needs a fix", default);
+            var raised = await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", "needs a fix", default);
             rowId = raised.Id;
 
             // Read CreatedAt back from storage rather than trusting the in-memory value: SQLite
@@ -439,7 +440,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var approved = await svc.ApproveAsync("FOO-1", "acme", "prod", "unblocked", default);
+            var approved = await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "unblocked", default);
             Assert.Equal(rowId, approved.Id);
             Assert.Equal(WorkItemDecision.Approved, approved.Decision);
             Assert.Equal("unblocked", approved.Comment);
@@ -473,14 +474,14 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.RaiseIssueAsync("FOO-1", "acme", "prod", null, default);
+            await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.RaiseIssueAsync("FOO-1", "acme", "prod", null, default));
+                svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", null, default));
             Assert.Contains("already", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -500,7 +501,7 @@ public class WorkItemApprovalTests
 
         var client = factory.CreateAdminClient();
         var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/blocks",
-            new { product = "acme", targetEnv = "prod", comment = "on hold" });
+            new { product = "acme", service = "api", targetEnv = "prod", comment = "on hold" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await Deserialize(response);
         Assert.Equal("Blocked", body.GetProperty("decision").GetString());
@@ -518,7 +519,7 @@ public class WorkItemApprovalTests
         using var scope = factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
-            svc.AddCommentAsync("NOPE-1", "acme", "prod", "hello", default));
+            svc.AddCommentAsync("NOPE-1", "acme", "api", "prod", "hello", default));
     }
 
     [Fact]
@@ -539,7 +540,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var created = await svc.AddCommentAsync("FOO-1", "acme", "prod", "  needs a retest  ", default);
+            var created = await svc.AddCommentAsync("FOO-1", "acme", "api", "prod", "  needs a retest  ", default);
             commentId = created.Id;
             Assert.Equal("needs a retest", created.Body);
             Assert.Equal("qa@example.com", created.AuthorEmail);
@@ -553,18 +554,18 @@ public class WorkItemApprovalTests
             Assert.Equal("retested, fine", updated.Body);
             Assert.NotNull(updated.UpdatedAt);
 
-            var thread = await svc.GetCommentsAsync("FOO-1", "acme", "prod", default);
+            var thread = await svc.GetCommentsAsync("FOO-1", "acme", "api", "prod", default);
             Assert.Single(thread);
 
             // A different env is a different thread.
-            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "staging", default));
+            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "api", "staging", default));
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             await svc.DeleteCommentAsync(commentId, default);
-            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "prod", default));
+            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "api", "prod", default));
         }
     }
 
@@ -585,7 +586,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            commentId = (await svc.AddCommentAsync("FOO-1", "acme", "prod", "mine", default)).Id;
+            commentId = (await svc.AddCommentAsync("FOO-1", "acme", "api", "prod", "mine", default)).Id;
         }
 
         factory.Current.Email = "someone-else@example.com";
@@ -607,7 +608,7 @@ public class WorkItemApprovalTests
 
         using var scope = factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-        Assert.Null(await svc.GetDetailAsync("NOPE-1", "acme", "prod", default));
+        Assert.Null(await svc.GetDetailAsync("NOPE-1", "acme", "api", "prod", default));
     }
 
     /// <summary>
@@ -625,10 +626,12 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Two Pending candidates of the SAME service carry the ticket (a second source edge into
+            // prod). Two services would be two work items, each with a page of its own.
             await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
                 service: "api", createdAt: DateTimeOffset.UtcNow.AddHours(-2));
             var (_, _, newer) = await SeedPolicyEventCandidateAsync(db, "FOO-1",
-                approverGroup: "ReleaseApprovers", service: "web",
+                approverGroup: "ReleaseApprovers", service: "api", sourceEnv: "uat",
                 createdAt: DateTimeOffset.UtcNow);
             newerId = newer.Id;
         }
@@ -636,7 +639,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
             Assert.Equal(2, detail!.Candidates.Count);
             Assert.Equal(newerId, detail.PrimaryCandidateId);
@@ -677,7 +680,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
             Assert.Equal(new[] { liveId }, detail!.Candidates.Select(c => c.Id).ToArray());
             Assert.Equal(liveId, detail.PrimaryCandidateId);
@@ -708,7 +711,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
             Assert.Equal(body, detail!.Content);
         }
@@ -733,13 +736,13 @@ public class WorkItemApprovalTests
                 service: "api", createdAt: DateTimeOffset.UtcNow.AddHours(-2),
                 content: "the original description");
             await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
-                service: "web", createdAt: DateTimeOffset.UtcNow, content: null);
+                service: "api", sourceEnv: "uat", createdAt: DateTimeOffset.UtcNow, content: null);
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
             Assert.Equal("the original description", detail!.Content);
         }
@@ -766,7 +769,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
             Assert.Null(detail!.Content);
         }
@@ -798,14 +801,14 @@ public class WorkItemApprovalTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
 
-            var detail = await svc.GetDetailAsync("FOO-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
             Assert.Equal("Fix retry", detail!.Title);
             Assert.Equal(
                 "fix: send an idempotency key with the retry • test: cover the duplicate submit",
                 detail.SubTitle);
 
-            var duplicate = await svc.GetDetailAsync("BAR-1", "acme", "prod", default);
+            var duplicate = await svc.GetDetailAsync("BAR-1", "acme", "api", "prod", default);
             Assert.NotNull(duplicate);
             Assert.Equal("Fix retry", duplicate!.Title);
             Assert.Null(duplicate.SubTitle);
@@ -821,9 +824,9 @@ public class WorkItemApprovalTests
 
         using var scope = factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-        var ctx = await svc.GetTicketContextAsync("ZZZ-999", "acme", "prod", default);
+        var ctx = await svc.GetTicketContextAsync("ZZZ-999", "acme", "api", "prod", default);
         Assert.False(ctx.CanApprove);
-        Assert.Equal("This work item is not known for that product and environment", ctx.BlockedReason);
+        Assert.Equal("This work item is not known for that product, service and environment", ctx.BlockedReason);
         Assert.Null(ctx.PendingCandidateId);
         Assert.Empty(ctx.Approvals);
     }
@@ -851,7 +854,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ctx = await svc.GetTicketContextAsync("ORPH-1", "acme", "prod", default);
+            var ctx = await svc.GetTicketContextAsync("ORPH-1", "acme", "api", "prod", default);
             Assert.True(ctx.CanApprove);
             Assert.Null(ctx.BlockedReason);
             Assert.Null(ctx.PendingCandidateId);
@@ -889,9 +892,42 @@ public class WorkItemApprovalTests
     [Fact]
     public async Task GetPendingForCurrentUser_SameTicketOnMultipleCandidates_EmittedOnceWithCount()
     {
-        // The same ticket backs two Pending candidates (same product/targetEnv, different services).
-        // A sign-off is shared across them, so the queue shows the ticket ONCE, with BlockingPromotions
-        // reflecting how many promotions it unblocks.
+        // The same ticket backs two Pending candidates of the SAME service (same product/targetEnv,
+        // two source edges). A sign-off is shared across them, so the queue shows the ticket ONCE, with
+        // BlockingPromotions reflecting how many promotions it unblocks.
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                service: "a", sourceEnv: "staging");
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                service: "a", sourceEnv: "uat");
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var queue = await svc.GetPendingForCurrentUserAsync(default);
+
+            var row = Assert.Single(queue.Tickets);
+            Assert.Equal("FOO-1", row.WorkItemKey);
+            Assert.Equal("a", row.Service);
+            Assert.Equal(2, row.BlockingPromotions);
+        }
+    }
+
+    /// <summary>
+    /// The service is part of a work item's identity: the same ticket carried by two services of one
+    /// product is two work items, each with its own queue row and its own sign-off. Deciding one
+    /// leaves the other pending.
+    /// </summary>
+    [Fact]
+    public async Task GetPendingForCurrentUser_SameTicketOnTwoServices_IsTwoWorkItems()
+    {
         await using var factory = new WorkItemTestFactory();
         factory.Current.Email = "qa@example.com";
         factory.Current.RolesList = new() { "InfraPortal.QA" };
@@ -908,9 +944,34 @@ public class WorkItemApprovalTests
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             var queue = await svc.GetPendingForCurrentUserAsync(default);
 
-            var row = Assert.Single(queue.Tickets);
-            Assert.Equal("FOO-1", row.WorkItemKey);
-            Assert.Equal(2, row.BlockingPromotions);
+            Assert.Equal(2, queue.Tickets.Count);
+            Assert.All(queue.Tickets, t => Assert.Equal("FOO-1", t.WorkItemKey));
+            Assert.All(queue.Tickets, t => Assert.Equal(1, t.BlockingPromotions));
+            Assert.Equal(new[] { "a", "b" }, queue.Tickets.Select(t => t.Service).OrderBy(x => x));
+
+            // Signing off a/FOO-1 says nothing about b/FOO-1.
+            await svc.ApproveAsync("FOO-1", "acme", "a", "prod", "a is fine", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var remaining = Assert.Single((await svc.GetPendingForCurrentUserAsync(default)).Tickets);
+            Assert.Equal("b", remaining.Service);
+
+            var a = await svc.GetTicketContextAsync("FOO-1", "acme", "a", "prod", default);
+            var b = await svc.GetTicketContextAsync("FOO-1", "acme", "b", "prod", default);
+            Assert.Equal("Approved", a.MyDecision);
+            Assert.Null(b.MyDecision);
+            Assert.Empty(b.Approvals);
+
+            // Each instance has its own thread, too.
+            Assert.Single(await svc.GetCommentsAsync("FOO-1", "acme", "a", "prod", default));
+            Assert.Empty(await svc.GetCommentsAsync("FOO-1", "acme", "b", "prod", default));
+
+            // And the resolver for pre-service links names both.
+            var instances = await svc.GetInstancesAsync("FOO-1", "acme", "prod", default);
+            Assert.Equal(new[] { "a", "b" }, instances.Select(i => i.Service));
         }
     }
 
@@ -928,11 +989,11 @@ public class WorkItemApprovalTests
             await SeedPolicyEventCandidateAsync(db, "FOO-2", approverGroup: "ReleaseApprovers", service: "b");
             await SeedPolicyEventCandidateAsync(db, "FOO-3", approverGroup: "ReleaseApprovers", service: "c");
 
-            // Already decided FOO-2.
+            // Already decided FOO-2 — on the service that carries it.
             db.WorkItemApprovals.Add(new WorkItemApproval
             {
                 Id = Guid.NewGuid(),
-                WorkItemKey = "FOO-2", Product = "acme", TargetEnv = "prod",
+                WorkItemKey = "FOO-2", Product = "acme", Service = "b", TargetEnv = "prod",
                 ApproverEmail = "me@example.com", ApproverName = "Me",
                 Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -1022,6 +1083,7 @@ public class WorkItemApprovalTests
                 CandidateId = older.Id,
                 WorkItemKey = "ENVD-1",
                 Product = "acme",
+                Service = "api",
                 TargetEnv = "prod",
                 CreatedAt = DateTimeOffset.UtcNow.AddHours(-2),
             });
@@ -1032,7 +1094,7 @@ public class WorkItemApprovalTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var detail = await svc.GetDetailAsync("ENVD-1", "acme", "prod", default);
+            var detail = await svc.GetDetailAsync("ENVD-1", "acme", "api", "prod", default);
             Assert.NotNull(detail);
 
             var byEnv = detail!.Environments.ToDictionary(e => e.Environment, e => e.Version);
@@ -1061,7 +1123,7 @@ public class WorkItemApprovalTests
                 new WorkItemApproval
                 {
                     Id = Guid.NewGuid(),
-                    WorkItemKey = "OLD-1", Product = "acme", TargetEnv = "prod",
+                    WorkItemKey = "OLD-1", Product = "acme", Service = "a", TargetEnv = "prod",
                     ApproverEmail = "me@example.com", ApproverName = "Me",
                     Decision = WorkItemDecision.Approved,
                     CreatedAt = DateTimeOffset.UtcNow.AddDays(-10),
@@ -1069,7 +1131,7 @@ public class WorkItemApprovalTests
                 new WorkItemApproval
                 {
                     Id = Guid.NewGuid(),
-                    WorkItemKey = "NEW-1", Product = "acme", TargetEnv = "prod",
+                    WorkItemKey = "NEW-1", Product = "acme", Service = "b", TargetEnv = "prod",
                     ApproverEmail = "me@example.com", ApproverName = "Me",
                     Decision = WorkItemDecision.Blocked,
                     CreatedAt = DateTimeOffset.UtcNow,
@@ -1104,9 +1166,9 @@ public class WorkItemApprovalTests
             await SeedPolicyEventCandidateAsync(db, "K-2", approverGroup: "ReleaseApprovers", service: "b");
             await SeedPolicyEventCandidateAsync(db, "K-3", approverGroup: "ReleaseApprovers", service: "c");
             db.WorkItemApprovals.AddRange(
-                Approval("K-1", "alice@example.com", "Alice", WorkItemDecision.Approved),
-                Approval("K-2", "alice@example.com", "Alice", WorkItemDecision.Blocked),
-                Approval("K-3", "bob@example.com", "Bob", WorkItemDecision.Approved));
+                Approval("K-1", "alice@example.com", "Alice", WorkItemDecision.Approved, service: "a"),
+                Approval("K-2", "alice@example.com", "Alice", WorkItemDecision.Blocked, service: "b"),
+                Approval("K-3", "bob@example.com", "Bob", WorkItemDecision.Approved, service: "c"));
             await db.SaveChangesAsync();
         }
 
@@ -1151,7 +1213,7 @@ public class WorkItemApprovalTests
         // Admin client is needed only to satisfy the [Authorize] CanApprove pipeline.
         // Authority is checked server-side against the fake ICurrentUser.
         var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/approvals",
-            new { product = "acme", targetEnv = "prod", comment = "ship it" });
+            new { product = "acme", service = "api", targetEnv = "prod", comment = "ship it" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await Deserialize(response);
@@ -1172,7 +1234,7 @@ public class WorkItemApprovalTests
 
         var client = factory.CreateAdminClient();
         var response = await client.PostAsJsonAsync("/api/work-items/NOPE-1/approvals",
-            new { product = "acme", targetEnv = "prod" });
+            new { product = "acme", service = "api", targetEnv = "prod" });
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         var body = await Deserialize(response);
@@ -1195,7 +1257,7 @@ public class WorkItemApprovalTests
             db.WorkItemApprovals.Add(new WorkItemApproval
             {
                 Id = Guid.NewGuid(),
-                WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
+                WorkItemKey = "FOO-1", Product = "acme", Service = "api", TargetEnv = "prod",
                 ApproverEmail = "approver@example.com", ApproverName = "Approver",
                 Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -1205,7 +1267,7 @@ public class WorkItemApprovalTests
 
         var client = factory.CreateAdminClient();
         var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/approvals",
-            new { product = "acme", targetEnv = "prod" });
+            new { product = "acme", service = "api", targetEnv = "prod" });
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = await Deserialize(response);
         Assert.Contains("already", body.GetProperty("error").GetString()!,
@@ -1230,7 +1292,7 @@ public class WorkItemApprovalTests
 
         var client = factory.CreateAdminClient();
         var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/approvals",
-            new { product = "acme", targetEnv = "prod" });
+            new { product = "acme", service = "api", targetEnv = "prod" });
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
@@ -1250,7 +1312,7 @@ public class WorkItemApprovalTests
 
         var client = factory.CreateAdminClient();
         var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/issues",
-            new { product = "acme", targetEnv = "prod", comment = "found a regression" });
+            new { product = "acme", service = "api", targetEnv = "prod", comment = "found a regression" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await Deserialize(response);
@@ -1280,7 +1342,7 @@ public class WorkItemApprovalTests
         }
 
         var client = factory.CreateAdminClient();
-        var response = await client.GetAsync("/api/work-items/FOO-1?product=acme&targetEnv=prod");
+        var response = await client.GetAsync("/api/work-items/FOO-1?product=acme&service=api&targetEnv=prod");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await Deserialize(response);
@@ -1335,7 +1397,7 @@ public class WorkItemApprovalTests
             db.WorkItemApprovals.Add(new WorkItemApproval
             {
                 Id = Guid.NewGuid(),
-                WorkItemKey = "FOO-1", Product = "acme", TargetEnv = "prod",
+                WorkItemKey = "FOO-1", Product = "acme", Service = "a", TargetEnv = "prod",
                 ApproverEmail = "me@example.com", ApproverName = "Me",
                 Decision = WorkItemDecision.Approved,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -1481,19 +1543,20 @@ public class WorkItemApprovalTests
                 approverGroup: "ReleaseApprovers", service: "api");
             stranded.Status = PromotionStatus.Superseded;
 
-            // Same ticket on a dead AND a live candidate: still live work, so hands off.
+            // Same work item on a dead AND a live candidate of one service: still live work, so hands
+            // off. (On a different service it would be a different work item — and stranded.)
             var (_, _, deadCopy) = await SeedPolicyEventCandidateAsync(db, "ALSO-LIVE",
-                approverGroup: "ReleaseApprovers", service: "old");
+                approverGroup: "ReleaseApprovers", service: "same", sourceEnv: "staging");
             deadCopy.Status = PromotionStatus.Superseded;
             await SeedPolicyEventCandidateAsync(db, "ALSO-LIVE",
-                approverGroup: "ReleaseApprovers", service: "new");
+                approverGroup: "ReleaseApprovers", service: "same", sourceEnv: "uat");
 
             // Stranded, but somebody raised an issue on it — a deliberate hold.
             var (_, _, held) = await SeedPolicyEventCandidateAsync(db, "ON-HOLD",
                 approverGroup: "ReleaseApprovers", service: "held");
             held.Status = PromotionStatus.Rejected;
             db.WorkItemApprovals.Add(
-                Approval("ON-HOLD", "qa@example.com", "QA", WorkItemDecision.Issue));
+                Approval("ON-HOLD", "qa@example.com", "QA", WorkItemDecision.Issue, service: "held"));
 
             await db.SaveChangesAsync();
         }
@@ -1659,12 +1722,13 @@ public class WorkItemApprovalTests
     /// <summary>Convenience factory for a <see cref="WorkItemApproval"/> row (created now).</summary>
     private static WorkItemApproval Approval(
         string workItemKey, string approverEmail, string approverName, WorkItemDecision decision,
-        string product = "acme", string targetEnv = "prod")
+        string product = "acme", string targetEnv = "prod", string service = "api")
         => new()
         {
             Id = Guid.NewGuid(),
             WorkItemKey = workItemKey,
             Product = product,
+            Service = service,
             TargetEnv = targetEnv,
             ApproverEmail = approverEmail,
             ApproverName = approverName,
@@ -1702,6 +1766,7 @@ public class WorkItemApprovalTests
             CandidateId = cand.Id,
             WorkItemKey = workItemKey,
             Product = product,
+            Service = service,
             TargetEnv = targetEnv,
             Title = title,
             SubTitle = subTitle,

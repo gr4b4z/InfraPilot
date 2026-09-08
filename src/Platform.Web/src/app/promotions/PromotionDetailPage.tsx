@@ -458,7 +458,7 @@ export function PromotionDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Work items card — bundle of work-items keyed (key, product, targetEnv). Rows link to
+          {/* Work items card — bundle of work-items keyed (key, product, service, targetEnv). Rows link to
              the work-item detail page, which owns sign-off and discussion; assigning people here
              refetches the candidate so the row re-renders with the new participant. */}
           <WorkItemsCard
@@ -2052,7 +2052,12 @@ function TicketRow({
       return;
     }
     try {
-      const next = await api.getWorkItemContext(key, candidate.product, candidate.targetEnv);
+      const next = await api.getWorkItemContext(
+        key,
+        candidate.product,
+        candidate.service,
+        candidate.targetEnv,
+      );
       setCtx(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load work item state');
@@ -2061,15 +2066,17 @@ function TicketRow({
     }
   };
 
-  // Each row owns its work-item context, so it also owns reacting to that work item changing.
+  // Each row owns its work-item context, so it also owns reacting to that work item changing. The
+  // same ticket on a sibling service is a different work item, so its events are not this row's.
   const workItemTick = useEntityRefresh(['work-item'], {
-    filter: (evt) => !evt.key || evt.key === key,
+    filter: (evt) =>
+      (!evt.key || evt.key === key) && (!evt.service || evt.service === candidate.service),
   });
 
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, candidate.product, candidate.targetEnv, candidate.id, workItemTick]);
+  }, [key, candidate.product, candidate.service, candidate.targetEnv, candidate.id, workItemTick]);
 
   const Icon = REFERENCE_ICONS[reference.type] ?? Ticket;
   const href = resolveReferenceHref({
@@ -2092,7 +2099,7 @@ function TicketRow({
 
   // Carry this candidate as the referrer so the work-item page can offer a way back here.
   const detailPath = key
-    ? workItemDetailPath(key, candidate.product, candidate.targetEnv, candidate.id)
+    ? workItemDetailPath(key, candidate.product, candidate.service, candidate.targetEnv, candidate.id)
     : null;
 
   const rowProps = useKeyboardListRow(index, () => detailPath && navigate(detailPath), {
