@@ -501,6 +501,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             if (jsonType != null) requiredRolesJson.HasColumnType(jsonType);
             e.Ignore(x => x.RequiredWorkItemRoles);
             e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.RequireAllWorkItemInstancesApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
             // Default TRUE: pre-existing edges keep requiring a source deploy event.
@@ -563,6 +564,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasKey(x => x.Id);
             e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            // Denormalised from the parent candidate: the work item's identity is
+            // (key, product, service, targetEnv). Defaulted so rows written before the column existed
+            // load; the AddWorkItemService migration backfills it from the candidate.
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.Provider).HasMaxLength(50);
             e.Property(x => x.Url).HasMaxLength(2000);
@@ -577,8 +582,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .OnDelete(DeleteBehavior.Cascade);
             // Lookup: "all tickets on candidate X" for the gate evaluator.
             e.HasIndex(x => x.CandidateId);
-            // Lookup: "candidates carrying ticket X for (product, env)" for the approval surface.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
+            // Lookup: "candidates carrying ticket X for (product, service, env)" for the approval
+            // surface. Also serves the (key, product, env) prefix, which the legacy-link resolver uses
+            // to list the services carrying a ticket.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.Service });
         });
 
         // Promotion Approvals
@@ -607,21 +614,24 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasKey(x => x.Id);
             e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.ApproverEmail).HasMaxLength(300).IsRequired();
             e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Property(x => x.Comment).HasMaxLength(2000);
-            // One decision per (ticket, product, env, approver). DB-level guard against double-decision.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.ApproverEmail }).IsUnique();
-            // Lookup: "all decisions on FOO-123 for product X in env stage" — for the gate evaluator.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
+            // One decision per (ticket, product, service, env, approver). DB-level guard against
+            // double-decision.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.Service, x.TargetEnv, x.ApproverEmail }).IsUnique();
+            // Lookup: "all decisions on FOO-123 for product X / service Y in env stage" — for the
+            // gate evaluator.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.Service, x.TargetEnv });
             // Lookup: "any decisions in this product+env" — admin queries.
             e.HasIndex(x => new { x.Product, x.TargetEnv });
         });
 
         // Work-item comments — the discussion thread on a ticket's sign-off, keyed the same way
-        // as WorkItemApproval so it survives candidate supersession. No FK: there is no single
+        // as WorkItemApproval (key, product, service, targetEnv) so it survives candidate supersession. No FK: there is no single
         // owning candidate (one ticket can back several).
         modelBuilder.Entity<WorkItemComment>(e =>
         {
@@ -629,14 +639,15 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasKey(x => x.Id);
             e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.AuthorEmail).HasMaxLength(300).IsRequired();
             e.Property(x => x.AuthorName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Body).HasMaxLength(4000).IsRequired();
             // Null for human comments; set on the auto-written entries that record a sign-off.
             e.Property(x => x.Decision).HasMaxLength(20).HasConversion<string>();
-            // Lookup: "the thread for FOO-123 in product X / env stage", oldest first.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.CreatedAt });
+            // Lookup: "the thread for FOO-123 in product X / service Y / env stage", oldest first.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.Service, x.TargetEnv, x.CreatedAt });
         });
 
         // Release Notes

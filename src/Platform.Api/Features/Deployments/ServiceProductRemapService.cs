@@ -23,14 +23,18 @@ namespace Platform.Api.Features.Deployments;
 /// <c>FromProduct</c> row governs — the same rule at ingest and at repair, so history cannot end up
 /// somewhere new traffic would never go.</para>
 ///
-/// <para><b>What is deliberately left behind.</b> Ticket approvals and comments key on
-/// <c>(WorkItemKey, Product, TargetEnv)</c> with no service column, so a ticket spanning two services
-/// cannot be attributed to one of them; moving those rows would silently reassign another service's
-/// approvals. They stay under the old product and are counted as
-/// <see cref="RemapCounts.StrandedTicketApprovals"/> instead. Promotion and rollback <i>policies</i>
-/// also stay — they are configuration an admin owns, and the target product's policies are the ones
-/// that should apply from now on. Rollback requests stay because a request carries one product across
-/// many services; moving it for one service would misfile the rest.</para>
+/// <para><b>Ticket approvals and comments move with the service.</b> They key on
+/// <c>(WorkItemKey, Product, Service, TargetEnv)</c>, so the rows for this service are unambiguous and
+/// follow it to the new product. The exception is legacy rows written before the service was part of
+/// the identity and never attributed to one (a blank service — their candidate had already been
+/// deleted when the <c>AddWorkItemService</c> migration ran): a ticket spanning two services cannot be
+/// attributed to one of them, so those stay under the old product and are counted as
+/// <see cref="RemapCounts.StrandedTicketApprovals"/>.</para>
+///
+/// <para><b>What is deliberately left behind.</b> Promotion and rollback <i>policies</i> stay — they
+/// are configuration an admin owns, and the target product's policies are the ones that should apply
+/// from now on. Rollback requests stay because a request carries one product across many services;
+/// moving it for one service would misfile the rest.</para>
 /// </summary>
 public class ServiceProductRemapService
 {
@@ -61,17 +65,20 @@ public class ServiceProductRemapService
     /// </param>
     /// <param name="Promotions">Promotion candidates whose product changes.</param>
     /// <param name="OpenPromotions">
-    /// How many of those candidates are still in flight (pending / approved / deploying). Worth waiting
-    /// out: their recorded ticket approvals do not move (see <paramref name="StrandedTicketApprovals"/>),
-    /// so an open candidate can come out of the remap needing approval again.
+    /// How many of those candidates are still in flight (pending / approved / deploying). Their
+    /// sign-offs move with them (see <paramref name="TicketApprovals"/>), so an open candidate comes
+    /// out of the remap in the state it went in — still worth knowing what is mid-flight.
     /// </param>
     /// <param name="PromotionWorkItems">Ticket index rows hanging off those candidates.</param>
+    /// <param name="TicketApprovals">Work-item sign-offs for this service whose product changes.</param>
+    /// <param name="TicketComments">Work-item thread entries for this service whose product changes.</param>
     /// <param name="Retirements">Service retirement tombstones whose product changes.</param>
     /// <param name="RetirementMerges">
     /// Tombstones folded into one the target product already had, keeping the later retirement date.
     /// </param>
     /// <param name="StrandedTicketApprovals">
-    /// Ticket approvals that stay under the old product because they are not service-scoped.
+    /// Legacy ticket approvals (blank service) for the moving tickets that stay under the old product
+    /// because they cannot be attributed to this service.
     /// </param>
     public record RemapCounts(
         int Deployments,
@@ -81,11 +88,13 @@ public class ServiceProductRemapService
         int Promotions,
         int OpenPromotions,
         int PromotionWorkItems,
+        int TicketApprovals,
+        int TicketComments,
         int Retirements,
         int RetirementMerges,
         int StrandedTicketApprovals)
     {
-        public static readonly RemapCounts Empty = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        public static readonly RemapCounts Empty = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         public RemapCounts Add(RemapCounts o) => new(
             Deployments + o.Deployments,
@@ -95,12 +104,14 @@ public class ServiceProductRemapService
             Promotions + o.Promotions,
             OpenPromotions + o.OpenPromotions,
             PromotionWorkItems + o.PromotionWorkItems,
+            TicketApprovals + o.TicketApprovals,
+            TicketComments + o.TicketComments,
             Retirements + o.Retirements,
             RetirementMerges + o.RetirementMerges,
             StrandedTicketApprovals + o.StrandedTicketApprovals);
 
         public int Total => Deployments + DeployWorkItems + Builds + Promotions + PromotionWorkItems
-                          + Retirements + RetirementMerges;
+                          + TicketApprovals + TicketComments + Retirements + RetirementMerges;
     }
 
     /// <summary>
@@ -230,12 +241,12 @@ public class ServiceProductRemapService
             _db.PromotionCandidates.Any(c =>
                 c.Id == w.CandidateId && c.Product == from && c.Service.ToLower() == lowered));
 
-        // Informational only — see the class remarks on why these are not moved.
+        // Legacy sign-offs never attributed to a service — informational only, see the class remarks.
         var movingTicketKeys = await promotionWorkItems.Select(w => w.WorkItemKey).Distinct().ToListAsync(ct);
         var strandedApprovals = movingTicketKeys.Count == 0
             ? 0
             : await _db.WorkItemApprovals.CountAsync(
-                a => a.Product == from && movingTicketKeys.Contains(a.WorkItemKey), ct);
+                a => a.Product == from && a.Service == "" && movingTicketKeys.Contains(a.WorkItemKey), ct);
 
         var deployWorkItemCount = apply
             ? await deployWorkItems.ExecuteUpdateAsync(s => s.SetProperty(w => w.Product, target), ct)
@@ -244,6 +255,18 @@ public class ServiceProductRemapService
         var promotionWorkItemCount = apply
             ? await promotionWorkItems.ExecuteUpdateAsync(s => s.SetProperty(w => w.Product, target), ct)
             : await promotionWorkItems.CountAsync(ct);
+
+        // Sign-offs and threads are service-scoped, so this service's rows follow it. The service
+        // column is the stored (case-preserved) name; match it the way the parents are matched.
+        var ticketApprovals = _db.WorkItemApprovals.Where(a => a.Product == from && a.Service.ToLower() == lowered);
+        var ticketApprovalCount = apply
+            ? await ticketApprovals.ExecuteUpdateAsync(s => s.SetProperty(a => a.Product, target), ct)
+            : await ticketApprovals.CountAsync(ct);
+
+        var ticketComments = _db.WorkItemComments.Where(c => c.Product == from && c.Service.ToLower() == lowered);
+        var ticketCommentCount = apply
+            ? await ticketComments.ExecuteUpdateAsync(s => s.SetProperty(c => c.Product, target), ct)
+            : await ticketComments.CountAsync(ct);
 
         var events = _db.DeployEvents.Where(e => e.Product == from && e.Service.ToLower() == lowered);
         var eventCount = apply
@@ -270,6 +293,8 @@ public class ServiceProductRemapService
             Promotions: candidateCount,
             OpenPromotions: openCount,
             PromotionWorkItems: promotionWorkItemCount,
+            TicketApprovals: ticketApprovalCount,
+            TicketComments: ticketCommentCount,
             Retirements: retirements,
             RetirementMerges: retirementMerges,
             StrandedTicketApprovals: strandedApprovals);

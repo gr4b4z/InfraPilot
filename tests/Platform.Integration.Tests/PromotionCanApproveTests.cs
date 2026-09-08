@@ -380,6 +380,7 @@ public class PromotionCanApproveTests
                 CandidateId = candidate.Id,
                 WorkItemKey = key,
                 Product = product,
+                Service = service,
                 TargetEnv = targetEnv,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
@@ -408,6 +409,7 @@ public class PromotionCanApproveTests
         Id = Guid.NewGuid(),
         WorkItemKey = key,
         Product = candidate.Product,
+        Service = candidate.Service,
         TargetEnv = candidate.TargetEnv,
         ApproverEmail = email,
         ApproverName = email,

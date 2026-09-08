@@ -458,7 +458,7 @@ export function PromotionDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Work items card — bundle of work-items keyed (key, product, targetEnv). Rows link to
+          {/* Work items card — bundle of work-items keyed (key, product, service, targetEnv). Rows link to
              the work-item detail page, which owns sign-off and discussion; assigning people here
              refetches the candidate so the row re-renders with the new participant. */}
           <WorkItemsCard
@@ -1444,8 +1444,9 @@ function PromotionApprovalCard({
     if (gate && gate.required && !gate.satisfied) {
       const outstanding = gate.total - gate.approved;
       const issues = (gate.issues ?? 0) > 0 ? `, ${gate.issues} flagged with issues` : '';
+      const scope = gate.allInstances ? ' on every service carrying it' : '';
       return (
-        `This promotion's policy requires every work item to be approved first. ` +
+        `This promotion's policy requires every work item to be approved${scope} first. ` +
         `${gate.approved} of ${gate.total} signed off${issues} — ` +
         `${outstanding} still outstanding. Sign them off from the work items below or the queue.`
       );
@@ -1866,7 +1867,11 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
                   ) : (
                     <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
                   )}
-                  <span className="truncate">All work items resolved</span>
+                  <span className="truncate">
+                    {workItemGate.allInstances
+                      ? 'All work items resolved on every service'
+                      : 'All work items resolved'}
+                  </span>
                 </span>
                 {workItemGate.autoApprove && (
                   <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
@@ -2052,7 +2057,12 @@ function TicketRow({
       return;
     }
     try {
-      const next = await api.getWorkItemContext(key, candidate.product, candidate.targetEnv);
+      const next = await api.getWorkItemContext(
+        key,
+        candidate.product,
+        candidate.service,
+        candidate.targetEnv,
+      );
       setCtx(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load work item state');
@@ -2061,15 +2071,17 @@ function TicketRow({
     }
   };
 
-  // Each row owns its work-item context, so it also owns reacting to that work item changing.
+  // Each row owns its work-item context, so it also owns reacting to that work item changing. The
+  // same ticket on a sibling service is a different work item, so its events are not this row's.
   const workItemTick = useEntityRefresh(['work-item'], {
-    filter: (evt) => !evt.key || evt.key === key,
+    filter: (evt) =>
+      (!evt.key || evt.key === key) && (!evt.service || evt.service === candidate.service),
   });
 
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, candidate.product, candidate.targetEnv, candidate.id, workItemTick]);
+  }, [key, candidate.product, candidate.service, candidate.targetEnv, candidate.id, workItemTick]);
 
   const Icon = REFERENCE_ICONS[reference.type] ?? Ticket;
   const href = resolveReferenceHref({
@@ -2092,7 +2104,7 @@ function TicketRow({
 
   // Carry this candidate as the referrer so the work-item page can offer a way back here.
   const detailPath = key
-    ? workItemDetailPath(key, candidate.product, candidate.targetEnv, candidate.id)
+    ? workItemDetailPath(key, candidate.product, candidate.service, candidate.targetEnv, candidate.id)
     : null;
 
   const rowProps = useKeyboardListRow(index, () => detailPath && navigate(detailPath), {

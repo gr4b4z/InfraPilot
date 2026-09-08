@@ -446,6 +446,7 @@ public class PromotionService
         var alreadyNoted = (await _db.WorkItemComments.AsNoTracking()
                 .Where(c => keys.Contains(c.WorkItemKey)
                          && c.Product == candidate.Product
+                         && c.Service == candidate.Service
                          && c.TargetEnv == candidate.TargetEnv
                          && c.AuthorEmail == WorkItemComment.SystemAuthor)
                 .Select(c => new { c.WorkItemKey, c.Body })
@@ -467,6 +468,7 @@ public class PromotionService
                 Id = Guid.NewGuid(),
                 WorkItemKey = r.Key!,
                 Product = candidate.Product,
+                Service = candidate.Service,
                 TargetEnv = candidate.TargetEnv,
                 AuthorEmail = WorkItemComment.SystemAuthor,
                 AuthorName = "System",
@@ -487,6 +489,7 @@ public class PromotionService
             new
             {
                 candidate.Product,
+                candidate.Service,
                 candidate.TargetEnv,
                 candidate.Version,
                 workItemKeys = recorded,
@@ -530,7 +533,9 @@ public class PromotionService
 
     /// <summary>
     /// Returns the fresh candidate's work items to an undecided state by clearing the Issue and
-    /// Blocked sign-offs recorded for that <c>(key, product, targetEnv)</c>.
+    /// Blocked sign-offs recorded for that <c>(key, product, service, targetEnv)</c>. Holds on the
+    /// same ticket for another service are a different work item and stay put — the code under
+    /// review there did not change.
     ///
     /// <para>Rationale: a "held back" verdict is a judgement about a specific build. When a new
     /// version arrives carrying the same ticket, that judgement no longer describes anything — the
@@ -553,6 +558,7 @@ public class PromotionService
         var held = await _db.WorkItemApprovals
             .Where(a => keys.Contains(a.WorkItemKey)
                      && a.Product == candidate.Product
+                     && a.Service == candidate.Service
                      && a.TargetEnv == candidate.TargetEnv
                      && a.Decision != WorkItemDecision.Approved)
             .ToListAsync(ct);
@@ -570,6 +576,7 @@ public class PromotionService
                 Id = Guid.NewGuid(),
                 WorkItemKey = group.Key,
                 Product = candidate.Product,
+                Service = candidate.Service,
                 TargetEnv = candidate.TargetEnv,
                 AuthorEmail = WorkItemComment.SystemAuthor,
                 AuthorName = "System",
@@ -590,6 +597,7 @@ public class PromotionService
             {
                 reason = "new-version",
                 candidate.Product,
+                candidate.Service,
                 candidate.TargetEnv,
                 candidate.Version,
                 workItemKeys = held.Select(a => a.WorkItemKey).Distinct().ToList(),
@@ -620,6 +628,7 @@ public class PromotionService
                 CandidateId = candidate.Id,
                 WorkItemKey = r.Key!,
                 Product = candidate.Product,
+                Service = candidate.Service,
                 TargetEnv = candidate.TargetEnv,
                 Provider = r.Provider,
                 Url = r.Url,
@@ -640,8 +649,8 @@ public class PromotionService
     /// started. Staged onto the caller's change tracker — the caller saves.
     ///
     /// <para>Sign-offs and comment threads are untouched: both key on
-    /// <c>(workItemKey, product, targetEnv)</c> rather than on the candidate, so a round trip through
-    /// "untracked" and back doesn't lose a reviewer's decision.</para>
+    /// <c>(workItemKey, product, service, targetEnv)</c> rather than on the candidate, so a round trip
+    /// through "untracked" and back doesn't lose a reviewer's decision.</para>
     /// </summary>
     private async Task ResyncWorkItemIndexAsync(
         PromotionCandidate candidate, bool tracks, CancellationToken ct)
@@ -1672,7 +1681,7 @@ public class PromotionService
     ///         approvers (see <see cref="ApprovalMatcher"/>).</item>
     /// </list>
     /// A work item counts as approved when it has at least one Approved <see cref="WorkItemApproval"/>
-    /// row for <c>(WorkItemKey, Product, TargetEnv)</c> and zero Issue / Blocked rows.
+    /// row for <c>(WorkItemKey, Product, Service, TargetEnv)</c> and zero Issue / Blocked rows.
     /// </remarks>
     /// <param name="ignoreRecordedApprovals">
     /// Evaluate as if no <see cref="PromotionApproval"/> row existed. Answers the one question
@@ -1970,20 +1979,41 @@ public class PromotionService
         var approvals = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => workItemKeys.Contains(a.WorkItemKey)
                      && a.Product == candidate.Product
+                     && a.Service == candidate.Service
                      && a.TargetEnv == candidate.TargetEnv)
             .ToListAsync(ct);
 
         var approved = 0;
         var issues = 0;
-        foreach (var key in workItemKeys)
+        if (snapshot.RequireAllWorkItemInstancesApproved)
         {
-            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
-            // Either non-approval stalls the gate and takes precedence over a sibling approval, so
-            // one is enough to hold the item. A block simply reads as "not approved"; an issue is
-            // counted, so the UI can explain the shortfall instead of leaving a silent gap.
-            if (rows.Any(a => a.Decision == WorkItemDecision.Blocked)) continue;
-            if (rows.Any(a => a.Decision == WorkItemDecision.Issue)) { issues++; continue; }
-            if (rows.Any(a => a.Decision == WorkItemDecision.Approved)) approved++;
+            // The gate judges each ticket by its overall status across every service instance — the
+            // same roll-up the work-item pages show — so the progress here counts tickets whose every
+            // instance is approved, and an issue on any sibling instance is this promotion's issue too.
+            var overall = await WorkItemOverallStatus.LoadAsync(_db,
+                workItemKeys.Select(k => new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv)), ct);
+            foreach (var key in workItemKeys)
+            {
+                var status = overall.GetValueOrDefault(new WorkItemTicketId(key, candidate.Product, candidate.TargetEnv));
+                switch (status?.State)
+                {
+                    case WorkItemInstanceState.Approved: approved++; break;
+                    case WorkItemInstanceState.Issue: issues++; break;
+                }
+            }
+        }
+        else
+        {
+            foreach (var key in workItemKeys)
+            {
+                var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
+                // Either non-approval stalls the gate and takes precedence over a sibling approval, so
+                // one is enough to hold the item. A block simply reads as "not approved"; an issue is
+                // counted, so the UI can explain the shortfall instead of leaving a silent gap.
+                if (rows.Any(a => a.Decision == WorkItemDecision.Blocked)) continue;
+                if (rows.Any(a => a.Decision == WorkItemDecision.Issue)) { issues++; continue; }
+                if (rows.Any(a => a.Decision == WorkItemDecision.Approved)) approved++;
+            }
         }
 
         return new WorkItemGateProgress(
@@ -1994,7 +2024,8 @@ public class PromotionService
             Required: snapshot.RequireAllWorkItemsApproved,
             Total: workItemKeys.Count, Approved: approved,
             Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove,
-            Issues: issues);
+            Issues: issues,
+            AllInstances: snapshot.RequireAllWorkItemInstancesApproved);
     }
 
     /// <summary>
@@ -2071,6 +2102,7 @@ public class PromotionService
         var approvals = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => workItemKeys.Contains(a.WorkItemKey)
                      && a.Product == candidate.Product
+                     && a.Service == candidate.Service
                      && a.TargetEnv == candidate.TargetEnv)
             .ToListAsync(ct);
 
@@ -2081,6 +2113,21 @@ public class PromotionService
             if (rows.Any(a => a.Decision == WorkItemDecision.Blocked)) return false;
             if (rows.Any(a => a.Decision == WorkItemDecision.Issue)) return false;
             if (!rows.Any(a => a.Decision == WorkItemDecision.Approved)) return false;
+        }
+
+        // This service's instances are all approved. Under RequireAllWorkItemInstancesApproved the
+        // policy reads the ticket as done-or-not across the product, so every OTHER service's
+        // instance in the target environment has to be approved too — and none may hold an issue or
+        // a block.
+        if (ReadSnapshot(candidate).RequireAllWorkItemInstancesApproved)
+        {
+            var overall = await WorkItemOverallStatus.LoadAsync(_db,
+                workItemKeys.Select(k => new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv)), ct);
+            foreach (var key in workItemKeys)
+            {
+                var status = overall.GetValueOrDefault(new WorkItemTicketId(key, candidate.Product, candidate.TargetEnv));
+                if (status is null || status.State != WorkItemInstanceState.Approved) return false;
+            }
         }
 
         return true;
@@ -3017,40 +3064,58 @@ public class PromotionService
             .ToListAsync(ct);
         if (workItems.Count == 0) return blocked; // nothing to gate on
 
-        // Sign-offs key on (key, product, targetEnv), so fetch by the keys in play and re-match the
-        // triple in memory. Over-fetches rows for a key shared across products; cheap and bounded.
+        // Sign-offs key on (key, product, service, targetEnv), so fetch by the keys in play and
+        // re-match the identity in memory. Over-fetches rows for a key shared across products or
+        // services; cheap and bounded.
         var keys = workItems.Select(w => w.WorkItemKey).Distinct().ToList();
         var products = gated.Select(t => t.Candidate.Product).Distinct().ToList();
+        var services = gated.Select(t => t.Candidate.Service).Distinct().ToList();
         var envs = gated.Select(t => t.Candidate.TargetEnv).Distinct().ToList();
         var decisions = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => keys.Contains(a.WorkItemKey)
                      && products.Contains(a.Product)
+                     && services.Contains(a.Service)
                      && envs.Contains(a.TargetEnv))
-            .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv, a.Decision })
+            .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision })
             .ToListAsync(ct);
 
         var approvedTuples = decisions
             .Where(d => d.Decision == WorkItemDecision.Approved)
-            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+            .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
             .ToHashSet();
         // An Issue or a Block holds the item regardless of a sibling approval — same precedence
         // AreAllWorkItemsApprovedAsync applies.
         var heldTuples = decisions
             .Where(d => d.Decision != WorkItemDecision.Approved)
-            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+            .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
             .ToHashSet();
 
         var keysByCandidate = workItems
             .GroupBy(w => w.CandidateId)
             .ToDictionary(g => g.Key, g => g.Select(w => w.WorkItemKey).Distinct().ToList());
 
-        foreach (var (candidate, _) in gated)
+        // Candidates gating on the ticket's overall status need the roll-up across every service's
+        // instance, not just their own rows. One batch for all of them.
+        var overallIds = gated
+            .Where(t => t.Snapshot.RequireAllWorkItemInstancesApproved)
+            .SelectMany(t => (keysByCandidate.GetValueOrDefault(t.Candidate.Id) ?? new())
+                .Select(k => new WorkItemTicketId(k, t.Candidate.Product, t.Candidate.TargetEnv)))
+            .ToList();
+        var overall = overallIds.Count == 0
+            ? new Dictionary<WorkItemTicketId, WorkItemOverallStatus>()
+            : await WorkItemOverallStatus.LoadAsync(_db, overallIds, ct);
+
+        foreach (var (candidate, snapshot) in gated)
         {
             var candidateKeys = keysByCandidate.GetValueOrDefault(candidate.Id);
             if (candidateKeys is null or { Count: 0 }) continue; // no work items ⇒ nothing to wait for
-            var allResolved = candidateKeys.All(k =>
-                approvedTuples.Contains((k, candidate.Product, candidate.TargetEnv))
-                && !heldTuples.Contains((k, candidate.Product, candidate.TargetEnv)));
+            var allResolved = snapshot.RequireAllWorkItemInstancesApproved
+                ? candidateKeys.All(k =>
+                    overall.GetValueOrDefault(new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv))
+                        ?.State == WorkItemInstanceState.Approved)
+                : candidateKeys.All(k =>
+                    approvedTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv))
+                    && !heldTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv)));
             if (!allResolved) blocked.Add(candidate.Id);
         }
 
@@ -3300,7 +3365,11 @@ public record WorkItemGateProgress(
     // Work items carrying an Issue. Counted separately from Approved so the UI can say
     // "2 of 5 approved, 1 issue" instead of leaving the shortfall unexplained. Blocked items are
     // deliberately not counted here — they read as simply not approved.
-    int Issues = 0);
+    int Issues = 0,
+    // True when the policy judges each work item by the ticket's overall status across every
+    // service instance (RequireAllWorkItemInstancesApproved) rather than by this promotion's own
+    // instance — so "approved" above means "approved everywhere", and the UI can say so.
+    bool AllInstances = false);
 
 /// <summary>One approval step's progress: satisfied once all its requirements are.</summary>
 public record StepProgress(string Name, bool Satisfied, IReadOnlyList<RequirementProgress> Requirements);
