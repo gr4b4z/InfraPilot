@@ -862,6 +862,17 @@ foreach ($line in $counts) { $parts = "$line".Split('|'); if ($parts.Count -eq 2
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 $sb.ToString() | Set-Content -Path $CheatSheetPath -Encoding utf8
 
+# The same facts, machine-readable, for the screenshot/walkthrough generator (scripts/tutorial/capture).
+$scenes = [ordered]@{}
+foreach ($entry in $story.GetEnumerator()) { $scenes[$entry.Key.Substring(0, 1)] = [ordered]@{ title = $entry.Key; data = $entry.Value } }
+ConvertTo-Json -InputObject ([ordered]@{
+    builtAt = [DateTimeOffset]::UtcNow.ToString('o'); source = $manifest.source; heroProduct = $HeroProduct
+    heroService = $heroService; prodEnv = $prodEnv; heroEnvs = @($heroEnvs)
+    webBase = $WebBase; apiBase = $ApiBase; apiKey = $TutorialApiKey
+    accounts = @($Accounts | ForEach-Object { [ordered]@{ role = $_.Role; email = $_.Email; password = $_.Password; name = $_.Name } })
+    scenes = $scenes
+}) -Depth 10 | Set-Content -Path (Join-Path $StateDir 'tutorial-scenes.json') -Encoding utf8
+
 # ── Report ───────────────────────────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Step 'Tutorial environment ready'
