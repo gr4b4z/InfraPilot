@@ -67,6 +67,37 @@ deletes the volume as well.
 
 Logs and pid files go to `.local/` (gitignored).
 
+### Tutorial Environment (A Copy Of A Live Instance)
+
+```bash
+./scripts/tutorial/seed-tutorial.ps1
+```
+
+Builds the environment used for presentations and training: the local database is dropped and
+refilled with a copy of a real instance's *active* data — the current version of every service in
+every environment, the last week of deploys, the registered builds and every open promotion — and
+then a scripted storyline is staged on top (a promotion signed off and waiting for its release
+approval, one with an issue raised, one rejected, one approved and waiting for its deploy, a failed
+deploy with pipeline logs, a rollback request, a release note, a webhook subscription, a service
+request). Three accounts come with it: `admin@localhost` / `admin123` (Admin), `qa@localhost` / `qa123`
+(QA) and `user@localhost` / `user123` (plain User).
+
+The copy is taken by `scripts/tutorial/export-snapshot.ps1` through the public API, so it needs
+`DEPLOYMENTS_URL` and `DEPLOYMENTS_API_KEY` for the source instance; the result lands in the gitignored
+`scripts/tutorial/snapshot/` and is reused by later runs (`-RefreshSnapshot` pulls again). Everything
+else is written through the local API the way pipelines and users write it, so the data is exactly
+what the product does with real payloads. The run ends with `.local/tutorial-cheatsheet.md` — the
+promotion ids, links and curl commands the live parts of a demo need — and
+[docs/tutorial/presentation-guide.md](docs/tutorial/presentation-guide.md) is the matching
+presenter's script. `scripts/tutorial/webhook-listener.ps1` is a terminal that shows the seeded
+webhook's deliveries arriving.
+
+The script also writes `src/Platform.Api/appsettings.Development.json` (backing up an existing one):
+the demo deployment seeder is switched off there (`Seed:DemoDeployments`), a `tutorial-pipeline-key`
+API key is added for the curl commands, and the ingest rate limit is lifted. `reseed.ps1` afterwards
+gives a database with only the catalog and the users; delete the `Seed` block to get the built-in
+demo dataset back.
+
 ### Syncing MPT Versions
 
 ```bash
