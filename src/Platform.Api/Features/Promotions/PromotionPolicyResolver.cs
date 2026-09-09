@@ -103,6 +103,7 @@ public class PromotionPolicyResolver
             SourceRequiresDeploy = policy.SourceRequiresDeploy,
             AutoCreateFromBranches = policy.AutoCreateFromBranches,
             ApprovedWebhookDelaySeconds = policy.ApprovedWebhookDelaySeconds,
+            DeploysOnApproval = policy.DeploysOnApproval,
         };
     }
 }

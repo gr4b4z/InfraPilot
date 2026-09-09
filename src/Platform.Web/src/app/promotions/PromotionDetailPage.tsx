@@ -43,6 +43,8 @@ import {
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { PromotionRoute } from '@/components/promotions/PromotionRoute';
+import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
+import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import {
   MissingRolesBadge,
@@ -1456,6 +1458,10 @@ function PromotionApprovalCard({
   })();
   const approveBlocked = approveBlockedReason !== null;
 
+  // What Approve actually does on this edge — a deploy, or a hand-off to a pipeline that asks again.
+  // Stated in the card and repeated in the confirmation, from one place (see ApprovalEffect).
+  const deploys = approvalDeploys(candidate);
+
   return (
     <div
       className="rounded-xl border p-5"
@@ -1483,6 +1489,16 @@ function PromotionApprovalCard({
 
       {showActions && (
         <>
+          {/* Above the controls, not inside the confirmation only: the decision to press Approve is
+             made here, and somebody who learns what it does after clicking has already decided. */}
+          <div className="mb-3">
+            <ApprovalEffectNotice
+              deploys={deploys}
+              version={candidate.version}
+              targetEnv={candidate.targetEnv}
+            />
+          </div>
+
           {/* "Approve as" selector — always shown when the user is eligible for any open
              requirement. A single eligible requirement is preselected (one pre-checked radio);
              with more than one the approver must pick before the Approve button enables. */}
@@ -1601,7 +1617,7 @@ function PromotionApprovalCard({
               </strong>{' '}
               v{candidate.version} → <strong>{candidate.targetEnv}</strong>.
               {pending === 'approve'
-                ? ' Approving records your sign-off; the promotion deploys once its gate is fully satisfied.'
+                ? approvalEffectSentence(deploys, candidate.targetEnv)
                 : ' Rejecting turns this promotion down. It will not deploy.'}
             </>
           }

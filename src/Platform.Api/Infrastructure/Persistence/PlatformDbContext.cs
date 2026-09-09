@@ -506,6 +506,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
             // Default TRUE: pre-existing edges keep requiring a source deploy event.
             e.Property(x => x.SourceRequiresDeploy).IsRequired().HasDefaultValue(true);
+            // Default TRUE: an approval releases the deploy on its own unless an edge says an
+            // external pipeline approval still stands between it and the target environment.
+            e.Property(x => x.DeploysOnApproval).IsRequired().HasDefaultValue(true);
             // Branch patterns that auto-create candidates from registered builds. Null ⇒ never.
             // Same JSON-string-column treatment as the other list fields; the computed
             // AutoCreateFromBranches property is not mapped.

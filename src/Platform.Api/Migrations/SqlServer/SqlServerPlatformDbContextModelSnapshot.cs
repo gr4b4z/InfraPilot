@@ -835,6 +835,11 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<bool>("DeploysOnApproval")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
                     b.Property<string>("EscalationGroup")
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
