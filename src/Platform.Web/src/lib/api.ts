@@ -1564,6 +1564,18 @@ export interface PromotionCandidate {
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
   /**
+   * Whether approving this promotion is the **last** gate before the version is live.
+   *
+   * `true` — the release automation deploys straight off the approval, so Approve ships it. `false`
+   * — the approval starts a deployment run that stops at an approval outside InfraPortal (the SDP
+   * pipeline's Azure DevOps environment check on staging and prod), so the target environment does
+   * not change until somebody signs off there too.
+   *
+   * Absent on responses from an older API, and on candidates whose policy snapshot predates the
+   * flag — treat `undefined` as `true`, which is what every edge did before it existed.
+   */
+  deploysOnApproval?: boolean;
+  /**
    * Whether this candidate's edge creates work items at all. False for dev-only edges (e.g. dev → test)
    * whose policy opts out: the change set still lists its work-item references, but there is nothing to
    * sign off, no queue entry, and no required roles. Absent on responses from an older API — treat
@@ -2314,6 +2326,12 @@ export interface PromotionPolicy {
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
+  /**
+   * Whether an approval on this edge is the last gate before the version is live. False for edges a
+   * pipeline releases behind its own approval — the SDP pipeline's Azure DevOps environment check on
+   * staging and prod. Display only; nothing about gating changes.
+   */
+  deploysOnApproval: boolean;
   /** Branch patterns (full refs, `*` wildcards) that auto-create candidates from registered builds. */
   autoCreateFromBranches: string[];
   /** Per-edge override (seconds) of the approval → promotion.approved delivery delay; null = default. */
@@ -2341,6 +2359,8 @@ export interface UpsertPromotionPolicyPayload {
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
   sourceRequiresDeploy: boolean;
+  /** Whether an approval on this edge is the last gate before the version is live. */
+  deploysOnApproval: boolean;
   autoCreateFromBranches: string[];
   approvedWebhookDelaySeconds: number | null;
 }

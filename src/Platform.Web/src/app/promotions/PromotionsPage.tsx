@@ -5,6 +5,8 @@ import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/li
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
 import { WorkItemsNeedingAttentionBadge } from '@/components/promotions/MissingRoles';
+import { BulkApprovalEffectLine } from '@/components/promotions/ApprovalEffect';
+import { approvalDeploys } from '@/lib/approvalEffect';
 import {
   readEnumPref,
   readPref,
@@ -692,6 +694,15 @@ export function PromotionsPage() {
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
 
+  // How many of the selected promotions deploy off the approval alone, for the line beside the bulk
+  // button. Bulk approve is where a whole release goes out in one click, so it is the surface that
+  // most needs to say so — and the one where nothing said it before.
+  const selectedDeployingCount = useMemo(
+    () =>
+      approvablePending.filter((c) => selected.has(c.id) && approvalDeploys(c)).length,
+    [approvablePending, selected],
+  );
+
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -912,6 +923,11 @@ export function PromotionsPage() {
               </h2>
             </div>
             {view === 'mine' && selected.size > 0 && (
+              <div className="flex items-center gap-3">
+              <BulkApprovalEffectLine
+                deployingCount={selectedDeployingCount}
+                totalCount={selected.size}
+              />
               <button
                 onClick={handleBulkApprove}
                 disabled={bulkLoading}
@@ -925,6 +941,7 @@ export function PromotionsPage() {
                 <CheckCircle size={12} />
                 {bulkLoading ? 'Approving...' : `Approve selected (${selected.size})`}
               </button>
+              </div>
             )}
           </div>
           <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>

@@ -140,7 +140,22 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 ### `GET /api/promotions` — list
 Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
-current user (Pending + authorized for ≥1 open requirement + not already decided).
+current user (Pending + authorized for ≥1 open requirement + not already decided) and a
+**`deploysOnApproval`** boolean read off its policy snapshot.
+
+`deploysOnApproval` answers "what does pressing Approve do?", the question the queue could not
+previously answer. `true` (the default, and what a candidate whose snapshot predates the field
+reads as): InfraPortal's gate is the only gate — once satisfied, the release automation deploys the
+version, so an approval ships it. This is the mpt-release path. `false`: the approval starts a
+deployment run that stops at an approval of its own outside InfraPortal — the SDP pipeline
+(marketplace repo) cuts a release branch and queues a run whose staging and prod stages each wait
+on an Azure DevOps environment check — so the approval is necessary but not sufficient and the
+target environment does not change until somebody signs off there too.
+
+It is **display only**: gate evaluation, dispatch and webhook delivery are identical either way,
+and a producer never sends it. It is set per edge on the promotion policy
+(`deploysOnApproval`, Settings → Promotions → After approval); the flag defaults to `true`, and the
+edges seeded `false` are the `mpt` product's staging and prod ones.
 
 Every candidate (list and detail alike) carries two target-env versions, which mean different
 things once the promotion is no longer open:
