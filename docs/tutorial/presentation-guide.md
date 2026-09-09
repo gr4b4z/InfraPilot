@@ -230,6 +230,24 @@ products and to scopes (`build:register`, `promotion:create`), and are what ever
 | 35–40 | 4 Release notes + webhooks | Admin | H, I |
 | 40–45 | 5 Settings tour | Admin | — |
 
+## The walkthrough document
+
+`scripts/tutorial/capture` turns this guide into an annotated screenshot walkthrough — every screen,
+from each actor's point of view, with numbered callouts, the terminal output of the live steps, a
+"what you see" paragraph and the presenter's line — as a landscape PDF and a single HTML file. It is
+the hand-out for people who want to prepare before the session or look something up afterwards.
+
+```powershell
+.\scripts	utorial\seed-tutorial.ps1 -Force        # fresh storyline (the capture approves, deploys, rolls back)
+.\scripts\start.ps1                                # web dev server
+cd scripts	utorial\capture
+npm install && npm run install-browser              # first time only
+npm run all                                         # capture + build
+```
+
+Output: `.local/tutorial-walkthrough/InfraPortal-tutorial-walkthrough.pdf` (and `.html`). It contains
+names from the live data, so it stays out of the repository — share the file, not a commit.
+
 ## Resetting between rehearsals
 
 `.\scripts\tutorial\seed-tutorial.ps1 -Force` rebuilds everything from the existing snapshot in a few

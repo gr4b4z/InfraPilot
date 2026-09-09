@@ -92,6 +92,11 @@ promotion ids, links and curl commands the live parts of a demo need — and
 presenter's script. `scripts/tutorial/webhook-listener.ps1` is a terminal that shows the seeded
 webhook's deliveries arriving.
 
+`scripts/tutorial/capture` (Node + Playwright) produces the offline version of the presentation: an
+annotated screenshot walkthrough of every part, as PDF and HTML, from each actor's point of view, with
+the terminal output of the live steps. `npm run all` there, after a fresh seed; output lands in
+`.local/tutorial-walkthrough/`.
+
 The script also writes `src/Platform.Api/appsettings.Development.json` (backing up an existing one):
 the demo deployment seeder is switched off there (`Seed:DemoDeployments`), a `tutorial-pipeline-key`
 API key is added for the curl commands, and the ingest rate limit is lifted. `reseed.ps1` afterwards
