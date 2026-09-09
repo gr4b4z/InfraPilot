@@ -246,9 +246,10 @@ export function instanceStateStyle(state: WorkItemInstanceState): { label: strin
 }
 
 /**
- * One line for the ticket's roll-up across services: "2 of 3 services approved", with the holds
- * named because they are what somebody has to go and clear ("1 of 3 services approved · 1 issue ·
- * 1 blocked"). Empty for a single-instance ticket, where the instance's own state says it all.
+ * One line for the ticket's roll-up across services: "2 of 3 services approved", with issues and
+ * blocks named because the approved count alone doesn't explain the rest ("1 of 3 services approved ·
+ * 1 issue · 1 blocked"). Only the blocked ones hold a promotion.
+ * Empty for a single-instance ticket, where the instance's own state says it all.
  */
 export function overallSummaryLabel(overall: WorkItemOverallStatus | null | undefined): string {
   if (!overall || overall.instances <= 1) return '';

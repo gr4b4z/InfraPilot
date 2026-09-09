@@ -1401,12 +1401,13 @@ export function PromotionSettings() {
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      All work items must be approved before promotion can be approved
+                      All work items must be signed off before promotion can be approved
                       <span
                         className="block text-[11px] mt-0.5"
                         style={{ color: 'var(--text-muted)' }}
                       >
-                        Blocks the Approve button until every work item has a sign-off.
+                        Blocks the Approve button until every work item has a decision on it and none
+                        is blocked. An issue counts as signed off — only a block holds the promotion.
                       </span>
                     </span>
                   </label>
@@ -1422,13 +1423,14 @@ export function PromotionSettings() {
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      Auto-approve promotion when all work items are approved
+                      Auto-approve promotion when all work items are signed off
                       <span
                         className="block text-[11px] mt-0.5"
                         style={{ color: 'var(--text-muted)' }}
                       >
                         Promotion is automatically approved the moment the last work item gets its
-                        sign-off.
+                        decision, with nothing blocked — raising an issue on the last one approves it
+                        too.
                       </span>
                     </span>
                   </label>
@@ -1450,15 +1452,15 @@ export function PromotionSettings() {
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      A work item counts as approved only when every service&rsquo;s instance is
+                      A work item counts as signed off only when every service&rsquo;s instance is
                       <span
                         className="block text-[11px] mt-0.5"
                         style={{ color: 'var(--text-muted)' }}
                       >
                         The same ticket carried by several services is one work item per service. By
                         default this promotion waits only for its own service&rsquo;s instance; with
-                        this on it waits for the ticket&rsquo;s overall status — approved on every
-                        service in the target environment, no issue or block anywhere. Only applies
+                        this on it waits for the ticket&rsquo;s overall status — decided on every
+                        service in the target environment, with no block anywhere. Only applies
                         together with one of the two options above.
                       </span>
                     </span>

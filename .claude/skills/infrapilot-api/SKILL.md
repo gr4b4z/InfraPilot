@@ -133,7 +133,8 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   once the promotion lands, so read history off `fromVersion`.
 - `POST /api/promotions/{id}/approve` / `/reject` — human actions (body `{ "comment"?: ... }`).
 - Work-item sign-off: `POST /api/work-items/{key}/approvals` | `/issues` | `/blocks` with body
-  `{ product, targetEnv, comment? }`.
+  `{ product, targetEnv, comment? }`. Only `/blocks` holds the promotion gate — an issue flags a
+  problem on a change that still ships and clears the item like an approval does.
 
 ## Build registry
 

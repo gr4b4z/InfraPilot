@@ -1168,12 +1168,13 @@ public class PromotionService
 
         // RequireAllWorkItemsApproved: the policy says every work item must be signed off before a
         // human release manager can approve the promotion. When the bundle has work items and at least
-        // one is still pending (or rejected), reject the attempt with an actionable message.
+        // one is still undecided (or blocked), reject the attempt with an actionable message.
         if (snapshot.RequireAllWorkItemsApproved && await CandidateHasWorkItemsAsync(candidate, ct))
         {
-            if (!await AreAllWorkItemsApprovedAsync(candidate, ct))
+            if (!await AreAllWorkItemsClearedAsync(candidate, ct))
                 throw new InvalidOperationException(
-                    "All work items must be approved before this promotion can be approved. " +
+                    "All work items must be signed off before this promotion can be approved — " +
+                    "a blocked item holds it, an issue does not. " +
                     "Check the work items queue for pending sign-offs.");
         }
 
@@ -1544,8 +1545,9 @@ public class PromotionService
                 + (policy.Current.IsAutoApprove
                     ? $"Add an approval requirement to the {candidate.SourceEnv} → {candidate.TargetEnv} "
                       + "policy first, then cancel."
-                    : "Its policy auto-approves once every work item is signed off; raise an issue or "
-                      + "block on a work item to reopen the gate, then cancel."));
+                    : "Its policy auto-approves once every work item is signed off; block a work "
+                      + "item to reopen the gate, then cancel. (An issue does not — it flags a "
+                      + "problem without holding the release.)"));
         }
 
         // Cancelling under a newer policy has to carry that policy onto the candidate. Sending it
@@ -1672,16 +1674,16 @@ public class PromotionService
     /// (<see cref="ResolvedPolicySnapshot.ApprovalSteps"/>) and the work-item flags:
     /// <list type="number">
     ///   <item>If <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> and the bundle has
-    ///         work items that are not all approved → blocked.</item>
+    ///         work items that are not all cleared → blocked.</item>
     ///   <item>If <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/> and every
-    ///         work item is approved → satisfied, regardless of any manual approver requirements.</item>
+    ///         work item is cleared → satisfied, regardless of any manual approver requirements.</item>
     ///   <item>If there are no human approver requirements (empty requirement tree) → satisfied.</item>
     ///   <item>Otherwise, Approved <see cref="PromotionApproval"/> rows are matched against the
     ///         requirement tree; satisfied when every requirement has enough distinct eligible
     ///         approvers (see <see cref="ApprovalMatcher"/>).</item>
     /// </list>
-    /// A work item counts as approved when it has at least one Approved <see cref="WorkItemApproval"/>
-    /// row for <c>(WorkItemKey, Product, Service, TargetEnv)</c> and zero Issue / Blocked rows.
+    /// A work item counts as cleared when it has at least one <see cref="WorkItemApproval"/> row for
+    /// <c>(WorkItemKey, Product, Service, TargetEnv)</c> — Approved or Issue — and zero Blocked ones.
     /// </remarks>
     /// <param name="ignoreRecordedApprovals">
     /// Evaluate as if no <see cref="PromotionApproval"/> row existed. Answers the one question
@@ -1721,18 +1723,18 @@ public class PromotionService
                 });
         }
 
-        // 1. Work items REQUIRED but not all approved → blocked.
+        // 1. Work items REQUIRED but not all cleared → blocked.
         if (snapshot.RequireAllWorkItemsApproved
             && await CandidateHasWorkItemsAsync(candidate, ct)
-            && !await AreAllWorkItemsApprovedAsync(candidate, ct))
+            && !await AreAllWorkItemsClearedAsync(candidate, ct))
         {
-            return new GateResult(false, new[] { "All work items must be approved before this promotion can proceed" });
+            return new GateResult(false, new[] { "All work items must be signed off before this promotion can proceed" });
         }
 
-        // 2. Accelerator: all work items approved auto-promotes, regardless of manual steps.
+        // 2. Accelerator: all work items cleared auto-promotes, regardless of manual steps.
         if (snapshot.AutoApproveOnAllWorkItemsApproved
             && await CandidateHasWorkItemsAsync(candidate, ct)
-            && await AreAllWorkItemsApprovedAsync(candidate, ct))
+            && await AreAllWorkItemsClearedAsync(candidate, ct))
         {
             return new GateResult(true, Array.Empty<string>());
         }
@@ -1955,8 +1957,8 @@ public class PromotionService
     /// Computes the "all work items resolved" gate condition for a candidate, or <c>null</c> when the
     /// policy doesn't gate on work items (neither <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>
     /// nor <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>) or the candidate carries no
-    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and
-    /// neither an Issue nor a Blocked one.
+    /// work items. A work item counts as resolved when somebody has ruled on it and nobody blocked it —
+    /// an Issue resolves it as much as an Approval does, it just says something is wrong with what ships.
     /// </summary>
     private async Task<WorkItemGateProgress?> GetWorkItemGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
@@ -1985,21 +1987,24 @@ public class PromotionService
 
         var approved = 0;
         var issues = 0;
+        var blocked = 0;
         if (snapshot.RequireAllWorkItemInstancesApproved)
         {
             // The gate judges each ticket by its overall status across every service instance — the
-            // same roll-up the work-item pages show — so the progress here counts tickets whose every
-            // instance is approved, and an issue on any sibling instance is this promotion's issue too.
+            // same roll-up the work-item pages show — so a block on any sibling instance holds this
+            // promotion too, and a sibling nobody has ruled on still leaves the ticket outstanding.
             var overall = await WorkItemOverallStatus.LoadAsync(_db,
                 workItemKeys.Select(k => new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv)), ct);
             foreach (var key in workItemKeys)
             {
                 var status = overall.GetValueOrDefault(new WorkItemTicketId(key, candidate.Product, candidate.TargetEnv));
-                switch (status?.State)
-                {
-                    case WorkItemInstanceState.Approved: approved++; break;
-                    case WorkItemInstanceState.Issue: issues++; break;
-                }
+                if (status is null) continue; // no instance in the index ⇒ nothing signed off yet
+                if (status.Blocked > 0) { blocked++; continue; }
+                // Counts, not State: the roll-up shows Issue even when a sibling is still undecided,
+                // and an undecided sibling is outstanding however the ticket reads.
+                if (status.Pending > 0) continue;
+                if (status.Issues > 0) { issues++; continue; }
+                approved++;
             }
         }
         else
@@ -2007,12 +2012,15 @@ public class PromotionService
             foreach (var key in workItemKeys)
             {
                 var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
-                // Either non-approval stalls the gate and takes precedence over a sibling approval, so
-                // one is enough to hold the item. A block simply reads as "not approved"; an issue is
-                // counted, so the UI can explain the shortfall instead of leaving a silent gap.
-                if (rows.Any(a => a.Decision == WorkItemDecision.Blocked)) continue;
-                if (rows.Any(a => a.Decision == WorkItemDecision.Issue)) { issues++; continue; }
-                if (rows.Any(a => a.Decision == WorkItemDecision.Approved)) approved++;
+                // A block takes precedence over a sibling approval and is the only verdict that holds
+                // the item. Issues are counted apart from approvals so the UI can say what is flagged
+                // on what is shipping, rather than leaving a silent gap.
+                switch (WorkItemOverallStatus.StateOf(rows.Select(a => a.Decision)))
+                {
+                    case WorkItemInstanceState.Blocked: blocked++; break;
+                    case WorkItemInstanceState.Issue: issues++; break;
+                    case WorkItemInstanceState.Approved: approved++; break;
+                }
             }
         }
 
@@ -2023,8 +2031,11 @@ public class PromotionService
             // the Approve button for the first case without disabling it for the second.
             Required: snapshot.RequireAllWorkItemsApproved,
             Total: workItemKeys.Count, Approved: approved,
-            Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove,
+            // Cleared, not approved: an issue satisfies the gate too, so the shortfall is exactly the
+            // items nobody has ruled on plus the ones somebody blocked.
+            Satisfied: approved + issues == workItemKeys.Count, AutoApprove: autoApprove,
             Issues: issues,
+            Blocked: blocked,
             AllInstances: snapshot.RequireAllWorkItemInstancesApproved);
     }
 
@@ -2082,14 +2093,16 @@ public class PromotionService
     }
 
     /// <summary>
-    /// Returns <c>true</c> when every distinct work-item key on the candidate has at least one
-    /// <see cref="PromotionDecision.Approved"/> <see cref="WorkItemApproval"/> row and zero
-    /// <see cref="WorkItemDecision.Issue"/> / <see cref="WorkItemDecision.Blocked"/> rows.
+    /// Returns <c>true</c> when every distinct work-item key on the candidate is cleared: it carries at
+    /// least one <see cref="WorkItemApproval"/> row — <see cref="WorkItemDecision.Approved"/> or
+    /// <see cref="WorkItemDecision.Issue"/> — and zero <see cref="WorkItemDecision.Blocked"/> ones.
+    /// That is what the policy's <c>RequireAllWorkItemsApproved</c> asks for: a block is the only
+    /// verdict that holds a promotion, an issue flags a problem on a change that is still going out.
     /// Returns <c>true</c> vacuously when the
     /// candidate has no work items — callers should guard with <see cref="CandidateHasWorkItemsAsync"/>
     /// first when they want "no work items" to be treated differently.
     /// </summary>
-    private async Task<bool> AreAllWorkItemsApprovedAsync(PromotionCandidate candidate, CancellationToken ct)
+    private async Task<bool> AreAllWorkItemsClearedAsync(PromotionCandidate candidate, CancellationToken ct)
     {
         var workItemKeys = await _db.PromotionWorkItems.AsNoTracking()
             .Where(w => w.CandidateId == candidate.Id)
@@ -2109,16 +2122,16 @@ public class PromotionService
         foreach (var key in workItemKeys)
         {
             var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
-            // Either non-approval stalls the item regardless of sibling approvals.
-            if (rows.Any(a => a.Decision == WorkItemDecision.Blocked)) return false;
-            if (rows.Any(a => a.Decision == WorkItemDecision.Issue)) return false;
-            if (!rows.Any(a => a.Decision == WorkItemDecision.Approved)) return false;
+            // A block holds the item regardless of sibling approvals; an issue does not hold it at
+            // all. An item nobody has ruled on is the one the gate is waiting for.
+            if (!WorkItemOverallStatus.ClearsGate(
+                    WorkItemOverallStatus.StateOf(rows.Select(a => a.Decision)))) return false;
         }
 
-        // This service's instances are all approved. Under RequireAllWorkItemInstancesApproved the
+        // This service's instances are all cleared. Under RequireAllWorkItemInstancesApproved the
         // policy reads the ticket as done-or-not across the product, so every OTHER service's
-        // instance in the target environment has to be approved too — and none may hold an issue or
-        // a block.
+        // instance in the target environment has to be cleared too — none may hold a block, and none
+        // may still be undecided.
         if (ReadSnapshot(candidate).RequireAllWorkItemInstancesApproved)
         {
             var overall = await WorkItemOverallStatus.LoadAsync(_db,
@@ -2126,7 +2139,7 @@ public class PromotionService
             foreach (var key in workItemKeys)
             {
                 var status = overall.GetValueOrDefault(new WorkItemTicketId(key, candidate.Product, candidate.TargetEnv));
-                if (status is null || status.State != WorkItemInstanceState.Approved) return false;
+                if (status is null || !status.ClearsGateEverywhere) return false;
             }
         }
 
@@ -3079,14 +3092,14 @@ public class PromotionService
             .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision })
             .ToListAsync(ct);
 
-        var approvedTuples = decisions
-            .Where(d => d.Decision == WorkItemDecision.Approved)
+        // Any verdict clears the item — an issue is a flag on a change that still ships. Only a block
+        // holds it, and it holds regardless of a sibling approval: the same precedence
+        // AreAllWorkItemsClearedAsync applies.
+        var decidedTuples = decisions
             .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
             .ToHashSet();
-        // An Issue or a Block holds the item regardless of a sibling approval — same precedence
-        // AreAllWorkItemsApprovedAsync applies.
-        var heldTuples = decisions
-            .Where(d => d.Decision != WorkItemDecision.Approved)
+        var blockedTuples = decisions
+            .Where(d => d.Decision == WorkItemDecision.Blocked)
             .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
             .ToHashSet();
 
@@ -3112,10 +3125,10 @@ public class PromotionService
             var allResolved = snapshot.RequireAllWorkItemInstancesApproved
                 ? candidateKeys.All(k =>
                     overall.GetValueOrDefault(new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv))
-                        ?.State == WorkItemInstanceState.Approved)
+                        ?.ClearsGateEverywhere == true)
                 : candidateKeys.All(k =>
-                    approvedTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv))
-                    && !heldTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv)));
+                    decidedTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv))
+                    && !blockedTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv)));
             if (!allResolved) blocked.Add(candidate.Id);
         }
 
@@ -3346,8 +3359,10 @@ public record ApprovalProgress(
     WorkItemGateProgress? WorkItems = null);
 
 /// <summary>
-/// Progress of the "all work items resolved/approved" gate condition for a candidate:
-/// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off.
+/// Progress of the "all work items resolved" gate condition for a candidate:
+/// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off, plus the
+/// <paramref name="Issues"/> that are cleared with a flag on them and the <paramref name="Blocked"/>
+/// that are not cleared at all.
 /// </summary>
 /// <param name="Required">
 /// True when the policy holds human approval back until every work item is signed off
@@ -3362,10 +3377,13 @@ public record ApprovalProgress(
 /// </param>
 public record WorkItemGateProgress(
     bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false,
-    // Work items carrying an Issue. Counted separately from Approved so the UI can say
-    // "2 of 5 approved, 1 issue" instead of leaving the shortfall unexplained. Blocked items are
-    // deliberately not counted here — they read as simply not approved.
+    // Work items carrying an Issue. Counted apart from Approved so the UI can say "2 of 5 approved,
+    // 1 with an issue" — these clear the gate (Satisfied counts them in), they just say something is
+    // wrong with what is shipping.
     int Issues = 0,
+    // Work items somebody has blocked — the only verdict that holds the gate. The rest of the
+    // shortfall (Total - Approved - Issues - Blocked) is items nobody has ruled on yet.
+    int Blocked = 0,
     // True when the policy judges each work item by the ticket's overall status across every
     // service instance (RequireAllWorkItemInstancesApproved) rather than by this promotion's own
     // instance — so "approved" above means "approved everywhere", and the UI can say so.
