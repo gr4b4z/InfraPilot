@@ -218,6 +218,8 @@ public class DeployEventWorkItemBackfillService : BackgroundService
                 Title = title,
                 SubTitle = subTitle,
                 Content = r.Content,
+                Priority = r.Priority,
+                WorkItemType = r.WorkItemType,
                 Revision = r.Revision,
                 CreatedAt = DateTimeOffset.UtcNow,
             });

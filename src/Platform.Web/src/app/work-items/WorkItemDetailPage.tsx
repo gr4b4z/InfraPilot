@@ -31,6 +31,7 @@ import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { MissingRolesBadge, MissingRolesNotice } from '@/components/promotions/MissingRoles';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   AlertTriangle,
@@ -333,6 +334,10 @@ export function WorkItemDetailPage() {
                 {detail.workItemKey}
               </h1>
             </div>
+            {/* What kind of ticket this is and how urgent, in the tracker's own words. Beside the
+                name because they change how everything below is read: a Highest-priority Bug and a
+                Low Task get different scrutiny. Absent when the producer sent neither. */}
+            <WorkItemTraits workItemType={detail.workItemType} priority={detail.priority} />
             {/* The tracker link is the most-used control on this page — someone reviewing a ticket
                 goes to read it. It was a 14px bare icon next to the title; now it's a labelled
                 button so it's findable without hunting. */}

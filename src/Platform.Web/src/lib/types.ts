@@ -273,6 +273,9 @@ export interface RelatedWorkItem {
   title?: string | null;
   /** The messages of the commits behind the ticket, joined — shown under `title`. */
   subTitle?: string | null;
+  /** Tracker labels — priority ("High") and issue type ("Bug") — absent when the producer sent none. */
+  priority?: string | null;
+  workItemType?: string | null;
   /** Environments the ticket is gated for; a work-item link needs one of them. */
   signOffTargetEnvs: string[];
 }

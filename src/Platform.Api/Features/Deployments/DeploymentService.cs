@@ -253,7 +253,11 @@ public class DeploymentService
                     // the tracker's own verdict on the item, which nothing here is entitled to edit.
                     Commits: r.Commits,
                     Resolution: r.Resolution,
-                    OccurredAt: r.OccurredAt)).ToList(),
+                    OccurredAt: r.OccurredAt,
+                    // Tracker labels, stored as sent — the UI recognises the common Jira ones and
+                    // shows anything else as-is.
+                    Priority: r.Priority,
+                    WorkItemType: r.WorkItemType)).ToList(),
                 JsonOptions),
             ParticipantsJson = JsonSerializer.Serialize(
                 (dto.Participants ?? []).Select(p => new ParticipantDto(
@@ -490,7 +494,7 @@ public class DeploymentService
         var workItemRows = await _db.DeployEventWorkItems.AsNoTracking()
             .Where(w => w.DeployEventId == id)
             .OrderBy(w => w.WorkItemKey)
-            .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle })
+            .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType })
             .ToListAsync(ct);
 
         // Sign-off is keyed on (key, product, service, targetEnv); the service is this event's, so a
@@ -502,7 +506,7 @@ public class DeploymentService
             .ToList();
 
         var workItemDtos = workItemRows
-            .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, signOffEnvs))
+            .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType, signOffEnvs))
             .ToList();
 
         return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);

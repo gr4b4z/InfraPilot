@@ -46,6 +46,7 @@ import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
 import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import {
   MissingRolesBadge,
   MissingRolesNotice,
@@ -2184,6 +2185,9 @@ function TicketRow({
                 {reference.title}
               </span>
             )}
+            {/* Issue type and priority from the tracker, so a reviewer scanning the bundle can spot
+                the Bug among the Stories and the Highest among the Lows without opening each one. */}
+            <WorkItemTraits workItemType={reference.workItemType} priority={reference.priority} />
             {/* Nobody in a role the policy requires. Sits on the title line, next to the state badge's
                 column, so a reviewer scanning the bundle sees which item is missing an owner. */}
             <MissingRolesBadge roles={missingRoles} />

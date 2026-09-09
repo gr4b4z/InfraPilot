@@ -490,6 +490,10 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<Guid>("DeployEventId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -517,6 +521,10 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.Property<string>("WorkItemKey")
                         .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("WorkItemType")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
@@ -921,6 +929,10 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -960,6 +972,10 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.Property<string>("WorkItemKey")
                         .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("WorkItemType")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 

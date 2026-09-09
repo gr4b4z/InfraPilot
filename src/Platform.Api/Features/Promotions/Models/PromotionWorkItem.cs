@@ -46,6 +46,12 @@ public class PromotionWorkItem
     // body. Unbounded: a description is prose, not a label.
     public string? Content { get; set; }
 
+    // The tracker's priority label ("High") and issue type ("Bug", "Story") as the producer read
+    // them. Labels, not enums: trackers name their levels differently and the UI only needs to
+    // recognise the common ones to colour them. Null when the producer didn't send them.
+    public string? Priority { get; set; }
+    public string? WorkItemType { get; set; }
+
     public string? Revision { get; set; }
 
     // When the change carrying this ticket entered trunk — same resolution as
