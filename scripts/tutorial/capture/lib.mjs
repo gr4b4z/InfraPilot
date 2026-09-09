@@ -160,6 +160,8 @@ export async function drawMarks(page, marks, { anchor } = {}) {
     marker.appendChild(el('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: RED }));
     defs.appendChild(marker);
     svg.appendChild(defs);
+    // Attached before anything is measured: getBBox on a detached SVG reports stale geometry.
+    document.body.appendChild(svg);
 
     items.forEach((m, i) => {
       const pad = m.pad ?? 6;
@@ -196,7 +198,6 @@ export async function drawMarks(page, marks, { anchor } = {}) {
         svg.insertBefore(plate, text);
       }
     });
-    document.body.appendChild(svg);
   }, resolved);
   await page.waitForTimeout(100);
   return resolved.map((r) => r.box);
