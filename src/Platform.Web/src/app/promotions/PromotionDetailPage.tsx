@@ -1444,13 +1444,23 @@ function PromotionApprovalCard({
   const gate = progress?.workItems;
   const approveBlockedReason: string | null = (() => {
     if (gate && gate.required && !gate.satisfied) {
-      const outstanding = gate.total - gate.approved;
-      const issues = (gate.issues ?? 0) > 0 ? `, ${gate.issues} flagged with issues` : '';
+      // What is actually holding the gate: blocked items plus items nobody has ruled on. Issues are
+      // signed off as far as the gate is concerned, so they are reported but never counted as
+      // outstanding — naming them here would send the approver chasing something that isn't the hold.
+      const blocked = gate.blocked ?? 0;
+      const undecided = gate.total - gate.approved - (gate.issues ?? 0) - blocked;
+      const held = [
+        blocked > 0 ? `${blocked} blocked` : null,
+        undecided > 0 ? `${undecided} not signed off yet` : null,
+      ]
+        .filter(Boolean)
+        .join(' and ');
+      const issues = (gate.issues ?? 0) > 0 ? `, ${gate.issues} flagged with issues (not a hold)` : '';
       const scope = gate.allInstances ? ' on every service carrying it' : '';
       return (
-        `This promotion's policy requires every work item to be approved${scope} first. ` +
-        `${gate.approved} of ${gate.total} signed off${issues} — ` +
-        `${outstanding} still outstanding. Sign them off from the work items below or the queue.`
+        `This promotion's policy requires every work item to be signed off${scope} first. ` +
+        `${gate.approved} of ${gate.total} approved${issues} — ` +
+        `${held}. Clear them from the work items below or the queue.`
       );
     }
     if (!selected) return 'Select which requirement you are approving as';
@@ -1896,10 +1906,17 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
                       : 'Resolving all work items auto-approves this promotion'}
                   </p>
                 )}
-                {/* Flagged items explain a shortfall that the approved count alone doesn't. */}
+                {/* A block is the hold; an issue is a flag on something that is still going out.
+                    Both are named, so a satisfied gate never hides a flagged item and an unsatisfied
+                    one names what to actually chase. */}
+                {(workItemGate.blocked ?? 0) > 0 && (
+                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--danger)' }}>
+                    {workItemGate.blocked} blocked — this gate stays unmet until that changes
+                  </p>
+                )}
                 {(workItemGate.issues ?? 0) > 0 && (
                   <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--warning)' }}>
-                    {workItemGate.issues} with issues — resolve or approve them to satisfy this gate
+                    {workItemGate.issues} with issues — flagged, but not holding this gate
                   </p>
                 )}
               </div>

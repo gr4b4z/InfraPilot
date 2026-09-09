@@ -74,9 +74,9 @@ import {
 interface WorkItemProgress {
   total: number;
   approved: number;
-  /** Carrying an Issue — a flagged problem. Stalls the gate without vetoing the promotion. */
+  /** Carrying an Issue — a flagged problem on a change that still ships. Does not stall the gate. */
   issues: number;
-  /** Held back by a Block. Same effect as an issue, stronger statement. */
+  /** Held back by a Block — the only decision that stalls the gate. */
   blocked: number;
   /** Work-item key → the decision on it, or null when nobody has decided yet. */
   decisions: Record<string, WorkItemDecision | null>;
@@ -1301,9 +1301,9 @@ function WorkItemsBadge({
       </span>
     );
   }
-  // Held-back items are called out in the label: without them a stalled bundle looks identical to
-  // one nobody has looked at yet, which is the opposite of the truth. Blocks lead — they're the
-  // stronger call of the two.
+  // Blocks and issues are called out in the label: without them a stalled bundle looks identical to
+  // one nobody has looked at yet, which is the opposite of the truth. Blocks lead — they are what
+  // actually holds the promotion; an issue is a flag on something still going out.
   const held = [
     progress.blocked > 0 ? `${progress.blocked} blocked` : null,
     progress.issues > 0 ? `${progress.issues} issue${progress.issues === 1 ? '' : 's'}` : null,

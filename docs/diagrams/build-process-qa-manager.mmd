@@ -47,11 +47,17 @@ and records one of three results.`"]:::qa
 it works`"]:::good
     REVIEW --> R2["`**Issue** ⚠
 a problem was found,
-but it does not block release`"]:::bad
+but it does not stop the release`"]:::gate
     REVIEW --> R3["`**Block** ⛔
-the change is harmful`"]:::bad
+this must not go out`"]:::bad
 
-    R2 --> HELD
+    R1 --> CLEARED
+    R2 --> CLEARED
+    CLEARED["`The change counts as **cleared**. An issue is
+recorded with a comment and a link to Jira, so the
+known problem travels with the release instead
+of holding it.`"]:::quiet
+
     R3 --> HELD
     HELD["`The change counts as **not cleared**. A comment
 explains why, with a link to Jira. The Promotion is
@@ -59,7 +65,7 @@ not cancelled — it waits, and the reviewer
 can change their mind later.`"]:::quiet
     HELD -.->|"`fixed and re-tested`"| REVIEW
 
-    R1 --> TARGET
+    CLEARED --> TARGET
     HELD --> TARGET
     TARGET{"`Where is this
 Promotion going?`"}:::gate
@@ -68,11 +74,14 @@ Promotion going?`"}:::gate
 Verification is visible here, but not required.`"]:::qam
     TARGET -->|"`To **Production**`"| HARD
     HARD{"`Is **every** change
-inside it Approved?`"}:::gate
+inside it cleared?
+Approved or Issue — only a
+**Block** holds it, and so does a
+change nobody has checked yet.`"}:::gate
     HARD -->|"`No`"| WAIT["`**Approve** stays locked. The portal names
-the changes still outstanding, so the
-QA Manager knows who to chase.`"]:::bad
-    WAIT -.->|"`last outstanding change approved`"| HARD
+the changes still blocked or unchecked, so
+the QA Manager knows who to chase.`"]:::bad
+    WAIT -.->|"`last outstanding change cleared`"| HARD
     HARD -->|"`Yes`"| CLEAR["`**Approve** unlocks. Only **Pawel Krainski** or
 **Tatyana Velikanova** may give this
 approval — one of them is enough.`"]:::good

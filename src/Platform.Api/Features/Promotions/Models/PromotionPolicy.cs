@@ -92,9 +92,12 @@ public class PromotionPolicy
     // These flags are independent and can be combined freely.
 
     /// <summary>
-    /// When <c>true</c>, a human approver cannot approve the promotion until every work item
-    /// in the bundle has at least one Approved WorkItemApproval row. Has no effect when the bundle
-    /// contains no work items (nothing to wait for).
+    /// When <c>true</c>, a human approver cannot approve the promotion until every work item in the
+    /// bundle has been <b>cleared</b>: somebody recorded a decision on it and nobody blocked it. An
+    /// <see cref="WorkItemDecision.Issue"/> clears the item like an approval does — it flags a problem
+    /// on a change that is still going out — so <see cref="WorkItemDecision.Blocked"/> is the only
+    /// verdict that holds the promotion. Has no effect when the bundle contains no work items
+    /// (nothing to wait for).
     /// </summary>
     public bool RequireAllWorkItemsApproved { get; set; } = false;
 
@@ -103,9 +106,9 @@ public class PromotionPolicy
     /// (<c>mpt-helpdesk/MPT-1</c> and <c>mpt-platform/MPT-1</c> are two work items), so by default a
     /// promotion of <c>mpt-helpdesk</c> waits only for <i>its</i> instance of the ticket. When
     /// <c>true</c> it waits for the ticket's <b>overall</b> status instead — every service's instance
-    /// in the target environment approved, none holding an issue or block (see
-    /// <see cref="WorkItemOverallStatus"/>). For a team that reads a ticket as done-or-not rather than
-    /// done-per-service.
+    /// in the target environment decided, none holding a block (see
+    /// <see cref="WorkItemOverallStatus.ClearsGateEverywhere"/>). For a team that reads a ticket as
+    /// done-or-not rather than done-per-service.
     ///
     /// <para>Qualifies <see cref="RequireAllWorkItemsApproved"/> and
     /// <see cref="AutoApproveOnAllWorkItemsApproved"/>; on its own it changes nothing, because
@@ -114,9 +117,11 @@ public class PromotionPolicy
     public bool RequireAllWorkItemInstancesApproved { get; set; } = false;
 
     /// <summary>
-    /// When <c>true</c>, the candidate is automatically promoted the moment all work items
-    /// in the bundle have been approved, regardless of any human approver requirements — the
-    /// first path that satisfies the gate wins.
+    /// When <c>true</c>, the candidate is automatically promoted the moment all work items in the
+    /// bundle are cleared (same bar as <see cref="RequireAllWorkItemsApproved"/>: decided, none
+    /// blocked), regardless of any human approver requirements — the first path that satisfies the
+    /// gate wins. Note that raising an issue on the last outstanding item clears it, so it promotes
+    /// the candidate: an issue is a note about what ships, not a hold.
     /// </summary>
     public bool AutoApproveOnAllWorkItemsApproved { get; set; } = false;
 

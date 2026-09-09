@@ -98,15 +98,16 @@ public class PromotionGateTests
             Arg.Any<WebhookEventFilters>());
     }
 
-    // ── 1a. WorkItemsOnly_Issue_StallsGateThenApproveReleasesIt ───────────────
+    // ── 1a. WorkItemsOnly_Issue_ClearsGateAndPromotes ─────────────────────────
 
     /// <summary>
-    /// An issue is the reversible middle ground between silence and a block: the gate stays unmet (so
-    /// no auto-promotion) but the candidate stays Pending. Approving afterwards clears it and the gate
-    /// fires as normal.
+    /// An issue flags a problem on a change that is still going out, so it clears the item exactly as
+    /// an approval does: the gate is satisfied and the auto-approve accelerator fires. Only a block
+    /// holds a promotion. The ticket-level audit and webhook still say an issue was raised, so the
+    /// flag is not lost behind the promotion.
     /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_Issue_StallsGateThenApproveReleasesIt()
+    public async Task WorkItemsOnly_Issue_ClearsGateAndPromotes()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
@@ -134,8 +135,8 @@ public class PromotionGateTests
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var candidate = await db.PromotionCandidates.AsNoTracking()
                 .FirstAsync(c => c.Id == candidateId);
-            Assert.Equal(PromotionStatus.Pending, candidate.Status);
-            Assert.Null(candidate.ApprovedAt);
+            Assert.Equal(PromotionStatus.Approved, candidate.Status);
+            Assert.NotNull(candidate.ApprovedAt);
 
             var ticket = await db.AuditLog.AsNoTracking()
                 .Where(a => a.Action == "promotion.ticket.issue-raised").ToListAsync();
@@ -146,12 +147,52 @@ public class PromotionGateTests
             "promotion.ticket.issue-raised",
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
+    }
 
-        // Resolving the issue satisfies the gate.
+    // ── 1a-bis. WorkItemsOnly_Block_HoldsGateUntilChanged ─────────────────────
+
+    /// <summary>
+    /// The counterpart to the test above: a block on the only work item holds the gate, and the
+    /// promotion moves only once that block is replaced by another decision.
+    /// </summary>
+    [Fact]
+    public async Task WorkItemsOnly_Block_HoldsGateUntilChanged()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
+            candidateId = c.Id;
+        }
+
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "resolved", default);
+            await svc.BlockAsync("FOO-1", "acme", "api", "prod", "not going out", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
+            Assert.Null(candidate.ApprovedAt);
+        }
+
+        // Downgrading the block to an issue is enough — the item is cleared, not approved.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", "known cosmetic bug", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -289,11 +330,12 @@ public class PromotionGateTests
     }
 
     /// <summary>
-    /// A hold on a sibling instance holds the ticket. With the all-instances gate, an Issue on
-    /// web/FOO-1 keeps the api promotion Pending even though api/FOO-1 is approved.
+    /// With the all-instances gate, an Issue on web/FOO-1 does not hold the api promotion: every
+    /// instance has been ruled on and none is blocked, so the ticket is cleared everywhere. The
+    /// roll-up still reads Issue — the flag is reported, it just isn't a hold.
     /// </summary>
     [Fact]
-    public async Task AllInstancesGate_SiblingIssueHoldsThePromotion()
+    public async Task AllInstancesGate_SiblingIssueDoesNotHoldThePromotion()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "qa@example.com";
@@ -323,10 +365,53 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            Assert.Equal(PromotionStatus.Approved, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
             var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
             Assert.Equal(WorkItemInstanceState.Issue, overall!.State);
             Assert.Equal(1, overall.Issues);
+            Assert.True(overall.ClearsGateEverywhere);
+        }
+    }
+
+    /// <summary>
+    /// The same shape with a block: web/FOO-1 blocked keeps the api promotion Pending even though
+    /// api/FOO-1 is approved, because the all-instances gate reads the ticket across services.
+    /// </summary>
+    [Fact]
+    public async Task AllInstancesGate_SiblingBlockHoldsThePromotion()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid apiId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, api) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "api");
+            await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "web");
+            apiId = api.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.BlockAsync("FOO-1", "acme", "web", "prod", "web is broken", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "api tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
+            Assert.Equal(WorkItemInstanceState.Blocked, overall!.State);
+            Assert.False(overall.ClearsGateEverywhere);
         }
     }
 
@@ -406,7 +491,7 @@ public class PromotionGateTests
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 svc.ApproveAsync(candidateId, "ship it", default));
-            Assert.Contains("All work items must be approved", ex.Message,
+            Assert.Contains("All work items must be signed off", ex.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -456,9 +541,9 @@ public class PromotionGateTests
 
     /// <summary>
     /// A work-item block is a verdict on the ticket, not on the promotion: it holds the gate (the item
-    /// never counts as resolved) but leaves the candidate Pending, exactly like an issue. It used to
-    /// cascade into <c>promotion.rejected</c>; that veto is gone, so a block is recoverable — the same
-    /// user can approve later, or a new version resets the decision.
+    /// never counts as resolved) but leaves the candidate Pending. It used to cascade into
+    /// <c>promotion.rejected</c>; that veto is gone, so a block is recoverable — the same user can
+    /// approve later, or a new version resets the decision.
     /// </summary>
     [Fact]
     public async Task WorkItemsOnly_TicketBlocked_StallsGateWithoutTerminatingCandidate()
@@ -482,6 +567,8 @@ public class PromotionGateTests
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
             await svc.BlockAsync("FOO-1", "acme", "api", "prod", "not ready", default);
+            // Everything else in the bundle signed off: the block alone has to hold the gate.
+            await svc.ApproveAsync("FOO-2", "acme", "api", "prod", "fine", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -602,7 +689,7 @@ public class PromotionGateTests
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 svc.ApproveAsync(candidateId, "ship", default));
-            Assert.Contains("All work items must be approved", ex.Message,
+            Assert.Contains("All work items must be signed off", ex.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
 

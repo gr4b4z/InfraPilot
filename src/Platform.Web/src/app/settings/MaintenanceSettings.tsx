@@ -696,8 +696,8 @@ function OrphanedWorkItemsCard() {
           in the work-item queue — has no gate left to feed and no deploy that will ever retire it, so
           it stays pending forever. This approves them in bulk, on your name, with a note saying it
           was a maintenance sweep. Items a live promotion still carries are ordinary pending work and
-          are left alone, and so is anything somebody already decided: an issue or a block is a
-          deliberate hold, not a leftover.
+          are left alone, and so is anything somebody already decided: an issue or a block is
+          somebody&rsquo;s deliberate call, not a leftover.
         </p>
       </div>
 

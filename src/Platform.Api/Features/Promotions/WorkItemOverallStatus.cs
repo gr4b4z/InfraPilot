@@ -6,8 +6,12 @@ namespace Platform.Api.Features.Promotions;
 
 /// <summary>
 /// The sign-off state of one work item instance, derived from its <see cref="WorkItemApproval"/> rows
-/// with the gate's precedence: a block outranks an issue, either outranks a sibling approval, and an
+/// with display precedence: a block outranks an issue, either outranks a sibling approval, and an
 /// item nobody has ruled on is pending.
+///
+/// <para>Only <see cref="Blocked"/> holds a promotion back. <see cref="Issue"/> is a flag on a change
+/// that is still going out, so it clears the gate alongside <see cref="Approved"/> — see
+/// <see cref="WorkItemOverallStatus.ClearsGate"/>.</para>
 /// </summary>
 public enum WorkItemInstanceState
 {
@@ -33,10 +37,11 @@ public record WorkItemInstanceStatusView(string Service, string? Title, WorkItem
 /// instance's own state, so a manager reading the ticket and a tester signing off one service look at
 /// the same object from two sides.
 ///
-/// <para><see cref="State"/> follows the gate's precedence across instances: any block → Blocked, else
+/// <para><see cref="State"/> follows display precedence across instances: any block → Blocked, else
 /// any issue → Issue, else every instance approved → Approved, else Pending. A promotion whose policy
-/// sets <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> waits for this to be
-/// Approved rather than for its own service's instance alone.</para>
+/// sets <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> waits for every
+/// instance to clear (<see cref="ClearsGateEverywhere"/>) rather than for its own service's alone —
+/// which is not the same as <see cref="State"/> being Approved, since an issue clears too.</para>
 ///
 /// <para>Instances are the services with a <see cref="PromotionWorkItem"/> row for the ticket in that
 /// product/env — whatever the carrying promotion's status. A service whose promotion already shipped
@@ -59,6 +64,23 @@ public record WorkItemOverallStatus(
     public WorkItemOverallSummary ToSummary() => new(
         State.ToString(), Instances, Approved, Issues, Blocked, Pending,
         InstanceStatuses.Select(i => new WorkItemInstanceSummary(i.Service, i.Title, i.State.ToString())).ToList());
+
+    /// <summary>
+    /// Whether an instance in this state lets a promotion through. Only <see cref="WorkItemInstanceState.Blocked"/>
+    /// holds the gate: an issue says "something is wrong here", not "this is not going out", so it
+    /// clears alongside an approval. An item nobody has ruled on is not cleared — that verdict is
+    /// exactly what the gate is waiting for.
+    /// </summary>
+    public static bool ClearsGate(WorkItemInstanceState state)
+        => state is WorkItemInstanceState.Approved or WorkItemInstanceState.Issue;
+
+    /// <summary>
+    /// Whether the ticket clears the gate on every service carrying it: nothing blocked, nothing still
+    /// undecided. Read off the counts rather than <see cref="State"/> because the roll-up's display
+    /// precedence puts an issue above a pending sibling — a ticket showing "Issue" while one service
+    /// has not been looked at yet must not read as cleared.
+    /// </summary>
+    public bool ClearsGateEverywhere => Instances > 0 && Blocked == 0 && Pending == 0;
 
     /// <summary>The state of one instance from its decision rows.</summary>
     public static WorkItemInstanceState StateOf(IEnumerable<WorkItemDecision> decisions)
