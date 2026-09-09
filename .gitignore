@@ -28,6 +28,7 @@ Thumbs.db
 .env.docker
 .env.*.local
 appsettings.Development.json
+appsettings.Development.json.bak
 
 # Catalog — custom items live outside examples/ and should not be committed
 catalog/*
@@ -46,6 +47,10 @@ local/
 
 # Logs and pid files written by scripts/start.ps1
 .local/
+
+# Production data pulled by scripts/tutorial/export-snapshot.ps1 — real names, e-mails and internal
+# URLs. Regenerated on demand; never committed.
+scripts/tutorial/snapshot/
 
 # Legacy /site directory — contents moved to /docs
 site/

@@ -364,12 +364,20 @@ var app = builder.Build();
     if (!isMsal)
         await SeedData.SeedLocalUsers(db);
 
-    // Seed demo data in development only.
+    // Seed demo data in development only. Each block can be switched off in configuration
+    // (`Seed:DemoRequests`, `Seed:DemoDeployments`) so a local database can be filled from another
+    // source instead — scripts/tutorial/seed-tutorial.ps1 replays a production snapshot and needs the
+    // deployment/promotion tables to start empty. Both default to on, so nothing changes for an
+    // ordinary dev run.
     if (app.Environment.IsDevelopment())
     {
-        await SeedData.SeedDemoData(db);
-        await DeploymentSeedData.Seed(db);
-        await PromotionSeedData.Seed(db);
+        if (builder.Configuration.GetValue("Seed:DemoRequests", true))
+            await SeedData.SeedDemoData(db);
+        if (builder.Configuration.GetValue("Seed:DemoDeployments", true))
+        {
+            await DeploymentSeedData.Seed(db);
+            await PromotionSeedData.Seed(db);
+        }
     }
 }
 
