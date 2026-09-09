@@ -78,8 +78,8 @@ refilled with a copy of a real instance's *active* data — the current version 
 every environment, the last week of deploys, the registered builds and every open promotion — and
 then a scripted storyline is staged on top (a promotion signed off and waiting for its release
 approval, one with an issue raised, one rejected, one approved and waiting for its deploy, a failed
-deploy with pipeline logs, a rollback request, a release note, a webhook subscription, a service
-request). Three accounts come with it: `admin@localhost` / `admin123` (Admin), `qa@localhost` / `qa123`
+deploy with pipeline logs, a rollback request, a release note, a webhook subscription). Three
+accounts come with it: `admin@localhost` / `admin123` (Admin), `qa@localhost` / `qa123`
 (QA) and `user@localhost` / `user123` (plain User).
 
 The copy is taken by `scripts/tutorial/export-snapshot.ps1` through the public API, so it needs
