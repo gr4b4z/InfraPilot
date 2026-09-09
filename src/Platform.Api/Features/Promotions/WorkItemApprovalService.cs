@@ -34,10 +34,10 @@ namespace Platform.Api.Features.Promotions;
 /// (product, service, env, approver) — enforced by unique index plus an in-app duplicate check that
 /// returns a friendly 400 instead of a DB exception.</para>
 ///
-/// <para>No decision cascades to the promotion. Approve feeds the gate (and can auto-promote);
-/// Issue and Block both simply leave the item unresolved, which stalls the gate without terminating
-/// the candidate, and both are reversible. Vetoing a promotion is a candidate-level action
-/// (<see cref="PromotionService.RejectAsync"/>), never something done to a single ticket.</para>
+/// <para>No decision cascades to the promotion. Approve and Issue both clear the item and feed the
+/// gate (and so can auto-promote); Block leaves it unresolved, which stalls the gate without
+/// terminating the candidate. All three are reversible. Vetoing a promotion is a candidate-level
+/// action (<see cref="PromotionService.RejectAsync"/>), never something done to a single ticket.</para>
 /// </summary>
 public class WorkItemApprovalService
 {
@@ -99,9 +99,9 @@ public class WorkItemApprovalService
         => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Approved, ct);
 
     /// <summary>
-    /// Flags something wrong with the work item. The candidate stays Pending and the gate treats the
-    /// item as unresolved; the same user can switch to Approved later. Mechanically identical to
-    /// <see cref="BlockAsync"/> — the two differ only in what the reviewer is saying.
+    /// Flags something wrong with the work item without holding it back: the gate counts the item as
+    /// cleared, so this can be the decision that satisfies it. The same user can switch to Approved
+    /// or Blocked later. <see cref="BlockAsync"/> is the decision that actually stops a release.
     /// </summary>
     public Task<WorkItemApproval> RaiseIssueAsync(
         string workItemKey, string product, string service, string targetEnv, string? comment,
@@ -109,9 +109,9 @@ public class WorkItemApprovalService
         => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Issue, ct);
 
     /// <summary>
-    /// Holds the work item back. Says more than <see cref="RaiseIssueAsync"/> and does exactly the
-    /// same: no cascade to the promotion, and reversible. Note this is <i>not</i> a veto — that is
-    /// <see cref="PromotionService.RejectAsync"/>, which terminates a candidate.
+    /// Holds the work item back — the only decision that stalls the promotion gate. Still no cascade
+    /// to the candidate, and reversible: this is <i>not</i> a veto, which is
+    /// <see cref="PromotionService.RejectAsync"/> and terminates a candidate.
     /// </summary>
     public Task<WorkItemApproval> BlockAsync(
         string workItemKey, string product, string service, string targetEnv, string? comment,
@@ -120,8 +120,9 @@ public class WorkItemApprovalService
 
     /// <summary>
     /// Records a ticket-level decision after authority checks, then drives the candidate side:
-    /// an approval re-evaluates the gate (which may auto-promote), an Issue or Block does nothing
-    /// to the candidate — it just leaves the item unresolved, which stalls the gate.
+    /// an approval or an issue re-evaluates the gate (which may auto-promote, since both clear the
+    /// item), a Block does nothing to the candidate — it just leaves the item unresolved, which
+    /// stalls the gate.
     ///
     /// <para>A user who already decided may change their mind: the existing row is updated in
     /// place (the unique index permits one row per approver) and <c>UpdatedAt</c> is stamped.
@@ -267,15 +268,15 @@ public class WorkItemApprovalService
             decision, LogSanitizer.Clean(key), LogSanitizer.Clean(prod), LogSanitizer.Clean(svc),
             LogSanitizer.Clean(env), LogSanitizer.Clean(_currentUser.Email), candidate?.Id);
 
-        // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
-        // WorkItemsOnly / WorkItemsAndManual conditions are met). Issue and Block → nothing at all:
-        // neither cascades to the promotion; they simply leave the item unresolved, which is enough
-        // to stall the gate until someone approves or the next version resets the decision. (A
-        // decision that displaces an earlier approval needs no re-evaluation either: re-evaluation
-        // only ever promotes.)
-        if (decision == WorkItemDecision.Approved)
+        // Drive the candidate side. Approve or Issue → re-evaluate the gate (may auto-promote when
+        // WorkItemsOnly / WorkItemsAndManual conditions are met): both clear the item, so either can
+        // be the verdict that completes the bundle. Block → nothing at all: it does not cascade to
+        // the promotion, it simply leaves the item unresolved, which is enough to stall the gate
+        // until someone changes the decision or the next version resets it. (A block that displaces
+        // an earlier approval needs no re-evaluation either: re-evaluation only ever promotes.)
+        if (decision != WorkItemDecision.Blocked)
         {
-            // A ticket approval is shared across every candidate of this service carrying it
+            // A ticket decision is shared across every candidate of this service carrying it
             // (WorkItemApproval is keyed by key+product+service+targetEnv, not by candidate), so
             // re-evaluate ALL pending candidates that reference this ticket — not just the one the
             // row was attributed to — so every gate the sign-off satisfies auto-promotes immediately.
@@ -1211,8 +1212,8 @@ public class WorkItemApprovalService
             .Select(w => (w.WorkItemKey, w.Product, w.Service, w.TargetEnv))
             .ToHashSet();
 
-        // Any decision at all — an approval means resolved, an Issue or Block means someone is
-        // deliberately holding the item. Both are left alone.
+        // Any decision at all — an approval or an issue means resolved, a Block means someone is
+        // deliberately holding the item. All are left alone: somebody already ruled on them.
         var decided = (await _db.WorkItemApprovals.AsNoTracking()
                 .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv })
                 .ToListAsync(ct))

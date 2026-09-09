@@ -3,12 +3,11 @@ namespace Platform.Api.Features.Promotions.Models;
 /// <summary>
 /// A sign-off decision on one work item, for one <c>(product, service, targetEnv)</c>.
 ///
-/// <para>Only <see cref="Approved"/> releases the promotion gate. <see cref="Issue"/> and
-/// <see cref="Blocked"/> are both "not approved": they leave the item unresolved, which stalls the
-/// gate without cancelling the promotion, and both are reversible — the same person can switch to
-/// Approved later, and a new version of the promotion clears them and asks again. They are
-/// mechanically identical; the difference is what the reviewer is saying. An issue is "something's
-/// wrong here"; a block is "this is not going out".</para>
+/// <para><see cref="Blocked"/> is the only decision that holds the promotion gate. An issue is
+/// "something's wrong here" about a change that is still going out, so <see cref="Approved"/> and
+/// <see cref="Issue"/> both clear the item; a block is "this is not going out", and it stalls the
+/// gate without cancelling the promotion. Every decision is reversible — the same person can switch
+/// to another later, and a new version of the promotion clears the held ones and asks again.</para>
 ///
 /// <para>Deliberately separate from <see cref="PromotionDecision"/>, which governs the promotion
 /// itself and whose <c>Rejected</c> is a genuine veto that terminates the candidate. Sharing one
@@ -26,15 +25,17 @@ public enum WorkItemDecision
     Approved,
 
     /// <summary>
-    /// Something is wrong with the item, flagged without declaring it undeliverable. Counted
-    /// separately by the gate so a shortfall reads as "3 of 5 approved, 1 issue" rather than an
-    /// unexplained gap.
+    /// Something is wrong with the item, flagged without declaring it undeliverable — so it does not
+    /// hold the promotion. Counted separately by the gate so a cleared bundle reads as "4 of 5
+    /// approved, 1 with an issue" rather than hiding the flag behind a green tick.
     /// </summary>
     Issue,
 
     /// <summary>
-    /// The item is held back. Stronger than <see cref="Issue"/> in what it says, identical in what
-    /// it does: the promotion stays Pending, nothing cascades, and the decision can be changed.
+    /// The item is held back — the one verdict that stops the promotion. It takes precedence over a
+    /// sibling approval or issue on the same item, and outranks them on the ticket's roll-up across
+    /// services. Nothing cascades: the promotion stays Pending rather than being rejected, and the
+    /// decision can be changed.
     /// </summary>
     Blocked,
 }
