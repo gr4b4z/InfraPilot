@@ -12,8 +12,8 @@ import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  launch, actorContext, go, drawMarks, clearMarks, shot, terminalCard, api, tokenFor, curlFor,
-  pretty, scenes, writeManifest, outDir, stateDir, repoRoot, VIEWPORT,
+  launch, actorContext, go, drawMarks, clearMarks, shot, setShotCounter, terminalCard, api, tokenFor, curlFor,
+  pretty, scenes, writeManifest, readManifest, outDir, stateDir, repoRoot, VIEWPORT,
 } from './lib.mjs';
 
 const sc = scenes.scenes;
@@ -29,7 +29,17 @@ const only = (process.env.PARTS ?? '').split(',').map((s) => s.trim()).filter(Bo
 const wantPart = (n) => only.length === 0 || only.includes(n);
 
 const manifest = { builtAt: new Date().toISOString(), hero, source: scenes.source ?? null, scenes: sc, accounts: scenes.accounts, steps: [] };
-const record = (entry) => { manifest.steps.push(entry); console.log(`  ✓ ${entry.part}.${entry.n} ${entry.title}`); };
+// A partial run (PARTS=…) replaces just those parts in the existing manifest and numbers its images
+// after the existing ones, so the other parts' screenshots survive untouched.
+if (only.length > 0) {
+  try {
+    const previous = readManifest();
+    manifest.steps = previous.steps.filter((s) => !only.includes(s.part));
+    const used = previous.steps.flatMap((s) => s.images.map((im) => Number(im.file.split('-')[0]) || 0));
+    setShotCounter(Math.max(0, ...used));
+  } catch { /* no earlier manifest — start fresh */ }
+}
+const record = (entry) => { manifest.steps.push(entry); manifest.steps.sort((a, b) => a.part - b.part || a.n - b.n); console.log(`  ✓ ${entry.part}.${entry.n} ${entry.title}`); };
 
 const browser = await launch();
 const ctx = {};
