@@ -123,6 +123,7 @@ export function LoginPage() {
           </p>
           <div className="space-y-0.5 text-[11px]" style={{ color: 'var(--text-muted)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
             <p>admin@localhost / admin123 (Admin)</p>
+            <p>qa@localhost / qa123 (QA)</p>
             <p>user@localhost / user123 (User)</p>
             <p>viewer@localhost / viewer123 (Viewer)</p>
           </div>
