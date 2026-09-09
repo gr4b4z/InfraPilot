@@ -635,6 +635,8 @@ public class PromotionService
                 Title = title,
                 SubTitle = subTitle,
                 Content = r.Content,
+                Priority = r.Priority,
+                WorkItemType = r.WorkItemType,
                 Revision = r.Revision,
                 CommittedAt = Deployments.WorkItemCommitTime.Resolve(r, allRefs),
                 CreatedAt = now,

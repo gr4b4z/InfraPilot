@@ -387,6 +387,9 @@ public static class WorkItemEndpoints
         // The work item's body, verbatim from the source system. Null when the producer sent none —
         // the page renders no Content section at all in that case.
         content = d.Content,
+        // Tracker labels for the chips beside the title. Null when the producer sent none.
+        priority = d.Priority,
+        workItemType = d.WorkItemType,
         url = d.Url,
         provider = d.Provider,
         pendingCandidateId = d.PendingCandidateId,

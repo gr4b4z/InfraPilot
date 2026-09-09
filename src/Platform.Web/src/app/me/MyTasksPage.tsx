@@ -21,6 +21,7 @@ import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
 import { useAuthStore } from '@/stores/authStore';
@@ -635,6 +636,8 @@ function WorkItemTaskRow({
               {ticket.title}
             </span>
           )}
+          {/* Tracker type and priority — what to pick up first when the list is long. */}
+          <WorkItemTraits workItemType={ticket.workItemType} priority={ticket.priority} />
           {myRoles.length > 0 && (
             <span
               className="badge shrink-0"

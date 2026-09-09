@@ -490,6 +490,10 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<Guid>("DeployEventId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -517,6 +521,10 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.Property<string>("WorkItemKey")
                         .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("WorkItemType")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
@@ -920,6 +928,10 @@ namespace Platform.Api.Migrations.Postgres
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -959,6 +971,10 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.Property<string>("WorkItemKey")
                         .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("WorkItemType")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 

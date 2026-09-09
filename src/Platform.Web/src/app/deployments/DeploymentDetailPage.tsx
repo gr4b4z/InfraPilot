@@ -40,6 +40,7 @@ import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { providerLabel, workItemDetailPath } from '@/lib/workItem';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import { roleDisplay } from '@/lib/roleLabel';
 import { collectParticipants } from '@/lib/types';
 import type {
@@ -984,6 +985,7 @@ function WorkItemsCard({ workItems, product, service, environment }: {
                         {wi.title}
                       </span>
                     )}
+                    <WorkItemTraits workItemType={wi.workItemType} priority={wi.priority} />
                   </Link>
                 ) : (
                   <div className="flex items-baseline gap-2 text-[13px]">
@@ -1012,6 +1014,7 @@ function WorkItemsCard({ workItems, product, service, environment }: {
                         {wi.title}
                       </span>
                     )}
+                    <WorkItemTraits workItemType={wi.workItemType} priority={wi.priority} />
                   </div>
                 )}
                 {wi.signOffTargetEnvs.length > 1 && (
