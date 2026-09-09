@@ -112,6 +112,61 @@ public class DeployEventWorkItemTests
     }
 
     /// <summary>
+    /// The tracker's priority and issue type persist on the projection exactly as sent and re-sync in
+    /// place — a ticket re-prioritised in Jira and re-sent shows the new level, and a producer that
+    /// stops sending them clears them rather than leaving a stale label behind.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_PersistsAndUpdatesWorkItemPriorityAndType()
+    {
+        await using var factory = new TestFactory();
+
+        Guid eventId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var dto = NewDto(references: new List<ReferenceDto>
+            {
+                new("work-item", Key: "FOO-1", Title: "Fix retry", Priority: "High", WorkItemType: "Bug"),
+            });
+
+            var ev = await service.IngestEvent(dto);
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+            eventId = ev.Id;
+
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+            Assert.Equal("High", row.Priority);
+            Assert.Equal("Bug", row.WorkItemType);
+        }
+
+        // Re-sync the same event: re-prioritised, and the type no longer sent.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
+            ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
+                new List<ReferenceDto> { new("work-item", Key: "FOO-1", Priority: "Lowest") },
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                });
+
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Equal("Lowest", row.Priority);
+            Assert.Null(row.WorkItemType);
+        }
+    }
+
+    /// <summary>
     /// The two display lines are resolved at sync time and re-synced in place: the ticket's own name
     /// on <c>Title</c>, the messages of every commit it rode in on underneath. A producer that titles
     /// the item by a commit subject and carries the Jira summary as subTitle gets the same answer as

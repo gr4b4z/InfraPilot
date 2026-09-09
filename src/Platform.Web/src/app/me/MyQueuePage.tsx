@@ -21,6 +21,7 @@ import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
 import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import {
   decisionStyle,
   instanceStateStyle,
@@ -330,7 +331,15 @@ export function MyQueuePage() {
         const needle = query.toLowerCase();
         return filteredTickets
           .filter((t) =>
-            [t.workItemKey, t.title ?? '', t.subTitle ?? '', t.product, t.service]
+            [
+              t.workItemKey,
+              t.title ?? '',
+              t.subTitle ?? '',
+              t.workItemType ?? '',
+              t.priority ?? '',
+              t.product,
+              t.service,
+            ]
               .some((field) => field.toLowerCase().includes(needle)),
           )
           .slice(0, 25)
@@ -1076,6 +1085,8 @@ function TicketRow({
                 {ticket.title}
               </span>
             )}
+            {/* Tracker type and priority — what to pick up first when the queue is long. */}
+            <WorkItemTraits workItemType={ticket.workItemType} priority={ticket.priority} />
             {ticket.blockingPromotions > 1 && (
               <span
                 className="badge shrink-0"

@@ -55,7 +55,8 @@ candidate; it does **not** recompute or infer the bundle.
       "title": "Add express checkout",                           // the Jira ticket's own summary
       "url": "https://jira/CHK-451",
       "commits": ["f9e8d7c", "b41c0aa"],                         // the commit(s) that mentioned the ticket
-      "content": "One-tap checkout for saved cards.\n\nOut of scope: guest checkout." },
+      "content": "One-tap checkout for saved cards.\n\nOut of scope: guest checkout.",
+      "priority": "High", "workItemType": "Story" },
     { "type": "commit",       "provider": "github", "key": "f9e8d7c", "revision": "f9e8d7c",
       "title": "Add one-tap express checkout for saved cards", "url": "https://github.com/o/r/commit/f9e8d7c" },
     { "type": "pull-request", "provider": "github", "key": "2087", "url": "https://github.com/o/r/pull/2087" },
@@ -67,7 +68,7 @@ candidate; it does **not** recompute or infer the bundle.
 }
 ```
 
-- A `reference` is `{ type, url?, provider?, key?, revision?, title?, subTitle?, content?,
+- A `reference` is `{ type, url?, provider?, key?, revision?, title?, subTitle?, content?, priority?, workItemType?,
   participants?, commits?, resolution?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
   become the candidate's work items); `pull-request` / `repository` etc. are stored for display
   and traceability. `occurredAt` has the same per-type meaning as on deploy ingest

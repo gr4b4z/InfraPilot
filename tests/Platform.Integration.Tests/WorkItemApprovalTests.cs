@@ -718,6 +718,73 @@ public class WorkItemApprovalTests
     }
 
     /// <summary>
+    /// The tracker's priority and issue type reach the detail page as the producer sent them — the
+    /// UI recognises the common names for colour and icon, so nothing may normalise the case or the
+    /// spelling on the way out. Blank values collapse to null so the client has one emptiness check.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_ReturnsPriorityAndType_AndBlanksToNull()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                priority: "Highest", workItemType: "Bug");
+            await SeedPolicyEventCandidateAsync(db, "FOO-2", approverGroup: "ReleaseApprovers",
+                priority: "   ", workItemType: "");
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var labelled = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
+            Assert.NotNull(labelled);
+            Assert.Equal("Highest", labelled!.Priority);
+            Assert.Equal("Bug", labelled.WorkItemType);
+
+            var blank = await svc.GetDetailAsync("FOO-2", "acme", "api", "prod", default);
+            Assert.NotNull(blank);
+            Assert.Null(blank!.Priority);
+            Assert.Null(blank.WorkItemType);
+        }
+    }
+
+    /// <summary>
+    /// Priority and type follow the same "prefer primary, else whoever has it" rule as title and
+    /// content: a re-ingest that omits them must not blank out labels an earlier candidate supplied.
+    /// </summary>
+    [Fact]
+    public async Task GetDetail_FallsBackToAnotherCandidatesPriorityAndType_WhenPrimaryRowHasNone()
+    {
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Older candidate carries the labels; the newer (primary) one doesn't.
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                createdAt: DateTimeOffset.UtcNow.AddHours(-2), priority: "Low", workItemType: "Task");
+            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers",
+                sourceEnv: "uat", createdAt: DateTimeOffset.UtcNow);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var detail = await svc.GetDetailAsync("FOO-1", "acme", "api", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal("Low", detail!.Priority);
+            Assert.Equal("Task", detail.WorkItemType);
+        }
+    }
+
+    /// <summary>
     /// Content follows the same "prefer primary, else whoever has it" rule as title and url: a later
     /// ingest that omitted the description shouldn't blank out a body an earlier one supplied.
     /// </summary>
@@ -1768,7 +1835,9 @@ public class WorkItemApprovalTests
             DateTimeOffset? createdAt = null,
             string? content = null,
             string? title = null,
-            string? subTitle = null)
+            string? subTitle = null,
+            string? priority = null,
+            string? workItemType = null)
     {
         var ev = NewDeployEvent(participants, product, service, sourceEnv);
         db.DeployEvents.Add(ev);
@@ -1790,6 +1859,8 @@ public class WorkItemApprovalTests
             Title = title,
             SubTitle = subTitle,
             Content = content,
+            Priority = priority,
+            WorkItemType = workItemType,
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.PromotionWorkItems.Add(wi);

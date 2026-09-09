@@ -120,7 +120,10 @@ public static class BuildPromotions
         Key: GetString(obj, "key", "id", "name"),
         Revision: GetString(obj, "revision", "commit", "sha"),
         Title: GetString(obj, "title", "summary") ?? GetString(obj, "branch"),
-        SubTitle: GetString(obj, "subTitle", "subtitle"));
+        SubTitle: GetString(obj, "subTitle", "subtitle"),
+        // Tracker labels on a work-item entry. `issueType` is accepted as the Jira-flavoured spelling.
+        Priority: GetString(obj, "priority"),
+        WorkItemType: GetString(obj, "workItemType", "issueType", "issuetype"));
 
     private static string? GetString(JsonElement obj, params string[] names)
     {

@@ -94,7 +94,18 @@ public record ReferenceDto(
     // date (not the author date — it survives rebase/squash and would overstate lead time).
     // Feeds the lead-time clock start (pull-request first, commit as fallback); ignored on
     // other reference types by the analytics read path.
-    DateTimeOffset? OccurredAt = null);
+    DateTimeOffset? OccurredAt = null,
+    // The tracker's priority for a `work-item`, as the producer read it — Jira's "Highest" /
+    // "High" / "Medium" / "Low" / "Lowest" or whatever the tracker calls its levels. A label, not a
+    // number: producers pass the tracker's own word through and the UI colours the well-known
+    // ones. Null when the tracker has no such notion or the producer didn't ask. Meaningless on
+    // other reference types; ignored there.
+    string? Priority = null,
+    // What kind of thing the `work-item` is in its tracker — Jira's issue type ("Bug", "Story",
+    // "Task", "Epic", …). Named WorkItemType rather than Type because Type already says what kind
+    // of reference this is ("work-item"). Same rules as Priority: the tracker's own label, passed
+    // through verbatim, null when unknown.
+    string? WorkItemType = null);
 
 public record ParticipantDto(
     string Role,
@@ -251,6 +262,10 @@ public record RelatedWorkItemDto(
     // Secondary display line — the messages of the commits behind the ticket (see
     // DeployEventWorkItem.SubTitle). Null when there are none to show.
     string? SubTitle,
+    // Tracker labels — priority ("High") and issue type ("Bug") — for the chips on the row. Null when
+    // the producer sent none.
+    string? Priority,
+    string? WorkItemType,
     List<string> SignOffTargetEnvs);
 
 public record ProductSummaryDto(
