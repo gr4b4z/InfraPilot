@@ -188,7 +188,7 @@ export async function drawMarks(page, marks, { anchor } = {}) {
         let tb = text.getBBox();
         // Keep the label on the page: a label centred above a control near the right edge would
         // otherwise run out of the screenshot. Slide it back in and let the arrow stay where it is.
-        const overflowRight = tb.x + tb.width + 8 - docW;
+        const overflowRight = tb.x + tb.width + 8 - window.innerWidth;
         const overflowLeft = 8 - tb.x;
         if (overflowRight > 0) { text.setAttribute('x', lx - overflowRight); tb = text.getBBox(); }
         else if (overflowLeft > 0) { text.setAttribute('x', lx + overflowLeft); tb = text.getBBox(); }
@@ -211,6 +211,8 @@ export async function clearMarks(page) {
 mkdirSync(imagesDir, { recursive: true });
 
 let counter = 0;
+/** Continue numbering after an earlier run's images, so a partial re-capture never overwrites them. */
+export function setShotCounter(n) { counter = n; }
 /** Saves the current viewport (or `fullPage`) as images/NN-name.png and returns the file name. */
 export async function shot(page, name, { fullPage = false, clip } = {}) {
   counter += 1;
