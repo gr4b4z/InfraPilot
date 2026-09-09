@@ -3,8 +3,8 @@
 .SYNOPSIS
     Builds the local InfraPortal tutorial environment on demand: a fresh database holding a copy of the
     live (not historical) data of a real instance, three demo accounts, and a scripted "storyline" of
-    promotions, sign-offs, a failed deploy, a rollback, a release note and a webhook — one of each
-    thing the presentation walks through.
+    promotions, sign-offs, a failed deploy, a rollback, a release note and a webhook — one of each thing
+    the presentation walks through.
 
 .DESCRIPTION
     Steps, in order:
@@ -25,7 +25,7 @@
       8. Storyline  — on the hero product (default mpt): QA assigned to work items, one promotion fully
                       signed off and waiting for the admin, one with an issue raised, one rejected, one
                       approved and waiting for its deploy, a failed deploy with logs, a rollback request
-                      awaiting approval, a release note, a webhook subscription, a service request.
+                      awaiting approval, a release note, a webhook subscription.
       9. Cheat sheet — written to .local/tutorial-cheatsheet.md with the ids, links and curl commands
                       the live parts of the demo need.
 
@@ -309,7 +309,6 @@ if (Test-Path $DevSettingsPath) {
 }
 if (-not $settings.Contains('Seed')) { $settings['Seed'] = @{} }
 $settings['Seed']['DemoDeployments'] = $false
-$settings['Seed']['DemoRequests'] = $true
 if (-not $settings.Contains('Deployments')) { $settings['Deployments'] = @{} }
 $deployments = $settings['Deployments']
 $keys = @()
@@ -348,7 +347,7 @@ update local_users set "Name" = '$($User.Name)', "Roles" = '["InfraPortal.User"]
 foreach ($a in $Accounts) { Write-Detail ("{0,-6} {1,-18} {2,-10} {3}" -f $a.Role, $a.Email, $a.Password, $a.Name) }
 $adminToken = Get-Token $Admin
 $qaToken = Get-Token $Qa
-$userToken = Get-Token $User
+Get-Token $User | Out-Null   # the plain user only has to be able to sign in
 Write-Ok 'All three can sign in'
 
 # ── 6. Environments ──────────────────────────────────────────────────────────────────────────
@@ -778,18 +777,6 @@ $r = Invoke-Local -Method POST -Path '/api/webhooks' -Token $adminToken -Body @{
 if ($r.Status -in 200, 201) { $story['I. Webhook subscription'] = [pscustomobject]@{ id = $r.Body.id; url = $WebhookUrl } }
 else { Write-Note "webhook: HTTP $($r.Status) $(Write-Json $r.Body)" }
 
-# Service request — raised by the plain user, waiting for an approver. (SeedData also leaves a handful of
-# older requests in mixed states.)
-$r = Invoke-Local -Method POST -Path '/api/requests' -Token $userToken -Body @{
-    catalogItemId = 'create-namespace'
-    inputs = @{ namespace_name = 'mpt-tutorial-sandbox'; cluster = 'aks-dev-weu'; environment = 'development'; cpu_limit = 2; memory_limit = 4; enable_network_policy = $true }
-}
-if ($r.Status -in 200, 201) {
-    $requestId = $r.Body.id
-    $submit = Invoke-Local -Method POST -Path "/api/requests/$requestId/submit" -Token $userToken
-    $story['J. Service request from the plain user'] = [pscustomobject]@{ id = $requestId; submitted = ($submit.Status -lt 300); status = (Get-Prop $submit.Body 'status') }
-} else { Write-Note "service request: HTTP $($r.Status) $(Write-Json $r.Body)" }
-
 # ── 9. Cheat sheet ───────────────────────────────────────────────────────────────────────────
 Write-Step 'Cheat sheet'
 $counts = Invoke-Psql -Sql @"
@@ -800,8 +787,7 @@ union all select 'promotion_work_items', count(*) from promotion_work_items
 union all select 'work_item_approvals', count(*) from work_item_approvals
 union all select 'rollback_requests', count(*) from rollback_requests
 union all select 'release_notes', count(*) from release_notes
-union all select 'webhook_subscriptions', count(*) from webhook_subscriptions
-union all select 'service_requests', count(*) from service_requests;
+union all select 'webhook_subscriptions', count(*) from webhook_subscriptions;
 "@
 
 $sb = [System.Text.StringBuilder]::new()
@@ -828,7 +814,6 @@ foreach ($entry in $story.GetEnumerator()) {
         'G.*' { "$WebBase/rollbacks — $($v.service) $($v.fromVersion) → $($v.toVersion) in $($v.environment)" }
         'H.*' { "$WebBase/release-notes/$HeroProduct/$($v.id)" }
         'I.*' { "$WebBase/webhooks/$($v.id) → $($v.url)" }
-        'J.*' { "$WebBase/requests/$($v.id) (submitted: $($v.submitted))" }
         default { "$WebBase/promotions/$($v.id) — $(Describe-Candidate $v)" }
     }
     [void]$sb.AppendLine("- **$($entry.Key)**  $link")

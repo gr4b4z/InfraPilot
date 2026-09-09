@@ -21,15 +21,15 @@ can switch roles without signing out:
 |---|---|---|
 | **Admin** — Anna Admin | `admin@localhost` / `admin123` | Release manager and platform owner: approves promotions and rollbacks, owns Settings, Webhooks, maintenance. |
 | **QA** — Karol QA | `qa@localhost` / `qa123` | Signs off work items, raises issues, may raise a rollback. Has "My tasks" and the work-items queue. |
-| **User** — Ula User | `user@localhost` / `user123` | Everyone else: reads deployments, artifacts, analytics; raises catalog requests. No queue, no approvals, no Settings. |
+| **User** — Ula User | `user@localhost` / `user123` | Everyone else: reads deployments, artifacts, analytics. No queue, no approvals, no Settings. |
 
 The pipelines' API key for the live commands is `tutorial-pipeline-key` (header `X-Api-Key`).
 
 What the audience is looking at: a copy of the production InfraPortal as of the export — the
 current version of every service in every environment for eight products, the last week of deploys,
 the registered builds and every promotion that was open. Timestamps were slid so the newest deploy
-is "30 minutes ago". On top of that, the seed staged ten scenes on the **mpt** product (the cheat
-sheet names them A–J); everything below points at them.
+is "30 minutes ago". On top of that, the seed staged nine scenes on the **mpt** product (the cheat
+sheet names them A–I); everything below points at them.
 
 The data contains real colleagues' names on commits and tickets. That is fine for an internal
 session; say so, and do not record the screen for wider distribution.
@@ -189,24 +189,7 @@ succeeded deploy of V on the target closes the candidate whatever state it is in
 
 ---
 
-## Part 5 — Self-service requests (User + Admin, 5 min)
-
-**Use case: a developer asks the platform team for something**
-
-1. As **User**, **Service Catalog**: catalog items are YAML (repo, pipeline, namespace, DNS record,
-   role assignment, free-form). Open **Create Namespace**: the form is generated from the YAML
-   (inputs, validation, approval, executor).
-2. **My Requests**: scene J is Ula's namespace request, awaiting approval; the older seeded
-   requests show the other states (completed, failed with the executor's error, rejected with a
-   reason, draft).
-3. As **Admin**, **Approvals**: approve or request changes. Explain that executors (Azure DevOps,
-   GitHub, Jira) are configured per installation and are stubbed here.
-4. **Settings → Service Catalog**: enable/disable items, edit the YAML with validation, version
-   history.
-
----
-
-## Part 6 — Running the platform (Admin, 10 min)
+## Part 5 — Running the platform (Admin, 10 min)
 
 Walk **Settings** left to right:
 
@@ -245,8 +228,7 @@ products and to scopes (`build:register`, `promotion:create`), and are what ever
 | 10–30 | 2 Promotions end to end | QA → Admin → terminal | A, C, B, E, D, live curls |
 | 30–35 | 3 Rollbacks | QA → Admin | G |
 | 35–40 | 4 Release notes + webhooks | Admin | H, I |
-| 40–43 | 5 Catalog request | User → Admin | J |
-| 43–45 | 6 Settings tour | Admin | — |
+| 40–45 | 5 Settings tour | Admin | — |
 
 ## Resetting between rehearsals
 
@@ -260,8 +242,6 @@ moves the storyline; `-NoDateShift` keeps real timestamps.
 - **Sign-in is local** (e-mail + password); production uses Entra ID and Graph group membership.
   Policies here name users by e-mail instead of groups.
 - **The AI assistant** (⌘/Ctrl+K) needs an Azure OpenAI deployment configured; it is off.
-- **Executors** for catalog requests (Azure DevOps, GitHub, Jira) are not configured, so a
-  submitted request that needs one ends up Failed with a clear error rather than doing anything.
 - **Work-item enrichment** from Jira/Azure DevOps is off; everything shown came with the events.
 - Only the current version matrix, one week of history, open promotions and the newest 200 builds
   were copied. Deployed/rejected promotions from before the export are not there.
