@@ -1851,6 +1851,14 @@ export interface WorkItemDetail {
    * always has something in it.
    */
   content: string | null;
+  /**
+   * The tracker's priority label ("High") and issue type ("Bug", "Story"), as the producer read
+   * them. Shown as chips beside the title; null when the producer sent none, and then no chip is
+   * rendered. Labels, not enums — `WorkItemTraits` recognises the common Jira names for colour and
+   * icon and shows anything else as-is.
+   */
+  priority: string | null;
+  workItemType: string | null;
   url: string | null;
   provider: string | null;
   pendingCandidateId: string | null;
@@ -1917,6 +1925,9 @@ export interface PendingTicket {
   title: string | null;
   /** Secondary display line — see `WorkItemDetail.subTitle`. */
   subTitle?: string | null;
+  /** Tracker labels — see `WorkItemDetail.priority` / `WorkItemDetail.workItemType`. */
+  priority?: string | null;
+  workItemType?: string | null;
   candidateId: string;
   /** Part of the work item's identity (see `WorkItemDetail.service`) and the row's candidate. */
   service: string;
@@ -2004,6 +2015,12 @@ export interface PromotionSourceEventReference {
    * the tracker's own summary on this field; the read path replaces it — see WorkItemDisplay.)
    */
   subTitle?: string | null;
+  /**
+   * Tracker labels on a `work-item` reference: the priority ("High") and the issue type ("Bug",
+   * "Story"), verbatim from the producer. Absent when the producer didn't ask the tracker.
+   */
+  priority?: string | null;
+  workItemType?: string | null;
   /**
    * Commit hashes this reference was derived from — set by the producer on `work-item` references
    * to record which commit messages mentioned the ticket. The server uses it to resolve the

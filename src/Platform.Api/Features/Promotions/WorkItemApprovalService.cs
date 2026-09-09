@@ -776,6 +776,8 @@ public class WorkItemApprovalService
                     Url: w.Url,
                     Title: w.Title,
                     SubTitle: w.SubTitle,
+                    Priority: w.Priority,
+                    WorkItemType: w.WorkItemType,
                     CandidateId: c.Id,
                     Service: c.Service,
                     Version: c.Version,
@@ -938,6 +940,8 @@ public class WorkItemApprovalService
                 Url: wi?.Url,
                 Title: wi?.Title,
                 SubTitle: wi?.SubTitle,
+                Priority: wi?.Priority,
+                WorkItemType: wi?.WorkItemType,
                 CandidateId: c2?.Id ?? Guid.Empty,
                 // Identity, so it comes from the decision row — the candidate (when found) agrees.
                 Service: a.Service,
@@ -1011,6 +1015,8 @@ public class WorkItemApprovalService
         var title = primaryRow?.Title ?? rows.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t));
         var subTitle = primaryRow?.SubTitle ?? rows.Select(w => w.SubTitle).FirstOrDefault(s => !string.IsNullOrEmpty(s));
         var content = primaryRow?.Content ?? rows.Select(w => w.Content).FirstOrDefault(c => !string.IsNullOrEmpty(c));
+        var priority = primaryRow?.Priority ?? rows.Select(w => w.Priority).FirstOrDefault(p => !string.IsNullOrEmpty(p));
+        var workItemType = primaryRow?.WorkItemType ?? rows.Select(w => w.WorkItemType).FirstOrDefault(t => !string.IsNullOrEmpty(t));
         var url = primaryRow?.Url ?? rows.Select(w => w.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
         var provider = primaryRow?.Provider ?? rows.Select(w => w.Provider).FirstOrDefault(p => !string.IsNullOrEmpty(p));
 
@@ -1062,6 +1068,8 @@ public class WorkItemApprovalService
             SubTitle: string.Equals(subTitle, title, StringComparison.Ordinal) ? null : subTitle,
             // Blank-to-null so the client has one emptiness check ("no content") rather than two.
             Content: string.IsNullOrWhiteSpace(content) ? null : content,
+            Priority: string.IsNullOrWhiteSpace(priority) ? null : priority,
+            WorkItemType: string.IsNullOrWhiteSpace(workItemType) ? null : workItemType,
             Url: url,
             Provider: provider,
             PendingCandidateId: ctx.PendingCandidateId,
@@ -1745,6 +1753,13 @@ public record WorkItemDetail(
     /// detail page shows no Content section at all rather than an empty one.
     /// </summary>
     string? Content,
+    /// <summary>
+    /// The tracker's priority label ("High") and issue type ("Bug", "Story"), as the producer read
+    /// them. Shown as chips beside the title; null when the producer sent none, in which case no chip
+    /// is rendered rather than an "Unknown" one.
+    /// </summary>
+    string? Priority,
+    string? WorkItemType,
     string? Url,
     string? Provider,
     Guid? PendingCandidateId,
@@ -1849,6 +1864,9 @@ public record PendingTicketView(
     string? Title,
     /// <summary>Secondary display line — see <see cref="WorkItemDetail.SubTitle"/>.</summary>
     string? SubTitle,
+    /// <summary>Tracker labels — see <see cref="WorkItemDetail.Priority"/> / <see cref="WorkItemDetail.WorkItemType"/>.</summary>
+    string? Priority,
+    string? WorkItemType,
     Guid CandidateId,
     /// <summary>Part of the work item's identity (see <see cref="WorkItemDetail.Service"/>), and
     /// the service of the candidate the row represents — the two always agree.</summary>

@@ -311,6 +311,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.SubTitle).HasMaxLength(500);
             // No length cap: this is the ticket/PR/commit body, not a label.
             e.Property(x => x.Content);
+            // Tracker labels — Jira's longest built-in names are well under this.
+            e.Property(x => x.Priority).HasMaxLength(100);
+            e.Property(x => x.WorkItemType).HasMaxLength(100);
             e.Property(x => x.Revision).HasMaxLength(200);
             e.HasOne<DeployEvent>()
                 .WithMany()
@@ -578,6 +581,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.SubTitle).HasMaxLength(500);
             // No length cap: this is the ticket/PR/commit body, not a label.
             e.Property(x => x.Content);
+            // Tracker labels — Jira's longest built-in names are well under this.
+            e.Property(x => x.Priority).HasMaxLength(100);
+            e.Property(x => x.WorkItemType).HasMaxLength(100);
             e.Property(x => x.Revision).HasMaxLength(200);
             e.HasOne<PromotionCandidate>()
                 .WithMany()

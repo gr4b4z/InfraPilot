@@ -97,6 +97,11 @@ public static class DeploymentSeedData
 
     // Commit subjects, in the shape a producer sends them: the ticket key in the message is how the
     // work item was discovered in the first place, so it's appended when one is seeded.
+    // Jira's stock issue types and priority levels — what the producers' Jira lookups return, so the
+    // seeded chips look like the real ones.
+    private static readonly string[] WorkItemTypes = ["Bug", "Story", "Task", "Improvement", "Sub-task"];
+    private static readonly string[] WorkItemPriorities = ["Highest", "High", "Medium", "Low", "Lowest"];
+
     private static readonly string[] CommitSubjects =
     [
         "fix: guard against a null tenant on the fast path",
@@ -489,13 +494,22 @@ public static class DeploymentSeedData
                 // messages underneath.
                 var commitTitled = rand.NextDouble() < 0.6;
 
+                // Jira's issue type and priority ride along on most tickets. Some carry neither, so
+                // the row without chips is visible locally too — a producer that never asked Jira
+                // (no credentials) sends none.
+                var labelled = rand.NextDouble() < 0.85;
+                var wiType = labelled ? WorkItemTypes[rand.Next(WorkItemTypes.Length)] : null;
+                var wiPriority = labelled ? WorkItemPriorities[rand.Next(WorkItemPriorities.Length)] : null;
+
                 refs.Add(new ReferenceDto("work-item",
                     $"https://acmetrix.atlassian.net/browse/{wiKey}", "jira", wiKey,
                     Title: commitTitled ? firstCommitSubject : wiTitle,
                     SubTitle: commitTitled ? wiTitle : null,
                     Participants: wiParticipants,
                     Commits: wiCommits,
-                    Content: wiContent));
+                    Content: wiContent,
+                    Priority: wiPriority,
+                    WorkItemType: wiType));
             }
         }
 

@@ -14,4 +14,8 @@ public record Reference(
     // created in the tracker, `pipeline` → build finish. Feeds lead-time analytics as the
     // clock start (pull-request first, commit as fallback) — never read the timestamp of an
     // arbitrary reference type for that.
-    DateTimeOffset? OccurredAt = null);
+    DateTimeOffset? OccurredAt = null,
+    // Tracker priority and issue type of a `work-item` — see ReferenceDto.Priority /
+    // ReferenceDto.WorkItemType. Labels from the tracker, passed through verbatim.
+    string? Priority = null,
+    string? WorkItemType = null);
