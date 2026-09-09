@@ -24,7 +24,8 @@ const PARTS = {
   5: { title: 'Running the platform', blurb: 'The Settings tour: environments and aliases, promotion and rollback policies, roles, feature flags, service products, maintenance — and what a plain user cannot do.' },
 };
 
-const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// Escapes for text and for attribute values alike — captions end up in alt attributes.
+const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const img64 = (file) => `data:image/png;base64,${readFileSync(join(imagesDir, file)).toString('base64')}`;
 const roleClass = (role) => ({ admin: 'admin', qa: 'qa', user: 'user', terminal: 'terminal', none: 'none' })[role] ?? 'none';
 
