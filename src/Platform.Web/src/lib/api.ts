@@ -777,7 +777,7 @@ class ApiClient {
    * Signs off every work item stranded in the "No live promotion" state — its promotions were all
    * superseded or rejected, so nothing will ever consume the sign-off and the row sits in the
    * work-item queue as pending work forever. Items a live promotion still carries are untouched, and
-   * so is anything somebody already decided (an Issue or a Block is a deliberate hold). Admin-only;
+   * so is anything somebody already decided (an Issue or a Block is somebody's call). Admin-only;
    * `dryRun` reports the list without writing, which the Maintenance card always does first.
    */
   approveOrphanedWorkItems(dryRun: boolean) {
@@ -829,8 +829,9 @@ class ApiClient {
   }
 
   /**
-   * Flag a problem on the work item. The promotion stays Pending and the same user can call
-   * `approveWorkItem` later to release the item.
+   * Flag a problem on the work item without holding it back: the gate counts the item as cleared, so
+   * this can be the decision that satisfies it (and auto-approves the promotion, under a policy that
+   * does that). The same user can call `approveWorkItem` or `blockWorkItem` later.
    */
   raiseWorkItemIssue(key: string, product: string, service: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
@@ -840,8 +841,8 @@ class ApiClient {
   }
 
   /**
-   * Hold the work item back. Says more than `raiseWorkItemIssue` and does the same thing: the
-   * promotion stays Pending, nothing is vetoed, and the decision can be changed later. Vetoing is a
+   * Hold the work item back — the only decision that stops the promotion gate. Still nothing is
+   * vetoed: the promotion stays Pending and the decision can be changed later. Vetoing is a
    * promotion-level action (`rejectPromotion`), never something done to one work item.
    */
   blockWorkItem(key: string, product: string, service: string, targetEnv: string, comment?: string) {
@@ -1696,10 +1697,10 @@ export interface WorkItemRoleGap {
 }
 
 /**
- * A work-item sign-off outcome. Neither `Issue` nor `Blocked` touches the promotion — both leave the
- * item unresolved, which stalls the gate without terminating the candidate, and both are reversible.
- * They differ only in what the reviewer is saying: "something's wrong here" versus "this isn't going
- * out". Vetoing belongs to the promotion, not to a single work item.
+ * A work-item sign-off outcome. `Blocked` is the only one that holds the promotion: it leaves the
+ * item unresolved, which stalls the gate without terminating the candidate. `Issue` says "something's
+ * wrong here" about a change that is still going out, so it clears the gate like `Approved` does.
+ * All three are reversible, and vetoing belongs to the promotion, not to a single work item.
  */
 export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked';
 
@@ -1779,8 +1780,9 @@ export interface WorkItemEnvironment {
 }
 
 /**
- * The sign-off state of one work item instance, derived from its decisions with the gate's precedence:
+ * The sign-off state of one work item instance, derived from its decisions with display precedence:
  * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
+ * For the gate only `Blocked` (and an undecided item) holds a promotion — `Issue` clears it.
  */
 export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
 
@@ -1794,10 +1796,11 @@ export interface WorkItemInstance {
 
 /**
  * The ticket across every service carrying it in one (product, targetEnv): what "is MPT-1 done"
- * means to somebody who does not think per service. `state` follows the gate's precedence across
+ * means to somebody who does not think per service. `state` follows display precedence across
  * instances — any block → Blocked, else any issue → Issue, else all approved → Approved, else
  * Pending. A policy with `requireAllWorkItemInstancesApproved` gates on this instead of on the
- * promotion's own instance.
+ * promotion's own instance: it waits for every instance to be decided with none blocked, which an
+ * `Issue` roll-up satisfies but a `Pending` one does not.
  */
 export interface WorkItemOverallStatus {
   state: WorkItemInstanceState;
@@ -2108,8 +2111,16 @@ export interface PromotionWorkItemGate {
   required: boolean;
   total: number;
   approved: number;
-  /** Work items carrying an Issue — counted apart from `approved` so a shortfall is explained. */
+  /**
+   * Work items carrying an Issue — counted apart from `approved` because they are flagged, not
+   * outstanding: they satisfy the gate alongside approvals.
+   */
   issues?: number;
+  /**
+   * Work items somebody blocked — the only verdict that holds the gate. Whatever is left
+   * (`total - approved - issues - blocked`) is items nobody has ruled on yet.
+   */
+  blocked?: number;
   satisfied: boolean;
   /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
   autoApprove: boolean;

@@ -959,6 +959,10 @@ function DecisionIcon({ decision, size }: { decision: WorkItemDecision; size: nu
  * Sign-off controls. Approve / Issue / Block each POST to their own endpoint; the option matching the
  * user's current decision is hidden (re-recording the same one is a no-op the API refuses), so what's
  * left are the states they can actually move to.
+ *
+ * The three are not three degrees of the same thing: Approve and Issue both clear the item for the
+ * promotion gate, Block is the only one that holds it. The note under the buttons says so, because
+ * the colours (green / amber / red) suggest a severity ramp that the gate does not follow.
  */
 function DecisionCard({
   detail,
@@ -1063,7 +1067,7 @@ function DecisionCard({
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--warning-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-                title="Flag a problem on this work item — the promotion stays pending"
+                title="Flag a problem on this work item — it does not hold the promotion"
               >
                 <AlertTriangle size={12} />
                 {busy === 'Issue' ? 'Raising…' : 'Issue'}
@@ -1076,7 +1080,7 @@ function DecisionCard({
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
-                title="Hold this work item back — the promotion stays pending"
+                title="Hold this work item back — the promotion cannot be approved"
               >
                 <Ban size={12} />
                 {busy === 'Blocked' ? 'Blocking…' : 'Block'}
@@ -1084,11 +1088,13 @@ function DecisionCard({
             )}
           </div>
           <p className="text-[11px] mt-2.5" style={{ color: 'var(--text-muted)' }}>
-            Only <span className="font-medium">Approve</span> releases the promotion.{' '}
-            <span className="font-medium">Issue</span> (&ldquo;something&rsquo;s wrong&rdquo;) and{' '}
-            <span className="font-medium">Block</span> (&ldquo;not going out&rdquo;) both leave the
-            item unresolved, which holds the promotion pending without cancelling it — and both are
-            reversible. A new version of the promotion clears them and asks again.
+            Only <span className="font-medium">Block</span> (&ldquo;not going out&rdquo;) holds the
+            promotion: it leaves the item unresolved, which keeps the promotion pending without
+            cancelling it. <span className="font-medium">Issue</span>
+            (&ldquo;something&rsquo;s wrong&rdquo;) records the problem against a change that still
+            ships, so it releases the promotion just as{' '}
+            <span className="font-medium">Approve</span> does. Every decision is reversible, and a
+            new version of the promotion clears the holds and asks again.
           </p>
         </>
       )}

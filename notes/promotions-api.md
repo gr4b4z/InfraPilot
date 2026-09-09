@@ -305,7 +305,9 @@ means and gets a `400` pointing at the resolver:
   every service whose promotions carry the ticket, each with its own state (`Pending` / `Approved` /
   `Issue` / `Blocked`), and `overall` — the roll-up (`state`, `instances`, `approved`, `issues`,
   `blocked`, `pending`): any block → Blocked, else any issue → Issue, else all approved → Approved,
-  else Pending. The detail response and queue rows carry the same `overall`. This is also how a link
+  else Pending. That precedence is for display; the gate reads the counts, and clears a ticket when
+  `blocked == 0 && pending == 0` (so an `Issue` roll-up clears, a `Pending` one does not).
+  The detail response and queue rows carry the same `overall`. This is also how a link
   minted before the service joined the identity (`/work-items/{key}?product=&targetEnv=`) finds its
   way to one instance, or to a picker.
 - `GET /{key}?product=&service=&targetEnv=` — sign-off context (authority, decision history).
@@ -320,10 +322,13 @@ Three decisions, each its own POST with body `{ product, service, targetEnv, com
 | `POST /{key}/issues` | `Issue` | `promotion.ticket.issue-raised` |
 | `POST /{key}/blocks` | `Blocked` | `promotion.ticket.blocked` |
 
-Only an approval releases the gate. An issue ("something's wrong") and a block ("not going out") are
-mechanically identical — both leave the item unresolved, which stalls the gate without terminating
-the candidate, and both are reversible; a new version of the promotion clears them and asks again.
-Vetoing is candidate-level (`POST /api/promotions/{id}/reject`), never something done to one ticket.
+**Only a block holds the gate.** An issue ("something's wrong") is a flag on a change that is still
+going out, so it releases the gate exactly as an approval does — including the auto-approve
+accelerator, which means raising an issue on the last outstanding item can promote the candidate. A
+block ("not going out") leaves the item unresolved, which stalls the gate without terminating the
+candidate. All three decisions are reversible, and a new version of the promotion clears the held
+ones and asks again. Vetoing is candidate-level (`POST /api/promotions/{id}/reject`), never something
+done to one ticket.
 
 The `promotion.ticket.*` webhook payloads and audit rows carry `service` alongside `workItemKey`,
 `product` and `targetEnv`. Rows written before the `AddWorkItemService` migration have no `service`
@@ -389,7 +394,8 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
     }
   ],
   "escalationGroup": "SRE-OnCall",      // optional
-  "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed off
+  "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed
+                                               // off (decided, none blocked — an issue counts)
   "requireAllWorkItemInstancesApproved": false, // judge a ticket by its overall status across every service
                                                // instance (see below) instead of this service's own
   "autoApproveOnAllWorkItemsApproved": false,  // auto-promote once all work items are signed off
@@ -412,19 +418,19 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
 - **Instance vs. overall**: a work item is per service, so by default a promotion of `mpt-helpdesk`
   waits only for `mpt-helpdesk/MPT-1`. With `requireAllWorkItemInstancesApproved` it waits for the
   ticket's **overall** status — every service's instance of `MPT-1` in the target environment
-  approved, none holding an issue or block. The overall status is what `GET /api/work-items/{key}/instances`
+  decided, none holding a block. The overall status is what `GET /api/work-items/{key}/instances`
   returns (and every instance page and queue row shows), so managers who read a ticket as
   done-or-not and testers who sign off per service look at the same object. The flag only qualifies
   the two gate flags below; on its own it changes nothing.
 - **Work-item gate**: when `requireAllWorkItemsApproved` is set and the candidate has work items,
-  all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
-  promotes automatically once every work item is approved, regardless of the human approver tree.
-  A work item counts as resolved only with at least one `Approved` decision and no `Rejected` or
-  `Blocked` one.
-- **Work-item decisions** are `Approved`, `Rejected`, or `Blocked`, one row per approver per
-  `(key, product, targetEnv)`. `Rejected` is a veto — it terminates the candidate. `Blocked` is a
-  reversible hold: the gate stays unmet but the candidate stays Pending, and the same approver can
-  switch to `Approved` later to release it. Re-deciding updates the approver's existing row
-  (stamping `updatedAt`) instead of appending a second one; recording the *same* decision twice is
-  a 400.
+  all must be cleared before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
+  promotes automatically once every work item is cleared, regardless of the human approver tree.
+  A work item counts as cleared when it carries at least one decision and no `Blocked` one — so an
+  `Issue` clears it just as an `Approved` does, and an item nobody has ruled on does not.
+- **Work-item decisions** are `Approved`, `Issue`, or `Blocked`, one row per approver per
+  `(key, product, service, targetEnv)`. None of them vetoes the candidate. `Blocked` is the only one
+  that holds the gate, and it is a reversible hold: the gate stays unmet but the candidate stays
+  Pending, and the same approver can switch to `Approved` or `Issue` later to release it.
+  Re-deciding updates the approver's existing row (stamping `updatedAt`) instead of appending a
+  second one; recording the *same* decision twice is a 400.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).
