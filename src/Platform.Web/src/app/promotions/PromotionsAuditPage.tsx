@@ -37,7 +37,7 @@ import { CopyViewLinkButton } from '@/components/ui/CopyViewLinkButton';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {
@@ -336,10 +336,12 @@ export function PromotionsAuditPage() {
   }, []);
 
   // A promotion changing anywhere means a new row landed here. The audit trail is append-only, so
-  // refetching from page 1 is the whole update — which does drop any "Load more" pages the reader had
-  // pulled in. Accepted rather than worked around: a new row at the top shifts every offset below it,
-  // so the alternative is a page whose later rows quietly no longer line up with its earlier ones.
+  // page 1 always holds the newest rows: a live refresh refetches it and merges it over what is on
+  // screen — new rows slot in at the top and the "Load more" pages the reader pulled in stay put,
+  // with the rows already mounted so their place is kept. (`loadMore` dedupes by id for the same
+  // reason: a new row at the top shifts every offset below it.)
   const promotionsTick = useEntityRefresh(['promotion', 'work-item']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
 
   // The identity of the query, and the effect's dependency. The window is resolved from the clock
   // inside the fetch rather than held in state: a `from` that changes on every render would retrigger
@@ -371,18 +373,33 @@ export function PromotionsAuditPage() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setFailed(false);
+    // A new query (mount, filter change) shows skeletons; a live refresh of the same query keeps the
+    // rows on screen and merges the newest page over them.
+    const silent = isBackgroundRefresh(queryKey);
+    if (!silent) {
+      setLoading(true);
+      setFailed(false);
+    }
     api
       .getPromotionAudit(requestParams(1))
       .then((data) => {
         if (cancelled) return;
         setFeed(data);
-        setRows(data.entries);
-        setPage(1);
+        setFailed(false);
+        if (silent) {
+          setRows((prev) => {
+            const fresh = new Set(data.entries.map((e) => e.id));
+            return [...data.entries, ...prev.filter((r) => !fresh.has(r.id))];
+          });
+        } else {
+          setRows(data.entries);
+          setPage(1);
+        }
       })
       .catch(() => {
         if (cancelled) return;
+        // A failed live refresh keeps what's on screen — the next event retries.
+        if (silent) return;
         setFeed(null);
         setRows([]);
         setFailed(true);

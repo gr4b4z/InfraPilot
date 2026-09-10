@@ -34,7 +34,7 @@ import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { deploymentHistoryPath } from '@/lib/deploymentPath';
 import { resolveReferenceHref } from '@/lib/refUrl';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
@@ -106,9 +106,11 @@ export function DeploymentDetailPage() {
   const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
   const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
 
-  const load = useCallback(async () => {
+  // A silent load (realtime, after the manual form) keeps the page mounted and swaps the fresh
+  // detail in; only a new id shows the spinner.
+  const load = useCallback(async ({ silent = false } = {}) => {
     if (!id) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       setDetail(await api.getDeploymentEvent(id));
@@ -125,7 +127,10 @@ export function DeploymentDetailPage() {
     filter: (evt) => !evt.id || evt.id === id,
   });
 
-  useEffect(() => { void load(); }, [load, realtimeTick]);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+  useEffect(() => {
+    void load({ silent: isBackgroundRefresh(id ?? '') });
+  }, [load, realtimeTick, id, isBackgroundRefresh]);
 
   // The registry row this deployment shipped, looked up on the triple the two records share
   // (product, service, version). A separate request rather than part of the event payload: the
@@ -278,7 +283,7 @@ export function DeploymentDetailPage() {
       {isAdmin && showManualForm && (
         <ManualDeployCard
           event={evt}
-          onDone={() => { setShowManualForm(false); void load(); }}
+          onDone={() => { setShowManualForm(false); void load({ silent: true }); }}
           onCancel={() => setShowManualForm(false)}
         />
       )}

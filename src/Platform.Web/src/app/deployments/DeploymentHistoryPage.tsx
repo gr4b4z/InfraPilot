@@ -5,7 +5,7 @@ import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
@@ -59,9 +59,16 @@ export function DeploymentHistoryPage() {
     filter: (evt) => !evt.product || evt.product === product,
   });
 
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+
   useEffect(() => {
-    if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
-  }, [product, service, fetchHistory, deploymentsTick]);
+    if (!product || !service) return;
+    // A push for this product refreshes the mounted rows in place — the reader's scroll position and
+    // any "Show more" they pressed survive. Only a different service shows the spinner.
+    fetchHistory(product, service, undefined, MAX_HISTORY_FETCH, {
+      silent: isBackgroundRefresh(`${product}/${service}`),
+    });
+  }, [product, service, fetchHistory, deploymentsTick, isBackgroundRefresh]);
 
   const environments = useMemo(() => {
     const envSet = new Set(allHistory.map((e) => e.environment));
