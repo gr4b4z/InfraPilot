@@ -424,10 +424,11 @@ app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(A
 app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
-// The promotions activity feed. CanApprove, not AuditViewer: "what was approved for prod today, and
-// by whom" is a question the people doing the approving ask about their own work, and every row of it
-// is already visible one promotion at a time on the detail pages.
-app.MapGroup("/api/promotions/audit").MapPromotionAuditEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// The promotions activity feed. AuditViewer (admin only) — the same gate as the platform audit log:
+// read end to end it is a record of who did what across every product, which is an administrator's
+// view of the system rather than an approver's view of their own work. Approvers still see the
+// history of any single promotion on its detail page, which is not gated this way.
+app.MapGroup("/api/promotions/audit").MapPromotionAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/rollbacks").MapRollbackEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);

@@ -489,9 +489,7 @@ public class PromotionAuditFeedTests : IClassFixture<PromotionAuditFeedTests.Aud
         Assert.Equal(1, byCategory.GetProperty("total").GetInt32());
     }
 
-    /// <summary>
-    /// The feed is for the people who do the approving, not just for admins — but it is not public.
-    /// </summary>
+    /// <summary>Anonymous callers get nothing.</summary>
     [Fact]
     public async Task Feed_RequiresAuthentication()
     {
@@ -500,13 +498,17 @@ public class PromotionAuditFeedTests : IClassFixture<PromotionAuditFeedTests.Aud
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
-    /// <summary>A non-admin approver can read it — that is the point of the CanApprove gate.</summary>
+    /// <summary>
+    /// Signing in is not enough: the cross-product record of who did what is administrators-only,
+    /// the same gate as the platform audit log. An approver's own work is still on the promotion
+    /// detail pages, which are not gated this way.
+    /// </summary>
     [Fact]
-    public async Task Feed_IsReadableByANonAdminApprover()
+    public async Task Feed_IsForbiddenToANonAdminApprover()
     {
         using var user = _factory.CreateAuthenticatedClient("user@localhost", "user123");
         var response = await user.GetAsync("/api/promotions/audit?pageSize=1");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     public class AuditFactory : TestFactory

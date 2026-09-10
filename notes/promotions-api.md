@@ -200,10 +200,13 @@ Every recorded action on a promotion, newest first. This is what the **Promotion
 questions: what was approved today, what was created today, what went to prod last week and who
 signed it off.
 
-Auth is the group's `CanApprove` policy, not the admin-only `AuditViewer` that guards
-`GET /api/audit` — every row is already visible one promotion at a time on the detail pages, and
-"who approved this" is a question approvers ask about their own work. The row's `sourceIp` is
-deliberately **not** returned, unlike on `/api/audit`.
+Auth is the admin-only `AuditViewer` policy, the same gate that guards `GET /api/audit`: read
+end to end this is a cross-product record of who did what, which is an administrator's view of the
+system. Approvers still see the history of any single promotion on its detail page, which is not
+gated this way. The row's `sourceIp` is deliberately **not** returned, unlike on `/api/audit`.
+
+The web UI matches: `/promotions/audit` is behind `AdminRoute`, and the sidebar entry, the command
+palette target and the **Audit** button on the promotions list are hidden from non-admins.
 
 Query params (all optional):
 
