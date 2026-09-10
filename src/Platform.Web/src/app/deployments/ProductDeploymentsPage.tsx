@@ -23,7 +23,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { api } from '@/lib/api';
 import type { PromotionCandidate } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
@@ -277,10 +277,17 @@ export function ProductDeploymentsPage() {
     filter: (evt) => !evt.product || evt.product === product,
   });
 
+  // Each fetch below tells a new query (a different product, tab or time window — spinner) apart
+  // from a push refresh of the one on screen (silent: the matrix and activity rows stay mounted
+  // and the fresh data swaps into them, so the wall monitor never blinks).
+  const isMatrixRefresh = useIsBackgroundRefresh();
+  const isRecentRefresh = useIsBackgroundRefresh();
+  const isActivityRefresh = useIsBackgroundRefresh();
+
   // Fetch state matrix (always needed for state tab)
   useEffect(() => {
-    if (product) fetchState(product);
-  }, [product, fetchState, deploymentsTick]);
+    if (product) fetchState(product, undefined, { silent: isMatrixRefresh(product) });
+  }, [product, fetchState, deploymentsTick, isMatrixRefresh]);
 
   // Pending promotions for this product, for the matrix's per-cell cue. Skipped entirely when the
   // feature is off — there is nothing to show and no reason to call the endpoint.
@@ -309,17 +316,29 @@ export function ProductDeploymentsPage() {
   useEffect(() => {
     if (product && tab === 'state' && timeFilter !== 'all') {
       if (timeFilter === 'custom' && !customDate) return;
-      fetchRecentByProduct(product, computeSince(timeFilter, customDate));
+      fetchRecentByProduct(product, computeSince(timeFilter, customDate), {
+        silent: isRecentRefresh(`${product}|${timeFilter}|${customDate}`),
+      });
     }
-  }, [product, tab, timeFilter, customDate, fetchRecentByProduct, deploymentsTick]);
+  }, [product, tab, timeFilter, customDate, fetchRecentByProduct, deploymentsTick, isRecentRefresh]);
 
   // Fetch recent activity for activity tab
   useEffect(() => {
     if (product && tab === 'activity') {
       if (activityTimeFilter === 'custom' && !activityCustomDate) return;
-      fetchRecentByProduct(product, computeSince(activityTimeFilter, activityCustomDate));
+      fetchRecentByProduct(product, computeSince(activityTimeFilter, activityCustomDate), {
+        silent: isActivityRefresh(`${product}|${activityTimeFilter}|${activityCustomDate}`),
+      });
     }
-  }, [product, tab, activityTimeFilter, activityCustomDate, fetchRecentByProduct, deploymentsTick]);
+  }, [
+    product,
+    tab,
+    activityTimeFilter,
+    activityCustomDate,
+    fetchRecentByProduct,
+    deploymentsTick,
+    isActivityRefresh,
+  ]);
 
   // Build a set of recently-changed (service, env) keys for highlighting
   const recentKeys = useMemo(() => {

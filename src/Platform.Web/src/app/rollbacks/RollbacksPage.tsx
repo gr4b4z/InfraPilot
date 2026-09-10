@@ -25,7 +25,7 @@ import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 
 const STATUS_CONFIG: Record<
   RollbackStatus,
@@ -104,8 +104,10 @@ export function RollbacksPage() {
         ],
   );
 
-  const fetchData = () => {
-    setLoading(true);
+  // `silent` refetches (realtime, after an action) keep the cards mounted and swap the response in by
+  // id; only a new filter set shows skeletons.
+  const fetchData = ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     const params: Record<string, string> = {};
     if (statusFilter) params.status = statusFilter;
     if (productFilter) params.product = productFilter;
@@ -120,9 +122,10 @@ export function RollbacksPage() {
   // Rollback items move through RollingBack → RolledBack/Failed server-side as completions
   // are matched — without push this list goes stale mid-rollback, its most-watched moment.
   const rollbacksTick = useEntityRefresh(['rollback']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
 
   useEffect(() => {
-    fetchData();
+    fetchData({ silent: isBackgroundRefresh(`${statusFilter}|${productFilter}|${targetEnvFilter}`) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, productFilter, targetEnvFilter, rollbacksTick]);
 
@@ -153,7 +156,7 @@ export function RollbacksPage() {
       /* refetch reflects the real state regardless */
     } finally {
       setActioningId(null);
-      fetchData();
+      fetchData({ silent: true });
     }
   };
 
@@ -165,7 +168,7 @@ export function RollbacksPage() {
       /* refetch */
     } finally {
       setActioningId(null);
-      fetchData();
+      fetchData({ silent: true });
     }
   };
 
@@ -177,7 +180,7 @@ export function RollbacksPage() {
       /* backend authorises; refetch reflects the outcome */
     } finally {
       setActioningId(null);
-      fetchData();
+      fetchData({ silent: true });
     }
   };
 
@@ -194,7 +197,7 @@ export function RollbacksPage() {
       setOverrideError(e instanceof Error ? e.message : 'Failed to override the approval gate');
     } finally {
       setActioningId(null);
-      fetchData();
+      fetchData({ silent: true });
     }
   };
 
@@ -384,7 +387,7 @@ export function RollbacksPage() {
           onClose={closeCreate}
           onCreated={() => {
             closeCreate();
-            fetchData();
+            fetchData({ silent: true });
           }}
         />
       )}

@@ -4,7 +4,7 @@ import { StatusBadge } from '@/components/requests/StatusBadge';
 import type { ServiceRequest } from '@/lib/types';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import { FileText, ArrowUpRight, Inbox, User, Users } from 'lucide-react';
 
@@ -23,16 +23,18 @@ export function RequestsPage() {
   // Status changes are driven by approvers and the executor worker, not this user — push keeps
   // the badges honest while the page sits open.
   const requestsTick = useEntityRefresh(['request', 'approval']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
 
   useEffect(() => {
-    setLoading(true);
+    // Only a new scope shows the skeleton; a push refresh swaps the response into the mounted rows.
+    if (!isBackgroundRefresh(scope)) setLoading(true);
     const params: Record<string, string> = {};
     if (scope === 'all') params.scope = 'all';
     api.getRequests(params)
       .then((data) => setRequests(data.items || []))
       .catch(() => setRequests([]))
       .finally(() => setLoading(false));
-  }, [scope, requestsTick]);
+  }, [scope, requestsTick, isBackgroundRefresh]);
 
   const statusCounts = {
     total: requests.length,

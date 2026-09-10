@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
@@ -42,7 +42,7 @@ import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { refreshMyTasks } from '@/stores/myTasksStore';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import {
   AlertTriangle,
@@ -446,6 +446,11 @@ export function PromotionsPage() {
 
   // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
   const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}`;
+  // The same identity, readable from a response handler that outlives the render it started in.
+  const filterKeyRef = useRef(filterKey);
+  useEffect(() => {
+    filterKeyRef.current = filterKey;
+  }, [filterKey]);
 
   // Secondary filters shared by every fetch on this page.
   const filterParams = () => {
@@ -457,8 +462,10 @@ export function PromotionsPage() {
     return params;
   };
 
-  const fetchData = () => {
-    setLoading(true);
+  // `silent` refetches keep the rows on screen and swap the response into them by key — the
+  // realtime and post-action paths. Only a new query (mount, filter change) shows skeletons.
+  const fetchData = ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     api
       .listPromotions({ status: 'Pending', ...filterParams() })
       .then((data) => setCandidates(data.candidates || []))
@@ -468,8 +475,8 @@ export function PromotionsPage() {
 
   // Approved-but-not-yet-deployed. Separate fetch (single-status ⇒ backend allows up
   // to 200) so the count is available for the tab badge before the tab is opened.
-  const fetchAwaitingDeploy = () => {
-    setAwaitingDeployLoading(true);
+  const fetchAwaitingDeploy = ({ silent = false } = {}) => {
+    if (!silent) setAwaitingDeployLoading(true);
     api
       .listPromotions({ status: 'Approved', ...filterParams() })
       .then((data) => setAwaitingDeploy(data.candidates || []))
@@ -498,16 +505,46 @@ export function PromotionsPage() {
   // sign-offs refresh the per-row progress cells without refetching the candidate lists.
   const promotionsTick = useEntityRefresh(['promotion']);
   const workItemsTick = useEntityRefresh(['work-item']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+
+  // Refetches whichever lazy sets are already loaded, in place. The realtime and post-action paths
+  // use this rather than dropping the sets back to null: a null set unmounts that tab's list for a
+  // skeleton, which for the tab the reader is on means losing their place. A result is only applied
+  // while the filters it was fetched under are still current — otherwise it would land over the
+  // null a filter change just set and stop the lazy effect from fetching the right data.
+  const refreshLazySets = () => {
+    const keyAtStart = filterKey;
+    const stillCurrent = () => filterKeyRef.current === keyAtStart;
+    if (archive !== null) {
+      api
+        .listPromotions(filterParams())
+        .then((data) => { if (stillCurrent()) setArchive(data.candidates || []); })
+        .catch(() => { /* keep the rows on screen; the next event retries */ });
+    }
+    if (rejected !== null) {
+      api
+        .listPromotions({ status: 'Rejected', ...filterParams() })
+        .then((data) => { if (stillCurrent()) setRejected(data.candidates || []); })
+        .catch(() => { /* as above */ });
+    }
+  };
 
   useEffect(() => {
-    fetchData();
-    fetchAwaitingDeploy();
-    // A filter change invalidates the lazy sets — drop them back to "not fetched" so the
-    // effect below refetches with the new filters when their tab is next shown.
-    setArchive(null);
-    setRejected(null);
+    // A realtime tick re-runs the query already on screen: refresh every loaded set in place and
+    // leave the skeletons out of it. A filter change is a new query — show skeletons, and drop the
+    // lazy sets back to "not fetched" so the effect below refetches with the new filters when
+    // their tab is next shown.
+    const silent = isBackgroundRefresh(filterKey);
+    fetchData({ silent });
+    fetchAwaitingDeploy({ silent });
+    if (silent) {
+      refreshLazySets();
+    } else {
+      setArchive(null);
+      setRejected(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productFilter, serviceFilter, targetEnvFilter, referenceFilter, promotionsTick]);
+  }, [filterKey, promotionsTick]);
 
   // Lazy loads for the tabs that aren't fetched up front. Fires on tab change and after a filter
   // change has reset the sets to null. `filterKey` is a dependency so a filter change tears down an
@@ -729,12 +766,11 @@ export function PromotionsPage() {
     } finally {
       // Refresh either way: on failure the server may still have approved some of the batch, so
       // re-reading is the only way to know what actually happened. Approved rows leave Pending and
-      // land in the awaiting-deploy set, and the lazy tabs are now stale — drop them so they
-      // refetch when next opened rather than showing a pre-approval snapshot.
-      fetchData();
-      fetchAwaitingDeploy();
-      setArchive(null);
-      setRejected(null);
+      // land in the awaiting-deploy set, and any loaded lazy tab is now stale — refetch it in place
+      // rather than showing a pre-approval snapshot.
+      fetchData({ silent: true });
+      fetchAwaitingDeploy({ silent: true });
+      refreshLazySets();
       setBulkLoading(false);
       // The sidebar counter and the bell badge counted these as awaiting the user.
       refreshMyTasks();
