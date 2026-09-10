@@ -16,7 +16,7 @@ import { KeyboardList } from '@/components/ui/KeyboardList';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
@@ -143,8 +143,12 @@ export function MyQueuePage() {
     filter: AssigneeFilterValue,
     tf: TimeFrameValue,
     decider: DeciderFilterValue,
+    opts: { silent?: boolean } = {},
   ) => {
-    setLoading(true);
+    // A silent fetch keeps the current rows mounted and swaps the response into them by key. Used
+    // for realtime refreshes and post-decision reloads, where the list already shows the right
+    // query — blanking it to a skeleton would only drop the reader's place.
+    if (!opts.silent) setLoading(true);
     setError(null);
     try {
       const apiArg = toApiArg(nextView, filter, currentUserEmail, tf, decider);
@@ -160,9 +164,13 @@ export function MyQueuePage() {
 
   // The queue is a projection over work items and their promotions — refresh on either stream.
   const realtimeTick = useEntityRefresh(['work-item', 'promotion']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
 
   useEffect(() => {
-    void fetchData(view, assigneeFilter, timeFrame, deciderFilter);
+    const queryKey = JSON.stringify([view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail]);
+    void fetchData(view, assigneeFilter, timeFrame, deciderFilter, {
+      silent: isBackgroundRefresh(queryKey),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail, realtimeTick]);
 
@@ -536,7 +544,7 @@ export function MyQueuePage() {
                 index={index}
                 ticket={t}
                 onChanged={() => {
-                  void fetchData(view, assigneeFilter, timeFrame, deciderFilter);
+                  void fetchData(view, assigneeFilter, timeFrame, deciderFilter, { silent: true });
                   // Reassigning a work item changes who it's "assigned to", so the shell's
                   // counters and the bell badge are stale the moment this returns.
                   refreshMyTasks();

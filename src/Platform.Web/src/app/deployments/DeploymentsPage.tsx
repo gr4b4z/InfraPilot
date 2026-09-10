@@ -40,7 +40,9 @@ export function DeploymentsPage() {
   const deploymentsTick = useEntityRefresh(['deployment']);
 
   useEffect(() => {
-    fetchProducts();
+    // The first run paints the matrix; pushes after that refresh it in place, so scroll position
+    // and the product filter panel stay where the reader left them.
+    fetchProducts({ silent: deploymentsTick > 0 });
   }, [fetchProducts, deploymentsTick]);
 
   useEffect(() => {

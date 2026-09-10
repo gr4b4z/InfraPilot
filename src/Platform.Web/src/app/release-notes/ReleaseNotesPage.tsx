@@ -5,7 +5,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { marked } from 'marked';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
-import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { api, type ReleaseNoteFeedItem } from '@/lib/api';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
@@ -42,8 +42,10 @@ export function ReleaseNotesPage() {
 
   useDocumentTitle([product, environment, 'Release notes']);
 
-  async function load() {
-    setLoading(true);
+  // A silent load (realtime) keeps the current page of notes mounted and swaps the response in;
+  // only a new product/environment/page shows the spinner.
+  async function load({ silent = false } = {}) {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await api.listReleaseNotes({
@@ -70,9 +72,10 @@ export function ReleaseNotesPage() {
   const releaseNotesTick = useEntityRefresh(['release-note'], {
     filter: (evt) => !evt.product || evt.product === product,
   });
+  const isBackgroundRefresh = useIsBackgroundRefresh();
 
   useEffect(() => {
-    load();
+    load({ silent: isBackgroundRefresh(`${product}|${environment}|${page}`) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product, environment, page, releaseNotesTick]);
 
