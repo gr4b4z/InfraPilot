@@ -101,7 +101,7 @@ function App() {
           <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           {/* "audit" ahead of the dynamic :id route so it can't be read as a promotion id. */}
-          <Route path="/promotions/audit" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsAuditPage /></FeatureRoute>} />
+          <Route path="/promotions/audit" element={<AdminRoute><FeatureRoute flag={FeatureFlag.Promotions}><PromotionsAuditPage /></FeatureRoute></AdminRoute>} />
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — work items awaiting the current user's signoff across products/envs. */}
           <Route path="/me/work-items" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />

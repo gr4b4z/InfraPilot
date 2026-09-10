@@ -37,6 +37,7 @@ import {
   type PromotionView,
 } from './promotionFilterParams';
 import { promotionSearchScope } from '@/components/shell/searchScopes';
+import { useAuthStore } from '@/stores/authStore';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
@@ -246,6 +247,9 @@ function usePersistedFilter(prefKey: string, initial: string): [string, (next: s
 
 export function PromotionsPage() {
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  // The audit feed is admin-only, so the shortcut to it is too — a button that lands on a redirect
+  // is worse than no button.
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
   const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
   // The URL is the shareable form of this page's state; the cookies are the resumable one. A link
   // carrying any promotion parameter wins outright on arrival — see promotionFilterParams for why a
@@ -757,20 +761,22 @@ export function PromotionsPage() {
           {/* The audit page answers the questions this list can't: what already happened, and who did
               it. Linked from here because that is where somebody stands when they think to ask — and
               it carries the current product/service/env narrowing across, so the question stays
-              scoped to whatever they were already looking at. */}
-          <Link
-            to={`/promotions/audit?${auditLinkParams().toString()}`}
-            className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
-            style={{
-              borderColor: 'var(--border-color)',
-              backgroundColor: 'var(--bg-primary)',
-              color: 'var(--text-secondary)',
-            }}
-            title="Recent actions taken on promotions — approvals, rejections, sign-offs and deploys"
-          >
-            <History size={12} />
-            Audit
-          </Link>
+              scoped to whatever they were already looking at. Admins only, like the page itself. */}
+          {isAdmin && (
+            <Link
+              to={`/promotions/audit?${auditLinkParams().toString()}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-secondary)',
+              }}
+              title="Recent actions taken on promotions — approvals, rejections, sign-offs and deploys"
+            >
+              <History size={12} />
+              Audit
+            </Link>
+          )}
           {/* The point of putting the filters in the URL was so this view could be handed to someone,
               and nobody thinks to look in the address bar for that. Built from the state rather than
               read back off `location`, so it's exact even before the first filter change has written
