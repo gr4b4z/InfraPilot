@@ -101,7 +101,8 @@ const navGroups: NavGroup[] = [
       { to: '/promotions', label: 'Promotions',    icon: GitPullRequest, counter: 'promotionsAwaitingMe',
         activeExcept: ['/promotions/audit'] },
       { to: '/me/work-items', label: 'Work items queue', icon: Inbox,   counter: 'workItemsAssignedToMe' },
-      { to: '/promotions/audit', label: 'Audit',          icon: History },
+      // Admin only — the cross-product record of who did what, same gate as the API behind it.
+      { to: '/promotions/audit', label: 'Audit',          icon: History, adminOnly: true },
     ],
   },
   {
