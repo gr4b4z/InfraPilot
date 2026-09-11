@@ -44,6 +44,7 @@ export function hiddenThemeInfo(id: HiddenTheme): HiddenThemeInfo {
 }
 
 const STORAGE_KEY = 'hidden-theme';
+const SOUND_STORAGE_KEY = 'hidden-theme-sound';
 
 function readStored(): HiddenTheme | null {
   try {
@@ -63,27 +64,61 @@ function writeStored(theme: HiddenTheme | null): void {
   }
 }
 
+function readStoredSound(): boolean {
+  try {
+    return window.localStorage.getItem(SOUND_STORAGE_KEY) === 'on';
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredSound(on: boolean): void {
+  try {
+    if (on) window.localStorage.setItem(SOUND_STORAGE_KEY, 'on');
+    else window.localStorage.removeItem(SOUND_STORAGE_KEY);
+  } catch {
+    // See writeStored.
+  }
+}
+
 interface HiddenThemeState {
   /** Active hidden theme, or null for the ordinary light/dark portal. */
   theme: HiddenTheme | null;
+  /**
+   * Ambient music for the active theme (see `lib/hiddenThemeAudio`). Off by default — a sudden
+   * soundtrack in an open-plan office is a worse surprise than a colour change — and remembered
+   * once switched on, so it comes back with the theme.
+   */
+  sound: boolean;
   /**
    * Bumped on every change, including re-selecting the current theme, so the confirmation toast
    * re-shows even when the theme itself didn't move.
    */
   changedAt: number;
+  /** Which switch `changedAt` refers to, so the toast can word itself accordingly. */
+  lastChange: 'theme' | 'sound';
 
   setTheme: (theme: HiddenTheme | null) => void;
   /** none → matrix → punk → cyberpunk → forest → none. */
   cycle: () => void;
+  toggleSound: () => void;
 }
 
 export const useHiddenThemeStore = create<HiddenThemeState>()((set, get) => ({
   theme: typeof window === 'undefined' ? null : readStored(),
+  sound: typeof window === 'undefined' ? false : readStoredSound(),
   changedAt: 0,
+  lastChange: 'theme',
 
   setTheme: (theme) => {
     writeStored(theme);
-    set({ theme, changedAt: Date.now() });
+    set({ theme, changedAt: Date.now(), lastChange: 'theme' });
+  },
+
+  toggleSound: () => {
+    const sound = !get().sound;
+    writeStoredSound(sound);
+    set({ sound, changedAt: Date.now(), lastChange: 'sound' });
   },
 
   cycle: () => {
