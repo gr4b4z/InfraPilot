@@ -89,11 +89,12 @@ public class PromotionGateFilterTests
     }
 
     [Fact]
-    public async Task AnOutstandingWorkItemGateRulesOutWaitingOnlyForAStep()
+    public async Task AnOutstandingWorkItemGateMeansTheStepIsHeld_NotWaiting()
     {
-        // The step is the only human sign-off left, but the policy also holds the promotion until every
-        // work item is signed off — so it is not one signature away from going out, and must not show
-        // up under "only gate left".
+        // The step is short of approvals, but the policy holds the promotion until every work item is
+        // signed off, so nobody may sign it: the detail page padlocks it ("opens once all work items
+        // are resolved") and ApproveAsync refuses. The promotion is waiting on its work items, not on
+        // Release Approval — so neither filter mode may offer it to an approver of that gate.
         await using var factory = new GateFixture();
 
         Guid id;
@@ -110,8 +111,60 @@ public class PromotionGateFilterTests
         var status = await GateStatusAsync(factory, id);
 
         Assert.True(status.WorkItemsOutstanding);
-        Assert.True(status.IsWaitingFor(ReleaseGate));
+        Assert.False(status.IsWaitingFor(ReleaseGate));
         Assert.False(status.IsWaitingOnlyFor(ReleaseGate));
+        // The step is still reported, so the card can name what opens once the work items clear — the
+        // list just doesn't read it as "waiting on".
+        Assert.Equal(new[] { ReleaseGate }, status.OutstandingSteps);
+    }
+
+    [Fact]
+    public async Task AWorkItemGateHoldsEveryStep_NotJustTheLastOne()
+    {
+        // Two gates, both held. The one the user filtered by was "QA Review", which a promotion nobody
+        // can QA-review yet must not answer for any more than "Release Approval" does.
+        await using var factory = new GateFixture();
+
+        Guid id;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            id = (await SeedAsync(
+                db,
+                new[] { SecurityGate, ReleaseGate },
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        var status = await GateStatusAsync(factory, id);
+
+        Assert.False(status.IsWaitingFor(SecurityGate));
+        Assert.False(status.IsWaitingFor(ReleaseGate));
+    }
+
+    [Fact]
+    public async Task APolicyThatDoesNotGateOnWorkItemsHoldsNothing()
+    {
+        // An unsigned work item only holds the steps when the policy says it does. Without
+        // RequireAllWorkItemsApproved the approvers may go ahead, so the gate is open and the filter
+        // has to keep offering it.
+        await using var factory = new GateFixture();
+
+        Guid id;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            id = (await SeedAsync(
+                db,
+                new[] { ReleaseGate },
+                requireAllWorkItemsApproved: false,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        var status = await GateStatusAsync(factory, id);
+
+        Assert.False(status.WorkItemsOutstanding);
+        Assert.True(status.IsWaitingOnlyFor(ReleaseGate));
     }
 
     [Fact]

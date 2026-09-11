@@ -98,7 +98,9 @@ public static class PromotionEndpoints
             // "Show me the promotions waiting for Release Approval" — and, with `gateOnly`, only the
             // ones where it is the last thing outstanding, i.e. the ones an approver of that gate can
             // actually finish. Only a Pending candidate waits on anything, so a gate filter narrows
-            // the list to Pending by construction; nothing extra is needed to say so.
+            // the list to Pending by construction; nothing extra is needed to say so. A promotion the
+            // work-item gate is holding waits on no step at all (see PromotionGateStatus): asking for
+            // Release Approval must not return one whose Release Approval nobody may sign yet.
             var gateName = (gate ?? "").Trim();
             if (gateName.Length > 0)
             {
@@ -858,11 +860,13 @@ public static class PromotionEndpoints
         canApprove,
         // The approval steps this promotion is still short of approvals on, named as the policy names
         // them ("Release Approval"). Empty on anything that isn't Pending, on auto-approve edges, and
-        // on responses that don't compute it. The list filters on the same values, so a chip here is
-        // exactly what the gate dropdown offers.
+        // on responses that don't compute it. Short of approvals is not the same as open: read it
+        // together with workItemsOutstanding below, which says the steps are held rather than waiting.
         pendingGates = gateStatus?.OutstandingSteps ?? Array.Empty<string>(),
-        // True when the policy's work-item gate is also holding this promotion back — the other thing
-        // "waiting only for <gate>" has to rule out.
+        // True when the policy's work-item gate is holding this promotion back — nobody may approve
+        // any of the steps above until every work item is signed off. It is what the promotion is
+        // actually waiting on, so the card says "work items" rather than naming a padlocked gate, and
+        // the gate filter passes it over.
         workItemsOutstanding = gateStatus?.WorkItemsOutstanding ?? false,
         // Whether approving is the last gate before the version is live. True (and the default for a
         // candidate whose snapshot predates the flag) ⇒ the release automation deploys straight off
