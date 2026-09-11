@@ -68,3 +68,7 @@ export const PROMOTIONS_PRODUCT_FILTER_PREF = 'ip.promotions.filter.product';
 export const PROMOTIONS_SERVICE_FILTER_PREF = 'ip.promotions.filter.service';
 export const PROMOTIONS_TARGET_ENV_FILTER_PREF = 'ip.promotions.filter.targetEnv';
 export const PROMOTIONS_REFERENCE_FILTER_PREF = 'ip.promotions.filter.reference';
+/** Approval gate the list is narrowed to, e.g. "Release Approval". */
+export const PROMOTIONS_GATE_FILTER_PREF = 'ip.promotions.filter.gate';
+/** `'1'` when the gate filter is narrowed further to promotions waiting on that gate alone. */
+export const PROMOTIONS_GATE_ONLY_FILTER_PREF = 'ip.promotions.filter.gateOnly';
