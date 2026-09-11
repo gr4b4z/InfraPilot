@@ -40,6 +40,7 @@ import {
   Edit2,
   Trash2,
   Undo2,
+  Lock,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { PromotionRoute } from '@/components/promotions/PromotionRoute';
@@ -1759,6 +1760,87 @@ function ApprovalProgressBody({
     .flatMap((s) => s.requirements.map((r) => gateKey(s.name, r.name)))
     .find((k) => eligibleByGate.has(k));
 
+  // When the policy requires every work item signed off before anyone may approve, that gate comes
+  // first in every sense: it is listed on top, and while it is unmet the human steps are not
+  // "waiting" on anybody — nobody can approve them yet. They render held (padlock, muted, no
+  // Approve button) rather than pending, so the page does not claim the promotion is waiting on QA
+  // Review when it is in fact waiting on work items. A policy that only auto-approves on work items
+  // (`autoApprove` without `required`) holds nothing: approvers may go ahead regardless.
+  const heldByWorkItems = !!workItemGate && workItemGate.required && !workItemGate.satisfied;
+
+  // The "all work items resolved" gate. Rendered first, above the approval steps, because when the
+  // policy requires it the steps below cannot be approved until it is met — the order on screen is
+  // the order things actually happen in.
+  const workItemGateBlock = workItemGate && (
+    <div>
+      <div className="flex items-center gap-1.5 mb-2">
+        {workItemGate.satisfied ? (
+          <CheckCircle size={13} style={{ color: 'var(--success)' }} />
+        ) : (
+          <Clock size={13} style={{ color: 'var(--warning)' }} />
+        )}
+        <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+          Work items
+        </span>
+      </div>
+      <div
+        className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+      >
+        <div className="min-w-0">
+          <span
+            className="inline-flex items-center gap-2 text-[13px] min-w-0"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            {workItemGate.satisfied ? (
+              <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+            ) : (
+              <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+            )}
+            <span className="truncate">
+              {workItemGate.allInstances
+                ? 'All work items resolved on every service'
+                : 'All work items resolved'}
+            </span>
+          </span>
+          {workItemGate.required && steps.length > 0 && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
+              {workItemGate.satisfied
+                ? 'Cleared — the approval steps below are open'
+                : 'The approval steps below wait for this first'}
+            </p>
+          )}
+          {workItemGate.autoApprove && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
+              {workItemGate.satisfied
+                ? 'Auto-approved the promotion'
+                : 'Resolving all work items auto-approves this promotion'}
+            </p>
+          )}
+          {/* A block is the hold; an issue is a flag on something that is still going out.
+              Both are named, so a satisfied gate never hides a flagged item and an unsatisfied
+              one names what to actually chase. */}
+          {(workItemGate.blocked ?? 0) > 0 && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--danger)' }}>
+              {workItemGate.blocked} blocked — this gate stays unmet until that changes
+            </p>
+          )}
+          {(workItemGate.issues ?? 0) > 0 && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--warning)' }}>
+              {workItemGate.issues} with issues — flagged, but not holding this gate
+            </p>
+          )}
+        </div>
+        <span
+          className="text-[12px] font-medium whitespace-nowrap"
+          style={{ color: workItemGate.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
+        >
+          {workItemGate.approved} of {workItemGate.total} approved
+        </span>
+      </div>
+    </div>
+  );
+
   return (
     <div>
       <div className="flex items-center justify-end mb-3">
@@ -1771,6 +1853,11 @@ function ApprovalProgressBody({
               <CheckCircle size={14} />
               All approvals met
             </>
+          ) : heldByWorkItems && workItemGate ? (
+            <>
+              <Clock size={14} />
+              Waiting for work items · {workItemGate.approved} of {workItemGate.total} resolved
+            </>
           ) : (
             <>
               <Clock size={14} />
@@ -1782,17 +1869,28 @@ function ApprovalProgressBody({
       </div>
 
       <div className="space-y-4">
-        {steps.map((step, si) => (
+        {workItemGateBlock}
+
+        {steps.map((step, si) => {
+          const held = heldByWorkItems && !step.satisfied;
+          return (
           <div key={`${step.name}-${si}`}>
             <div className="flex items-center gap-1.5 mb-2">
               {step.satisfied ? (
                 <CheckCircle size={13} style={{ color: 'var(--success)' }} />
+              ) : held ? (
+                <Lock size={13} style={{ color: 'var(--text-muted)' }} />
               ) : (
                 <Clock size={13} style={{ color: 'var(--warning)' }} />
               )}
               <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
                 {step.name}
               </span>
+              {held && (
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  · not yet — opens once all work items are resolved
+                </span>
+              )}
             </div>
             <div className="space-y-1.5">
               {step.requirements.map((req, ri) => {
@@ -1801,12 +1899,18 @@ function ApprovalProgressBody({
                 const approversText = approvers.join(' · ');
                 const key = gateKey(step.name, req.name);
                 const approvedBy = approvalsByGate.get(key) ?? [];
-                const eligible = eligibleByGate.get(key);
+                // No Approve button on a held gate: the work-items gate above says what to do, and
+                // a button nobody can press would only claim the gate is waiting on this user.
+                const eligible = held ? undefined : eligibleByGate.get(key);
                 return (
                   <div
                     key={`${req.name}-${ri}`}
                     className="p-2.5 rounded-lg border"
-                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-secondary)',
+                      opacity: held && !req.satisfied ? 0.7 : 1,
+                    }}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -1816,6 +1920,8 @@ function ApprovalProgressBody({
                         >
                           {req.satisfied ? (
                             <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+                          ) : held ? (
+                            <Lock size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                           ) : (
                             <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
                           )}
@@ -1834,7 +1940,13 @@ function ApprovalProgressBody({
                       <div className="flex items-center gap-2 shrink-0">
                         <span
                           className="text-[12px] font-medium whitespace-nowrap"
-                          style={{ color: req.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
+                          style={{
+                            color: req.satisfied
+                              ? 'var(--success)'
+                              : held
+                                ? 'var(--text-muted)'
+                                : 'var(--text-secondary)',
+                          }}
                         >
                           {req.approved} of {req.required} approved
                         </span>
@@ -1917,7 +2029,8 @@ function ApprovalProgressBody({
               })}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {/* Decisions that belong to no gate above: a rejection (a veto on the whole promotion, so it
             was never recorded against one), or an approval recorded before gates were tracked or
@@ -1980,70 +2093,6 @@ function ApprovalProgressBody({
           </div>
         )}
 
-        {/* The "all work items resolved" gate condition — shown when the policy requires every
-           work item signed off, so the approver can see whether that condition is fulfilled. */}
-        {workItemGate && (
-          <div>
-            <div className="flex items-center gap-1.5 mb-2">
-              {workItemGate.satisfied ? (
-                <CheckCircle size={13} style={{ color: 'var(--success)' }} />
-              ) : (
-                <Clock size={13} style={{ color: 'var(--warning)' }} />
-              )}
-              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                Work items
-              </span>
-            </div>
-            <div
-              className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-            >
-              <div className="min-w-0">
-                <span
-                  className="inline-flex items-center gap-2 text-[13px] min-w-0"
-                  style={{ color: 'var(--text-primary)' }}
-                >
-                  {workItemGate.satisfied ? (
-                    <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
-                  ) : (
-                    <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-                  )}
-                  <span className="truncate">
-                    {workItemGate.allInstances
-                      ? 'All work items resolved on every service'
-                      : 'All work items resolved'}
-                  </span>
-                </span>
-                {workItemGate.autoApprove && (
-                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
-                    {workItemGate.satisfied
-                      ? 'Auto-approved the promotion'
-                      : 'Resolving all work items auto-approves this promotion'}
-                  </p>
-                )}
-                {/* A block is the hold; an issue is a flag on something that is still going out.
-                    Both are named, so a satisfied gate never hides a flagged item and an unsatisfied
-                    one names what to actually chase. */}
-                {(workItemGate.blocked ?? 0) > 0 && (
-                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--danger)' }}>
-                    {workItemGate.blocked} blocked — this gate stays unmet until that changes
-                  </p>
-                )}
-                {(workItemGate.issues ?? 0) > 0 && (
-                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--warning)' }}>
-                    {workItemGate.issues} with issues — flagged, but not holding this gate
-                  </p>
-                )}
-              </div>
-              <span
-                className="text-[12px] font-medium whitespace-nowrap"
-                style={{ color: workItemGate.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
-              >
-                {workItemGate.approved} of {workItemGate.total} approved
-              </span>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
