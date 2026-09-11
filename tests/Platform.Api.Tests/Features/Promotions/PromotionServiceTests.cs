@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -904,6 +904,108 @@ public class PromotionServiceTests : IDisposable
         Assert.Equal("QA", row.RequirementName);
         // Two requirements each need 1; Alice covers only one → still Pending.
         Assert.Equal(PromotionStatus.Pending, updated.Status);
+    }
+
+    /// <summary>
+    /// The stuck-promotion bug: Alice is in the group behind both requirements. Under the old global
+    /// distinct-person rule her first approval consumed her, and nobody else existed to clear the
+    /// second gate. Each gate now takes its own approval from her and the promotion goes through.
+    /// </summary>
+    [Fact]
+    public async Task Approve_SameUser_TwoGates_ApprovesEachSeparately()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+
+        var afterQa = await _sut.ApproveAsync(c!.Id, "as qa", stepName: "Signoff", requirementName: "QA");
+        Assert.Equal(PromotionStatus.Pending, afterQa.Status);
+
+        // The other gate is still on offer to her.
+        var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
+        var eligible = await _sut.GetEligibleRequirementsAsync(reloaded!);
+        var remaining = Assert.Single(eligible);
+        Assert.Equal("ReleaseManager", remaining.RequirementName);
+        Assert.True(await _sut.CanUserApproveAsync(reloaded!));
+
+        var afterRm = await _sut.ApproveAsync(c.Id, "as rm", stepName: "Signoff", requirementName: "ReleaseManager");
+        Assert.Equal(PromotionStatus.Approved, afterRm.Status);
+
+        var rows = _db.PromotionApprovals.OrderBy(a => a.CreatedAt).ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal("alice@example.com", r.ApproverEmail));
+        Assert.Equal(new[] { "QA", "ReleaseManager" }, rows.Select(r => r.RequirementName));
+    }
+
+    [Fact]
+    public async Task Approve_AfterOneGate_WithoutChoice_AutoPicksTheRemainingGate()
+    {
+        // Once QA carries her approval only ReleaseManager is open for her, so no choice is needed.
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+
+        var updated = await _sut.ApproveAsync(c.Id, null);
+
+        Assert.Equal(PromotionStatus.Approved, updated.Status);
+        Assert.Contains(_db.PromotionApprovals, r => r.RequirementName == "ReleaseManager");
+    }
+
+    [Fact]
+    public async Task Approve_SameUser_SameGateTwice_Throws()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.ApproveAsync(c.Id, null, stepName: "Signoff", requirementName: "QA"));
+
+        Assert.Contains("already approved", ex.Message);
+        Assert.Single(_db.PromotionApprovals);
+    }
+
+    [Fact]
+    public async Task Approve_AllMyGatesDone_Throws_NothingLeftToApprove()
+    {
+        // Both gates approved by Alice → the candidate is Approved and no longer Pending, so the guard
+        // that fires is the Pending one. Use a 2-of-M gate instead so it stays Pending after her row.
+        SeedPolicy(approverGroup: "ops", minApprovers: 2);
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.ApproveAsync(c.Id, null));
+
+        Assert.Contains("already approved", ex.Message);
+        Assert.Single(_db.PromotionApprovals);
+    }
+
+    [Fact]
+    public async Task Progress_SameUserOnTwoGates_CountsOnBoth()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+        await _sut.ApproveAsync(c.Id, null, stepName: "Signoff", requirementName: "ReleaseManager");
+        var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
+
+        var progress = await _sut.GetApprovalProgressAsync(reloaded!);
+
+        Assert.True(progress.AllSatisfied);
+        Assert.Equal(2, progress.TotalApproved);
+        Assert.All(Assert.Single(progress.Steps).Requirements, r => Assert.Equal(1, r.Approved));
+    }
+
+    [Fact]
+    public async Task Reject_AfterApprovingOneGate_StillVetoes()
+    {
+        // Signing off QA does not forfeit the release manager's veto.
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+
+        var updated = await _sut.RejectAsync(c.Id, "not this one");
+
+        Assert.Equal(PromotionStatus.Rejected, updated.Status);
     }
 
     [Fact]

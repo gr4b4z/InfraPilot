@@ -279,7 +279,8 @@ public class PromotionCanApproveTests
     [Fact]
     public async Task CanApprove_False_OnceThisUserHasDecided()
     {
-        // Pre-existing behaviour, pinned so the rewrite can't drop it.
+        // A legacy, unattributed decision (no step/requirement) closes the whole candidate to its
+        // author — pinned so the per-gate rewrite can't drop it.
         await using var factory = new GateFixture();
         factory.AsUser("first@example.com");
 
@@ -294,6 +295,90 @@ public class PromotionCanApproveTests
 
         Assert.False(await CanApproveAsync(factory, candidateId));
     }
+
+    [Fact]
+    public async Task CanApprove_False_OnceThisUserHasApprovedTheOnlyGate()
+    {
+        // The gate still wants a second person, but not this one — they already signed it.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 2)).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "first@example.com", "Approval", "Approvers"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    // ── One person in two gates ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task CanApprove_True_ForTheSecondGate_AfterApprovingTheFirst()
+    {
+        // The stuck-promotion bug from the list's point of view: the QA manager who is also the
+        // release manager has signed QA. The release gate is still theirs to approve, so the list
+        // must keep the promotion in their queue — and ApproveAsync must accept it.
+        await using var factory = new GateFixture();
+        factory.AsUser("pawel@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1, steps: TwoGates())).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "pawel@example.com", "QA Review", "QA Manager"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.True(await CanApproveAsync(factory, candidateId));
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var approved = await svc.ApproveAsync(candidateId, null); // only one gate left → auto-picked
+            Assert.Equal(PromotionStatus.Approved, approved.Status);
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_False_OnceBothGatesCarryThisUsersApproval()
+    {
+        // Both gates want two people; this user has given each gate their one approval.
+        await using var factory = new GateFixture();
+        factory.AsUser("pawel@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 2, steps: TwoGates(minApprovers: 2))).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "pawel@example.com", "QA Review", "QA Manager"));
+            db.PromotionApprovals.Add(NewApproval(candidateId, "pawel@example.com", "Release Approval", "Release Manager"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    /// <summary>Two steps, one requirement each, both behind the same approver group.</summary>
+    private static List<ApprovalStep> TwoGates(int minApprovers = 1) => new()
+    {
+        new ApprovalStep("QA Review", new()
+        {
+            new ApproverRequirement("QA Manager", new() { new GroupRef(ApproverGroup, ApproverGroup) }, new(), minApprovers),
+        }),
+        new ApprovalStep("Release Approval", new()
+        {
+            new ApproverRequirement("Release Manager", new() { new GroupRef(ApproverGroup, ApproverGroup) }, new(), minApprovers),
+        }),
+    };
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -319,7 +404,8 @@ public class PromotionCanApproveTests
         IEnumerable<string>? workItemKeys = null,
         string product = "acme",
         string service = "api",
-        string targetEnv = "prod")
+        string targetEnv = "prod",
+        List<ApprovalStep>? steps = null)
     {
         const string version = "v1.0.0";
         db.DeployEvents.Add(new DeployEvent
@@ -340,7 +426,7 @@ public class PromotionCanApproveTests
 
         var snapshot = new ResolvedPolicySnapshot(PolicyId: Guid.NewGuid(), EscalationGroup: null)
         {
-            ApprovalSteps = new()
+            ApprovalSteps = steps ?? new()
             {
                 new ApprovalStep("Approval", new()
                 {
@@ -390,13 +476,16 @@ public class PromotionCanApproveTests
         return candidate;
     }
 
-    private static PromotionApproval NewApproval(Guid candidateId, string email) => new()
+    private static PromotionApproval NewApproval(
+        Guid candidateId, string email, string? stepName = null, string? requirementName = null) => new()
     {
         Id = Guid.NewGuid(),
         CandidateId = candidateId,
         ApproverEmail = email,
         ApproverName = email,
         Decision = PromotionDecision.Approved,
+        StepName = stepName,
+        RequirementName = requirementName,
         CreatedAt = DateTimeOffset.UtcNow,
     };
 
