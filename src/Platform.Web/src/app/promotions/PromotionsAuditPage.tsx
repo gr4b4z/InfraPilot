@@ -740,7 +740,7 @@ export function PromotionsAuditPage() {
                   className="ml-0.5 rounded-full px-1.5 text-[11px] font-semibold"
                   style={{
                     backgroundColor: active ? 'var(--accent)' : 'var(--bg-secondary)',
-                    color: active ? '#fff' : 'var(--text-muted)',
+                    color: active ? 'var(--accent-fg)' : 'var(--text-muted)',
                   }}
                 >
                   {count}

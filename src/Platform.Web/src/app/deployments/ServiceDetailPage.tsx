@@ -193,7 +193,7 @@ export function ServiceDetailPage() {
               type="button"
               onClick={() => setDeployArtifactOpen(true)}
               className="inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1.5 rounded-lg transition-opacity hover:opacity-90"
-              style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+              style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
               <Rocket size={13} />
               Deploy an artifact

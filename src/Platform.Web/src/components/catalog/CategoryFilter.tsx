@@ -21,7 +21,7 @@ export function CategoryFilter({ categories, selected, onSelect }: Props) {
         style={{
           backgroundColor: selected === null ? 'var(--accent)' : 'transparent',
           borderColor: selected === null ? 'var(--accent)' : 'var(--border-color)',
-          color: selected === null ? 'white' : 'var(--text-secondary)',
+          color: selected === null ? 'var(--accent-fg)' : 'var(--text-secondary)',
         }}
       >
         All services
@@ -34,7 +34,7 @@ export function CategoryFilter({ categories, selected, onSelect }: Props) {
           style={{
             backgroundColor: selected === cat ? 'var(--accent)' : 'transparent',
             borderColor: selected === cat ? 'var(--accent)' : 'var(--border-color)',
-            color: selected === cat ? 'white' : 'var(--text-secondary)',
+            color: selected === cat ? 'var(--accent-fg)' : 'var(--text-secondary)',
           }}
         >
           {categoryLabels[cat] || cat}

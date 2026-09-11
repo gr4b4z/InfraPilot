@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksCount } from '@/stores/myTasksStore';
 import { useHiddenProductCount } from '@/stores/userPrefsStore';
 import { useUiStore } from '@/stores/uiStore';
+import { HIDDEN_THEME_CLASSES, hiddenThemeInfo, useHiddenThemeStore } from '@/stores/hiddenThemeStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
 
@@ -52,6 +53,9 @@ export function Topbar() {
   );
 
   const darkMode = themeMode === 'system' ? systemPrefersDark : themeMode === 'dark';
+  // Easter-egg theme layered over light/dark — see hiddenThemeStore. Applied here because this
+  // effect is the one place that writes theme classes and `color-scheme` onto the root element.
+  const hiddenTheme = useHiddenThemeStore((s) => s.theme);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -67,7 +71,7 @@ export function Topbar() {
   useEffect(() => {
     const root = document.documentElement;
 
-    root.classList.remove('light', 'dark');
+    root.classList.remove('light', 'dark', ...HIDDEN_THEME_CLASSES);
 
     if (themeMode === 'light') {
       root.classList.add('light');
@@ -75,9 +79,14 @@ export function Topbar() {
       root.classList.add('dark');
     }
 
-    root.style.colorScheme = darkMode ? 'dark' : 'light';
+    // The hidden theme's token block is written as `:root.theme-*`, so it outranks `.light`/`.dark`
+    // regardless of which classes are present; only `color-scheme` needs deciding here.
+    const hidden = hiddenTheme ? hiddenThemeInfo(hiddenTheme) : null;
+    if (hidden) root.classList.add(hidden.className);
+
+    root.style.colorScheme = hidden ? hidden.colorScheme : darkMode ? 'dark' : 'light';
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
-  }, [themeMode, darkMode]);
+  }, [themeMode, darkMode, hiddenTheme]);
 
   const themeLabel = themeMode === 'system'
     ? `System (${darkMode ? 'dark' : 'light'})`
@@ -181,7 +190,7 @@ export function Topbar() {
             onClick={() => setThemeMode('light')}
             className="p-2 rounded-md transition-colors"
             style={{
-              color: themeMode === 'light' ? 'white' : 'var(--text-muted)',
+              color: themeMode === 'light' ? 'var(--accent-fg)' : 'var(--text-muted)',
               backgroundColor: themeMode === 'light' ? 'var(--accent)' : 'transparent',
             }}
             title="Always light"
@@ -193,7 +202,7 @@ export function Topbar() {
             onClick={() => setThemeMode('dark')}
             className="p-2 rounded-md transition-colors"
             style={{
-              color: themeMode === 'dark' ? 'white' : 'var(--text-muted)',
+              color: themeMode === 'dark' ? 'var(--accent-fg)' : 'var(--text-muted)',
               backgroundColor: themeMode === 'dark' ? 'var(--accent)' : 'transparent',
             }}
             title="Always dark"
@@ -205,7 +214,7 @@ export function Topbar() {
             onClick={() => setThemeMode('system')}
             className="p-2 rounded-md transition-colors"
             style={{
-              color: themeMode === 'system' ? 'white' : 'var(--text-muted)',
+              color: themeMode === 'system' ? 'var(--accent-fg)' : 'var(--text-muted)',
               backgroundColor: themeMode === 'system' ? 'var(--accent)' : 'transparent',
             }}
             title={themeLabel}

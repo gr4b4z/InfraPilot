@@ -203,7 +203,7 @@ export function RequestDetailPage() {
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold rounded-lg transition-all cursor-pointer relative z-10"
                 style={{
                   backgroundColor: 'var(--accent)',
-                  color: 'white',
+                  color: 'var(--accent-fg)',
                   opacity: retrying ? 0.7 : 1,
                 }}
               >

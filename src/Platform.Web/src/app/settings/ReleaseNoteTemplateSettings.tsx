@@ -122,7 +122,7 @@ export function ReleaseNoteTemplateSettings() {
             onClick={save}
             disabled={saving || loading}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium disabled:opacity-50"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
             Save to {scopeLabel}

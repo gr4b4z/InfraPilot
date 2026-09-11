@@ -488,7 +488,7 @@ export function CreateRollbackPanel({
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',
-                color: '#fff',
+                color: 'var(--accent-fg)',
                 opacity: !preview || eligibleCount === 0 || submitting ? 0.5 : 1,
               }}
             >

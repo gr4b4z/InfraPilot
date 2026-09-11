@@ -1324,7 +1324,7 @@ function CommentsCard({
                     <button
                       onClick={() => saveEdit(c.id)}
                       className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
-                      style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+                      style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
                     >
                       Save
                     </button>
@@ -1401,7 +1401,7 @@ function CommentsCard({
             className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
             style={{
               backgroundColor: 'var(--accent)',
-              color: '#fff',
+              color: 'var(--accent-fg)',
               opacity: posting || !body.trim() ? 0.6 : 1,
             }}
           >

@@ -121,7 +121,7 @@ export function ReleaseNoteDraftPage() {
             onClick={publish}
             disabled={publishing || !markdown.trim()}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium disabled:opacity-50"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {publishing ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
             Publish
