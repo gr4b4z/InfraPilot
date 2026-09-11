@@ -558,7 +558,8 @@ class ApiClient {
     /**
      * Narrow to promotions still waiting on this approval step, by name ("Release Approval"). Only a
      * Pending promotion waits on anything, so this narrows the result to Pending whatever `status`
-     * says.
+     * says — and a promotion held behind its work-item gate waits on no step at all, so it is left
+     * out even though the step is short of approvals (see `workItemsOutstanding`).
      */
     gate?: string;
     /**
@@ -1625,9 +1626,11 @@ export interface PromotionCandidate {
    */
   pendingGates?: string[];
   /**
-   * Whether the policy's work-item gate is also holding this promotion back. Read alongside
-   * `pendingGates`: a promotion with one outstanding gate and this set is not one gate away from
-   * going out.
+   * Whether the policy's work-item gate is holding this promotion back — every work item must be
+   * signed off before anyone may approve any step. Read alongside `pendingGates`: the steps listed
+   * there are short of approvals but *held*, not waiting, so a promotion with this set is waiting on
+   * its work items and not on any gate. The `gate` filter passes it over, and the list card says
+   * "work items" rather than naming a step nobody can sign yet.
    */
   workItemsOutstanding?: boolean;
 }

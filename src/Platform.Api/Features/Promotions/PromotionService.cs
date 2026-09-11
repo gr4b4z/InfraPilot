@@ -3079,9 +3079,10 @@ public class PromotionService
     }
 
     /// <summary>
-    /// Which approval gates each candidate is still <b>waiting on</b>, for a whole list at once — the
-    /// input the promotions list filters "waiting for Release Approval" on, and the per-row chips that
-    /// say so.
+    /// Which approval gates each candidate is still <b>short of approvals on</b>, for a whole list at
+    /// once — the input the promotions list filters "waiting for Release Approval" on, and the per-row
+    /// chips that say so. Whether those gates are open or held behind the work-item gate is the other
+    /// half of the answer, carried alongside them; <see cref="PromotionGateStatus"/> draws that line.
     ///
     /// <para>A gate here is an <see cref="ApprovalStep"/>, named as the admin named it (an unnamed step
     /// reads as "Approval", the same label <see cref="GetApprovalProgressAsync"/> gives it). A step is
@@ -3572,27 +3573,40 @@ public record WorkItemGateProgress(
 /// reports it for a whole list: the approval steps that are short of approvals, plus whether the
 /// policy's work-item gate is also holding it.
 ///
-/// <para>The distinction the two predicates draw is the one the promotions list filter is for.
-/// "Waiting for Release Approval" (<see cref="IsWaitingFor"/>) includes a promotion that is waiting
-/// for three other things as well; "waiting <i>only</i> for Release Approval"
-/// (<see cref="IsWaitingOnlyFor"/>) is the one an approver can actually finish — every other gate on
-/// it, work items included, is already clear.</para>
+/// <para><b>Outstanding is not the same as waiting.</b> When the policy holds human approval back
+/// until every work item is signed off, the steps in <see cref="OutstandingSteps"/> are not open —
+/// nobody may approve them yet, and <see cref="PromotionService.ApproveAsync"/> refuses if they try.
+/// Such a promotion is waiting on its work items, not on QA Review, and the detail page says so
+/// (the steps render held: padlocked, no Approve button, "opens once all work items are resolved").
+/// Both predicates here agree with that page, so a gate filter never offers an approver a promotion
+/// their signature cannot move.</para>
+///
+/// <para>What the two predicates still distinguish is how much is left. "Waiting for Release
+/// Approval" (<see cref="IsWaitingFor"/>) includes a promotion that is waiting for three other steps
+/// as well; "waiting <i>only</i> for Release Approval" (<see cref="IsWaitingOnlyFor"/>) is the one an
+/// approver can actually finish off.</para>
 /// </summary>
 public record PromotionGateStatus(IReadOnlyList<string> OutstandingSteps, bool WorkItemsOutstanding)
 {
     /// <summary>A candidate with nothing left to wait on — every non-Pending one, and auto-approve edges.</summary>
     public static readonly PromotionGateStatus None = new(Array.Empty<string>(), false);
 
-    /// <summary>Whether the named approval step is among the ones still outstanding.</summary>
+    /// <summary>
+    /// Whether the promotion is waiting on the named approval step: the step is short of approvals
+    /// <i>and</i> the work-item gate isn't holding the whole promotion behind it. A held promotion is
+    /// waiting on its work items — naming a step it cannot reach yet would send an approver to a
+    /// padlocked gate.
+    /// </summary>
     public bool IsWaitingFor(string step)
-        => OutstandingSteps.Any(s => string.Equals(s, step, StringComparison.OrdinalIgnoreCase));
+        => !WorkItemsOutstanding
+        && OutstandingSteps.Any(s => string.Equals(s, step, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Whether the named step is the <b>last</b> thing outstanding: no other approval step is short,
-    /// and the work-item gate isn't holding the promotion either.
+    /// Whether the named step is the <b>last</b> thing outstanding: it is open (see
+    /// <see cref="IsWaitingFor"/>) and no other approval step is short.
     /// </summary>
     public bool IsWaitingOnlyFor(string step)
-        => !WorkItemsOutstanding && OutstandingSteps.Count == 1 && IsWaitingFor(step);
+        => OutstandingSteps.Count == 1 && IsWaitingFor(step);
 }
 
 /// <summary>One approval step's progress: satisfied once all its requirements are.</summary>
