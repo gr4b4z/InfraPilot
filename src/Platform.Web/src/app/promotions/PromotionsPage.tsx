@@ -60,6 +60,7 @@ import {
   ExternalLink,
   Filter,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 
 /**
@@ -987,7 +988,7 @@ export function PromotionsPage() {
               <label
                 className="flex cursor-pointer items-center gap-1.5 text-[12px] whitespace-nowrap"
                 style={{ color: 'var(--text-secondary)' }}
-                title={`Only promotions where ${gateFilter} is the last thing outstanding — every other approval step signed off, and no work item holding it back.`}
+                title={`Only promotions where ${gateFilter} is the last thing outstanding — every other approval step already signed off. (Either way the list leaves out promotions whose work items must be signed off first: nobody can approve those yet.)`}
               >
                 <input
                   type="checkbox"
@@ -1136,17 +1137,43 @@ export function PromotionsPage() {
 }
 
 /**
- * Which approval gates a pending promotion is still short of — "Waiting on: Release Approval". The
- * list can be filtered by exactly these names, so the badge doubles as the legend for the gate
- * dropdown: whatever a card says here is a value that dropdown offers.
+ * What a pending promotion is waiting on — "Waiting on: Release Approval". The list can be filtered
+ * by exactly these gate names, so the badge doubles as the legend for the gate dropdown: whatever a
+ * card says here is a value that dropdown offers, and searching for it finds this card.
  *
- * <p>Renders nothing when the promotion isn't waiting on a human gate (anything resolved, and every
- * auto-approve edge), and nothing at all on a response from an API that doesn't report gates. Two
- * names are shown before it collapses to a count — a card that lists four gates has stopped saying
- * anything the reader can act on, and the detail page's progress panel is where that belongs.</p>
+ * <p>That last part is why a promotion whose policy holds approval until every work item is signed
+ * off says <b>work items</b> instead of naming its steps. Its steps are short of approvals, but they
+ * are held, not waiting: nobody may sign them, the detail page padlocks them ("opens once all work
+ * items are resolved"), and the gate filter passes the promotion over. Naming a gate here that the
+ * gate filter doesn't answer for would send a reader looking for work that isn't theirs yet.</p>
+ *
+ * <p>Renders nothing when the promotion isn't waiting on anything (everything resolved, and every
+ * auto-approve edge with no work-item gate), and nothing at all on a response from an API that
+ * doesn't report gates. Two names are shown before it collapses to a count — a card that lists four
+ * gates has stopped saying anything the reader can act on, and the detail page's progress panel is
+ * where that belongs.</p>
  */
 function PendingGatesBadge({ candidate }: { candidate: PromotionCandidate }) {
   const gates = candidate.pendingGates ?? [];
+
+  // Held behind the work-item gate: that is the one thing to chase, so it is the one thing named.
+  // The steps it holds go in the tooltip — useful context, not the answer to "what now".
+  if (candidate.workItemsOutstanding) {
+    return (
+      <span
+        className="badge shrink-0 whitespace-nowrap"
+        style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+        title={
+          'Waiting on every work item being signed off' +
+          (gates.length > 0 ? `. ${gates.join(' and ')} open once they are.` : '')
+        }
+      >
+        <Lock size={10} />
+        Waiting on: work items
+      </span>
+    );
+  }
+
   if (gates.length === 0) return null;
 
   const MAX_NAMES = 2;
@@ -1158,10 +1185,7 @@ function PendingGatesBadge({ candidate }: { candidate: PromotionCandidate }) {
     <span
       className="badge shrink-0 whitespace-nowrap"
       style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
-      title={
-        `Waiting on ${gates.join(', ')}` +
-        (candidate.workItemsOutstanding ? ', and on its work items being signed off' : '')
-      }
+      title={`Waiting on ${gates.join(', ')}`}
     >
       <ShieldCheck size={10} />
       Waiting on: {label}
