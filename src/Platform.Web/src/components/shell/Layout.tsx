@@ -21,7 +21,9 @@ export function Layout() {
   return (
     <div
       className="flex h-screen overflow-hidden"
-      style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+      // `--bg-shell` exists only in the hidden themes, where it is transparent so their animated
+      // backdrop shows through the translucent page canvas. Everywhere else this is --bg-primary.
+      style={{ backgroundColor: 'var(--bg-shell, var(--bg-primary))', color: 'var(--text-primary)' }}
     >
       {/* First tab stop on the page: without it, reaching the content means tabbing through the
           whole sidebar on every navigation. Off-screen until focused. */}

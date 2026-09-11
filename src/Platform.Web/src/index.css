@@ -246,8 +246,9 @@ body {
   --font-sans: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
   --font-display: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
 
-  --bg-primary: #0A140A;
-  --bg-secondary: #020602;
+  --bg-shell: transparent;
+  --bg-primary: rgba(10, 20, 10, 0.93);
+  --bg-secondary: rgba(2, 6, 2, 0.78);
   --bg-tertiary: #0F1F0F;
   --bg-elevated: #142914;
   --bg-overlay: rgba(0, 10, 0, 0.8);
@@ -285,8 +286,9 @@ body {
 :root.theme-punk {
   color-scheme: light;
 
-  --bg-primary: #FFFBE0;
-  --bg-secondary: #FFEA00;
+  --bg-shell: transparent;
+  --bg-primary: rgba(255, 251, 224, 0.94);
+  --bg-secondary: rgba(255, 234, 0, 0.6);
   --bg-tertiary: #FFF3A0;
   --bg-elevated: #FFFFFF;
   --bg-overlay: rgba(0, 0, 0, 0.75);
@@ -324,8 +326,9 @@ body {
 :root.theme-cyberpunk {
   color-scheme: dark;
 
-  --bg-primary: #150B33;
-  --bg-secondary: #0B0520;
+  --bg-shell: transparent;
+  --bg-primary: rgba(21, 11, 51, 0.93);
+  --bg-secondary: rgba(11, 5, 32, 0.76);
   --bg-tertiary: #1E1147;
   --bg-elevated: #261656;
   --bg-overlay: rgba(5, 0, 20, 0.8);
@@ -363,8 +366,9 @@ body {
 :root.theme-forest {
   color-scheme: dark;
 
-  --bg-primary: #0E2A19;
-  --bg-secondary: #071A10;
+  --bg-shell: transparent;
+  --bg-primary: rgba(14, 42, 25, 0.93);
+  --bg-secondary: rgba(7, 26, 16, 0.74);
   --bg-tertiary: #143824;
   --bg-elevated: #1B4630;
   --bg-overlay: rgba(0, 12, 5, 0.8);
@@ -396,6 +400,124 @@ body {
   --shadow-md: 0 0 16px rgba(255, 110, 199, 0.28), 0 0 4px rgba(166, 255, 77, 0.3);
   --shadow-lg: 0 0 28px rgba(255, 110, 199, 0.32), 0 0 8px rgba(166, 255, 77, 0.35);
   --shadow-xl: 0 0 48px rgba(255, 110, 199, 0.38), 0 0 12px rgba(166, 255, 77, 0.4);
+}
+
+/* ---- Hidden theme set dressing ----------------------------------------------------------------
+   The animated backdrop (HiddenThemeScene's canvas) sits behind everything; `--bg-shell` above
+   makes the shell transparent and the page canvas translucent so it shows through. The overlay
+   sits above everything but the toast and never takes pointer events. Text glows are plain
+   inherited text-shadow on body. Everything that moves stops under prefers-reduced-motion.
+   ------------------------------------------------------------------------------------------------ */
+.hidden-theme-scene {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.hidden-theme-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1250;
+  pointer-events: none;
+}
+
+.hidden-theme-toast {
+  animation: hidden-theme-toast-in 0.25s ease-out;
+}
+
+@keyframes hidden-theme-toast-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Matrix: CRT scanlines, a vignette, phosphor glow on every glyph, the odd flicker. */
+:root.theme-matrix body {
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.45);
+}
+:root.theme-matrix .hidden-theme-overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+  animation: hidden-theme-flicker 5s steps(1) infinite;
+}
+@keyframes hidden-theme-flicker {
+  0%, 100% { opacity: 1; }
+  37% { opacity: 0.82; }
+  38% { opacity: 1; }
+  71% { opacity: 0.9; }
+  72% { opacity: 1; }
+}
+
+/* Punk: paper grain and halftone multiplied over everything, shouty headings, a nervous twitch. */
+:root.theme-punk .hidden-theme-overlay {
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.4 0'/></filter><rect width='100%25' height='100%25' filter='url(%23g)'/></svg>"),
+    radial-gradient(circle, rgba(0, 0, 0, 0.16) 1px, transparent 1.6px);
+  background-size: 220px 220px, 6px 6px;
+  mix-blend-mode: multiply;
+  opacity: 0.6;
+}
+:root.theme-punk h1,
+:root.theme-punk h2 {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+:root.theme-punk .hidden-theme-toast {
+  transform: rotate(-1.5deg);
+  border-radius: 4px;
+}
+:root.theme-punk #root {
+  animation: hidden-theme-jitter 7s steps(1) infinite;
+}
+@keyframes hidden-theme-jitter {
+  0%, 100% { transform: none; }
+  41% { transform: translate(1px, -1px); }
+  42% { transform: none; }
+  43% { transform: translate(-2px, 1px); }
+  44% { transform: none; }
+  87% { transform: translate(1px, 1px); }
+  88% { transform: none; }
+}
+
+/* Cyberpunk: fine scanlines, a magenta vignette, cyan glow on text, neon breathing on the toast. */
+:root.theme-cyberpunk body {
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.35);
+}
+:root.theme-cyberpunk .hidden-theme-overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0 1px, transparent 1px 4px),
+    radial-gradient(ellipse at center, transparent 60%, rgba(255, 42, 109, 0.2) 100%);
+}
+:root.theme-cyberpunk .hidden-theme-toast {
+  animation: hidden-theme-toast-in 0.25s ease-out, hidden-theme-neon 2.4s ease-in-out infinite;
+}
+@keyframes hidden-theme-neon {
+  0%, 100% { box-shadow: 0 0 16px rgba(0, 240, 255, 0.35), 0 0 4px rgba(255, 92, 240, 0.4); }
+  50% { box-shadow: 0 0 32px rgba(0, 240, 255, 0.6), 0 0 10px rgba(255, 92, 240, 0.7); }
+}
+
+/* Forest Fairy: warm glow on text, a soft bloom from the canopy that slowly breathes. */
+:root.theme-forest body {
+  text-shadow: 0 0 10px rgba(255, 211, 77, 0.22);
+}
+:root.theme-forest .hidden-theme-overlay {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255, 240, 180, 0.12), transparent 60%),
+    radial-gradient(ellipse at center, transparent 60%, rgba(0, 12, 5, 0.5) 100%);
+  animation: hidden-theme-breathe 9s ease-in-out infinite;
+}
+@keyframes hidden-theme-breathe {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hidden-theme-overlay,
+  .hidden-theme-toast,
+  :root.theme-punk #root {
+    animation: none !important;
+  }
 }
 
 /* SWO Gradient - Cyan to Light Purple */
