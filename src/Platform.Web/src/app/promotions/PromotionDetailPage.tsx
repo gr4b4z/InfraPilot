@@ -139,12 +139,17 @@ export function PromotionDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionDone, setActionDone] = useState<string | null>(null);
+  // Set when the user approved one gate but still has another to approve on this promotion — the
+  // card stays actionable (no `actionDone` latch) and this names what was just recorded.
+  const [approvedAs, setApprovedAs] = useState<string | null>(null);
   // Set once an approval is cancelled on this page. `webhookStopped` says whether the
   // promotion.approved delivery was still in its hold window — two rather different pieces of news,
   // so the banner reports which one happened.
   const [cancelled, setCancelled] = useState<{ webhookStopped: boolean } | null>(null);
 
-  const fetchData = () => {
+  // Resolves to the fresh payload (or null on failure) so an action handler can decide what to do
+  // next from the state the server now reports, not from what it assumed the action would do.
+  const fetchData = () =>
     api
       .getPromotion(id!)
       .then((data) => {
@@ -157,10 +162,13 @@ export function PromotionDetailPage() {
         setBypass(data.bypass ?? null);
         setCanCancelApproval(data.canCancelApproval ?? false);
         setDeploymentEventId(data.deploymentEventId ?? null);
+        return data;
       })
-      .catch((err) => setError(err.message))
+      .catch((err) => {
+        setError(err.message);
+        return null;
+      })
       .finally(() => setLoading(false));
-  };
 
   // Live refresh for this candidate: its own events by id, plus work-item sign-offs which
   // change the approval progress shown here (their events carry a key, not the candidate id).
@@ -195,8 +203,17 @@ export function PromotionDetailPage() {
       } else {
         await api.rejectPromotion(id!, actionComment || undefined);
       }
-      setActionDone(action === 'approve' ? 'Approved' : 'Rejected');
-      fetchData();
+      const refreshed = await fetchData();
+      // A rejection ends the promotion, and so does the approval that satisfies its gate. But an
+      // approver who sits in several gates has only cleared one of them — the card has to stay
+      // actionable for the rest, so the "done" state latches only once nothing is left for this user.
+      const moreForMe =
+        action === 'approve'
+        && refreshed != null
+        && refreshed.candidate.status === 'Pending'
+        && refreshed.eligibleRequirements.length > 0;
+      if (moreForMe) setApprovedAs(target?.requirementName ?? null);
+      else setActionDone(action === 'approve' ? 'Approved' : 'Rejected');
       // This candidate just left (or is about to leave) the user's awaiting-me list.
       refreshMyTasks();
     } catch (err) {
@@ -393,6 +410,25 @@ export function PromotionDetailPage() {
         );
       })()}
 
+      {/* One gate down, another still waiting on this same user. Not folded into `actionDone`: that
+         latch hides the controls, and the controls are exactly what this person needs next. */}
+      {!actionDone && approvedAs && (
+        <div
+          className="flex items-center gap-3 p-4 rounded-xl border"
+          style={{
+            backgroundColor: 'var(--success-bg)',
+            borderColor: 'var(--success)',
+            color: 'var(--success)',
+          }}
+        >
+          <CheckCircle size={18} />
+          <span className="text-[13px] font-medium">
+            Your approval as &lsquo;{approvedAs}&rsquo; was recorded. This promotion still needs your
+            approval on another gate below.
+          </span>
+        </div>
+      )}
+
       {/* Cancelled-approval banner. Not folded into `actionDone` above: this outcome leaves the
          promotion open, and the one thing the user needs to know is whether the downstream webhook
          got out before they took the approval back. */}
@@ -470,12 +506,14 @@ export function PromotionDetailPage() {
             onChanged={fetchData}
           />
 
-          {/* Promotion approval — the live gate progress (per step / per requirement) and the
-             approve/reject action shown together in one card. Progress is visible to everyone;
-             the controls appear only when the current user can act. */}
+          {/* Promotion approval — the live gate progress (per step / per requirement), who has
+             approved each gate, and an Approve button on every gate the current user can still
+             clear, all in one card. Progress and history are visible to everyone; the controls
+             appear only when the current user can act. */}
           <PromotionApprovalCard
             candidate={candidate}
             progress={approvalProgress}
+            approvals={approvals}
             actionDone={actionDone}
             actionLoading={actionLoading}
             onAction={handleAction}
@@ -504,70 +542,6 @@ export function PromotionDetailPage() {
                     Reason: {bypass.reason}
                   </p>
                 )}
-              </div>
-            </div>
-          )}
-
-          {/* Approval trail */}
-          {approvals.length > 0 && (
-            <div
-              className="rounded-xl border p-5"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <h2
-                className="text-[11px] font-semibold uppercase tracking-wider mb-4"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                Approval Trail ({approvals.length})
-              </h2>
-              <div className="space-y-2">
-                {approvals.map((a) => {
-                  const isApproved = a.decision === 'Approved';
-                  return (
-                    <div
-                      key={a.id}
-                      className="flex items-start gap-3 p-3 rounded-lg border"
-                      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-                    >
-                      <div
-                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                        style={{
-                          backgroundColor: isApproved ? 'var(--success-bg)' : 'var(--danger-bg)',
-                          color: isApproved ? 'var(--success)' : 'var(--danger)',
-                        }}
-                      >
-                        {isApproved ? <CheckCircle size={14} /> : <XCircle size={14} />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="inline-flex items-center gap-1.5 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                            {a.approverName}
-                            <CopyEmailButton email={a.approverEmail} />
-                          </span>
-                          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                            {format(new Date(a.createdAt), 'MMM d, HH:mm')}
-                          </span>
-                        </div>
-                        <div className="mt-1">
-                          <span
-                            className="badge"
-                            style={{
-                              backgroundColor: isApproved ? 'var(--success-bg)' : 'var(--danger-bg)',
-                              color: isApproved ? 'var(--success)' : 'var(--danger)',
-                            }}
-                          >
-                            {a.decision}
-                          </span>
-                        </div>
-                        {a.comment && (
-                          <p className="text-[12px] mt-1.5" style={{ color: 'var(--text-secondary)' }}>
-                            &ldquo;{a.comment}&rdquo;
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
               </div>
             </div>
           )}
@@ -1363,13 +1337,16 @@ function CommentsCard({
 // ─────────────────────────────────────────────────────────────────────────
 // Promotion approval (manual) card
 //
-// Shows the live gate progress plus the approve/reject controls. When a policy
-// has no manual approver requirements there is nothing to manually approve —
-// the approver has no eligible requirements — so the controls simply don't render.
+// Shows the live gate progress — each gate with who has approved it and, for
+// every gate the current user is still eligible for, its own Approve button —
+// plus the promotion-level Reject. When a policy has no manual approver
+// requirements there is nothing to manually approve — the approver has no
+// eligible requirements — so the controls simply don't render.
 // ─────────────────────────────────────────────────────────────────────────
 function PromotionApprovalCard({
   candidate,
   progress,
+  approvals,
   actionDone,
   actionLoading,
   onAction,
@@ -1381,6 +1358,7 @@ function PromotionApprovalCard({
 }: {
   candidate: PromotionCandidate;
   progress: PromotionApprovalProgress | null;
+  approvals: PromotionApprovalEntry[];
   actionDone: string | null;
   actionLoading: boolean;
   onAction: (action: 'approve' | 'reject', comment: string, target?: EligibleRequirement) => void;
@@ -1406,22 +1384,19 @@ function PromotionApprovalCard({
   const showCancelApproval = canCancelApproval && !actionDone;
   const [confirmingCancel, setConfirmingCancel] = useState(false);
 
-  // When the approver is eligible for more than one open requirement they must choose which one
-  // they approve as. Key by `${stepName}\u0000${requirementName}` so step+requirement is unique.
-  const reqKey = (r: EligibleRequirement) => `${r.stepName}\u0000${r.requirementName}`;
-  const [selectedKey, setSelectedKey] = useState<string>('');
   // Approving releases a deploy and rejecting refuses one; both are single keystrokes now (`A`, `R`),
   // so both go through a confirmation that names what it is about to do. `pending` is which one is
-  // waiting on that confirmation. Declared with the other hooks, above the early return below.
-  const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
-  // Ties the visible "why you can't approve" line to the Approve button. Up here with the other
+  // waiting on that confirmation — for an approval, which gate it is for, since every gate the user
+  // is eligible for carries its own Approve button. Declared with the other hooks, above the early
+  // return below.
+  const [pending, setPending] = useState<
+    | { action: 'approve'; target: EligibleRequirement }
+    | { action: 'reject' }
+    | null
+  >(null);
+  // Ties the visible "why you can't approve" line to the Approve buttons. Up here with the other
   // hooks — the early return below means anything called after it runs conditionally.
   const approveBlockedId = useId();
-  // Always offer the "Approve as" radios. With exactly one eligible requirement, preselect it
-  // (one pre-checked radio) so the UI is uniform; with more than one, the approver must pick.
-  const selected =
-    eligibleRequirements.find((r) => reqKey(r) === selectedKey)
-    ?? (eligibleRequirements.length === 1 ? eligibleRequirements[0] : null);
 
   // Hide the card entirely when there's nothing to show: no progress to surface, no action
   // available to the current user, and neither escape hatch on offer.
@@ -1429,19 +1404,16 @@ function PromotionApprovalCard({
 
   const confirmAction = (actionComment: string) => {
     if (!pending) return;
-    // For approvals: pass the chosen requirement (preselected when only one is eligible).
-    const target = pending === 'approve' ? selected ?? undefined : undefined;
-    onAction(pending, actionComment, target);
+    onAction(pending.action, actionComment, pending.action === 'approve' ? pending.target : undefined);
     setPending(null);
   };
 
-  // Why the Approve button is unavailable, or null when it isn't. Doubles as the tooltip, so the
+  // Why every Approve button is unavailable, or null when they aren't. Doubles as the tooltip, so a
   // button can never be greyed out without saying why.
   //
-  // The work-item gate is checked first because it outranks the other reason: when the policy holds
-  // approval back until every item is signed off, picking a requirement changes nothing. The
-  // condition mirrors the server's guard in ApproveAsync exactly — an approver should learn this
-  // from a disabled button, not from a failed request.
+  // When the policy holds approval back until every work item is signed off, no gate is approvable
+  // whichever one the user sits in. The condition mirrors the server's guard in ApproveAsync exactly
+  // — an approver should learn this from a disabled button, not from a failed request.
   const gate = progress?.workItems;
   const approveBlockedReason: string | null = (() => {
     if (gate && gate.required && !gate.satisfied) {
@@ -1464,10 +1436,8 @@ function PromotionApprovalCard({
         `${held}. Clear them from the work items below or the queue.`
       );
     }
-    if (!selected) return 'Select which requirement you are approving as';
     return null;
   })();
-  const approveBlocked = approveBlockedReason !== null;
 
   // What Approve actually does on this edge — a deploy, or a hand-off to a pipeline that asks again.
   // Stated in the card and repeated in the confirmation, from one place (see ApprovalEffect).
@@ -1487,14 +1457,23 @@ function PromotionApprovalCard({
         </h2>
       </div>
 
-      {/* Live gate progress (per step / requirement). Shown to everyone who can see the card;
-         a divider separates it from the action controls when those are present. */}
+      {/* Live gate progress (per step / requirement) with who approved each gate and, for the
+         current user, an Approve button on every gate still open to them. Shown to everyone who
+         can see the card; a divider separates it from the action controls when those are present. */}
       {showProgress && progress && (
         <div
           className={showActions ? 'mb-4 pb-4 border-b' : ''}
           style={showActions ? { borderColor: 'var(--border-color)' } : undefined}
         >
-          <ApprovalProgressBody progress={progress} />
+          <ApprovalProgressBody
+            progress={progress}
+            approvals={approvals}
+            eligibleRequirements={showActions ? eligibleRequirements : []}
+            onApprove={(target) => setPending({ action: 'approve', target })}
+            approveBlockedReason={approveBlockedReason}
+            approveBlockedId={approveBlockedId}
+            actionLoading={actionLoading}
+          />
         </div>
       )}
 
@@ -1510,80 +1489,28 @@ function PromotionApprovalCard({
             />
           </div>
 
-          {/* "Approve as" selector — always shown when the user is eligible for any open
-             requirement. A single eligible requirement is preselected (one pre-checked radio);
-             with more than one the approver must pick before the Approve button enables. */}
-          {eligibleRequirements.length > 0 && (
-            <div className="mb-3">
-              <p
-                className="text-[12px] font-medium mb-1.5"
-                style={{ color: 'var(--text-secondary)' }}
-              >
-                Approve as
-              </p>
-              <div className="flex flex-col gap-1.5">
-                {eligibleRequirements.map((r) => {
-                  const key = reqKey(r);
-                  const active = selected != null && reqKey(selected) === key;
-                  return (
-                    <label
-                      key={key}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-[13px] transition-colors"
-                      style={{
-                        borderColor: active ? 'var(--accent)' : 'var(--border-color)',
-                        backgroundColor: active ? 'var(--bg-secondary)' : 'transparent',
-                        color: 'var(--text-primary)',
-                      }}
-                    >
-                      <input
-                        type="radio"
-                        name="approve-as"
-                        value={key}
-                        checked={active}
-                        onChange={() => setSelectedKey(key)}
-                      />
-                      <span className="font-medium">{r.requirementName}</span>
-                      {r.stepName && (
-                        <span style={{ color: 'var(--text-muted)' }}>· {r.stepName}</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
+          {/* Why the gates' Approve buttons are greyed out, stated in the open and not only on
+              hover. A greyed-out primary action is the thing people report as broken, and a tooltip
+              is unreachable on touch and to a screen reader that never lands on the disabled
+              button. `aria-describedby` on every Approve button ties it here. */}
+          {approveBlockedReason && (
+            <p
+              id={approveBlockedId}
+              className="text-[12px] mb-3 flex items-start gap-1.5"
+              style={{ color: 'var(--warning)' }}
+            >
+              <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+              <span>{approveBlockedReason}</span>
+            </p>
           )}
 
-          {/* The comment used to live here behind an "Add comment" toggle. It moved into the
-              confirmation, which now always asks — two comment fields for one decision reads as a
-              bug, and the one attached to the confirmation is the one that gets used. */}
+          {/* Approving happens per gate — each open gate the user is eligible for carries its own
+              Approve button in the progress list above, beside who has already approved it.
+              Rejecting is a veto on the whole promotion, so it stays a single control here. The
+              comment for either lives in the confirmation, which always asks. */}
           <div className="flex items-center gap-2 flex-wrap">
-            {/* The tooltip lives on a wrapper, not on the button. A disabled button receives no
-                pointer events, so a `title` on it never opens — the explanation for why a control
-                is unavailable would be invisible on exactly the control that needs it. */}
-            <span
-              title={approveBlockedReason ?? undefined}
-              style={{ cursor: approveBlocked ? 'not-allowed' : undefined }}
-            >
-              <button
-                onClick={() => setPending('approve')}
-                {...{ [ROW_ACTION_ATTR]: 'approve' }}
-                disabled={actionLoading || approveBlocked}
-                aria-describedby={approveBlocked ? approveBlockedId : undefined}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
-                style={{
-                  backgroundColor: 'var(--success-solid)',
-                  color: '#fff',
-                  opacity: actionLoading || approveBlocked ? 0.5 : 1,
-                  cursor: approveBlocked ? 'not-allowed' : 'pointer',
-                  pointerEvents: approveBlocked ? 'none' : undefined,
-                }}
-              >
-                <CheckCircle size={14} />
-                Approve
-              </button>
-            </span>
             <button
-              onClick={() => setPending('reject')}
+              onClick={() => setPending({ action: 'reject' })}
               {...{ [ROW_ACTION_ATTR]: 'reject' }}
               disabled={actionLoading}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
@@ -1598,45 +1525,43 @@ function PromotionApprovalCard({
               Reject
             </button>
             <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-              or press <kbd className="font-mono">A</kbd> / <kbd className="font-mono">R</kbd>
+              or press <kbd className="font-mono">A</kbd> to approve the first open gate /{' '}
+              <kbd className="font-mono">R</kbd> to reject
             </span>
           </div>
-
-          {/* Also stated in the open, not only on hover. A greyed-out primary action is the thing
-              people report as broken, and a tooltip is unreachable on touch and to a screen reader
-              that never lands on the disabled button. `aria-describedby` ties it to the button. */}
-          {approveBlockedReason && (
-            <p
-              id={approveBlockedId}
-              className="text-[12px] mt-2 flex items-start gap-1.5"
-              style={{ color: 'var(--warning)' }}
-            >
-              <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-              <span>{approveBlockedReason}</span>
-            </p>
-          )}
         </>
       )}
 
       {pending && (
         <ConfirmDialog
-          title={pending === 'approve' ? 'Approve this promotion?' : 'Reject this promotion?'}
+          title={
+            pending.action === 'approve'
+              ? `Approve as ‘${pending.target.requirementName}’?`
+              : 'Reject this promotion?'
+          }
           body={
             <>
               <strong>
                 {candidate.product} / {candidate.service}
               </strong>{' '}
               v{candidate.version} → <strong>{candidate.targetEnv}</strong>.
-              {pending === 'approve'
-                ? approvalEffectSentence(deploys, candidate.targetEnv)
-                : ' Rejecting turns this promotion down. It will not deploy.'}
+              {pending.action === 'approve' ? (
+                <>
+                  {' '}You are approving the{' '}
+                  <strong>{pending.target.stepName || 'Approval'}</strong> gate as{' '}
+                  <strong>{pending.target.requirementName}</strong>.
+                  {approvalEffectSentence(deploys, candidate.targetEnv)}
+                </>
+              ) : (
+                ' Rejecting turns this promotion down. It will not deploy.'
+              )}
             </>
           }
-          confirmLabel={pending === 'approve' ? 'Approve' : 'Reject'}
-          confirmTone={pending === 'approve' ? 'success' : 'danger'}
-          commentLabel={pending === 'approve' ? 'Comment (optional)' : 'Reason'}
+          confirmLabel={pending.action === 'approve' ? 'Approve' : 'Reject'}
+          confirmTone={pending.action === 'approve' ? 'success' : 'danger'}
+          commentLabel={pending.action === 'approve' ? 'Comment (optional)' : 'Reason'}
           // A refusal without a reason leaves the author nothing to act on, so rejection asks for one.
-          commentRequired={pending === 'reject'}
+          commentRequired={pending.action === 'reject'}
           busy={actionLoading}
           onConfirm={confirmAction}
           onCancel={() => setPending(null)}
@@ -1773,17 +1698,66 @@ function PromotionApprovalCard({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Approval progress card
+// Approval progress
 //
 // Surfaces the live promotion gate (GET /promotions/{id} → approvalProgress)
 // as a per-step / per-requirement breakdown of "how many approvals are in vs.
 // required". The counts come straight from the backend matcher so the panel
-// always mirrors the real gate — it never recomputes progress. Approver names
-// live in the Approval Trail; this panel is counts + status only.
+// always mirrors the real gate — it never recomputes progress. Under each
+// requirement it lists who approved it (the rows recorded against that gate)
+// and, when the current user is eligible for it, an Approve button — one per
+// gate, so somebody sitting in two gates approves each on its own. Decisions
+// that belong to no current gate — rejections, approvals recorded before gates
+// were tracked — are listed separately below the steps so nothing is hidden.
 // ─────────────────────────────────────────────────────────────────────────
-function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgress }) {
+function ApprovalProgressBody({
+  progress,
+  approvals,
+  eligibleRequirements,
+  onApprove,
+  approveBlockedReason,
+  approveBlockedId,
+  actionLoading,
+}: {
+  progress: PromotionApprovalProgress;
+  approvals: PromotionApprovalEntry[];
+  /** Open gates the current user may approve — each gets an Approve button. Empty hides them all. */
+  eligibleRequirements: EligibleRequirement[];
+  onApprove: (target: EligibleRequirement) => void;
+  approveBlockedReason: string | null;
+  approveBlockedId: string;
+  actionLoading: boolean;
+}) {
   const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate } = progress;
   const remaining = Math.max(0, totalRequired - totalApproved);
+  const approveBlocked = approveBlockedReason !== null;
+
+  // The progress payload names an unnamed step or requirement "Approval"; approval rows and
+  // eligible requirements carry the raw (possibly empty) name. Normalise both onto one key so a
+  // row lands on the gate it was recorded against.
+  const gateKey = (stepName: string | null | undefined, requirementName: string | null | undefined) =>
+    `${stepName || 'Approval'}\u0000${requirementName || 'Approval'}`;
+  const gateKeys = new Set(steps.flatMap((s) => s.requirements.map((r) => gateKey(s.name, r.name))));
+  const approvalsByGate = new Map<string, PromotionApprovalEntry[]>();
+  const otherDecisions: PromotionApprovalEntry[] = [];
+  for (const a of [...approvals].sort((x, y) => x.createdAt.localeCompare(y.createdAt))) {
+    const key = gateKey(a.stepName, a.requirementName);
+    if (a.decision === 'Approved' && gateKeys.has(key)) {
+      const list = approvalsByGate.get(key) ?? [];
+      list.push(a);
+      approvalsByGate.set(key, list);
+    } else {
+      otherDecisions.push(a);
+    }
+  }
+  const eligibleByGate = new Map(
+    eligibleRequirements.map((r) => [gateKey(r.stepName, r.requirementName), r] as const),
+  );
+  // The `A` shortcut approves "the first open gate": tag only the first Approve button, so one
+  // keystroke can never be ambiguous about which gate it is about to sign.
+  const firstEligibleKey = steps
+    .flatMap((s) => s.requirements.map((r) => gateKey(s.name, r.name)))
+    .find((k) => eligibleByGate.has(k));
 
   return (
     <div>
@@ -1825,46 +1799,186 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
                 // Who can satisfy this requirement: group names + explicitly-listed users.
                 const approvers = [...req.groups.map((g) => g.name), ...req.users];
                 const approversText = approvers.join(' · ');
+                const key = gateKey(step.name, req.name);
+                const approvedBy = approvalsByGate.get(key) ?? [];
+                const eligible = eligibleByGate.get(key);
                 return (
                   <div
                     key={`${req.name}-${ri}`}
-                    className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
+                    className="p-2.5 rounded-lg border"
                     style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
                   >
-                    <div className="min-w-0">
-                      <span
-                        className="inline-flex items-center gap-2 text-[13px] min-w-0"
-                        style={{ color: 'var(--text-primary)' }}
-                      >
-                        {req.satisfied ? (
-                          <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
-                        ) : (
-                          <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-                        )}
-                        <span className="truncate">{req.name}</span>
-                      </span>
-                      {approversText && (
-                        <p
-                          className="text-[11px] mt-0.5 ml-6 truncate"
-                          style={{ color: 'var(--text-muted)' }}
-                          title={`Can approve: ${approversText}`}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <span
+                          className="inline-flex items-center gap-2 text-[13px] min-w-0"
+                          style={{ color: 'var(--text-primary)' }}
                         >
-                          Approvers: {approversText}
-                        </p>
-                      )}
+                          {req.satisfied ? (
+                            <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+                          ) : (
+                            <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                          )}
+                          <span className="truncate">{req.name}</span>
+                        </span>
+                        {approversText && (
+                          <p
+                            className="text-[11px] mt-0.5 ml-6 truncate"
+                            style={{ color: 'var(--text-muted)' }}
+                            title={`Can approve: ${approversText}`}
+                          >
+                            Approvers: {approversText}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className="text-[12px] font-medium whitespace-nowrap"
+                          style={{ color: req.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
+                        >
+                          {req.approved} of {req.required} approved
+                        </span>
+                        {eligible && (
+                          /* The tooltip lives on a wrapper, not on the button. A disabled button
+                             receives no pointer events, so a `title` on it never opens — the
+                             explanation for why a control is unavailable would be invisible on
+                             exactly the control that needs it. */
+                          <span
+                            title={approveBlockedReason ?? undefined}
+                            style={{ cursor: approveBlocked ? 'not-allowed' : undefined }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => onApprove(eligible)}
+                              {...(key === firstEligibleKey ? { [ROW_ACTION_ATTR]: 'approve' } : {})}
+                              disabled={actionLoading || approveBlocked}
+                              aria-describedby={approveBlocked ? approveBlockedId : undefined}
+                              aria-label={`Approve as ${req.name}`}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                              style={{
+                                backgroundColor: 'var(--success-solid)',
+                                color: '#fff',
+                                opacity: actionLoading || approveBlocked ? 0.5 : 1,
+                                cursor: approveBlocked ? 'not-allowed' : 'pointer',
+                                pointerEvents: approveBlocked ? 'none' : undefined,
+                              }}
+                            >
+                              <CheckCircle size={13} />
+                              Approve
+                            </button>
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <span
-                      className="text-[12px] font-medium whitespace-nowrap"
-                      style={{ color: req.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
-                    >
-                      {req.approved} of {req.required} approved
-                    </span>
+
+                    {/* Who has approved this gate, oldest first. Kept on the gate itself rather
+                        than in a separate trail so a gate's count and its names never disagree. */}
+                    {approvedBy.length > 0 && (
+                      <div className="mt-2 ml-6">
+                        <p
+                          className="text-[11px] font-medium uppercase tracking-wider mb-1"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          Approved by
+                        </p>
+                        <ul className="space-y-1">
+                          {approvedBy.map((a) => (
+                            <li
+                              key={a.id}
+                              className="flex items-start gap-1.5 text-[12px]"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              <CheckCircle
+                                size={12}
+                                style={{ color: 'var(--success)', flexShrink: 0, marginTop: 3 }}
+                              />
+                              <span className="min-w-0">
+                                <span
+                                  className="inline-flex items-center gap-1 font-medium"
+                                  style={{ color: 'var(--text-primary)' }}
+                                >
+                                  {a.approverName}
+                                  <CopyEmailButton email={a.approverEmail} />
+                                </span>
+                                <span style={{ color: 'var(--text-muted)' }}>
+                                  {' '}· {format(new Date(a.createdAt), 'MMM d, yyyy HH:mm')}
+                                </span>
+                                {a.comment && (
+                                  <span className="block mt-0.5">&ldquo;{a.comment}&rdquo;</span>
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           </div>
         ))}
+
+        {/* Decisions that belong to no gate above: a rejection (a veto on the whole promotion, so it
+            was never recorded against one), or an approval recorded before gates were tracked or
+            against a requirement the policy no longer has. Shown so the history stays complete. */}
+        {otherDecisions.length > 0 && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                Other decisions
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {otherDecisions.map((a) => {
+                const isApproved = a.decision === 'Approved';
+                const what = !isApproved
+                  ? 'Rejected — a veto that turned the whole promotion down'
+                  : a.requirementName
+                    ? `Approved as ‘${a.requirementName}’ — a gate this policy no longer has`
+                    : 'Approved — recorded before approvals were tracked per gate';
+                return (
+                  <div
+                    key={a.id}
+                    className="flex items-start gap-3 p-2.5 rounded-lg border"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                  >
+                    {isApproved ? (
+                      <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0, marginTop: 2 }} />
+                    ) : (
+                      <XCircle size={14} style={{ color: 'var(--danger)', flexShrink: 0, marginTop: 2 }} />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className="inline-flex items-center gap-1.5 text-[13px] font-medium"
+                          style={{ color: 'var(--text-primary)' }}
+                        >
+                          {a.approverName}
+                          <CopyEmailButton email={a.approverEmail} />
+                        </span>
+                        <span className="text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                          {format(new Date(a.createdAt), 'MMM d, yyyy HH:mm')}
+                        </span>
+                      </div>
+                      <p
+                        className="text-[11px] mt-0.5"
+                        style={{ color: isApproved ? 'var(--text-muted)' : 'var(--danger)' }}
+                      >
+                        {what}
+                      </p>
+                      {a.comment && (
+                        <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+                          &ldquo;{a.comment}&rdquo;
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* The "all work items resolved" gate condition — shown when the policy requires every
            work item signed off, so the approver can see whether that condition is fulfilled. */}

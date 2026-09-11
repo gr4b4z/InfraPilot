@@ -4,8 +4,11 @@ using Platform.Api.Features.Promotions.Models;
 namespace Platform.Api.Tests.Features.Promotions;
 
 /// <summary>
-/// Unit tests for <see cref="ApprovalMatcher"/> — the pure distinct-person assignment that decides
-/// whether a set of approvers satisfies a flattened requirement set (plan §8.4, decision D9).
+/// Unit tests for <see cref="ApprovalMatcher"/> — the pure assignment that decides whether a set of
+/// approvals satisfies a flattened requirement set. Distinctness is per requirement: an N-of-M gate
+/// needs N different people, but one person may clear several gates through separate pinned
+/// approvals. Unpinned (legacy, unattributed) approvers are still placed at most once, so the
+/// original §8.4 greedy cases hold for them.
 /// </summary>
 public class ApprovalMatcherTests
 {
@@ -89,9 +92,11 @@ public class ApprovalMatcherTests
     }
 
     [Fact]
-    public void Person_Counts_Toward_At_Most_One_Requirement()
+    public void Unpinned_Person_Counts_Toward_At_Most_One_Requirement()
     {
-        // Two requirements both satisfiable only by Alice → one person can't cover both.
+        // Two requirements both satisfiable only by Alice, one UNATTRIBUTED approval from her. We
+        // don't know which gate she meant, so it is placed once — the other stays open until she
+        // approves it explicitly.
         var reqs = new[]
         {
             Req("R1", 1, "alice@x"),
@@ -100,6 +105,7 @@ public class ApprovalMatcherTests
 
         var result = ApprovalMatcher.Match(reqs, new[] { "alice@x" }, ByUser);
         Assert.False(result.AllSatisfied);
+        Assert.Equal(1, result.Requirements.Count(o => o.Satisfied));
     }
 
     [Fact]
@@ -172,6 +178,89 @@ public class ApprovalMatcherTests
         Assert.False(result.AllSatisfied);
         Assert.Equal(1, result.Requirements[0].Matched); // R1 capped at need=1 (Alice); Bob surplus
         Assert.Equal(0, result.Requirements[1].Matched); // R2 starves — Bob honoured his R1 choice
+    }
+
+    /// <summary>
+    /// The bug this rule change fixes: one person sits in two gates ("QA Review" as QA manager,
+    /// "Release Approval" as release manager). Approving each gate separately must clear both — the
+    /// old global distinct-person rule let them count once and left the promotion stuck.
+    /// </summary>
+    [Fact]
+    public void Same_Person_Pinned_To_Two_Requirements_Satisfies_Both()
+    {
+        var reqs = new[]
+        {
+            Req("QA Manager", 1, "pawel@x"),
+            Req("Release Manager", 1, "pawel@x"),
+        };
+
+        var decisions = new[]
+        {
+            new ApproverDecision("pawel@x", 0),
+            new ApproverDecision("pawel@x", 1),
+        };
+
+        var result = ApprovalMatcher.Match(reqs, decisions, ByUser);
+
+        Assert.True(result.AllSatisfied);
+        Assert.Equal(1, result.Requirements[0].Matched);
+        Assert.Equal(1, result.Requirements[1].Matched);
+    }
+
+    /// <summary>Only one of the two gates approved → the other stays open, even though the same person could clear it.</summary>
+    [Fact]
+    public void Same_Person_Pinned_To_One_Of_Two_Requirements_Leaves_Other_Open()
+    {
+        var reqs = new[]
+        {
+            Req("QA Manager", 1, "pawel@x"),
+            Req("Release Manager", 1, "pawel@x"),
+        };
+
+        var result = ApprovalMatcher.Match(reqs, new[] { new ApproverDecision("pawel@x", 0) }, ByUser);
+
+        Assert.False(result.AllSatisfied);
+        Assert.True(result.Requirements[0].Satisfied);
+        Assert.False(result.Requirements[1].Satisfied);
+    }
+
+    /// <summary>Within one gate a person is still one person: two pinned rows from Alice on a 2-of-M gate count once.</summary>
+    [Fact]
+    public void Same_Person_Pinned_Twice_To_Same_Requirement_Counts_Once()
+    {
+        var reqs = new[] { Req("R1", 2, "alice@x", "bob@x") };
+
+        var decisions = new[]
+        {
+            new ApproverDecision("alice@x", 0),
+            new ApproverDecision("ALICE@x", 0), // same person, different casing
+        };
+
+        var result = ApprovalMatcher.Match(reqs, decisions, ByUser);
+
+        Assert.False(result.AllSatisfied);
+        Assert.Equal(1, result.Requirements[0].Matched);
+    }
+
+    /// <summary>
+    /// An unpinned approval never doubles up a pin from the same person on the same gate — but it is
+    /// free to fill a different gate, which is the legacy-row behaviour.
+    /// </summary>
+    [Fact]
+    public void Unpinned_Row_Does_Not_Double_Count_On_A_Gate_The_Person_Already_Pinned()
+    {
+        var reqs = new[] { Req("R1", 2, "alice@x", "bob@x") };
+
+        var decisions = new[]
+        {
+            new ApproverDecision("alice@x", 0),
+            new ApproverDecision("alice@x", null),
+        };
+
+        var result = ApprovalMatcher.Match(reqs, decisions, ByUser);
+
+        Assert.False(result.AllSatisfied);
+        Assert.Equal(1, result.Requirements[0].Matched);
     }
 
     /// <summary>Unpinned approvers still run the original greedy fill (the Alice/Bob case is unchanged).</summary>
