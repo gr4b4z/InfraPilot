@@ -26,7 +26,14 @@ public static class PromotionEndpoints
         group.MapGet("/filter-options", async (PromotionService svc, CancellationToken ct) =>
         {
             var options = await svc.GetFilterOptionsAsync(ct);
-            return Results.Ok(new { products = options.Products, targetEnvs = options.TargetEnvs });
+            return Results.Ok(new
+            {
+                products = options.Products,
+                targetEnvs = options.TargetEnvs,
+                // Approval-step names to offer the gate filter. Empty on an instance whose edges are
+                // all auto-approve — the UI hides the control rather than offering an empty dropdown.
+                gates = options.Gates,
+            });
         });
 
         // List candidates with filters + capability flags.
@@ -39,6 +46,8 @@ public static class PromotionEndpoints
             string? service,
             string? targetEnv,
             string? reference,
+            string? gate,
+            bool? gateOnly,
             int? limit) =>
         {
             PromotionStatus? parsed = null;
@@ -81,6 +90,29 @@ public static class PromotionEndpoints
                 candidates = candidates.Where(c => c.References.Any(RefMatches)).ToList();
             }
 
+            // Which approval gates each candidate is still waiting on. Computed for the whole list in
+            // one batch (see GetGateStatusesAsync) — it backs both the `gate` filter below and the
+            // per-row `pendingGates` the list renders.
+            var gateStatuses = await svc.GetGateStatusesAsync(candidates);
+
+            // "Show me the promotions waiting for Release Approval" — and, with `gateOnly`, only the
+            // ones where it is the last thing outstanding, i.e. the ones an approver of that gate can
+            // actually finish. Only a Pending candidate waits on anything, so a gate filter narrows
+            // the list to Pending by construction; nothing extra is needed to say so.
+            var gateName = (gate ?? "").Trim();
+            if (gateName.Length > 0)
+            {
+                candidates = candidates
+                    .Where(c =>
+                    {
+                        var status = gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None);
+                        return gateOnly == true
+                            ? status.IsWaitingOnlyFor(gateName)
+                            : status.IsWaitingFor(gateName);
+                    })
+                    .ToList();
+            }
+
             var capability = await svc.CanUserApproveManyAsync(candidates);
             var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
@@ -101,7 +133,8 @@ public static class PromotionEndpoints
                         targetCurrentVersion: target.Current,
                         fromVersion: target.Baseline,
                         sourceBranch: sourceBranch,
-                        decidedWorkItemKeys: decidedKeys);
+                        decidedWorkItemKeys: decidedKeys,
+                        gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None));
                 }),
             });
         });
@@ -779,7 +812,11 @@ public static class PromotionEndpoints
         // Work items on this edge that already carry a decision — see LoadDecidedWorkItemKeysAsync.
         // Supplied by the read paths (list, detail), which is where completeness is rendered; the
         // decision responses below omit it, and the UI refetches the candidate after acting anyway.
-        IReadOnlySet<string>? decidedWorkItemKeys = null) => new
+        IReadOnlySet<string>? decidedWorkItemKeys = null,
+        // Which approval gates the candidate is still waiting on — see PromotionGateStatus. Supplied
+        // by the list, which computes it for every row in one batch; null everywhere else, and read
+        // as "nothing outstanding" rather than fetched per candidate.
+        PromotionGateStatus? gateStatus = null) => new
     {
         id = c.Id,
         product = c.Product,
@@ -819,6 +856,14 @@ public static class PromotionEndpoints
         sourceEventReferences = Deployments.WorkItemDisplay.ApplyToReferences(
             sourceEventReferences ?? Array.Empty<ReferenceDto>()),
         canApprove,
+        // The approval steps this promotion is still short of approvals on, named as the policy names
+        // them ("Release Approval"). Empty on anything that isn't Pending, on auto-approve edges, and
+        // on responses that don't compute it. The list filters on the same values, so a chip here is
+        // exactly what the gate dropdown offers.
+        pendingGates = gateStatus?.OutstandingSteps ?? Array.Empty<string>(),
+        // True when the policy's work-item gate is also holding this promotion back — the other thing
+        // "waiting only for <gate>" has to rule out.
+        workItemsOutstanding = gateStatus?.WorkItemsOutstanding ?? false,
         // Whether approving is the last gate before the version is live. True (and the default for a
         // candidate whose snapshot predates the flag) ⇒ the release automation deploys straight off
         // the approval, so the approve button ships it; false ⇒ the run it starts stops at an

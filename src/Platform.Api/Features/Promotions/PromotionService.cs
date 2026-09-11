@@ -800,10 +800,12 @@ public class PromotionService
 
         var products = await q.Select(c => c.Product).Distinct().OrderBy(p => p).ToListAsync(ct);
         var targetEnvs = await q.Select(c => c.TargetEnv).Distinct().OrderBy(e => e).ToListAsync(ct);
+        var gates = await GetGateOptionsAsync(q, ct);
 
         return new PromotionFilterOptions(
             products.Where(p => !string.IsNullOrWhiteSpace(p)).ToList(),
-            targetEnvs.Where(e => !string.IsNullOrWhiteSpace(e)).ToList());
+            targetEnvs.Where(e => !string.IsNullOrWhiteSpace(e)).ToList(),
+            gates);
     }
 
     public async Task<PromotionCandidate?> GetByIdAsync(Guid id, CancellationToken ct = default)
@@ -3077,6 +3079,128 @@ public class PromotionService
     }
 
     /// <summary>
+    /// Which approval gates each candidate is still <b>waiting on</b>, for a whole list at once — the
+    /// input the promotions list filters "waiting for Release Approval" on, and the per-row chips that
+    /// say so.
+    ///
+    /// <para>A gate here is an <see cref="ApprovalStep"/>, named as the admin named it (an unnamed step
+    /// reads as "Approval", the same label <see cref="GetApprovalProgressAsync"/> gives it). A step is
+    /// outstanding while any requirement in it is short of approvals; satisfaction comes from the same
+    /// matcher the real gate uses (<see cref="MatchRecorded"/>), so this can never disagree with what
+    /// the detail page's progress panel shows.</para>
+    ///
+    /// <para>Only a Pending candidate can be waiting on anything — an approved, deployed, rejected or
+    /// superseded one is past its gates and maps to <see cref="PromotionGateStatus.None"/>, as does an
+    /// auto-approve edge (no human gate to wait on). Batched like
+    /// <see cref="CanUserApproveManyAsync"/>: one query for every approval row across the list, plus
+    /// the two <see cref="GetWorkItemGateBlockedAsync"/> runs, and no Graph calls at all — attribution
+    /// of an already-recorded approval doesn't need live membership.</para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, PromotionGateStatus>> GetGateStatusesAsync(
+        IReadOnlyCollection<PromotionCandidate> candidates, CancellationToken ct = default)
+    {
+        var result = new Dictionary<Guid, PromotionGateStatus>();
+        foreach (var c in candidates) result[c.Id] = PromotionGateStatus.None;
+
+        var pending = candidates.Where(c => c.Status == PromotionStatus.Pending).ToList();
+        if (pending.Count == 0) return result;
+
+        var ids = pending.Select(c => c.Id).ToList();
+        var approvalsByCandidate = (await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.CandidateId) && a.Decision == PromotionDecision.Approved)
+                .Select(a => new { a.CandidateId, a.ApproverEmail, a.StepName, a.RequirementName })
+                .ToListAsync(ct))
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<RecordedApproval>)g
+                    .Select(a => new RecordedApproval(a.ApproverEmail, a.StepName, a.RequirementName))
+                    .ToList());
+
+        // The work-item gate is not an approval step, but it is another thing the promotion is waiting
+        // on — and that is exactly what "waiting ONLY for Release Approval" has to rule out.
+        var workItemBlocked = await GetWorkItemGateBlockedAsync(pending, ct);
+
+        foreach (var c in pending)
+        {
+            var snapshot = ReadSnapshot(c);
+            var outstanding = new List<string>();
+
+            if (!snapshot.IsAutoApprove && snapshot.AllRequirements.Count > 0)
+            {
+                var recorded = approvalsByCandidate.GetValueOrDefault(c.Id);
+                // Nobody has approved yet ⇒ nothing is satisfied ⇒ every step is outstanding. Skipping
+                // the matcher for the common case on a pending list, as CanUserApproveManyAsync does.
+                if (recorded is null or { Count: 0 })
+                {
+                    outstanding.AddRange(snapshot.ApprovalSteps
+                        .Where(s => s.Requirements.Count > 0)
+                        .Select(StepDisplayName));
+                }
+                else
+                {
+                    var match = MatchRecorded(snapshot, recorded);
+                    // The matcher's outcomes are index-aligned to AllRequirements (steps flattened in
+                    // order), so walking the steps in the same order consumes them 1:1.
+                    var cursor = 0;
+                    foreach (var step in snapshot.ApprovalSteps)
+                    {
+                        var stepSatisfied = true;
+                        foreach (var _ in step.Requirements)
+                        {
+                            if (!match.Requirements[cursor++].Satisfied) stepSatisfied = false;
+                        }
+                        if (step.Requirements.Count > 0 && !stepSatisfied)
+                            outstanding.Add(StepDisplayName(step));
+                    }
+                }
+            }
+
+            result[c.Id] = new PromotionGateStatus(outstanding, workItemBlocked.Contains(c.Id));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The vocabulary of approval gates the promotions list can filter on: every step name appearing on
+    /// a Pending candidate's own policy snapshot. Derived from the candidates rather than from the
+    /// policy table on purpose — a gate nothing is waiting on is an option that can only ever produce an
+    /// empty list, and a Pending candidate's snapshot is kept current with its policy anyway (see
+    /// <see cref="RefreshPolicySnapshotsAsync"/>), so the two agree wherever it matters.
+    /// </summary>
+    private async Task<List<string>> GetGateOptionsAsync(IQueryable<PromotionCandidate> scope, CancellationToken ct)
+    {
+        var snapshots = await scope
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Select(c => c.ResolvedPolicyJson)
+            .ToListAsync(ct);
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var json in snapshots)
+        {
+            // Lenient: one unparseable snapshot costs its gates from the dropdown, not the whole page.
+            var snapshot = ResolvedPolicySnapshot.TryRead(json);
+            if (snapshot is null) continue;
+            foreach (var step in snapshot.ApprovalSteps)
+            {
+                if (step.Requirements.Count == 0) continue; // nothing to wait for
+                names.Add(StepDisplayName(step));
+            }
+        }
+
+        return names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// How a step is named everywhere it is shown — its own name, or "Approval" when the admin left it
+    /// blank. Shared by the progress panel, the gate statuses and the filter vocabulary so a filter
+    /// value always matches the label the reader saw.
+    /// </summary>
+    private static string StepDisplayName(ApprovalStep step)
+        => string.IsNullOrEmpty(step.Name) ? "Approval" : step.Name;
+
+    /// <summary>
     /// Of <paramref name="candidates"/>, those whose policy holds human approval back until every work
     /// item is signed off and which still have one outstanding — exactly the condition
     /// <see cref="ApproveAsync"/> refuses on. Two queries for the whole list, so the promotions list
@@ -3360,7 +3484,13 @@ public class PromotionService
 /// Vocabulary for the promotions list filters. Ordering is alphabetical here; the client re-orders
 /// environments into the configured deployment order, which it knows and the API does not.
 /// </summary>
-public record PromotionFilterOptions(IReadOnlyList<string> Products, IReadOnlyList<string> TargetEnvs);
+public record PromotionFilterOptions(
+    IReadOnlyList<string> Products,
+    IReadOnlyList<string> TargetEnvs,
+    // Approval-step names currently outstanding-or-not on Pending candidates — the gate filter's
+    // vocabulary. See PromotionService.GetGateOptionsAsync for why it comes from the candidates
+    // rather than from the policy table.
+    IReadOnlyList<string> Gates);
 
 public record PromotionQuery(
     PromotionStatus? Status = null,
@@ -3436,6 +3566,34 @@ public record WorkItemGateProgress(
     // service instance (RequireAllWorkItemInstancesApproved) rather than by this promotion's own
     // instance — so "approved" above means "approved everywhere", and the UI can say so.
     bool AllInstances = false);
+
+/// <summary>
+/// What one candidate is still waiting on, as <see cref="PromotionService.GetGateStatusesAsync"/>
+/// reports it for a whole list: the approval steps that are short of approvals, plus whether the
+/// policy's work-item gate is also holding it.
+///
+/// <para>The distinction the two predicates draw is the one the promotions list filter is for.
+/// "Waiting for Release Approval" (<see cref="IsWaitingFor"/>) includes a promotion that is waiting
+/// for three other things as well; "waiting <i>only</i> for Release Approval"
+/// (<see cref="IsWaitingOnlyFor"/>) is the one an approver can actually finish — every other gate on
+/// it, work items included, is already clear.</para>
+/// </summary>
+public record PromotionGateStatus(IReadOnlyList<string> OutstandingSteps, bool WorkItemsOutstanding)
+{
+    /// <summary>A candidate with nothing left to wait on — every non-Pending one, and auto-approve edges.</summary>
+    public static readonly PromotionGateStatus None = new(Array.Empty<string>(), false);
+
+    /// <summary>Whether the named approval step is among the ones still outstanding.</summary>
+    public bool IsWaitingFor(string step)
+        => OutstandingSteps.Any(s => string.Equals(s, step, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether the named step is the <b>last</b> thing outstanding: no other approval step is short,
+    /// and the work-item gate isn't holding the promotion either.
+    /// </summary>
+    public bool IsWaitingOnlyFor(string step)
+        => !WorkItemsOutstanding && OutstandingSteps.Count == 1 && IsWaitingFor(step);
+}
 
 /// <summary>One approval step's progress: satisfied once all its requirements are.</summary>
 public record StepProgress(string Name, bool Satisfied, IReadOnlyList<RequirementProgress> Requirements);
