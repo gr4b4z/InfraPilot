@@ -119,7 +119,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
                 className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold"
                 style={{
                   backgroundColor: active ? 'var(--accent)' : 'var(--bg-secondary)',
-                  color: active ? '#fff' : 'var(--text-muted)',
+                  color: active ? 'var(--accent-fg)' : 'var(--text-muted)',
                   border: `1px solid ${active ? 'var(--accent)' : 'var(--border-color)'}`,
                 }}
               >

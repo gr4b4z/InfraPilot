@@ -244,7 +244,7 @@ export function RollbacksPage() {
         <button
           onClick={openCreate}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-90 shrink-0"
-          style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+          style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
         >
           <Plus size={14} />
           New rollback
@@ -601,7 +601,7 @@ function RollbackCard({
               onClick={() => onOverride?.(reason.trim())}
               disabled={busy || reason.trim().length === 0}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity disabled:opacity-50"
-              style={{ backgroundColor: 'var(--warning)', color: '#fff' }}
+              style={{ backgroundColor: 'var(--warning-solid)', color: '#fff' }}
             >
               <ShieldAlert size={12} />
               {busy ? 'Overriding…' : 'Confirm override'}

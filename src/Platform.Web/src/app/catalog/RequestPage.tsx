@@ -240,7 +240,7 @@ export function RequestPage() {
                   className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
                   style={{
                     backgroundColor: isActive ? 'var(--accent)' : isPast ? 'var(--success)' : 'var(--bg-secondary)',
-                    color: isActive || isPast ? 'white' : 'var(--text-muted)',
+                    color: isActive || isPast ? 'var(--accent-fg)' : 'var(--text-muted)',
                     border: !isActive && !isPast ? '1px solid var(--border-color)' : undefined,
                   }}
                 >

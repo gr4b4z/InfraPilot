@@ -167,7 +167,7 @@ export function ReleaseNotesPage() {
               onClick={openDraft}
               disabled={!environment}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium disabled:opacity-50"
-              style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+              style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
               <Eye size={14} />
               Preview

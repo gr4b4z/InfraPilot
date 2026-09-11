@@ -1089,7 +1089,7 @@ function PeopleCard({
               className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',
-                color: '#fff',
+                color: 'var(--accent-fg)',
                 opacity: saving ? 0.6 : 1,
               }}
             >
@@ -1244,7 +1244,7 @@ function CommentsCard({
                     <button
                       onClick={() => saveEdit(c.id)}
                       className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
-                      style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+                      style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
                     >
                       Save
                     </button>
@@ -1322,7 +1322,7 @@ function CommentsCard({
               className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',
-                color: '#fff',
+                color: 'var(--accent-fg)',
                 opacity: posting || !body.trim() ? 0.6 : 1,
               }}
             >
@@ -1669,7 +1669,7 @@ function PromotionApprovalCard({
                   title={bypassReason.trim().length === 0 ? 'Enter a reason first' : undefined}
                   className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
                   style={{
-                    backgroundColor: 'var(--warning)',
+                    backgroundColor: 'var(--warning-solid)',
                     color: '#fff',
                     opacity: actionLoading || bypassReason.trim().length === 0 ? 0.5 : 1,
                     cursor: bypassReason.trim().length === 0 ? 'not-allowed' : 'pointer',
