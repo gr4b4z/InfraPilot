@@ -387,7 +387,7 @@ function RunLink({ run }: { run: DeployRun | null | undefined }) {
       target="_blank"
       rel="noopener noreferrer"
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
-      style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+      style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
       // `o` opens the run. The one unambiguous "go and look at the source" action on this page, which
       // is what makes the page-level fallback in invokeRowAction safe to rely on here.
       {...{ [ROW_ACTION_ATTR]: 'open-external' }}
@@ -584,7 +584,7 @@ function ManualDeployCard({ event: evt, onDone, onCancel }: {
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity"
           style={{
             backgroundColor: 'var(--accent)',
-            color: '#fff',
+            color: 'var(--accent-fg)',
             opacity: canSubmit ? 1 : 0.5,
             cursor: canSubmit ? 'pointer' : 'not-allowed',
           }}

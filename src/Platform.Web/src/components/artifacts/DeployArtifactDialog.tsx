@@ -227,7 +227,7 @@ export function DeployArtifactDialog({
             onClick={submit}
             disabled={!selectedArtifact || !targetEnv || submitting}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
-            style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {submitting ? <Loader2 className="animate-spin" size={13} /> : <Rocket size={13} />}
             {selectedTarget?.autoApprove ? 'Deploy' : 'Request deployment'}

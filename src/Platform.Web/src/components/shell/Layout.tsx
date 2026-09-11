@@ -28,7 +28,7 @@ export function Layout() {
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[1200] focus:px-3 focus:py-2 focus:rounded-lg focus:text-[13px] focus:font-medium"
-        style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+        style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
       >
         Skip to main content
       </a>

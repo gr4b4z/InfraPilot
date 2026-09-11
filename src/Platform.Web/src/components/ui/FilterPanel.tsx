@@ -87,7 +87,7 @@ export function FilterPanel({
             className="px-1.5 rounded-full text-[11px] font-semibold"
             style={{
               backgroundColor: activeCount > 0 ? 'var(--accent)' : 'var(--bg-secondary)',
-              color: activeCount > 0 ? '#fff' : 'var(--text-muted)',
+              color: activeCount > 0 ? 'var(--accent-fg)' : 'var(--text-muted)',
             }}
           >
             {badge ?? activeCount}
