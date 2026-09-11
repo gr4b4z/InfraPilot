@@ -161,7 +161,7 @@ export function ChatSidebar() {
         <div className="flex items-center gap-2">
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             <Sparkles size={14} />
           </div>
@@ -213,7 +213,7 @@ export function ChatSidebar() {
                     : msg.role === 'assistant'
                       ? 'var(--bg-secondary)'
                       : 'var(--accent)',
-                color: msg.role === 'assistant' ? 'var(--text-primary)' : 'white',
+                color: msg.role === 'assistant' ? 'var(--text-primary)' : 'var(--accent-fg)',
                 ...(msg.isNotification
                   ? { borderLeft: '3px solid var(--accent)', paddingLeft: 12, backgroundColor: 'var(--bg-secondary)' }
                   : {}),
@@ -318,7 +318,7 @@ export function ChatSidebar() {
             onClick={() => sendMessage()}
             disabled={loading || !input.trim()}
             className="px-3 py-2 rounded-lg transition-colors disabled:opacity-40"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>

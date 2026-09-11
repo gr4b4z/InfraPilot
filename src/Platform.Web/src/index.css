@@ -108,6 +108,9 @@ body {
   --accent-subtle: rgba(91, 73, 222, 0.12);
   /* Tinted fill behind accent-coloured text (active tabs, badges). Sibling of --success-bg etc. */
   --accent-bg: rgba(91, 73, 222, 0.1);
+  /* Text on a solid --accent fill. White for the brand themes; hidden themes with a neon accent
+     flip it to black so buttons, chips and the skip link stay legible. */
+  --accent-fg: #FFFFFF;
   --success: #059669;
   --success-bg: #ECFDF5;
   /* Solid fill for buttons carrying white text (Approve/Reject, destructive confirm). Equal to
@@ -146,6 +149,7 @@ body {
     --accent-muted: rgba(140, 128, 245, 0.12);
     --accent-subtle: rgba(140, 128, 245, 0.18);
     --accent-bg: rgba(140, 128, 245, 0.16);
+    --accent-fg: #FFFFFF;
     --success: #4EC994;
     --success-bg: rgba(78, 201, 148, 0.14);
     --success-solid: #107C55;
@@ -180,6 +184,7 @@ body {
   --accent-muted: rgba(140, 128, 245, 0.12);
   --accent-subtle: rgba(140, 128, 245, 0.18);
   --accent-bg: rgba(140, 128, 245, 0.16);
+  --accent-fg: #FFFFFF;
   --success: #4EC994;
   --success-bg: rgba(78, 201, 148, 0.14);
   --success-solid: #107C55;
@@ -210,6 +215,7 @@ body {
   --accent-muted: rgba(91, 73, 222, 0.08);
   --accent-subtle: rgba(91, 73, 222, 0.12);
   --accent-bg: rgba(91, 73, 222, 0.1);
+  --accent-fg: #FFFFFF;
   --success: #059669;
   --success-bg: #ECFDF5;
   --success-solid: var(--success);
@@ -221,6 +227,297 @@ body {
   --danger-solid: var(--danger);
   --info: #2563EB;
   --info-bg: #EFF6FF;
+}
+
+/* ------------------------------------------------------------------------------------------------
+   Hidden themes — easter eggs reached through the `t` keyboard chords (see KeyboardLayer and
+   hiddenThemeStore). Each block redefines every semantic token, so nothing below the shell has to
+   know they exist. Written as `:root.theme-*` (specificity 0,2,0) so a hidden theme always beats
+   the `.light` / `.dark` override that may be present at the same time.
+
+   Contrast is the one rule: every text token clears 4.5:1 on the surface it sits on, and
+   `--accent-fg` is black wherever the accent is bright enough to swallow white text. The
+   `--*-solid` fills stay deep enough to carry white text, exactly as in dark mode.
+   ------------------------------------------------------------------------------------------------ */
+
+/* Matrix — black terminal, phosphor green, everything in monospace. */
+:root.theme-matrix {
+  color-scheme: dark;
+  --font-sans: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  --font-display: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+
+  --bg-shell: transparent;
+  --bg-primary: rgba(10, 20, 10, 0.93);
+  --bg-secondary: rgba(2, 6, 2, 0.78);
+  --bg-tertiary: #0F1F0F;
+  --bg-elevated: #142914;
+  --bg-overlay: rgba(0, 10, 0, 0.8);
+  --text-primary: #39FF14;
+  --text-secondary: #23C50F;
+  --text-muted: #1A9A1E;
+  --border-color: #0F5A14;
+  --border-strong: #1E9A24;
+  --accent: #00FF41;
+  --accent-hover: #7DFF9A;
+  --accent-muted: rgba(0, 255, 65, 0.1);
+  --accent-subtle: rgba(0, 255, 65, 0.18);
+  --accent-bg: rgba(0, 255, 65, 0.14);
+  --accent-fg: #001A05;
+  --success: #39FF14;
+  --success-bg: rgba(57, 255, 20, 0.14);
+  --success-solid: #0B7A1F;
+  --warning: #F5FF3B;
+  --warning-solid: #7A6A00;
+  --warning-bg: rgba(245, 255, 59, 0.14);
+  --danger: #FF3B3B;
+  --danger-bg: rgba(255, 59, 59, 0.16);
+  --danger-solid: #B00020;
+  --info: #4DFFF3;
+  --info-bg: rgba(77, 255, 243, 0.14);
+
+  --shadow-xs: 0 0 4px rgba(0, 255, 65, 0.2);
+  --shadow-sm: 0 0 8px rgba(0, 255, 65, 0.22);
+  --shadow-md: 0 0 14px rgba(0, 255, 65, 0.3);
+  --shadow-lg: 0 0 24px rgba(0, 255, 65, 0.35);
+  --shadow-xl: 0 0 40px rgba(0, 255, 65, 0.4);
+}
+
+/* Punk — acid-yellow zine paper, black ink, hot-pink stencil, hard offset shadows. */
+:root.theme-punk {
+  color-scheme: light;
+
+  --bg-shell: transparent;
+  --bg-primary: rgba(255, 251, 224, 0.94);
+  --bg-secondary: rgba(255, 234, 0, 0.6);
+  --bg-tertiary: #FFF3A0;
+  --bg-elevated: #FFFFFF;
+  --bg-overlay: rgba(0, 0, 0, 0.75);
+  --text-primary: #000000;
+  --text-secondary: #1A1A1A;
+  --text-muted: #4A4400;
+  --border-color: #111111;
+  --border-strong: #000000;
+  --accent: #C2005F;
+  --accent-hover: #E6007A;
+  --accent-muted: rgba(194, 0, 95, 0.1);
+  --accent-subtle: rgba(194, 0, 95, 0.18);
+  --accent-bg: rgba(194, 0, 95, 0.14);
+  --accent-fg: #FFFFFF;
+  --success: #007A33;
+  --success-bg: rgba(0, 122, 51, 0.14);
+  --success-solid: #007A33;
+  --warning: #8A3B00;
+  --warning-solid: #8A3B00;
+  --warning-bg: rgba(138, 59, 0, 0.14);
+  --danger: #C40000;
+  --danger-bg: rgba(196, 0, 0, 0.12);
+  --danger-solid: #C40000;
+  --info: #0033CC;
+  --info-bg: rgba(0, 51, 204, 0.12);
+
+  --shadow-xs: 1px 1px 0 #000000;
+  --shadow-sm: 2px 2px 0 #000000;
+  --shadow-md: 4px 4px 0 #000000;
+  --shadow-lg: 6px 6px 0 #000000;
+  --shadow-xl: 8px 8px 0 #000000;
+}
+
+/* Cyberpunk — deep violet night, electric cyan, magenta and warning-yellow neon. */
+:root.theme-cyberpunk {
+  color-scheme: dark;
+
+  --bg-shell: transparent;
+  --bg-primary: rgba(21, 11, 51, 0.93);
+  --bg-secondary: rgba(11, 5, 32, 0.76);
+  --bg-tertiary: #1E1147;
+  --bg-elevated: #261656;
+  --bg-overlay: rgba(5, 0, 20, 0.8);
+  --text-primary: #F8F0FF;
+  --text-secondary: #C9B8FF;
+  --text-muted: #9583D6;
+  --border-color: #3D2A80;
+  --border-strong: #6B4FD8;
+  --accent: #00F0FF;
+  --accent-hover: #7FF7FF;
+  --accent-muted: rgba(0, 240, 255, 0.12);
+  --accent-subtle: rgba(0, 240, 255, 0.2);
+  --accent-bg: rgba(0, 240, 255, 0.16);
+  --accent-fg: #06021A;
+  --success: #39FF88;
+  --success-bg: rgba(57, 255, 136, 0.14);
+  --success-solid: #0E7A45;
+  --warning: #FFE500;
+  --warning-solid: #8A6D00;
+  --warning-bg: rgba(255, 229, 0, 0.14);
+  --danger: #FF2A6D;
+  --danger-bg: rgba(255, 42, 109, 0.16);
+  --danger-solid: #B8124A;
+  --info: #FF5CF0;
+  --info-bg: rgba(255, 92, 240, 0.14);
+
+  --shadow-xs: 0 0 4px rgba(0, 240, 255, 0.25);
+  --shadow-sm: 0 0 8px rgba(0, 240, 255, 0.25), 0 0 2px rgba(255, 92, 240, 0.3);
+  --shadow-md: 0 0 16px rgba(0, 240, 255, 0.3), 0 0 4px rgba(255, 92, 240, 0.35);
+  --shadow-lg: 0 0 28px rgba(0, 240, 255, 0.35), 0 0 8px rgba(255, 92, 240, 0.4);
+  --shadow-xl: 0 0 48px rgba(0, 240, 255, 0.4), 0 0 12px rgba(255, 92, 240, 0.45);
+}
+
+/* Forest Fairy — deep moss at night, with fairy-light pink, lime and gold glowing through. */
+:root.theme-forest {
+  color-scheme: dark;
+
+  --bg-shell: transparent;
+  --bg-primary: rgba(14, 42, 25, 0.93);
+  --bg-secondary: rgba(7, 26, 16, 0.74);
+  --bg-tertiary: #143824;
+  --bg-elevated: #1B4630;
+  --bg-overlay: rgba(0, 12, 5, 0.8);
+  --text-primary: #F2FFE9;
+  --text-secondary: #B8F0C8;
+  --text-muted: #7FC79A;
+  --border-color: #245A3A;
+  --border-strong: #3E8F5F;
+  --accent: #FF6EC7;
+  --accent-hover: #FFA3DE;
+  --accent-muted: rgba(255, 110, 199, 0.12);
+  --accent-subtle: rgba(255, 110, 199, 0.2);
+  --accent-bg: rgba(255, 110, 199, 0.16);
+  --accent-fg: #1A0512;
+  --success: #A6FF4D;
+  --success-bg: rgba(166, 255, 77, 0.14);
+  --success-solid: #2E7D1E;
+  --warning: #FFD34D;
+  --warning-solid: #8A5F00;
+  --warning-bg: rgba(255, 211, 77, 0.14);
+  --danger: #FF6B6B;
+  --danger-bg: rgba(255, 107, 107, 0.16);
+  --danger-solid: #B3261E;
+  --info: #6EE7FF;
+  --info-bg: rgba(110, 231, 255, 0.14);
+
+  --shadow-xs: 0 0 4px rgba(255, 110, 199, 0.2);
+  --shadow-sm: 0 0 8px rgba(255, 110, 199, 0.22), 0 0 2px rgba(166, 255, 77, 0.25);
+  --shadow-md: 0 0 16px rgba(255, 110, 199, 0.28), 0 0 4px rgba(166, 255, 77, 0.3);
+  --shadow-lg: 0 0 28px rgba(255, 110, 199, 0.32), 0 0 8px rgba(166, 255, 77, 0.35);
+  --shadow-xl: 0 0 48px rgba(255, 110, 199, 0.38), 0 0 12px rgba(166, 255, 77, 0.4);
+}
+
+/* ---- Hidden theme set dressing ----------------------------------------------------------------
+   The animated backdrop (HiddenThemeScene's canvas) sits behind everything; `--bg-shell` above
+   makes the shell transparent and the page canvas translucent so it shows through. The overlay
+   sits above everything but the toast and never takes pointer events. Text glows are plain
+   inherited text-shadow on body. Everything that moves stops under prefers-reduced-motion.
+   ------------------------------------------------------------------------------------------------ */
+.hidden-theme-scene {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.hidden-theme-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1250;
+  pointer-events: none;
+}
+
+.hidden-theme-toast {
+  animation: hidden-theme-toast-in 0.25s ease-out;
+}
+
+@keyframes hidden-theme-toast-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Matrix: CRT scanlines, a vignette, phosphor glow on every glyph, the odd flicker. */
+:root.theme-matrix body {
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.45);
+}
+:root.theme-matrix .hidden-theme-overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+  animation: hidden-theme-flicker 5s steps(1) infinite;
+}
+@keyframes hidden-theme-flicker {
+  0%, 100% { opacity: 1; }
+  37% { opacity: 0.82; }
+  38% { opacity: 1; }
+  71% { opacity: 0.9; }
+  72% { opacity: 1; }
+}
+
+/* Punk: paper grain and halftone multiplied over everything, shouty headings, a nervous twitch. */
+:root.theme-punk .hidden-theme-overlay {
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.4 0'/></filter><rect width='100%25' height='100%25' filter='url(%23g)'/></svg>"),
+    radial-gradient(circle, rgba(0, 0, 0, 0.16) 1px, transparent 1.6px);
+  background-size: 220px 220px, 6px 6px;
+  mix-blend-mode: multiply;
+  opacity: 0.6;
+}
+:root.theme-punk h1,
+:root.theme-punk h2 {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+:root.theme-punk .hidden-theme-toast {
+  transform: rotate(-1.5deg);
+  border-radius: 4px;
+}
+:root.theme-punk #root {
+  animation: hidden-theme-jitter 7s steps(1) infinite;
+}
+@keyframes hidden-theme-jitter {
+  0%, 100% { transform: none; }
+  41% { transform: translate(1px, -1px); }
+  42% { transform: none; }
+  43% { transform: translate(-2px, 1px); }
+  44% { transform: none; }
+  87% { transform: translate(1px, 1px); }
+  88% { transform: none; }
+}
+
+/* Cyberpunk: fine scanlines, a magenta vignette, cyan glow on text, neon breathing on the toast. */
+:root.theme-cyberpunk body {
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.35);
+}
+:root.theme-cyberpunk .hidden-theme-overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0 1px, transparent 1px 4px),
+    radial-gradient(ellipse at center, transparent 60%, rgba(255, 42, 109, 0.2) 100%);
+}
+:root.theme-cyberpunk .hidden-theme-toast {
+  animation: hidden-theme-toast-in 0.25s ease-out, hidden-theme-neon 2.4s ease-in-out infinite;
+}
+@keyframes hidden-theme-neon {
+  0%, 100% { box-shadow: 0 0 16px rgba(0, 240, 255, 0.35), 0 0 4px rgba(255, 92, 240, 0.4); }
+  50% { box-shadow: 0 0 32px rgba(0, 240, 255, 0.6), 0 0 10px rgba(255, 92, 240, 0.7); }
+}
+
+/* Forest Fairy: warm glow on text, a soft bloom from the canopy that slowly breathes. */
+:root.theme-forest body {
+  text-shadow: 0 0 10px rgba(255, 211, 77, 0.22);
+}
+:root.theme-forest .hidden-theme-overlay {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255, 240, 180, 0.12), transparent 60%),
+    radial-gradient(ellipse at center, transparent 60%, rgba(0, 12, 5, 0.5) 100%);
+  animation: hidden-theme-breathe 9s ease-in-out infinite;
+}
+@keyframes hidden-theme-breathe {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hidden-theme-overlay,
+  .hidden-theme-toast,
+  :root.theme-punk #root {
+    animation: none !important;
+  }
 }
 
 /* SWO Gradient - Cyan to Light Purple */

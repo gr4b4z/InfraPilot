@@ -4,7 +4,10 @@ import { useHotkeys } from '@/hooks/useHotkeys';
 import { activeKeyboardRow, focusIdleKeyboardList } from '@/hooks/keyboardList';
 import { invokeRowAction, type RowAction } from '@/lib/keys';
 import { useUiStore } from '@/stores/uiStore';
+import { useHiddenThemeStore } from '@/stores/hiddenThemeStore';
 import { CommandPalette } from './CommandPalette';
+import { HiddenThemeScene } from './HiddenThemeScene';
+import { HiddenThemeToast } from './HiddenThemeToast';
 import { QuickFind } from './QuickFind';
 import { ShortcutHelp } from './ShortcutHelp';
 
@@ -25,6 +28,9 @@ export function KeyboardLayer() {
   const [quickFindOpen, setQuickFindOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const navDrawerOpen = useUiStore((s) => s.navDrawerOpen);
+  const setHiddenTheme = useHiddenThemeStore((s) => s.setTheme);
+  const cycleHiddenTheme = useHiddenThemeStore((s) => s.cycle);
+  const toggleHiddenSound = useHiddenThemeStore((s) => s.toggleSound);
 
   // Our own dialogs, which we can see in state.
   const ownModalOpen = paletteOpen || quickFindOpen || helpOpen;
@@ -88,6 +94,18 @@ export function KeyboardLayer() {
       R: guard(() => act('reject')),
       I: guard(() => act('issue')),
       B: guard(() => act('block')),
+
+      // Hidden colour themes — an easter egg, so these are deliberately absent from the `?` help.
+      // `t` then a letter picks one, `t t` walks through all of them, `t 0` goes back to normal and
+      // `t s` toggles the theme's ambient music. `t` alone is otherwise unbound, so arming the
+      // prefix costs nothing.
+      't m': guard(() => setHiddenTheme('matrix')),
+      't p': guard(() => setHiddenTheme('punk')),
+      't c': guard(() => setHiddenTheme('cyberpunk')),
+      't f': guard(() => setHiddenTheme('forest')),
+      't t': guard(cycleHiddenTheme),
+      't 0': guard(() => setHiddenTheme(null)),
+      't s': guard(toggleHiddenSound),
     },
     { enabled: !ownModalOpen },
   );
@@ -98,6 +116,8 @@ export function KeyboardLayer() {
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       <QuickFind open={quickFindOpen} onClose={() => setQuickFindOpen(false)} />
       <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <HiddenThemeScene />
+      <HiddenThemeToast />
     </>
   );
 }

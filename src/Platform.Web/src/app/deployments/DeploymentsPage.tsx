@@ -282,7 +282,7 @@ export function DeploymentsPage() {
               className="hidden lg:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold"
               style={{
                 backgroundColor: hiddenCount > 0 ? 'var(--accent)' : 'var(--bg-secondary)',
-                color: hiddenCount > 0 ? '#fff' : 'var(--text-muted)',
+                color: hiddenCount > 0 ? 'var(--accent-fg)' : 'var(--text-muted)',
               }}
               title={`${shownCount} of ${controlProducts.length} product(s) shown`}
             >

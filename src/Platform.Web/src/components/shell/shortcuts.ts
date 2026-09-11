@@ -5,6 +5,9 @@ import { commandKeyLabel } from '@/lib/keys';
  *
  * This is the source the help overlay renders, so a shortcut that isn't described here is a shortcut
  * nobody can discover. Add the entry in the same change that adds the binding.
+ *
+ * The one deliberate exception is the `t …` family in {@link KeyboardLayer}: hidden colour themes
+ * that are meant to be stumbled upon, not advertised. Leave them out.
  */
 export interface ShortcutGroup {
   title: string;

@@ -1043,7 +1043,7 @@ export function PromotionsPage() {
                   className="ml-0.5 px-1.5 rounded-full text-[11px] font-semibold"
                   style={{
                     backgroundColor: active ? 'var(--accent)' : 'var(--warning-bg)',
-                    color: active ? '#fff' : 'var(--warning)',
+                    color: active ? 'var(--accent-fg)' : 'var(--warning)',
                   }}
                 >
                   {tab.count}
