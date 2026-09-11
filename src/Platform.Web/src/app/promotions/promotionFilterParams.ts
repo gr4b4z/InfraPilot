@@ -47,6 +47,16 @@ export interface PromotionParams {
   service: string;
   targetEnv: string;
   reference: string;
+  /**
+   * An approval step name — "show me what is waiting for Release Approval". Empty means no gate
+   * narrowing. Matched case-insensitively server-side against the step names the policy defines.
+   */
+  gate: string;
+  /**
+   * Qualifies {@link gate}: only the promotions where that gate is the *last* thing outstanding.
+   * Meaningless on its own, so it is only written to the URL when a gate is set.
+   */
+  gateOnly: boolean;
 }
 
 // Parameter names. Short and readable — these end up in links people paste to each other, and
@@ -56,8 +66,18 @@ const P_PRODUCT = 'product';
 const P_SERVICE = 'service';
 const P_TARGET_ENV = 'targetEnv';
 const P_REFERENCE = 'reference';
+const P_GATE = 'gate';
+const P_GATE_ONLY = 'gateOnly';
 
-const ALL_PARAMS = [P_TAB, P_PRODUCT, P_SERVICE, P_TARGET_ENV, P_REFERENCE] as const;
+const ALL_PARAMS = [
+  P_TAB,
+  P_PRODUCT,
+  P_SERVICE,
+  P_TARGET_ENV,
+  P_REFERENCE,
+  P_GATE,
+  P_GATE_ONLY,
+] as const;
 
 /** True when the URL is describing a view — i.e. the link carries state to honour. */
 export function hasPromotionParams(params: URLSearchParams): boolean {
@@ -87,6 +107,10 @@ export function parsePromotionParams(
     service: str(P_SERVICE),
     targetEnv: str(P_TARGET_ENV),
     reference: str(P_REFERENCE),
+    gate: str(P_GATE),
+    // Anything but an explicit "true"/"1" reads as off — a link is edited by hand, and the safe
+    // reading of a malformed flag is the wider list rather than a mysteriously narrower one.
+    gateOnly: ['true', '1'].includes(str(P_GATE_ONLY).toLowerCase()),
   };
 }
 
@@ -102,5 +126,8 @@ export function buildPromotionParams(state: PromotionParams): URLSearchParams {
   if (state.service) params.set(P_SERVICE, state.service);
   if (state.targetEnv) params.set(P_TARGET_ENV, state.targetEnv);
   if (state.reference) params.set(P_REFERENCE, state.reference);
+  if (state.gate) params.set(P_GATE, state.gate);
+  // Only meaningful alongside a gate, so a stray `gateOnly=true` never ends up in a shared link.
+  if (state.gate && state.gateOnly) params.set(P_GATE_ONLY, 'true');
   return params;
 }

@@ -139,10 +139,30 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 ## Read
 
 ### `GET /api/promotions` — list
-Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`.
+Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`, `gate`,
+`gateOnly`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
 current user (Pending + authorized for ≥1 open requirement + not already decided) and a
 **`deploysOnApproval`** boolean read off its policy snapshot.
+
+**Filtering by approval gate.** `gate` is an approval-step name as the policy spells it
+("Release Approval"; an unnamed step is "Approval"), matched case-insensitively, and narrows the
+list to promotions that step is still **outstanding** on. `gateOnly=true` narrows further to the
+ones where it is the *last* thing outstanding — every other approval step already satisfied and, if
+the policy gates on work items, none of those holding it back either. That is the difference between
+"what will need a Release Approval" and "what am I the last signature on".
+
+Only a Pending promotion is waiting on anything, so `gate` narrows the result to Pending whatever
+`status` says. The vocabulary to offer comes from `GET /api/promotions/filter-options`, which
+returns `{ products, targetEnvs, gates }` — `gates` being the step names appearing on pending
+promotions (empty on an instance whose edges are all auto-approve).
+
+Every candidate carries the same state as two fields:
+
+- **`pendingGates`** — the approval steps it is still short of approvals on, in policy order.
+  Empty on anything that is not Pending and on auto-approve edges.
+- **`workItemsOutstanding`** — whether the policy's work-item gate is also holding it. A promotion
+  with one `pendingGates` entry and this set is *not* one signature from going out.
 
 `deploysOnApproval` answers "what does pressing Approve do?", the question the queue could not
 previously answer. `true` (the default, and what a candidate whose snapshot predates the field

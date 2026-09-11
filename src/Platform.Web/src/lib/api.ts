@@ -555,6 +555,18 @@ class ApiClient {
     service?: string;
     targetEnv?: string;
     reference?: string;
+    /**
+     * Narrow to promotions still waiting on this approval step, by name ("Release Approval"). Only a
+     * Pending promotion waits on anything, so this narrows the result to Pending whatever `status`
+     * says.
+     */
+    gate?: string;
+    /**
+     * Qualifies `gate`: keep only the promotions where that gate is the **last** thing outstanding —
+     * every other approval step signed off and the work-item gate, if any, clear. Ignored without
+     * `gate`.
+     */
+    gateOnly?: boolean;
     limit?: number;
   }) {
     const entries: [string, string][] = [];
@@ -563,6 +575,8 @@ class ApiClient {
     if (params?.service) entries.push(['service', params.service]);
     if (params?.targetEnv) entries.push(['targetEnv', params.targetEnv]);
     if (params?.reference) entries.push(['reference', params.reference]);
+    if (params?.gate) entries.push(['gate', params.gate]);
+    if (params?.gate && params.gateOnly) entries.push(['gateOnly', 'true']);
     if (params?.limit) entries.push(['limit', String(params.limit)]);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<{ candidates: PromotionCandidate[] }>(`/promotions/${query}`);
@@ -1191,7 +1205,16 @@ class ApiClient {
    * a filtered result set collapse to whatever is already selected.
    */
   getPromotionFilterOptions() {
-    return this.request<{ products: string[]; targetEnvs: string[] }>(`/promotions/filter-options`);
+    return this.request<{
+      products: string[];
+      targetEnvs: string[];
+      /**
+       * Approval-step names appearing on pending promotions — the gate filter's vocabulary. Empty
+       * when no pending promotion has a human gate at all, which is the cue to hide the control.
+       * Absent on responses from an older API.
+       */
+      gates?: string[];
+    }>(`/promotions/filter-options`);
   }
 
   /**
@@ -1594,6 +1617,19 @@ export interface PromotionCandidate {
    * when a work item is attached later, someone is reassigned, or the policy changes.
    */
   workItemRoleGaps?: WorkItemRoleGap[];
+  /**
+   * The approval steps this promotion is still short of approvals on, named as the policy names them
+   * ("Release Approval", "Security Sign-off"). Empty on anything that isn't Pending and on
+   * auto-approve edges. Only the list computes it — absent on the detail response, which carries the
+   * full `approvalProgress` breakdown instead.
+   */
+  pendingGates?: string[];
+  /**
+   * Whether the policy's work-item gate is also holding this promotion back. Read alongside
+   * `pendingGates`: a promotion with one outstanding gate and this set is not one gate away from
+   * going out.
+   */
+  workItemsOutstanding?: boolean;
 }
 
 // ── Promotions audit ──────────────────────────────────────────────────────
