@@ -678,7 +678,7 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CandidateId", "ApproverEmail")
+                    b.HasIndex("CandidateId", "ApproverEmail", "StepName", "RequirementName")
                         .IsUnique();
 
                     b.ToTable("promotion_approvals", (string)null);

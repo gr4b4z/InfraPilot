@@ -269,9 +269,12 @@ Body: `{ "comment"?: string, "stepName"?: string, "requirementName"?: string }`.
 - `403` if not eligible for the named requirement; `409` if that requirement is already satisfied.
 - On success returns the updated candidate.
 
-The approval is recorded with its `(stepName, requirementName)` attribution and the gate
-evaluator honors it (each approver counts toward at most one requirement — global
-distinct-person rule).
+The approval is recorded against its `(stepName, requirementName)` and the gate evaluator counts
+it toward exactly that requirement. One person may approve several requirements — one call per
+requirement — so somebody who is both the QA manager and the release manager clears both gates.
+Approving the same requirement twice is a `400`. `GET /api/promotions/{id}` lists the approvals
+with their attribution and `eligibleRequirements` — the open requirements the caller has not yet
+approved — so a client can offer one approve action per gate.
 
 ### `POST /api/promotions/{id}/reject`
 Body: `{ "comment"?: string }`. One rejection from an authorized approver terminates the candidate.
@@ -411,8 +414,11 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
 ### Evaluation rules
 - **Within a requirement** → OR: a group member *or* a listed user qualifies.
 - **Within a step / across steps** → AND: every requirement (in every step) must be satisfied.
-- **Distinct people** (global): one human satisfies at most one requirement across the whole
-  policy. The matcher assigns most-constrained-requirement-first to avoid false "not satisfied".
+- **Distinct people** (per requirement): an N-of-M requirement needs N different people, but the
+  same person may satisfy several requirements by approving each one separately. (This replaced the
+  original global rule, under which a person eligible for two gates could clear only one and the
+  promotion stalled when nobody else was eligible for the other.) Legacy approvals recorded without
+  a requirement are placed by the matcher most-constrained-requirement-first, at most one each.
 - **Group membership is evaluated live** (token claims, then Microsoft Graph) at fetch/approval
   time — never snapshotted — so added/removed approvers take effect immediately. The *policy* is
   snapshotted onto the candidate at creation, but *who is in a group* is always current-state.
