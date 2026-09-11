@@ -16,6 +16,8 @@ import {
   PROMOTIONS_SERVICE_FILTER_PREF,
   PROMOTIONS_TARGET_ENV_FILTER_PREF,
   PROMOTIONS_REFERENCE_FILTER_PREF,
+  PROMOTIONS_GATE_FILTER_PREF,
+  PROMOTIONS_GATE_ONLY_FILTER_PREF,
 } from '@/lib/prefs';
 import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
@@ -57,6 +59,7 @@ import {
   Ticket,
   ExternalLink,
   Filter,
+  ShieldCheck,
 } from 'lucide-react';
 
 /**
@@ -266,6 +269,8 @@ export function PromotionsPage() {
         service: readPref(PROMOTIONS_SERVICE_FILTER_PREF) ?? '',
         targetEnv: readPref(PROMOTIONS_TARGET_ENV_FILTER_PREF) ?? '',
         reference: readPref(PROMOTIONS_REFERENCE_FILTER_PREF) ?? '',
+        gate: readPref(PROMOTIONS_GATE_FILTER_PREF) ?? '',
+        gateOnly: readPref(PROMOTIONS_GATE_ONLY_FILTER_PREF) === '1',
       };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -295,11 +300,22 @@ export function PromotionsPage() {
     PROMOTIONS_REFERENCE_FILTER_PREF,
     initial.reference,
   );
+  // The approval gate a promotion is still waiting on ("Release Approval"), and whether to narrow
+  // further to the ones waiting on nothing else. The pair is a single filter as far as the reader is
+  // concerned — the checkbox is meaningless without a gate picked, and the handlers keep them in step.
+  const [gateFilter, persistGate] = usePersistedFilter(PROMOTIONS_GATE_FILTER_PREF, initial.gate);
+  const [gateOnlyRaw, persistGateOnly] = usePersistedFilter(
+    PROMOTIONS_GATE_ONLY_FILTER_PREF,
+    initial.gateOnly ? '1' : '',
+  );
+  const gateOnlyFilter = gateOnlyRaw === '1';
   // Filter vocabulary. Fetched once and never re-fetched on a filter change — that is the whole
   // point of it (see api.getPromotionFilterOptions).
-  const [filterOptions, setFilterOptions] = useState<{ products: string[]; targetEnvs: string[] }>(
-    { products: [], targetEnvs: [] },
-  );
+  const [filterOptions, setFilterOptions] = useState<{
+    products: string[];
+    targetEnvs: string[];
+    gates: string[];
+  }>({ products: [], targetEnvs: [], gates: [] });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
@@ -330,6 +346,7 @@ export function PromotionsPage() {
     VIEW_HEADINGS[view],
     scopeTitle({ product: productFilter, service: serviceFilter, targetEnv: targetEnvFilter }),
     referenceFilter && `ref ${referenceFilter}`,
+    gateFilter && (gateOnlyFilter ? `only ${gateFilter} left` : `waiting on ${gateFilter}`),
     'Promotions',
   ]);
 
@@ -350,6 +367,8 @@ export function PromotionsPage() {
       service: serviceFilter,
       targetEnv: targetEnvFilter,
       reference: referenceFilter,
+      gate: gateFilter,
+      gateOnly: gateOnlyFilter,
       ...next,
     });
 
@@ -401,14 +420,30 @@ export function PromotionsPage() {
     syncUrl({ reference: next });
   };
 
+  // Clearing the gate clears the "only this one left" narrowing with it: on its own it has nothing to
+  // be "only" about, and leaving it set would silently re-narrow the list the next time a gate is
+  // picked. One URL write, for the same reason clearAllFilters does it that way.
+  const handleGateChange = (next: string) => {
+    persistGate(next);
+    if (!next) persistGateOnly('');
+    syncUrl({ gate: next, gateOnly: next ? gateOnlyFilter : false });
+  };
+
+  const handleGateOnlyChange = (next: boolean) => {
+    persistGateOnly(next ? '1' : '');
+    syncUrl({ gateOnly: next });
+  };
+
   const clearAllFilters = () => {
     persistProduct('');
     persistService('');
     persistTargetEnv('');
     persistReference('');
-    // One URL write rather than four: the handlers above each build the parameters from state that
-    // hasn't re-rendered yet, so calling them in sequence would leave three of the four behind.
-    syncUrl({ product: '', service: '', targetEnv: '', reference: '' });
+    persistGate('');
+    persistGateOnly('');
+    // One URL write rather than six: the handlers above each build the parameters from state that
+    // hasn't re-rendered yet, so calling them in sequence would leave five of the six behind.
+    syncUrl({ product: '', service: '', targetEnv: '', reference: '', gate: '', gateOnly: false });
   };
 
   /**
@@ -447,22 +482,49 @@ export function PromotionsPage() {
       onClear: () => handleReferenceChange(''),
     });
   }
+  if (gateFilter) {
+    // One chip for the pair. "Only gate left" isn't a narrowing anybody set on its own, and a second
+    // chip offering to clear it would suggest the gate filter survives that — it doesn't.
+    activeFilters.push({
+      label: gateOnlyFilter ? 'Waiting only on' : 'Waiting on',
+      value: gateFilter,
+      onClear: () => handleGateChange(''),
+    });
+  }
 
   // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
-  const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}`;
+  const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}|${gateFilter}|${gateOnlyFilter}`;
   // The same identity, readable from a response handler that outlives the render it started in.
   const filterKeyRef = useRef(filterKey);
   useEffect(() => {
     filterKeyRef.current = filterKey;
   }, [filterKey]);
 
-  // Secondary filters shared by every fetch on this page.
-  const filterParams = () => {
-    const params: Record<string, string> = {};
+  /**
+   * Secondary filters shared by every fetch on this page.
+   *
+   * The gate filter rides along with the rest, on every tab. It is a question only a pending promotion
+   * can answer — nothing already approved, deployed or rejected is waiting on a gate — so the resolved
+   * tabs legitimately come back empty while it is set, and the empty state names it as one of the
+   * narrowings in play rather than the tab being quietly exempted from it.
+   */
+  const filterParams = (): {
+    product?: string;
+    service?: string;
+    targetEnv?: string;
+    reference?: string;
+    gate?: string;
+    gateOnly?: boolean;
+  } => {
+    const params: ReturnType<typeof filterParams> = {};
     if (productFilter) params.product = productFilter;
     if (serviceFilter) params.service = serviceFilter;
     if (targetEnvFilter) params.targetEnv = targetEnvFilter;
     if (referenceFilter) params.reference = referenceFilter;
+    if (gateFilter) {
+      params.gate = gateFilter;
+      params.gateOnly = gateOnlyFilter;
+    }
     return params;
   };
 
@@ -495,7 +557,9 @@ export function PromotionsPage() {
     api
       .getPromotionFilterOptions()
       .then((o) => {
-        if (!cancelled) setFilterOptions(o);
+        // `gates` is absent on an older API — defaulted here so the dropdown simply doesn't render
+        // rather than the page failing on an undefined list.
+        if (!cancelled) setFilterOptions({ ...o, gates: o.gates ?? [] });
       })
       .catch(() => {
         // Leave the dropdowns with only their current selection; the rest of the page is unaffected.
@@ -732,6 +796,14 @@ export function PromotionsPage() {
     return Array.from(set).sort();
   }, [filterOptions.products, productFilter]);
 
+  // Approval gates to offer. Like the other dropdowns, the current selection stays listed even once
+  // nothing is waiting on it — otherwise a filter that has outlived its promotions can't be cleared.
+  const gateOptions = useMemo(() => {
+    const set = new Set(filterOptions.gates);
+    if (gateFilter) set.add(gateFilter);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [filterOptions.gates, gateFilter]);
+
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
 
@@ -823,7 +895,10 @@ export function PromotionsPage() {
 
       {/* Secondary filters */}
       <FilterPanel
-        activeCount={[productFilter, serviceFilter, targetEnvFilter, referenceFilter].filter(Boolean).length}
+        activeCount={
+          [productFilter, serviceFilter, targetEnvFilter, referenceFilter, gateFilter].filter(Boolean)
+            .length
+        }
       >
         <select
           value={productFilter}
@@ -881,6 +956,50 @@ export function PromotionsPage() {
             color: 'var(--text-primary)',
           }}
         />
+        {/* Approval gate. Hidden entirely when no pending promotion has a human gate — on an
+            all-auto-approve instance the dropdown could only ever offer its own empty default. Each
+            option carries the "Waiting on:" prefix rather than relying on a label, so the closed
+            select still says what the name in it means. */}
+        {gateOptions.length > 0 && (
+          <div className="flex items-center gap-2">
+            <select
+              value={gateFilter}
+              onChange={(e) => handleGateChange(e.target.value)}
+              aria-label="Waiting on approval gate"
+              className="rounded-lg border px-3 py-1.5 text-[13px]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              <option value="">Waiting on: any gate</option>
+              {gateOptions.map((g) => (
+                <option key={g} value={g}>
+                  Waiting on: {g}
+                </option>
+              ))}
+            </select>
+            {/* The second half of the question this filter exists to answer: not "which promotions
+                need a Release Approval at some point" but "which ones am I the last signature on".
+                Only offered once a gate is picked — on its own it has nothing to be "only" about. */}
+            {gateFilter && (
+              <label
+                className="flex cursor-pointer items-center gap-1.5 text-[12px] whitespace-nowrap"
+                style={{ color: 'var(--text-secondary)' }}
+                title={`Only promotions where ${gateFilter} is the last thing outstanding — every other approval step signed off, and no work item holding it back.`}
+              >
+                <input
+                  type="checkbox"
+                  checked={gateOnlyFilter}
+                  onChange={(e) => handleGateOnlyChange(e.target.checked)}
+                  className="rounded"
+                />
+                Only gate left
+              </label>
+            )}
+          </div>
+        )}
       </FilterPanel>
 
       {/* Tabs over the promotions set. Resolved sits here rather than behind a "show resolved"
@@ -1016,6 +1135,40 @@ export function PromotionsPage() {
   );
 }
 
+/**
+ * Which approval gates a pending promotion is still short of — "Waiting on: Release Approval". The
+ * list can be filtered by exactly these names, so the badge doubles as the legend for the gate
+ * dropdown: whatever a card says here is a value that dropdown offers.
+ *
+ * <p>Renders nothing when the promotion isn't waiting on a human gate (anything resolved, and every
+ * auto-approve edge), and nothing at all on a response from an API that doesn't report gates. Two
+ * names are shown before it collapses to a count — a card that lists four gates has stopped saying
+ * anything the reader can act on, and the detail page's progress panel is where that belongs.</p>
+ */
+function PendingGatesBadge({ candidate }: { candidate: PromotionCandidate }) {
+  const gates = candidate.pendingGates ?? [];
+  if (gates.length === 0) return null;
+
+  const MAX_NAMES = 2;
+  const shown = gates.slice(0, MAX_NAMES);
+  const hidden = gates.length - shown.length;
+  const label = hidden > 0 ? `${shown.join(', ')} +${hidden}` : shown.join(', ');
+
+  return (
+    <span
+      className="badge shrink-0 whitespace-nowrap"
+      style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+      title={
+        `Waiting on ${gates.join(', ')}` +
+        (candidate.workItemsOutstanding ? ', and on its work items being signed off' : '')
+      }
+    >
+      <ShieldCheck size={10} />
+      Waiting on: {label}
+    </span>
+  );
+}
+
 function CandidateCard({
   index,
   candidate,
@@ -1117,6 +1270,7 @@ function CandidateCard({
             count={roleGaps.length}
             roles={distinctMissingRoles}
           />
+          <PendingGatesBadge candidate={candidate} />
         </div>
         {/* Where it lands and how that environment's version moves. Wraps on a narrow viewport
            so the pieces drop to their own line instead of running off the edge of the screen. */}
