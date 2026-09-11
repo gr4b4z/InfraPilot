@@ -678,8 +678,9 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CandidateId", "ApproverEmail")
-                        .IsUnique();
+                    b.HasIndex("CandidateId", "ApproverEmail", "StepName", "RequirementName")
+                        .IsUnique()
+                        .HasFilter("[StepName] IS NOT NULL AND [RequirementName] IS NOT NULL");
 
                     b.ToTable("promotion_approvals", (string)null);
                 });

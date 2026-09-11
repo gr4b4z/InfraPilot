@@ -19,7 +19,7 @@ namespace Platform.Api.Features.Promotions;
 /// <list type="bullet">
 ///   <item>Candidate creation from ingested deploy events (with policy snapshot + supersede rules).</item>
 ///   <item>State machine enforcement: Pending → Approved → Deploying → Deployed, plus Rejected / Superseded off-ramps.</item>
-///   <item>Approval recording and gate evaluation (per-requirement, distinct-person matching).</item>
+///   <item>Approval recording and gate evaluation (per-requirement matching; one approval per person per gate).</item>
 ///   <item>Per-user capability checks (<see cref="CanUserApproveAsync"/>) so the UI can grey out buttons.</item>
 /// </list>
 ///
@@ -1147,9 +1147,11 @@ public class PromotionService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Records an approval from the current user. Enforces all gating rules:
-    /// candidate must still be Pending, user must be in the approver group, and the same user may
-    /// not approve twice (also enforced by a DB-level unique index as belt-and-suspenders).
+    /// Records an approval from the current user against one requirement (gate). Enforces all
+    /// gating rules: candidate must still be Pending, user must be authorized for the requirement,
+    /// and the same user may not approve the same requirement twice (also enforced by a DB-level
+    /// unique index as belt-and-suspenders). A user eligible for several requirements approves each
+    /// one separately — that is how one person sitting in two gates clears both.
     ///
     /// <para>After persisting the approval row, delegates to <see cref="ReevaluateAsync"/> which
     /// runs the gate evaluator and transitions the candidate to <see cref="PromotionStatus.Approved"/>
@@ -1181,13 +1183,19 @@ public class PromotionService
         }
 
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
-        await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
+
+        // A legacy, unattributed approval (recorded before gates were tracked per requirement) is
+        // ambiguous about which gate it meant, so it still counts as "this person has decided".
+        var mine = await LoadMyDecisionsAsync(candidateId, ct);
+        if (mine.Any(d => d.StepName is null && d.RequirementName is null))
+            throw new InvalidOperationException("You have already made a decision on this promotion");
 
         // Resolve which requirement this approval is attributed to. The approver may explicitly pin
         // a (stepName, requirementName); otherwise we auto-pick when exactly one open requirement is
-        // available, or ask the caller to choose when more than one is.
+        // available, or ask the caller to choose when more than one is. "Eligible" already excludes
+        // requirements this user has approved and requirements that are satisfied.
         var eligible = await GetEligibleRequirementsAsync(candidate, ct);
-        RequirementRef? target = null;
+        RequirementRef target;
         var hasExplicit = !string.IsNullOrWhiteSpace(stepName) || !string.IsNullOrWhiteSpace(requirementName);
         if (hasExplicit)
         {
@@ -1196,7 +1204,8 @@ public class PromotionService
                 && string.Equals(r.RequirementName, requirementName ?? "", StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                // Distinguish "not eligible" from "already satisfied" so the caller can pick a status.
+                // Distinguish "not eligible" from "already approved by you" from "already satisfied"
+                // so the caller can pick a status.
                 var existsInTree = snapshot.ApprovalSteps.Any(s =>
                     string.Equals(s.Name ?? "", stepName ?? "", StringComparison.OrdinalIgnoreCase)
                     && s.Requirements.Any(rq =>
@@ -1212,8 +1221,13 @@ public class PromotionService
                 }
 
                 if (existsInTree && authorized)
+                {
+                    if (mine.Any(d => SameRequirement(d, stepName, requirementName)))
+                        throw new InvalidOperationException(
+                            $"You have already approved this promotion as '{requirementName}'.");
                     throw new RequirementAlreadySatisfiedException(
                         $"Requirement '{requirementName}' is already satisfied — nothing to approve there.");
+                }
                 throw new UnauthorizedAccessException("You are not eligible for that requirement.");
             }
             target = match;
@@ -1222,9 +1236,17 @@ public class PromotionService
         {
             if (eligible.Count == 1) target = eligible[0];
             else if (eligible.Count > 1) throw new MultipleEligibleRequirementsException(eligible);
-            // eligible.Count == 0: leave target null — EnsureUserCanApproveAsync already passed, so
-            // the user is authorized for the tree but every requirement they match is satisfied.
-            // Record an unattributed row (back-compat) so the matcher's surplus handling applies.
+            else
+            {
+                // EnsureUserCanApproveAsync passed, so the user is authorized for the tree — but every
+                // requirement they match is either satisfied or already carries their approval.
+                // Nothing to record; say which it is.
+                if (mine.Any(d => d.Decision == PromotionDecision.Approved))
+                    throw new InvalidOperationException(
+                        "You have already approved every requirement you are eligible for on this promotion.");
+                throw new RequirementAlreadySatisfiedException(
+                    "Every requirement you are eligible for is already satisfied — nothing to approve.");
+            }
         }
 
         var decision = new PromotionApproval
@@ -1235,13 +1257,13 @@ public class PromotionService
             ApproverName = _currentUser.Name,
             Comment = comment,
             Decision = PromotionDecision.Approved,
-            StepName = target?.StepName,
-            RequirementName = target?.RequirementName,
+            StepName = target.StepName,
+            RequirementName = target.RequirementName,
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.PromotionApprovals.Add(decision);
 
-        var approvedAs = target is null || string.IsNullOrEmpty(target.RequirementName)
+        var approvedAs = string.IsNullOrEmpty(target.RequirementName)
             ? ""
             : $" as '{target.RequirementName}'";
         StageSystemComment(candidateId, string.IsNullOrWhiteSpace(comment)
@@ -1756,9 +1778,10 @@ public class PromotionService
     private async Task<GateResult> EvaluatePromotionOnlyGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
     {
-        // The manual gate is satisfied when EVERY requirement across EVERY step is satisfied by a
-        // distinct set of approvers (parallel AND over the flattened requirement set, D9). The
-        // matcher assigns each distinct approver to at most one requirement, most-constrained first.
+        // The manual gate is satisfied when EVERY requirement across EVERY step has enough distinct
+        // approvers of its own (parallel AND over the flattened requirement set). An approval counts
+        // toward the requirement it was recorded against, so one person may clear several gates;
+        // only legacy unattributed rows are placed by the matcher, at most one requirement each.
         var requirements = snapshot.AllRequirements;
         if (requirements.Count == 0)
             return new GateResult(true, Array.Empty<string>()); // no human gate
@@ -1780,9 +1803,9 @@ public class PromotionService
     }
 
     /// <summary>
-    /// Loads the candidate's distinct Approved approver emails and runs the
-    /// <see cref="ApprovalMatcher"/> against the requirement set, using the authorizer to decide
-    /// eligibility. Eligibility for the current user is resolved live (group membership); for any
+    /// Loads the candidate's Approved rows — one decision per (approver, requirement) — and runs
+    /// the <see cref="ApprovalMatcher"/> against the requirement set, using the authorizer to decide
+    /// eligibility of the unattributed ones. Eligibility for the current user is resolved live (group membership); for any
     /// other recorded approver, eligibility is determined by the requirement's explicit user list
     /// (group membership for non-current users can't be answered by the identity service). This is
     /// adequate because, in practice, distinct group memberships are validated at record time via
@@ -1814,27 +1837,11 @@ public class PromotionService
             }
         }
 
-        // Collapse to one decision per distinct approver. A pinned attribution (resolvable to a
-        // requirement index) wins; otherwise the row is unpinned and auto-attributed by the matcher.
-        var decisionByEmail = new Dictionary<string, ApproverDecision>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in approvedRows)
-        {
-            if (string.IsNullOrEmpty(row.ApproverEmail)) continue;
-            int? pinned = null;
-            if (!string.IsNullOrEmpty(row.RequirementName)
-                && indexByName.TryGetValue((row.StepName ?? "", row.RequirementName), out var idx))
-            {
-                pinned = idx;
-            }
-
-            // Keep the strongest signal: a pinned decision should not be overwritten by a later
-            // unpinned dup (shouldn't happen given the unique constraint, but be defensive).
-            if (decisionByEmail.TryGetValue(row.ApproverEmail, out var existing) && existing.PinnedRequirementIndex is not null)
-                continue;
-            decisionByEmail[row.ApproverEmail] = new ApproverDecision(row.ApproverEmail, pinned);
-        }
-
-        var decisions = decisionByEmail.Values.ToList();
+        // One pinned decision per (approver, requirement) — an approver who cleared two gates reaches
+        // the matcher twice — plus one unpinned decision per approver with legacy/stale attribution.
+        var decisions = ToDecisions(
+            approvedRows.Select(a => new RecordedApproval(a.ApproverEmail, a.StepName, a.RequirementName)),
+            indexByName);
 
         // Pre-resolve eligibility for the UNPINNED approvers so the (synchronous) matcher stays pure.
         // Pinned rows are trusted (eligibility was validated at record time) so they're attributed
@@ -2042,13 +2049,15 @@ public class PromotionService
     }
 
     /// <summary>
-    /// The set of OPEN requirements the current user may approve as: those they
-    /// <see cref="PromotionApprovalAuthorizer.IsAuthorizedForRequirementAsync"/> AND that are not yet
-    /// satisfied by the live matcher outcome. Returns an empty list when the candidate isn't Pending,
-    /// is auto-approve, the user has already decided, or the user is eligible for none.
+    /// The set of OPEN requirements the current user may still approve as: those they
+    /// <see cref="PromotionApprovalAuthorizer.IsAuthorizedForRequirementAsync"/>, that are not yet
+    /// satisfied by the live matcher outcome, and that they have not already approved. Returns an
+    /// empty list when the candidate isn't Pending, is auto-approve, the user holds a legacy
+    /// unattributed decision, or the user is eligible for none.
     ///
     /// <para>When the user is eligible for more than one open requirement, all of them are returned so
-    /// the caller (endpoint / UI) can prompt the approver to choose which one they approve as.</para>
+    /// the caller (endpoint / UI) can offer a separate approve action per gate. A user in two gates
+    /// therefore keeps the second one on offer after approving the first.</para>
     /// </summary>
     public async Task<IReadOnlyList<RequirementRef>> GetEligibleRequirementsAsync(
         PromotionCandidate candidate, CancellationToken ct = default)
@@ -2058,20 +2067,19 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove || snapshot.AllRequirements.Count == 0) return Array.Empty<RequirementRef>();
 
-        // Already decided? Nothing further to offer. Compare against the canonical stored form so a
-        // differently-cased email claim (e.g. UPN vs Graph mail) can't slip past the dedup.
-        var normalizedEmail = NormalizeEmail(_currentUser.Email);
-        var already = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == normalizedEmail, ct);
-        if (already) return Array.Empty<RequirementRef>();
+        // What this user has already decided on this candidate. A legacy unattributed row means they
+        // decided before gates were tracked — nothing further to offer. Attributed rows only take
+        // their own gate off the table.
+        var mine = await LoadMyDecisionsAsync(candidate.Id, ct);
+        if (mine.Any(d => d.StepName is null && d.RequirementName is null)) return Array.Empty<RequirementRef>();
 
         // Which requirements are still OPEN (not yet satisfied) per the live matcher.
         var match = await EvaluateRequirementMatchAsync(candidate, snapshot.AllRequirements, ct);
         var openByIndex = new bool[snapshot.AllRequirements.Count];
         for (var i = 0; i < match.Requirements.Count; i++) openByIndex[i] = !match.Requirements[i].Satisfied;
 
-        // Walk steps in flatten order, offering each (step, requirement) the user is authorized for
-        // and that is still open.
+        // Walk steps in flatten order, offering each (step, requirement) the user is authorized for,
+        // that is still open, and that they haven't approved yet.
         var result = new List<RequirementRef>();
         var cursor = 0;
         foreach (var step in snapshot.ApprovalSteps)
@@ -2080,6 +2088,7 @@ public class PromotionService
             {
                 var idx = cursor++;
                 if (!openByIndex[idx]) continue;
+                if (mine.Any(d => SameRequirement(d, step.Name, req.Name))) continue;
                 if (await _auth.IsAuthorizedForRequirementAsync(req, _currentUser.Email, ct))
                     result.Add(new RequirementRef(step.Name ?? "", req.Name ?? ""));
             }
@@ -2150,7 +2159,10 @@ public class PromotionService
 
     /// <summary>
     /// Rejects a pending candidate. One rejection from an authorized approver is enough to
-    /// terminate the flow — consistent with treating rejection as an explicit veto.
+    /// terminate the flow — consistent with treating rejection as an explicit veto. Having already
+    /// approved one gate does not forfeit the veto: the release manager who signed off QA may still
+    /// refuse the release. Only a legacy unattributed decision (or a prior rejection, which would
+    /// have terminated the candidate anyway) blocks a second row.
     /// </summary>
     public async Task<PromotionCandidate> RejectAsync(
         Guid candidateId, string? comment, CancellationToken ct = default)
@@ -2159,7 +2171,9 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
 
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
-        await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
+        var mine = await LoadMyDecisionsAsync(candidateId, ct);
+        if (mine.Any(d => d.StepName is null && d.RequirementName is null))
+            throw new InvalidOperationException("You have already made a decision on this promotion");
 
         var decision = new PromotionApproval
         {
@@ -2921,7 +2935,10 @@ public class PromotionService
 
     /// <summary>
     /// Non-throwing version of the approval authorization check — used by endpoints to return a
-    /// <c>canApprove</c> flag per candidate so the UI can disable buttons.
+    /// <c>canApprove</c> flag per candidate so the UI can disable buttons. True while the user has
+    /// at least one open requirement left to approve as (see
+    /// <see cref="GetEligibleRequirementsAsync"/>) — so somebody in two gates who has cleared one
+    /// still reads as able to approve until the other is done.
     /// </summary>
     public async Task<bool> CanUserApproveAsync(PromotionCandidate candidate, CancellationToken ct = default)
     {
@@ -2930,14 +2947,7 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove) return false; // nothing to approve
 
-        // Already decided? Can't approve again. Match the canonical stored form.
-        var normalizedEmail = NormalizeEmail(_currentUser.Email);
-        var already = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == normalizedEmail, ct);
-        if (already) return false;
-
-        // Authorized for some requirement of this candidate's rule tree.
-        return await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct);
+        return (await GetEligibleRequirementsAsync(candidate, ct)).Count > 0;
     }
 
     /// <summary>
@@ -2973,15 +2983,25 @@ public class PromotionService
         var list = candidates.ToList();
         if (list.Count == 0) return result;
 
-        // Precompute "already decided" set for the current user across all candidates in one query.
-        // Match the canonical stored form so casing can't cause a missed dedup.
+        // Precompute what the current user has already decided across all candidates in one query.
+        // Match the canonical stored form so casing can't cause a missed dedup. A legacy unattributed
+        // row closes the whole candidate to this user; an attributed row closes only its own gate.
         var ids = list.Select(c => c.Id).ToList();
         var normalizedEmail = NormalizeEmail(_currentUser.Email);
-        var alreadyDecided = await _db.PromotionApprovals.AsNoTracking()
+        var myRows = await _db.PromotionApprovals.AsNoTracking()
             .Where(a => ids.Contains(a.CandidateId) && a.ApproverEmail == normalizedEmail)
-            .Select(a => a.CandidateId)
+            .Select(a => new { a.CandidateId, a.StepName, a.RequirementName })
             .ToListAsync(ct);
-        var decidedSet = alreadyDecided.ToHashSet();
+        var decidedSet = myRows
+            .Where(a => a.StepName is null && a.RequirementName is null)
+            .Select(a => a.CandidateId)
+            .ToHashSet();
+        var myGates = myRows
+            .Where(a => a.StepName is not null || a.RequirementName is not null)
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(a => (Step: a.StepName ?? "", Req: a.RequirementName ?? "")).ToHashSet());
 
         // Every Approved row across the whole list, in one query — the input the matcher needs to tell
         // an open requirement from a satisfied one. Batched for the same reason group membership is.
@@ -3015,14 +3035,17 @@ public class PromotionService
             // approvable, so which ones the user matches doesn't matter.
             if (gateBlocked.Contains(c.Id)) { result[c.Id] = false; continue; }
 
-            // Which requirements this user is authorized for. Collected by index rather than
-            // short-circuiting on the first hit, because the open-ness test below needs all of them:
-            // one matched requirement being satisfied says nothing about another.
-            var requirements = snapshot.AllRequirements;
+            // Which requirements this user is authorized for and hasn't approved yet. Collected by
+            // index rather than short-circuiting on the first hit, because the open-ness test below
+            // needs all of them: one matched requirement being satisfied says nothing about another.
+            var approvedByMe = myGates.GetValueOrDefault(c.Id);
             var authorizedIndexes = new List<int>();
-            for (var ri = 0; ri < requirements.Count; ri++)
+            var ri = -1;
+            foreach (var step in snapshot.ApprovalSteps)
+            foreach (var req in step.Requirements)
             {
-                var req = requirements[ri];
+                ri++;
+                if (approvedByMe is not null && approvedByMe.Contains((step.Name ?? "", req.Name ?? ""))) continue;
                 // User-list match is free; check it first.
                 if (req.Users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -3163,26 +3186,37 @@ public class PromotionService
             }
         }
 
-        var decisionByEmail = new Dictionary<string, ApproverDecision>(StringComparer.OrdinalIgnoreCase);
+        return ApprovalMatcher.Match(
+            requirements,
+            ToDecisions(recorded, indexByName),
+            (recordedEmail, req) => ApprovedRowMatchesRequirement(req, recordedEmail));
+    }
+
+    /// <summary>
+    /// Turns recorded Approved rows into matcher decisions: one <b>pinned</b> decision per
+    /// (approver, requirement) whose attribution resolves to a requirement in the snapshot, plus at
+    /// most one <b>unpinned</b> decision per approver for rows with no (or stale) attribution. An
+    /// approver who approved two gates therefore reaches the matcher twice and counts on both.
+    /// </summary>
+    private static List<ApproverDecision> ToDecisions(
+        IEnumerable<RecordedApproval> recorded, IReadOnlyDictionary<(string Step, string Req), int> indexByName)
+    {
+        var decisions = new List<ApproverDecision>();
+        var pinnedSeen = new HashSet<(string Email, int Index)>();
+        var unpinnedSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in recorded)
         {
             if (string.IsNullOrEmpty(row.ApproverEmail)) continue;
-            int? pinned = null;
+            var email = row.ApproverEmail.ToLowerInvariant();
             if (!string.IsNullOrEmpty(row.RequirementName)
                 && indexByName.TryGetValue((row.StepName ?? "", row.RequirementName), out var idx))
             {
-                pinned = idx;
-            }
-            if (decisionByEmail.TryGetValue(row.ApproverEmail, out var existing)
-                && existing.PinnedRequirementIndex is not null)
+                if (pinnedSeen.Add((email, idx))) decisions.Add(new ApproverDecision(row.ApproverEmail, idx));
                 continue;
-            decisionByEmail[row.ApproverEmail] = new ApproverDecision(row.ApproverEmail, pinned);
+            }
+            if (unpinnedSeen.Add(email)) decisions.Add(new ApproverDecision(row.ApproverEmail, null));
         }
-
-        return ApprovalMatcher.Match(
-            requirements,
-            decisionByEmail.Values.ToList(),
-            (recordedEmail, req) => ApprovedRowMatchesRequirement(req, recordedEmail));
+        return decisions;
     }
 
     /// <summary>
@@ -3287,14 +3321,26 @@ public class PromotionService
             throw new UnauthorizedAccessException("You are not authorized to approve this promotion");
     }
 
-    private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)
+    /// <summary>
+    /// Every decision the current user has recorded on <paramref name="candidateId"/>, matched on the
+    /// canonical stored email form so a differently-cased claim (UPN vs Graph mail) can't slip past
+    /// the dedup. One row per gate approved, plus any rejection or legacy unattributed row.
+    /// </summary>
+    private async Task<IReadOnlyList<MyDecision>> LoadMyDecisionsAsync(Guid candidateId, CancellationToken ct)
     {
-        var normalizedEmail = NormalizeEmail(email);
-        var dup = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidateId && a.ApproverEmail == normalizedEmail, ct);
-        if (dup)
-            throw new InvalidOperationException("You have already made a decision on this promotion");
+        var normalizedEmail = NormalizeEmail(_currentUser.Email);
+        return await _db.PromotionApprovals.AsNoTracking()
+            .Where(a => a.CandidateId == candidateId && a.ApproverEmail == normalizedEmail)
+            .Select(a => new MyDecision(a.Decision, a.StepName, a.RequirementName))
+            .ToListAsync(ct);
     }
+
+    private readonly record struct MyDecision(PromotionDecision Decision, string? StepName, string? RequirementName);
+
+    /// <summary>Whether a recorded decision is attributed to the given (step, requirement) pair.</summary>
+    private static bool SameRequirement(MyDecision decision, string? stepName, string? requirementName)
+        => string.Equals(decision.StepName ?? "", stepName ?? "", StringComparison.OrdinalIgnoreCase)
+           && string.Equals(decision.RequirementName ?? "", requirementName ?? "", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Canonical form used for storing and comparing approver emails: trimmed + lower-invariant.

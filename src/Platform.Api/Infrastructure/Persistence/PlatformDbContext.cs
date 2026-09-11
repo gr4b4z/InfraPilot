@@ -609,8 +609,12 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             // Optional attribution to the step/requirement the approval was recorded against.
             e.Property(x => x.StepName).HasMaxLength(200);
             e.Property(x => x.RequirementName).HasMaxLength(200);
-            // DB-level guard against double approval from the same user.
-            e.HasIndex(x => new { x.CandidateId, x.ApproverEmail }).IsUnique();
+            // DB-level guard against the same user approving the same gate twice. One person may
+            // hold several rows on a candidate — one per requirement they approved as — which is what
+            // lets somebody sitting in two gates clear both. Rows with no attribution (rejections,
+            // legacy approvals) fall outside the index — Postgres never collides NULLs, SQL Server
+            // gets a NOT NULL filter — so those are guarded per user at the application level.
+            e.HasIndex(x => new { x.CandidateId, x.ApproverEmail, x.StepName, x.RequirementName }).IsUnique();
             e.HasOne<PromotionCandidate>()
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)

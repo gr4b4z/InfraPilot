@@ -1,8 +1,10 @@
 namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
-/// One approver's decision on a candidate. The DB-level UNIQUE on (CandidateId, ApproverEmail)
-/// is the belt-and-suspenders guard against double-approval races.
+/// One approver's decision on a candidate, recorded against one approval requirement (gate). A
+/// person eligible for several gates approves each of them separately and gets one row per gate.
+/// The DB-level UNIQUE on (CandidateId, ApproverEmail, StepName, RequirementName) is the
+/// belt-and-suspenders guard against approving the same gate twice in a race.
 /// </summary>
 public class PromotionApproval
 {
@@ -14,10 +16,11 @@ public class PromotionApproval
     public PromotionDecision Decision { get; set; } = PromotionDecision.Approved;
 
     /// <summary>
-    /// Optional attribution: which <see cref="ApprovalStep"/> / <see cref="ApproverRequirement"/>
-    /// the approver was recorded against. Informational only — the gate evaluator re-derives
-    /// requirement satisfaction from group/user membership via the matcher, so correctness does
-    /// not depend on these being set. Null on auto-approve rows and on legacy data.
+    /// Which <see cref="ApprovalStep"/> / <see cref="ApproverRequirement"/> the approval was
+    /// recorded against. Every approval recorded through <c>ApproveAsync</c> carries it; the gate
+    /// evaluator counts the row toward exactly that requirement. Null on Rejected rows, on
+    /// auto-approve rows and on legacy data recorded before attribution existed — those the matcher
+    /// attributes itself (most-constrained requirement first, at most one requirement per person).
     /// </summary>
     public string? StepName { get; set; }
 
