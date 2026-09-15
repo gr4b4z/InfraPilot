@@ -249,6 +249,7 @@ export function RollbackSettings() {
           </h2>
           <HelpButton
             page="Rollback settings"
+            context={{ policiesConfigured: policies.length }}
             question="How do I configure who can raise and approve rollbacks?"
             size="sm"
           />

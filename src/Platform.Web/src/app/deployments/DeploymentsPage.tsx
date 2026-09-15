@@ -193,7 +193,7 @@ export function DeploymentsPage() {
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               Deployments
             </h1>
-            <HelpButton page="Deployments" />
+            <HelpButton page="Deployments" context={{ products: shownCount, search: searchQuery }} />
           </div>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
             Product overview — current deployment state across environments

@@ -63,7 +63,7 @@ export function ChatSidebar() {
   // Derive current slug from the URL only — never fall back to stale store value.
   const currentSlug = slugMatch?.[1];
 
-  const sendMessage = async (overrideMessage?: string) => {
+  const sendMessage = async (overrideMessage?: string, pageState?: Record<string, string> | null) => {
     const msg = overrideMessage || input.trim();
     if (!msg || loading) return;
 
@@ -86,6 +86,7 @@ export function ChatSidebar() {
             currentPath: location.pathname,
             currentSlug: currentSlug || undefined,
             formData: currentSlug ? (context.formData || undefined) : undefined,
+            pageState: pageState ?? undefined,
           },
           history: getHistoryForAgent(),
         }),
@@ -153,15 +154,15 @@ export function ChatSidebar() {
   // the question they effectively asked is visible in the transcript.
   useEffect(() => {
     if (!pendingQuestion) return;
-    const question = consumePendingQuestion();
-    if (!question) return;
+    const queued = consumePendingQuestion();
+    if (!queued) return;
 
     // Sent from a microtask rather than the effect body: sendMessage sets state immediately, and
     // doing that while React is committing this effect cascades an extra render. The closure is the
     // one from the render that queued the question, so the page context it sends is current.
     queueMicrotask(() => {
-      addMessage({ role: 'user', text: question });
-      void sendMessage(question);
+      addMessage({ role: 'user', text: queued.question });
+      void sendMessage(queued.question, queued.pageState);
     });
   }, [pendingQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 

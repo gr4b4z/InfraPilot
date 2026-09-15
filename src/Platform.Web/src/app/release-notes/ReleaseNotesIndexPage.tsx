@@ -20,7 +20,7 @@ export function ReleaseNotesIndexPage() {
           <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
             Release Notes
           </h1>
-          <HelpButton page="Release Notes" />
+          <HelpButton page="Release Notes" context={{ products: products.length }} />
         </div>
         <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
           Pick a product to view its release notes.

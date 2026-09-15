@@ -224,8 +224,17 @@ export function RequestPage() {
           <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
             {detail.item.name}
           </h1>
+          {/* The form's own state, so "what do I do here?" can answer with the fields still empty
+              rather than describing the form from scratch. */}
           <HelpButton
             page={detail.item.name}
+            context={{
+              service: slug,
+              step: currentStep,
+              filledFields: Object.keys(values).filter((k) => values[k] !== '' && values[k] != null).length,
+              totalFields: detail.inputs.length,
+              validationErrors: Object.keys(errors).length,
+            }}
             question={`How do I fill in and submit the "${detail.item.name}" request?`}
           />
         </div>

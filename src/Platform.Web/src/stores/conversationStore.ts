@@ -39,6 +39,8 @@ interface ConversationState {
    * Not persisted — a reload should not re-ask what the user asked in a previous session.
    */
   pendingQuestion: string | null;
+  /** What the caller was looking at when it asked, sent alongside the question. */
+  pendingPageState: Record<string, string> | null;
 
   // Actions
   addMessage: (msg: Omit<ChatMessage, 'timestamp'>) => void;
@@ -51,9 +53,9 @@ interface ConversationState {
    * Opens the panel and leaves the question for ChatSidebar to send, so callers do not need to
    * know how a turn is assembled (page context, history, auth).
    */
-  askAssistant: (question: string) => void;
-  /** Takes the queued question, clearing it so a re-render cannot send it twice. */
-  consumePendingQuestion: () => string | null;
+  askAssistant: (question: string, pageState?: Record<string, string>) => void;
+  /** Takes the queued question and its context, clearing them so a re-render cannot send twice. */
+  consumePendingQuestion: () => { question: string; pageState: Record<string, string> | null } | null;
   toggleSidebar: () => void;
   toggleSidebarExpanded: () => void;
   startNewThread: () => void;
@@ -78,6 +80,7 @@ export const useConversationStore = create<ConversationState>()(
       sidebarOpen: false,
       sidebarExpanded: false,
       pendingQuestion: null,
+      pendingPageState: null,
 
       addMessage: (msg) =>
         set((state) => ({
@@ -107,12 +110,14 @@ export const useConversationStore = create<ConversationState>()(
 
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
 
-      askAssistant: (question) => set({ sidebarOpen: true, pendingQuestion: question }),
+      askAssistant: (question, pageState) =>
+        set({ sidebarOpen: true, pendingQuestion: question, pendingPageState: pageState ?? null }),
 
       consumePendingQuestion: () => {
-        const { pendingQuestion } = get();
-        if (pendingQuestion) set({ pendingQuestion: null });
-        return pendingQuestion;
+        const { pendingQuestion, pendingPageState } = get();
+        if (!pendingQuestion) return null;
+        set({ pendingQuestion: null, pendingPageState: null });
+        return { question: pendingQuestion, pageState: pendingPageState };
       },
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       toggleSidebarExpanded: () => set((state) => ({ sidebarExpanded: !state.sidebarExpanded })),
