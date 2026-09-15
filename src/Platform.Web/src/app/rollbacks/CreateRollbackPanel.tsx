@@ -250,6 +250,7 @@ export function CreateRollbackPanel({
             <select
               value={product}
               onChange={(e) => setProduct(e.target.value)}
+              data-guide-anchor="rollback-create-product"
               className="w-full rounded-lg border px-3 py-2 text-[13px]"
               style={selectStyle}
             >
@@ -269,6 +270,7 @@ export function CreateRollbackPanel({
             <select
               value={targetEnv}
               onChange={(e) => setTargetEnv(e.target.value)}
+              data-guide-anchor="rollback-create-target-env"
               className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
               style={targetEnvStyle}
             >
@@ -295,7 +297,11 @@ export function CreateRollbackPanel({
 
           {/* Mode */}
           <Field label="Mode">
-            <div className="inline-flex rounded-lg p-0.5 gap-0.5" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+            <div
+              data-guide-anchor="rollback-create-mode"
+              className="inline-flex rounded-lg p-0.5 gap-0.5"
+              style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}
+            >
               {(['Manual', 'Align'] as RollbackMode[]).map((m) => (
                 <button
                   key={m}
@@ -319,6 +325,7 @@ export function CreateRollbackPanel({
                 {prefill.service ? (
                   // Deep-linked from a deployment — service is fixed.
                   <div
+                    data-guide-anchor="rollback-create-service"
                     className="rounded-lg border px-3 py-2 text-[13px]"
                     style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
                   >
@@ -331,6 +338,7 @@ export function CreateRollbackPanel({
                       setManualService(e.target.value);
                       setManualVersion('');
                     }}
+                    data-guide-anchor="rollback-create-service"
                     className="w-full rounded-lg border px-3 py-2 text-[13px]"
                     style={selectStyle}
                     disabled={!product || !targetEnv || services.length === 0}
@@ -397,6 +405,7 @@ export function CreateRollbackPanel({
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+              data-guide-anchor="rollback-create-reason"
               rows={2}
               placeholder="Why are you rolling back?"
               className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
@@ -472,6 +481,7 @@ export function CreateRollbackPanel({
             <button
               onClick={handlePreview}
               disabled={!canPreview || previewing}
+              data-guide-anchor="rollback-create-preview-button"
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 border: '1px solid var(--border-color)',
@@ -485,6 +495,7 @@ export function CreateRollbackPanel({
             <button
               onClick={handleSubmit}
               disabled={!preview || eligibleCount === 0 || submitting}
+              data-guide-anchor="rollback-create-submit-button"
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',

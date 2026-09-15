@@ -67,9 +67,32 @@ import {
   workItemDetailPath,
 } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
+
+/**
+ * How long a promotion has been sitting in a non-terminal state, once that is long enough to be
+ * worth explaining — otherwise null.
+ *
+ * The threshold matches the server's diagnostic grace period: approval has to cross a webhook
+ * delivery, a workflow start, a commit and a reconcile that takes the deployment lock, so minutes
+ * are normal and a shorter window would describe healthy promotions as stuck.
+ */
+function stalledFor(candidate: PromotionCandidate): string | null {
+  if (TERMINAL_STATUSES.includes(candidate.status)) return null;
+
+  const since = candidate.approvedAt ?? candidate.createdAt;
+  if (!since) return null;
+
+  const minutes = (Date.now() - new Date(since).getTime()) / 60000;
+  if (minutes < 20) return null;
+
+  if (minutes < 60) return `${Math.floor(minutes)} minutes`;
+  if (minutes < 60 * 24) return `${Math.floor(minutes / 60)} hours`;
+  return `${Math.floor(minutes / (60 * 24))} days`;
+}
 
 // Author email the API stamps on entries it writes itself (PromotionComment.SystemAuthor).
 const SYSTEM_COMMENT_AUTHOR = 'system';
@@ -321,9 +344,31 @@ export function PromotionDetailPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            {candidate.product} / {candidate.service}
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              {candidate.product} / {candidate.service}
+            </h1>
+            {/* Carries the candidate id so the assistant diagnoses this exact promotion rather than
+                asking which one, and the status and age so it reaches for diagnose_promotion when
+                the thing is actually stalled instead of explaining the page. */}
+            <HelpButton
+              page="Promotion"
+              context={{
+                candidateId: candidate.id,
+                product: candidate.product,
+                service: candidate.service,
+                promotion: `${candidate.sourceEnv} → ${candidate.targetEnv}`,
+                version: candidate.version,
+                status: candidate.status,
+                waitingFor: stalledFor(candidate),
+              }}
+              question={
+                stalledFor(candidate)
+                  ? `This promotion has been ${candidate.status} for ${stalledFor(candidate)}. What is happening and what do I need to do?`
+                  : `What can I do with this promotion?`
+              }
+            />
+          </div>
           <div className="mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
             <PromotionRoute
               product={candidate.product}
@@ -511,19 +556,21 @@ export function PromotionDetailPage() {
              approved each gate, and an Approve button on every gate the current user can still
              clear, all in one card. Progress and history are visible to everyone; the controls
              appear only when the current user can act. */}
-          <PromotionApprovalCard
-            candidate={candidate}
-            progress={approvalProgress}
-            approvals={approvals}
-            actionDone={actionDone}
-            actionLoading={actionLoading}
-            onAction={handleAction}
-            onBypass={handleBypass}
-            onCancelApproval={handleCancelApproval}
-            canCancelApproval={canCancelApproval}
-            isAdmin={isAdmin}
-            eligibleRequirements={eligibleRequirements}
-          />
+          <div data-guide-anchor="promotion-approval-card">
+            <PromotionApprovalCard
+              candidate={candidate}
+              progress={approvalProgress}
+              approvals={approvals}
+              actionDone={actionDone}
+              actionLoading={actionLoading}
+              onAction={handleAction}
+              onBypass={handleBypass}
+              onCancelApproval={handleCancelApproval}
+              canCancelApproval={canCancelApproval}
+              isAdmin={isAdmin}
+              eligibleRequirements={eligibleRequirements}
+            />
+          </div>
 
           {/* Admin bypass banner — a bypass leaves no approval row, so this is the only trace of
              who force-approved the promotion and why. Shown in the approval area. */}
@@ -906,6 +953,7 @@ function PeopleCard({
 
   return (
     <div
+      data-guide-anchor="promotion-people-card"
       className="rounded-xl border p-5"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
@@ -919,6 +967,7 @@ function PeopleCard({
         {!readOnly && !showForm && (
           <button
             onClick={() => setShowForm(true)}
+            data-guide-anchor="promotion-assign-button"
             className="inline-flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
             style={{ color: 'var(--accent)' }}
           >
@@ -1086,6 +1135,7 @@ function PeopleCard({
             <button
               onClick={handleSave}
               disabled={saving}
+              data-guide-anchor="promotion-comment-save"
               className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',

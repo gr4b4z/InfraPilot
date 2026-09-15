@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
+import { GuideSpotlight } from '@/components/guide/GuideSpotlight';
 import { KeyboardLayer } from './KeyboardLayer';
 import { useRealtimeEvents } from '@/hooks/useRealtimeEvents';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
@@ -57,6 +58,8 @@ export function Layout() {
           <ChatSidebar />
         </div>
       </div>
+      {/* Above the shell so it can ring controls anywhere on the page, including the nav itself. */}
+      <GuideSpotlight />
     </div>
   );
 }

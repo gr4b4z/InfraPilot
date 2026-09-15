@@ -35,10 +35,16 @@ RUN chmod +x /start.sh
 COPY --from=api-build /app/api /app/api
 COPY --from=web-build /app/dist /usr/share/nginx/html
 COPY catalog /app/catalog
+COPY guides /app/guides
+COPY knowledge /app/knowledge
+COPY playbooks /app/playbooks
 
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV ASPNETCORE_URLS=http://127.0.0.1:8081
 ENV CatalogPath=/app/catalog
+ENV GUIDES_PATH=/app/guides
+ENV KNOWLEDGE_PATH=/app/knowledge
+ENV PLAYBOOKS_PATH=/app/playbooks
 ENV BACKEND_BASE_URL=
 ENV APP_NAME=InfraPilot
 ENV APP_SUBTITLE="Infrastructure Portal"

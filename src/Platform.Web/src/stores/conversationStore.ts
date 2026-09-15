@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AgentCard } from '@/lib/types';
+import type { GuidePlan } from './guideStore';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -13,6 +14,8 @@ export interface ChatMessage {
   cards?: AgentCard[];
   /** A2UI surface JSON emitted by the generate_form tool — renders a form inline in chat */
   a2uiSurface?: string;
+  /** Walkthrough started by the start_guide tool — kept so the user can replay it later */
+  guide?: GuidePlan;
   /** Whether this is an ambient notification (SSE push) */
   isNotification?: boolean;
   isLoading?: boolean;
@@ -31,6 +34,13 @@ interface ConversationState {
   sidebarOpen: boolean;
   /** When true the chat takes over the full content area (main view is hidden). */
   sidebarExpanded: boolean;
+  /**
+   * A question queued by something outside the chat, waiting for ChatSidebar to pick it up.
+   * Not persisted — a reload should not re-ask what the user asked in a previous session.
+   */
+  pendingQuestion: string | null;
+  /** What the caller was looking at when it asked, sent alongside the question. */
+  pendingPageState: Record<string, string> | null;
 
   // Actions
   addMessage: (msg: Omit<ChatMessage, 'timestamp'>) => void;
@@ -38,6 +48,14 @@ interface ConversationState {
   setContext: (ctx: Partial<ConversationContext>) => void;
   updateFormData: (key: string, value: unknown) => void;
   setSidebarOpen: (open: boolean) => void;
+  /**
+   * Ask the assistant something from outside the chat — the per-page Help buttons use this.
+   * Opens the panel and leaves the question for ChatSidebar to send, so callers do not need to
+   * know how a turn is assembled (page context, history, auth).
+   */
+  askAssistant: (question: string, pageState?: Record<string, string>) => void;
+  /** Takes the queued question and its context, clearing them so a re-render cannot send twice. */
+  consumePendingQuestion: () => { question: string; pageState: Record<string, string> | null } | null;
   toggleSidebar: () => void;
   toggleSidebarExpanded: () => void;
   startNewThread: () => void;
@@ -61,6 +79,8 @@ export const useConversationStore = create<ConversationState>()(
       context: {},
       sidebarOpen: false,
       sidebarExpanded: false,
+      pendingQuestion: null,
+      pendingPageState: null,
 
       addMessage: (msg) =>
         set((state) => ({
@@ -89,6 +109,16 @@ export const useConversationStore = create<ConversationState>()(
         })),
 
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
+
+      askAssistant: (question, pageState) =>
+        set({ sidebarOpen: true, pendingQuestion: question, pendingPageState: pageState ?? null }),
+
+      consumePendingQuestion: () => {
+        const { pendingQuestion, pendingPageState } = get();
+        if (!pendingQuestion) return null;
+        set({ pendingQuestion: null, pendingPageState: null });
+        return { question: pendingQuestion, pageState: pendingPageState };
+      },
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       toggleSidebarExpanded: () => set((state) => ({ sidebarExpanded: !state.sidebarExpanded })),
 

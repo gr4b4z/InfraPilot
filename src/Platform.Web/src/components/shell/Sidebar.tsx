@@ -34,6 +34,16 @@ import { KeyboardHints } from './KeyboardHints';
  */
 type CounterKey = 'promotionsAwaitingMe' | 'workItemsAssignedToMe' | 'myTasksTotal';
 
+/**
+ * Stable `data-guide-anchor` name for a nav destination, so the assistant's walkthroughs can point
+ * at "Rollbacks" in the sidebar as `nav-rollbacks`. Derived from the route rather than the label,
+ * which is what installations rebrand.
+ */
+function navAnchor(to: string): string {
+  const slug = to.replace(/^\//, '').replace(/\//g, '-');
+  return `nav-${slug || 'home'}`;
+}
+
 interface NavItem {
   to: string;
   label: string;
@@ -306,6 +316,9 @@ export function Sidebar() {
                     <NavLink
                       key={item.to}
                       to={item.to}
+                      // Every nav destination is addressable by the assistant's walkthroughs
+                      // without each one needing its own hand-written attribute.
+                      data-guide-anchor={navAnchor(item.to)}
                       className={({ isActive }) =>
                         // py-2.5 below `lg`: the drawer is driven by thumbs, and a 34px row is
                         // under the ~44px comfortable touch target.

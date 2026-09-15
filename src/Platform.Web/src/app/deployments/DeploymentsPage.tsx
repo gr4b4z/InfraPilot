@@ -14,6 +14,7 @@ import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import type { ProductSummary, ServiceSearchResult } from '@/lib/types';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 /** Below this the box is treated as empty — one letter matches half the fleet. */
 const MIN_SEARCH_LENGTH = 2;
@@ -188,9 +189,12 @@ export function DeploymentsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Deployments
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Deployments
+            </h1>
+            <HelpButton page="Deployments" context={{ products: shownCount, search: searchQuery }} />
+          </div>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
             Product overview — current deployment state across environments
           </p>
@@ -328,7 +332,11 @@ export function DeploymentsPage() {
           </button>
         </div>
       ) : (
-        <div className="rounded-xl border overflow-x-auto" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
+        <div
+          data-guide-anchor="deployments-product-list"
+          className="rounded-xl border overflow-x-auto"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+        >
           <table className="w-full min-w-max text-[13px]">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>

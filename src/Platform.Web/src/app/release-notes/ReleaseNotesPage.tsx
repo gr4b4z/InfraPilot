@@ -121,7 +121,7 @@ export function ReleaseNotesPage() {
         <div className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
           New release note
         </div>
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3" data-guide-anchor="release-notes-range">
           <div className="flex flex-col gap-1">
             <label className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Environment</label>
             <select
@@ -166,6 +166,7 @@ export function ReleaseNotesPage() {
             <button
               onClick={openDraft}
               disabled={!environment}
+              data-guide-anchor="release-notes-preview-button"
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium disabled:opacity-50"
               style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
