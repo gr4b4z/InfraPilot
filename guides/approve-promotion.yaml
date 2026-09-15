@@ -1,0 +1,37 @@
+id: approve-promotion
+title: Approve a promotion
+group: Promotions
+summary: >-
+  Clear the approval gates on a version waiting to move into the next environment, and see which
+  gates are still outstanding and who can clear them.
+aliases:
+  - approve a promotion
+  - promote a version
+  - sign off a release
+  - what is waiting for my approval
+  - who needs to approve this
+  - promotion gates
+route: /promotions
+requires:
+  feature_flag: Promotions
+  roles: []
+steps:
+  - text: >-
+      Open **Promotions**. The counter beside it in the navigation is the number of candidates
+      waiting on you specifically.
+    anchor: nav-promotions
+  - text: Open the candidate you want to act on to reach its detail page.
+    anchor: promotions-list
+  - text: >-
+      The **approval card** shows every gate, which are cleared, and who cleared them. An
+      **Approve** button appears on each gate you personally can still clear.
+    anchor: promotion-approval-card
+    note: >-
+      Progress and history are visible to everyone; only the controls are restricted. If you see no
+      Approve button, the remaining gates name someone else.
+  - text: >-
+      Approving the last outstanding gate advances the candidate. If more gates remain, the page
+      tells you which one you just cleared and what is still open.
+related:
+  - assign-promotion-participant
+  - comment-on-promotion

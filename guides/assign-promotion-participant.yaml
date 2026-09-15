@@ -1,0 +1,34 @@
+id: assign-promotion-participant
+title: Assign QA or another person to a promotion
+group: Promotions
+summary: >-
+  Put a named person on a promotion in a role such as QA, reviewer, or release manager, so the
+  right people are attached to the release.
+aliases:
+  - assign qa
+  - add someone to a promotion
+  - set the qa for a release
+  - who is the qa
+  - add a reviewer
+  - assign a release manager
+route: /promotions
+requires:
+  feature_flag: Promotions
+  roles: []
+steps:
+  - text: Open **Promotions** and select the candidate.
+    anchor: nav-promotions
+  - text: Find the **People** card, which lists everyone currently attached to the promotion.
+    anchor: promotion-people-card
+  - text: Click **Assign**, choose the role, and pick the person.
+    anchor: promotion-assign-button
+    note: >-
+      Role names are free-form and are canonicalised on save — "QA", "qa" and "Q.A." all land in
+      the same place. Search by name or email; matching on email is what lets downstream systems
+      like Jira and Slack line the person up.
+  - text: >-
+      You can also just ask me — "assign Alice as QA on this promotion" — and I will do it for you
+      from here.
+related:
+  - approve-promotion
+  - comment-on-promotion

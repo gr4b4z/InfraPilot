@@ -5,6 +5,7 @@ import { Loader2, CheckCircle, ArrowLeft, FileText, Shield, Send } from 'lucide-
 import { useConversationStore } from '@/stores/conversationStore';
 import { api } from '@/lib/api';
 import { buildAgentUrl } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import type { A2UIComponent, CatalogItem } from '@/lib/types';
 
@@ -120,7 +121,7 @@ export function RequestPage() {
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           message,
@@ -266,6 +267,7 @@ export function RequestPage() {
 
       {/* Form */}
       <div
+        data-guide-anchor="catalog-request-form"
         className="rounded-xl border p-6"
         style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
       >

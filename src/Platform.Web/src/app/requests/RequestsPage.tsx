@@ -146,6 +146,7 @@ export function RequestsPage() {
         </div>
       ) : (
         <div
+          data-guide-anchor="requests-list"
           className="rounded-xl border overflow-hidden"
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
         >

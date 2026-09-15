@@ -511,19 +511,21 @@ export function PromotionDetailPage() {
              approved each gate, and an Approve button on every gate the current user can still
              clear, all in one card. Progress and history are visible to everyone; the controls
              appear only when the current user can act. */}
-          <PromotionApprovalCard
-            candidate={candidate}
-            progress={approvalProgress}
-            approvals={approvals}
-            actionDone={actionDone}
-            actionLoading={actionLoading}
-            onAction={handleAction}
-            onBypass={handleBypass}
-            onCancelApproval={handleCancelApproval}
-            canCancelApproval={canCancelApproval}
-            isAdmin={isAdmin}
-            eligibleRequirements={eligibleRequirements}
-          />
+          <div data-guide-anchor="promotion-approval-card">
+            <PromotionApprovalCard
+              candidate={candidate}
+              progress={approvalProgress}
+              approvals={approvals}
+              actionDone={actionDone}
+              actionLoading={actionLoading}
+              onAction={handleAction}
+              onBypass={handleBypass}
+              onCancelApproval={handleCancelApproval}
+              canCancelApproval={canCancelApproval}
+              isAdmin={isAdmin}
+              eligibleRequirements={eligibleRequirements}
+            />
+          </div>
 
           {/* Admin bypass banner — a bypass leaves no approval row, so this is the only trace of
              who force-approved the promotion and why. Shown in the approval area. */}
@@ -906,6 +908,7 @@ function PeopleCard({
 
   return (
     <div
+      data-guide-anchor="promotion-people-card"
       className="rounded-xl border p-5"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
@@ -919,6 +922,7 @@ function PeopleCard({
         {!readOnly && !showForm && (
           <button
             onClick={() => setShowForm(true)}
+            data-guide-anchor="promotion-assign-button"
             className="inline-flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
             style={{ color: 'var(--accent)' }}
           >
@@ -1086,6 +1090,7 @@ function PeopleCard({
             <button
               onClick={handleSave}
               disabled={saving}
+              data-guide-anchor="promotion-comment-save"
               className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',

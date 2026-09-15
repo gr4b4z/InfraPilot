@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AgentCard } from '@/lib/types';
+import type { GuidePlan } from './guideStore';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -13,6 +14,8 @@ export interface ChatMessage {
   cards?: AgentCard[];
   /** A2UI surface JSON emitted by the generate_form tool — renders a form inline in chat */
   a2uiSurface?: string;
+  /** Walkthrough started by the start_guide tool — kept so the user can replay it later */
+  guide?: GuidePlan;
   /** Whether this is an ambient notification (SSE push) */
   isNotification?: boolean;
   isLoading?: boolean;

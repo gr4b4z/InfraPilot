@@ -35,21 +35,23 @@ export function ReleaseNotesIndexPage() {
       ) : (
         // A grid, so left/right move across a row and up/down between rows — `columns` has to match
         // the widest breakpoint's column count for the arithmetic to line up with what is on screen.
-        <KeyboardList
-          className="grid grid-cols-2 lg:grid-cols-3 gap-3"
-          count={products.length}
-          columns={3}
-          ariaLabel="Products with release notes"
-        >
-          {products.map((p, index) => (
-            <ProductCard
-              key={p.product}
-              index={index}
-              product={p.product}
-              environments={Object.keys(p.environments).length}
-            />
-          ))}
-        </KeyboardList>
+        <div data-guide-anchor="release-notes-product-list">
+          <KeyboardList
+            className="grid grid-cols-2 lg:grid-cols-3 gap-3"
+            count={products.length}
+            columns={3}
+            ariaLabel="Products with release notes"
+          >
+            {products.map((p, index) => (
+              <ProductCard
+                key={p.product}
+                index={index}
+                product={p.product}
+                environments={Object.keys(p.environments).length}
+              />
+            ))}
+          </KeyboardList>
+        </div>
       )}
     </div>
   );
