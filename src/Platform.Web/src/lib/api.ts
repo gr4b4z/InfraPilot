@@ -1,7 +1,6 @@
-import { acquireToken, isMsalEnabled, reauthenticate } from './auth';
+import { isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
-import { isLocalAuthEnabled } from './authConfig';
-import { getStoredToken } from './localAuth';
+import { authHeaders } from './authHeaders';
 
 /**
  * A webhook subscription's filter dimensions as written. Each is a set; an omitted or empty one
@@ -48,24 +47,10 @@ class ApiClient {
   }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...((options.headers as Record<string, string>) || {}),
-    };
-
-    if (isMsalEnabled()) {
-      const token = await acquireToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-    } else if (isLocalAuthEnabled()) {
-      const token = getStoredToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-    } else if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
-    }
+    const headers = await authHeaders(
+      (options.headers as Record<string, string>) || {},
+      this.token,
+    );
 
     const response = await fetch(buildApiUrl(path), {
       ...options,

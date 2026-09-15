@@ -62,6 +62,7 @@ import {
   ShieldCheck,
   Lock,
 } from 'lucide-react';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 /**
  * Per-candidate work-item signoff state for the list. The list API returns the candidate's own
@@ -859,9 +860,20 @@ export function PromotionsPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Promotions
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Promotions
+            </h1>
+            <HelpButton
+              page="Promotions"
+              context={{
+                view: VIEW_HEADINGS[view],
+                product: productFilter,
+                gate: gateFilter,
+                showing: displayed.length,
+              }}
+            />
+          </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Review and approve version promotions across environments
           </p>
@@ -1106,7 +1118,8 @@ export function PromotionsPage() {
               </div>
             )}
           </div>
-          <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
+          <div data-guide-anchor="promotions-list">
+            <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
             {displayed.map((c, index) => (
               <CandidateCard
                 key={c.id}
@@ -1122,7 +1135,8 @@ export function PromotionsPage() {
                 awaitingCue={view !== 'mine'}
               />
             ))}
-          </KeyboardList>
+            </KeyboardList>
+          </div>
           {displayed.length > PROGRESS_CANDIDATE_LIMIT && (
             <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
               Work-item sign-off state is loaded for the first {PROGRESS_CANDIDATE_LIMIT} rows;

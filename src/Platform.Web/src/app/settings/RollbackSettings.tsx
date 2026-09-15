@@ -13,6 +13,7 @@ import {
 import { useFeatureFlag, FeatureFlag } from '@/stores/featureFlagsStore';
 import { UserPicker, GroupPicker } from './approverPickers';
 import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 /**
  * Per-product rollback permissions: who may create a rollback and who must approve it. One policy per
@@ -242,9 +243,17 @@ export function RollbackSettings() {
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
     >
       <div>
-        <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Rollbacks
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Rollbacks
+          </h2>
+          <HelpButton
+            page="Rollback settings"
+            context={{ policiesConfigured: policies.length }}
+            question="How do I configure who can raise and approve rollbacks?"
+            size="sm"
+          />
+        </div>
         <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
           Set who can create rollbacks for each product and who must approve them. A product with no
           policy here can only be rolled back by an admin, and every such request needs an explicit
@@ -276,7 +285,7 @@ export function RollbackSettings() {
       ) : (
         <>
           {policies.length > 0 && (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" data-guide-anchor="settings-rollbacks-policies">
               <table className="w-full text-[13px]" style={{ color: 'var(--text-primary)' }}>
                 <thead>
                   <tr

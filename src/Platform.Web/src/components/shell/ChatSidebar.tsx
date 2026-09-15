@@ -5,7 +5,10 @@ import { useConversationStore } from '@/stores/conversationStore';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { ChatCard } from '@/components/chat/ChatCard';
 import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
+import { GuideCard } from '@/components/guide/GuideCard';
+import { useGuideStore } from '@/stores/guideStore';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
 
 export function ChatSidebar() {
   const {
@@ -21,6 +24,8 @@ export function ChatSidebar() {
     toggleSidebarExpanded,
     startNewThread,
     getHistoryForAgent,
+    pendingQuestion,
+    consumePendingQuestion,
   } = useConversationStore();
 
   const [input, setInput] = useState('');
@@ -31,6 +36,7 @@ export function ChatSidebar() {
   const location = useLocation();
   const isDesktop = useIsDesktop();
   const assistantName = getAssistantName();
+  const startGuide = useGuideStore((s) => s.start);
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -57,7 +63,7 @@ export function ChatSidebar() {
   // Derive current slug from the URL only — never fall back to stale store value.
   const currentSlug = slugMatch?.[1];
 
-  const sendMessage = async (overrideMessage?: string) => {
+  const sendMessage = async (overrideMessage?: string, pageState?: Record<string, string> | null) => {
     const msg = overrideMessage || input.trim();
     if (!msg || loading) return;
 
@@ -72,7 +78,7 @@ export function ChatSidebar() {
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           message: msg,
@@ -80,6 +86,7 @@ export function ChatSidebar() {
             currentPath: location.pathname,
             currentSlug: currentSlug || undefined,
             formData: currentSlug ? (context.formData || undefined) : undefined,
+            pageState: pageState ?? undefined,
           },
           history: getHistoryForAgent(),
         }),
@@ -115,7 +122,18 @@ export function ChatSidebar() {
         fieldSuggestions,
         cards: data.cards || undefined,
         a2uiSurface: data.a2uiSurface || undefined,
+        guide: data.guide || undefined,
       });
+
+      // The agent started a walkthrough — navigate and light up the first control. On a phone the
+      // chat covers the page it is about to point at, so close it first.
+      if (data.guide) {
+        if (!isDesktop) setSidebarOpen(false);
+        if (data.guide.route && data.guide.route !== location.pathname) {
+          navigate(data.guide.route);
+        }
+        startGuide(data.guide);
+      }
 
       // If a service was suggested, set it in context
       if (data.suggestedSlug) {
@@ -130,6 +148,23 @@ export function ChatSidebar() {
       setLoading(false);
     }
   };
+
+  // A Help button elsewhere on the page queued a question. Consuming it before sending is what stops
+  // a re-render from asking twice; the user message is added here rather than inside sendMessage so
+  // the question they effectively asked is visible in the transcript.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const queued = consumePendingQuestion();
+    if (!queued) return;
+
+    // Sent from a microtask rather than the effect body: sendMessage sets state immediately, and
+    // doing that while React is committing this effect cascades an extra render. The closure is the
+    // one from the render that queued the question, so the page context it sends is current.
+    queueMicrotask(() => {
+      addMessage({ role: 'user', text: queued.question });
+      void sendMessage(queued.question, queued.pageState);
+    });
+  }, [pendingQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNavigate = (slug: string) => {
     setContext({ catalogSlug: slug, step: 'form' });
@@ -238,6 +273,8 @@ export function ChatSidebar() {
                 initialValues={msg.fieldSuggestions}
               />
             )}
+
+            {msg.guide && <GuideCard plan={msg.guide} />}
 
             {/* Structured data cards */}
             {msg.cards && msg.cards.length > 0 && (

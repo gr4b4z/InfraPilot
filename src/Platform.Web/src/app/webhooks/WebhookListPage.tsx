@@ -36,6 +36,7 @@ import { NotificationCreateForm } from './NotificationCreateForm';
 import { WebhookFilterFields, WebhookFilterSummary } from './WebhookFilterFields';
 import { EMPTY_FILTERS, toFilterInput } from './webhookFilters';
 import type { WebhookFilters } from '@/lib/types';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 export function WebhookListPage() {
   const [webhooks, setWebhooks] = useState<WebhookSubscription[]>([]);
@@ -205,9 +206,21 @@ export function WebhookListPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Webhooks
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Webhooks
+            </h1>
+            {/* No walkthrough here, but the knowledge base documents every event and what consumes
+                it — which is what someone standing on this page actually needs. */}
+            <HelpButton
+              page="Webhooks"
+              context={{
+                subscriptions: webhooks.length,
+                active: webhooks.filter((w) => w.active).length,
+              }}
+              question="What do the webhook events mean, and which ones drive deployments?"
+            />
+          </div>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
             Manage webhook subscriptions for platform events
           </p>

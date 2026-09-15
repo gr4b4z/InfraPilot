@@ -673,16 +673,18 @@ export function ProductDeploymentsPage() {
       {/* Tab switcher + filters */}
       <div className="flex items-center gap-4 flex-wrap">
         {/* State / Activity / Compare tabs — Compare only when 2+ environments */}
-        <SegmentedControl
-          options={[
-            { key: 'state', label: 'State' },
-            { key: 'activity', label: 'Activity' },
-            ...(environments.length >= 2 ? [{ key: 'compare', label: 'Compare' }] : []),
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as ViewTab)}
-          ariaLabel="View"
-        />
+        <div data-guide-anchor="deployments-activity-tab">
+          <SegmentedControl
+            options={[
+              { key: 'state', label: 'State' },
+              { key: 'activity', label: 'Activity' },
+              ...(environments.length >= 2 ? [{ key: 'compare', label: 'Compare' }] : []),
+            ]}
+            value={tab}
+            onChange={(v) => setTab(v as ViewTab)}
+            ariaLabel="View"
+          />
+        </div>
 
         {/* Time filter for state tab */}
         {tab === 'state' && (

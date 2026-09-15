@@ -5,6 +5,7 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ScrollText, Loader2 } from 'lucide-react';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 export function ReleaseNotesIndexPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
@@ -15,9 +16,12 @@ export function ReleaseNotesIndexPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          Release Notes
-        </h1>
+        <div className="flex items-center gap-1">
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            Release Notes
+          </h1>
+          <HelpButton page="Release Notes" context={{ products: products.length }} />
+        </div>
         <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
           Pick a product to view its release notes.
         </p>
@@ -35,21 +39,23 @@ export function ReleaseNotesIndexPage() {
       ) : (
         // A grid, so left/right move across a row and up/down between rows — `columns` has to match
         // the widest breakpoint's column count for the arithmetic to line up with what is on screen.
-        <KeyboardList
-          className="grid grid-cols-2 lg:grid-cols-3 gap-3"
-          count={products.length}
-          columns={3}
-          ariaLabel="Products with release notes"
-        >
-          {products.map((p, index) => (
-            <ProductCard
-              key={p.product}
-              index={index}
-              product={p.product}
-              environments={Object.keys(p.environments).length}
-            />
-          ))}
-        </KeyboardList>
+        <div data-guide-anchor="release-notes-product-list">
+          <KeyboardList
+            className="grid grid-cols-2 lg:grid-cols-3 gap-3"
+            count={products.length}
+            columns={3}
+            ariaLabel="Products with release notes"
+          >
+            {products.map((p, index) => (
+              <ProductCard
+                key={p.product}
+                index={index}
+                product={p.product}
+                environments={Object.keys(p.environments).length}
+              />
+            ))}
+          </KeyboardList>
+        </div>
       )}
     </div>
   );

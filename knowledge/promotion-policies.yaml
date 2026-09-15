@@ -1,0 +1,92 @@
+id: promotion-policies
+title: Why the promotion policies are the way they are
+group: Policies
+summary: >-
+  The 13 promotion policies in force, the reasoning behind each shape, and what "no approval steps"
+  actually means.
+aliases:
+  - promotion policy
+  - why do I need approval
+  - who approves what
+  - approval gates
+  - why is this auto approved
+  - qa manager approval
+  - guardians
+  - work item sign off
+tags:
+  - policy
+  - approval
+  - gate
+  - QA Manager
+  - Guardians
+  - dev
+  - test
+  - staging
+  - prod
+source: mpt-release/docs/release-pipelines.md §5.2
+as_of: 2026-08-28
+body: |
+  ## The policies in force
+
+  | Product | Service | Edge | Approval | Work items |
+  |---|---|---|---|---|
+  | `mpt` | all | dev → test | none (auto) | no |
+  | `mpt` | all | stable → staging | QA Manager ×1 | tracked |
+  | `mpt` | all | staging → prod | QA Manager ×1 | tracked, **all must be approved** |
+  | `mpt-extensions` | all | build → dev | none (auto) | no |
+  | `mpt-extensions` | all | dev → test | none (auto) | no |
+  | `mpt-extensions` | `swo-extension-mscsp` | dev → test | Guardians ×1 (5 members) | no |
+  | `mpt-extensions` | all | stable → staging | QA Manager ×1 | tracked |
+  | `mpt-extensions` | `swo-extension-mscsp` | stable → staging, staging → prod | Guardians ×1 | tracked |
+  | `mpt-extensions` | all | staging → prod | QA Manager ×1 | tracked, **all must be approved** |
+  | `mpt-jenkins-tools` | all | build → staging, staging → prod | QA Manager / named approver | tracked |
+
+  ## Why they are shaped like this
+
+  **Gates tighten as blast radius grows.** `dev` and `test` are disposable — a bad version there
+  costs a redeploy, so a human gate would only add latency to the feedback loop it exists to
+  protect. `staging` is the first environment someone outside the team looks at, so it takes a QA
+  Manager. `prod` takes the same approver *plus* a requirement that every work item in the bundle is
+  signed off, because at that edge the question changes from "does it run?" to "is everything in
+  this release meant to ship?".
+
+  **A policy with zero approval steps is auto-approved, not ungated.** The candidate is still
+  created, recorded, and closed by the deploy event. That is deliberate: it keeps `dev → test` in
+  the same ledger as `staging → prod`, so the history of a version is one unbroken chain regardless
+  of how much ceremony each hop carried. Reading an auto edge as "no policy" is the most common
+  misreading — the record exists, only the pause does not.
+
+  **Service-specific overrides exist where ownership differs, not where risk does.**
+  `swo-extension-mscsp` carries a Guardians gate even at `dev → test`, which no other service does.
+  That is not because the service is riskier; it is because a different team owns the decision, and
+  the policy is where that ownership is expressed.
+
+  **`build → *` policies set `sourceRequiresDeploy = false`.** `build` is a synthetic source
+  environment that never receives deploy events, so the usual "the source environment must actually
+  be running this version" check cannot apply. Without that flag every build-registry promotion
+  would be rejected for a missing source deploy.
+
+  ## Work item tracking
+
+  Where a policy tracks work items, the promotion carries the bundle of Jira/ADO items in the
+  version range. At `staging → prod` **all of them must be approved** before the gate clears. An
+  item flagged with an issue is counted separately rather than hidden behind a green tick — a
+  cleared bundle can legitimately read "4 of 5 approved, 1 with an issue", because an issue is a
+  flag, not a block.
+
+  Sign-off is scoped to `(work item, product, service, target environment)`. Approving an item for
+  `staging` does **not** approve it for `prod`; the same item is asked about again at the next edge,
+  on purpose.
+
+  ## What policies do not do
+
+  Gating lives entirely here. `mpt-release/README.md` describes per-component gate contracts in
+  `_contracts/{component}.yaml` — **that directory does not exist**. Treat that README section as
+  aspirational and this table as the truth.
+related:
+  - webhook-catalogue
+  - delivery-tracks
+  - environments-and-tracks
+related_guides:
+  - approve-promotion
+  - assign-promotion-participant

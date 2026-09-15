@@ -5,8 +5,10 @@ import { Loader2, CheckCircle, ArrowLeft, FileText, Shield, Send } from 'lucide-
 import { useConversationStore } from '@/stores/conversationStore';
 import { api } from '@/lib/api';
 import { buildAgentUrl } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import type { A2UIComponent, CatalogItem } from '@/lib/types';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 interface CatalogDetail {
   item: CatalogItem;
@@ -120,7 +122,7 @@ export function RequestPage() {
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           message,
@@ -218,9 +220,24 @@ export function RequestPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          {detail.item.name}
-        </h1>
+        <div className="flex items-center gap-1">
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            {detail.item.name}
+          </h1>
+          {/* The form's own state, so "what do I do here?" can answer with the fields still empty
+              rather than describing the form from scratch. */}
+          <HelpButton
+            page={detail.item.name}
+            context={{
+              service: slug,
+              step: currentStep,
+              filledFields: Object.keys(values).filter((k) => values[k] !== '' && values[k] != null).length,
+              totalFields: detail.inputs.length,
+              validationErrors: Object.keys(errors).length,
+            }}
+            question={`How do I fill in and submit the "${detail.item.name}" request?`}
+          />
+        </div>
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
           {detail.item.description}
         </p>
@@ -266,6 +283,7 @@ export function RequestPage() {
 
       {/* Form */}
       <div
+        data-guide-anchor="catalog-request-form"
         className="rounded-xl border p-6"
         style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
       >

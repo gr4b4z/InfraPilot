@@ -10,6 +10,9 @@ using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Builds;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Diagnostics;
+using Platform.Api.Features.Guides;
+using Platform.Api.Features.Knowledge;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.ReleaseNotes;
 using Platform.Api.Features.Rollbacks;
@@ -223,6 +226,14 @@ builder.Services.AddScoped<Platform.Api.Features.Settings.ParticipantRoleCatalog
 
 // Agent
 builder.Services.AddSingleton<A2UIFormGenerator>();
+// Guides are read-only YAML read once at startup, so one index is shared by every request.
+builder.Services.AddSingleton<GuideYamlLoader>();
+builder.Services.AddSingleton<GuideRegistry>();
+// Same for the platform knowledge corpus and the failure playbooks the diagnostics match against.
+builder.Services.AddSingleton<KnowledgeRegistry>();
+builder.Services.AddSingleton<PlaybookRegistry>();
+// Scoped — it reads per-request database state.
+builder.Services.AddScoped<DiagnosticsService>();
 builder.Services.AddScoped<ValidationRunner>();
 builder.Services.AddScoped<PlatformQueryService>();
 builder.Services.AddHttpClient<CatalogAgent>();
@@ -330,6 +341,13 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+// Force the guide corpus to load now rather than on the first chat message. The registry is a
+// singleton and would otherwise be built lazily, which would hide a missing or malformed guides
+// directory until a user asked a how-to question and quietly got nothing.
+app.Services.GetRequiredService<GuideRegistry>();
+app.Services.GetRequiredService<KnowledgeRegistry>();
+app.Services.GetRequiredService<PlaybookRegistry>();
 
 // Apply pending EF Core migrations on every startup (idempotent).
 {
@@ -442,7 +460,11 @@ app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 // Webhooks — admin only (both schemes)
 app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
-app.MapGroup("/agent").MapAgentEndpoints().AllowAnonymous();
+// The assistant reads deployments, promotions, requests and the user directory, and writes
+// promotion participants and comments. It is a view onto the same data as the groups above, so it
+// carries the same gate they do — an unauthenticated caller must not reach through the agent what
+// it cannot reach directly. Role-aware guidance also depends on there being a user to ask about.
+app.MapGroup("/agent").MapAgentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 
 // Realtime hub — WebSocket (with SignalR's fallbacks) for entity-changed signals
 app.MapHub<EventsHub>("/api/hubs/events").RequireAuthorization();
