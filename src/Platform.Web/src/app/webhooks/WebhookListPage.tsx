@@ -214,6 +214,10 @@ export function WebhookListPage() {
                 it — which is what someone standing on this page actually needs. */}
             <HelpButton
               page="Webhooks"
+              context={{
+                subscriptions: webhooks.length,
+                active: webhooks.filter((w) => w.active).length,
+              }}
               question="What do the webhook events mean, and which ones drive deployments?"
             />
           </div>

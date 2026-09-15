@@ -52,7 +52,14 @@ export function RequestsPage() {
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               Requests
             </h1>
-            <HelpButton page="Requests" />
+            <HelpButton
+              page="Requests"
+              context={{
+                scope: scope === 'mine' ? 'my requests' : 'all requests',
+                total: statusCounts.total,
+                active: statusCounts.active,
+              }}
+            />
           </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {scope === 'mine' ? 'Track your infrastructure service requests' : 'All team infrastructure requests'}

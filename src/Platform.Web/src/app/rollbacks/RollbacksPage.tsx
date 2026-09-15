@@ -239,7 +239,15 @@ export function RollbacksPage() {
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               Rollbacks
             </h1>
-            <HelpButton page="Rollbacks" />
+            <HelpButton
+              page="Rollbacks"
+              context={{
+                status: statusFilter,
+                product: productFilter,
+                targetEnv: targetEnvFilter,
+                openRequests: active.length,
+              }}
+            />
           </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Revert services to a prior version, manually or by aligning to a reference environment

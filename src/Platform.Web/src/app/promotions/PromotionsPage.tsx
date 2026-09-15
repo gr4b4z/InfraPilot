@@ -864,7 +864,15 @@ export function PromotionsPage() {
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               Promotions
             </h1>
-            <HelpButton page="Promotions" />
+            <HelpButton
+              page="Promotions"
+              context={{
+                view: VIEW_HEADINGS[view],
+                product: productFilter,
+                gate: gateFilter,
+                showing: displayed.length,
+              }}
+            />
           </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Review and approve version promotions across environments

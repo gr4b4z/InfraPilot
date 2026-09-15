@@ -43,7 +43,7 @@ export function CatalogPage() {
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
               Service Catalog
             </h1>
-            <HelpButton page="Service Catalog" />
+            <HelpButton page="Service Catalog" context={{ servicesShown: filteredItems.length }} />
           </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Browse and request infrastructure services for your team
