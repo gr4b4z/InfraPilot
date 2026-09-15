@@ -6,6 +6,7 @@ import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { ChatCard } from '@/components/chat/ChatCard';
 import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
 import { GuideCard } from '@/components/guide/GuideCard';
+import { NavigationChip } from '@/components/guide/NavigationChip';
 import { useGuideStore } from '@/stores/guideStore';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
 import { authHeaders } from '@/lib/authHeaders';
@@ -123,7 +124,36 @@ export function ChatSidebar() {
         cards: data.cards || undefined,
         a2uiSurface: data.a2uiSurface || undefined,
         guide: data.guide || undefined,
+        navigation: data.navigation || undefined,
       });
+
+      // "Show me X" means move the screen. Skipped when a guide is also running — the guide owns
+      // navigation from here, and two routers fighting over the same turn lands nowhere useful.
+      if (data.navigation?.route && !data.guide) {
+        if (!isDesktop) setSidebarOpen(false);
+        if (data.navigation.route !== location.pathname + location.search) {
+          navigate(data.navigation.route);
+        }
+
+        // Landing on a list is not the same as finding the row. A single-step plan reuses the
+        // walkthrough spotlight to ring it, with its own Done button to dismiss.
+        if (data.navigation.highlight) {
+          startGuide({
+            id: `navigation:${data.navigation.route}`,
+            title: data.navigation.label,
+            summary: '',
+            route: data.navigation.route,
+            steps: [
+              {
+                text: data.navigation.highlightLabel
+                  ? `Here is **${data.navigation.highlightLabel}**.`
+                  : 'Here it is.',
+                anchor: data.navigation.highlight,
+              },
+            ],
+          });
+        }
+      }
 
       // The agent started a walkthrough — navigate and light up the first control. On a phone the
       // chat covers the page it is about to point at, so close it first.
@@ -275,6 +305,9 @@ export function ChatSidebar() {
             )}
 
             {msg.guide && <GuideCard plan={msg.guide} />}
+            {msg.navigation && (
+              <NavigationChip route={msg.navigation.route} label={msg.navigation.label} />
+            )}
 
             {/* Structured data cards */}
             {msg.cards && msg.cards.length > 0 && (
