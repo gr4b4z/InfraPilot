@@ -1,0 +1,66 @@
+id: environments-and-tracks
+title: The environments, and the two independent promotion tracks
+group: Topology
+summary: >-
+  What each environment is for, the two parallel promotion chains, and why there is no path from test
+  to stable.
+aliases:
+  - what environments are there
+  - what is stable
+  - difference between test and staging
+  - how do I get to production
+  - why can't I promote test to stable
+  - promotion map
+tags:
+  - environment
+  - dev
+  - test
+  - stable
+  - staging
+  - prod
+  - main
+  - promotion map
+source: mpt-release/README.md + promotion-map.yaml
+as_of: 2026-08-28
+body: |
+  ## The two chains
+
+      main ──► dev ──► test          (from master/main — feature releases, CI builds)
+      stable ──► staging ──► prod    (from release/5 — release candidates)
+
+  That is `promotion-map.yaml` in full. The two tracks are **independent**.
+
+  | Directory | Role |
+  |---|---|
+  | `main/` | Landing zone. CI builds from `master`/`main` land here before dev. |
+  | `stable/` | Landing zone. CI builds from `release/5` land here before staging. |
+  | `dev/`, `test/`, `staging/`, `prod/` | Desired state for that environment. |
+
+  `main` and `stable` are **landing zones, not environments** — nothing is deployed to them. A
+  version arriving in `stable` produces a `release-track` deploy event, which is a marker that the
+  version qualified for the production track, not a record of a deployment.
+
+  ## Why there is no test → stable edge
+
+  A build enters the production track **only by being built from `release/5`**. Verifying something
+  in `test` does not graduate it; it has to be rebuilt from the release branch.
+
+  The reason is that the two tracks carry different content. `main` builds contain whatever has
+  merged, which is deliberately ahead of the release. Promoting a `test`-verified build into
+  `stable` would drag unreleased work into the production track with it. Cross-track promotion is a
+  planned future phase, and would need a way to express "this change, not everything behind it".
+
+  So "I tested it in test, why isn't it in staging?" has one answer: it will reach staging when a
+  `release/5` build containing it is produced.
+
+  ## The synthetic `build` environment
+
+  Track C adds a source environment called `build`, which never receives deploy events — it is the
+  registry, not a place. Its policies set `sourceRequiresDeploy = false` for exactly that reason.
+related:
+  - delivery-tracks
+  - promotion-policies
+  - service-topology
+related_guides:
+  - check-deployed-version
+  - approve-promotion

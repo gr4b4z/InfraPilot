@@ -1106,7 +1106,8 @@ export function PromotionsPage() {
               </div>
             )}
           </div>
-          <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
+          <div data-guide-anchor="promotions-list">
+            <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
             {displayed.map((c, index) => (
               <CandidateCard
                 key={c.id}
@@ -1122,7 +1123,8 @@ export function PromotionsPage() {
                 awaitingCue={view !== 'mine'}
               />
             ))}
-          </KeyboardList>
+            </KeyboardList>
+          </div>
           {displayed.length > PROGRESS_CANDIDATE_LIMIT && (
             <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
               Work-item sign-off state is loaded for the first {PROGRESS_CANDIDATE_LIMIT} rows;

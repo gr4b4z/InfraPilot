@@ -1,0 +1,94 @@
+id: delivery-tracks
+title: How a change reaches production — the three delivery tracks
+group: Process
+summary: >-
+  There is no single release pipeline. Three tracks deliver different parts of the product, sharing
+  InfraPortal as their control plane.
+aliases:
+  - how does deployment work
+  - how does the release process work
+  - how does a change get to production
+  - what is the deployment pipeline
+  - sdp track
+  - gitops track
+  - build registry track
+  - how does mpt-release work
+tags:
+  - marketplace
+  - mpt-release
+  - sdp
+  - reconcile
+  - track
+  - pipeline
+source: mpt-release/docs/release-pipelines.md §1–4
+as_of: 2026-08-28
+body: |
+  Most confusion comes from calling all of these "the deployment pipeline". There are **three
+  delivery tracks** plus **one shared control plane**.
+
+  | Track | Delivers | Engine |
+  |---|---|---|
+  | **A — Marketplace Monorepo ("SDP")** | The core Marketplace product, ~45 components in `marketplace/manifest.json` | ADO `marketplace-sdp` / `marketplace-sdp-prod` |
+  | **B — Release-Metadata (GitOps)** | Extensions and satellite services — anything with a directory in `mpt-release` | GitHub Actions `Reconcile <env>` |
+  | **C — Build Registry** | Same targets as B, but starting from a registered build | GitHub Actions `Reconcile <env>` |
+  | **∗ InfraPortal** | Not a track. System of record for builds, deploy events, promotions and approvals | — |
+
+  ## Track A — the monorepo
+
+  `marketplace` is a super-repo of ~50 git submodules plus a `manifest.json` naming the exact
+  version of every component. **A release is a state of that manifest**, deployed as a set.
+
+  - One release branch per day (`staging/5.0806`, `prod/5.0828`). Later approvals the same day land
+    as further commits on the same branch, each restating the *whole* approved set — so the branch
+    always describes what is approved right now.
+  - **Two gates, not one.** InfraPortal approval decides *what goes in the branch*; the ADO
+    Environment approval on the SDP stage decides *when it deploys*.
+  - **Bursts collapse.** Approving six promotions raises six events and starts six runs;
+    `yield-to-newer-run.ps1` elects the newest and `queue-deployment.ps1` cancels the earlier
+    in-flight one. Net result: one release, one deployment.
+
+  ## Track B — desired state in git
+
+  `mpt-release` holds one directory per environment, one sub-directory per component, containing
+  `build-metadata.yaml` (desired version), `instance.yaml` (identity and placement) and
+  `deployment-status.yaml` (actual outcome).
+
+  **Writing a `build-metadata.yaml` into an environment directory is the declaration of intent; the
+  reconcile workflow makes it true.**
+
+      build pipeline → ACR + blob → ADO 5617 import → main/ or stable/
+        → Ingest Build Metadata → dev/ (automatic) or stable→staging candidate
+        → Reconcile <env> → helm/web deploy → deploy event closes the promotion
+
+  Git is the ledger: every deployment, promotion and rollback is a commit traceable to build ID,
+  Jira ticket and originator, with commit messages produced only by `Invoke-GitCommit`.
+
+  ## Track C — the build registry (strategic direction)
+
+  Every published build — `main`, `release/*` **and feature branches** — is registered as a
+  first-class Build. Deploying is then a promotion from the synthetic source environment `build`,
+  governed by the same policy engine as every other edge.
+
+  - **Commit-on-deploy.** A build that is never promoted never reaches `mpt-release`, so that
+    repository's history stays a deployment ledger rather than a log of everything that compiled.
+  - `main` builds match `build → dev` and auto-approve. **Feature builds register and stop** until
+    someone picks them in the UI or posts to `/api/promotions/from-build`.
+  - Registration is idempotent on `(product, service, version)`.
+
+  Tracks B and C **share the entire back half**. C replaces only the front half of B.
+
+  ## What is not true
+
+  - There is **no `test → stable` promotion**. A build reaches production only by being built from
+    `release/5`. Cross-track promotion is a planned future phase.
+  - InfraPortal never fetches from ACR. The build manifest is POSTed inline; the OCI reference is
+    stored so `mpt-release` can `oras pull` it later.
+related:
+  - promotion-policies
+  - webhook-catalogue
+  - service-topology
+  - environments-and-tracks
+  - reconcile-and-rollback
+related_guides:
+  - check-deployed-version
+  - approve-promotion

@@ -5,7 +5,10 @@ import { useConversationStore } from '@/stores/conversationStore';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { ChatCard } from '@/components/chat/ChatCard';
 import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
+import { GuideCard } from '@/components/guide/GuideCard';
+import { useGuideStore } from '@/stores/guideStore';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
 
 export function ChatSidebar() {
   const {
@@ -31,6 +34,7 @@ export function ChatSidebar() {
   const location = useLocation();
   const isDesktop = useIsDesktop();
   const assistantName = getAssistantName();
+  const startGuide = useGuideStore((s) => s.start);
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -72,7 +76,7 @@ export function ChatSidebar() {
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           message: msg,
@@ -115,7 +119,18 @@ export function ChatSidebar() {
         fieldSuggestions,
         cards: data.cards || undefined,
         a2uiSurface: data.a2uiSurface || undefined,
+        guide: data.guide || undefined,
       });
+
+      // The agent started a walkthrough — navigate and light up the first control. On a phone the
+      // chat covers the page it is about to point at, so close it first.
+      if (data.guide) {
+        if (!isDesktop) setSidebarOpen(false);
+        if (data.guide.route && data.guide.route !== location.pathname) {
+          navigate(data.guide.route);
+        }
+        startGuide(data.guide);
+      }
 
       // If a service was suggested, set it in context
       if (data.suggestedSlug) {
@@ -238,6 +253,8 @@ export function ChatSidebar() {
                 initialValues={msg.fieldSuggestions}
               />
             )}
+
+            {msg.guide && <GuideCard plan={msg.guide} />}
 
             {/* Structured data cards */}
             {msg.cards && msg.cards.length > 0 && (

@@ -1,0 +1,76 @@
+id: build-registry
+title: The build registry — how builds get registered and become deployable
+group: Process
+summary: >-
+  What `publish-steps.yaml` does at the end of every build, why registration fails the stage, and why
+  product routing decides whether a promotion is accepted.
+aliases:
+  - how are builds registered
+  - build registry
+  - publish-steps
+  - source_deploy_missing
+  - why was my build rejected
+  - oras
+  - deploy a feature branch
+  - artifacts
+tags:
+  - build
+  - registry
+  - ACR
+  - oras
+  - publish-steps.yaml
+  - feature branch
+  - source_deploy_missing
+source: ops-build-templates-aks-releases/README.md + aks-docker-templates/publish-steps.yaml (releases/v15)
+as_of: 2026-08-28
+body: |
+  ## What happens at publish time
+
+  `aks-docker-templates/publish-steps.yaml` runs for every publish — nothing to opt into, nothing
+  for a consumer pipeline to pass:
+
+  1. Push images and the helm chart to ACR (`nlpapp0336cre.azurecr.io`).
+  2. Generate `build-metadata.yaml`/`.json`, resolving `spec.product` from the service name.
+  3. `oras attach` the manifest to the helm chart as an OCI **referrer**, producing a digest-pinned
+     reference `<acr>/helm/<svc>@sha256:…`. Falls back to `<acr>/<svc>/build-metadata:<tag>` when the
+     referrers API is unavailable on the agent.
+  4. `POST /api/builds` — manifest inline, plus that OCI reference and digest.
+
+  Both steps are skipped for PR validation builds.
+
+  ## Why registration fails the stage
+
+  Deliberate. Once the registry is the path to a deployment, a build that quietly failed to register
+  would simply never ship, and nobody would find out until someone went looking for it. Failing loud
+  at publish time is cheaper than a silent gap.
+
+  The endpoint is idempotent on `(product, service, version)`, so re-running the publish stage after
+  an outage is safe.
+
+  ## Product routing — the `source_deploy_missing` rejection
+
+  A build must be filed under the **same product as the service's deploy events**, or its promotion
+  candidate is rejected with `source_deploy_missing`.
+
+  `publish-steps.yaml` resolves the product once — services in its `extensionServices` list go to
+  `mpt-extensions`, everything else to `mpt` — and writes it to `spec.product`, so the manifest and
+  the registry cannot disagree. When a new extension is added without being put on that list, its
+  builds file under `mpt`, its deploy events arrive under `mpt-extensions`, and every promotion for
+  it is rejected until the list is corrected.
+
+  ## Credentials
+
+  From the `marketplace.deployment` variable group (`DEPLOYMENTS_URL`, `DEPLOYMENTS_API_KEY`),
+  pulled in by `acr-creds-group.yaml`, which every publish job already includes. **The group must be
+  authorized for each build pipeline**, and the key needs the `build:register` scope.
+
+  ## Feature branches
+
+  Every branch is registered, including feature branches. `main` builds match the `build → dev`
+  policy and auto-approve; **feature builds register and stop** — a developer picks the build in the
+  UI, or posts to `/api/promotions/from-build` with `{ buildId, targetEnv }`. This is how a feature
+  branch reaches an environment without a landing-zone commit.
+related:
+  - delivery-tracks
+  - promotion-policies
+  - service-topology

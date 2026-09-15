@@ -1,0 +1,60 @@
+id: request-rollback
+title: Request a rollback
+group: Rollbacks
+summary: >-
+  Revert one or more services in an environment to a version that already ran there, either by
+  picking the service and version yourself or by aligning the environment to a reference one.
+aliases:
+  - how do i rollback
+  - roll back a service
+  - revert a deployment
+  - undo a deploy
+  - go back to the previous version
+  - downgrade a service
+  - restore an earlier version
+route: /rollbacks
+requires:
+  feature_flag: Rollbacks
+  roles: []
+steps:
+  - text: Open **Rollbacks** from the left navigation.
+    anchor: nav-rollbacks
+    note: >-
+      The page lists open requests at the top and resolved ones below. If you do not see Rollbacks
+      in the navigation, the feature is switched off for this installation.
+  - text: Click **New rollback** to open the composer.
+    anchor: rollbacks-new-button
+  - text: Choose the **Product** that owns the service you want to revert.
+    anchor: rollback-create-product
+  - text: >-
+      Choose the **Target environment** — this is the environment that will be rolled back, not
+      where the good version came from.
+    anchor: rollback-create-target-env
+    note: >-
+      If you are not permitted to raise a rollback for this product and environment, a warning
+      appears here and the rest of the form stays inert. The policy is set under
+      Settings → Rollbacks.
+  - text: >-
+      Pick a **Mode**. *Manual* reverts a single service to a version you choose. *Align* makes the
+      target environment match a reference environment, with an exclude list.
+    anchor: rollback-create-mode
+  - text: >-
+      In Manual mode, choose the **Service**, then the **Version** to return to. Only versions that
+      have actually run in this environment are offered.
+    anchor: rollback-create-service
+    note: In Align mode you pick a reference environment here instead of a service and version.
+  - text: Add a **Reason**. It is optional, but it is what approvers read first.
+    anchor: rollback-create-reason
+  - text: >-
+      Click **Preview** to see exactly what would move. Every service is listed as eligible or
+      skipped, with the reason it was skipped.
+    anchor: rollback-create-preview-button
+    note: Nothing has been requested yet at this point — preview is a dry run.
+  - text: Click **Create rollback** to raise the request.
+    anchor: rollback-create-submit-button
+    note: >-
+      The request now sits as Pending until an approver acts on it, unless the product and
+      environment have no approval gate configured.
+related:
+  - approve-rollback
+  - configure-rollback-policy

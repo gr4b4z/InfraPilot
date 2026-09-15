@@ -328,7 +328,11 @@ export function DeploymentsPage() {
           </button>
         </div>
       ) : (
-        <div className="rounded-xl border overflow-x-auto" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
+        <div
+          data-guide-anchor="deployments-product-list"
+          className="rounded-xl border overflow-x-auto"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+        >
           <table className="w-full min-w-max text-[13px]">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>

@@ -1,0 +1,23 @@
+id: track-request
+title: Track a request you raised
+group: Catalog
+summary: See the status, approval decisions and execution output of a request you submitted.
+aliases:
+  - where is my request
+  - request status
+  - did my request go through
+  - my requests
+route: /requests
+requires:
+  feature_flag: ServiceCatalog
+  roles: []
+steps:
+  - text: Open **My Requests**.
+    anchor: nav-requests
+  - text: >-
+      Open the request to see its timeline — who did what and when, the approval decisions, and the
+      output of the execution.
+    anchor: requests-list
+  - text: You can also ask me "what happened to my repo request" and I will pull the timeline up here.
+related:
+  - request-catalog-service

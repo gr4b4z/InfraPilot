@@ -276,7 +276,7 @@ export function RollbackSettings() {
       ) : (
         <>
           {policies.length > 0 && (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" data-guide-anchor="settings-rollbacks-policies">
               <table className="w-full text-[13px]" style={{ color: 'var(--text-primary)' }}>
                 <thead>
                   <tr

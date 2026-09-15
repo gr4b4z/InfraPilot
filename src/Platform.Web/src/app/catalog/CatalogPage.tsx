@@ -105,7 +105,9 @@ export function CatalogPage() {
           ))}
         </div>
       ) : (
-        <CatalogGrid items={filteredItems} />
+        <div data-guide-anchor="catalog-item-grid">
+          <CatalogGrid items={filteredItems} />
+        </div>
       )}
 
       {/* General request CTA */}

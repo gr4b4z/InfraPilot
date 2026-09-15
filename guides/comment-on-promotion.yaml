@@ -1,0 +1,20 @@
+id: comment-on-promotion
+title: Leave a note on a promotion
+group: Promotions
+summary: Post a comment on a promotion candidate so approvers and QA see the context.
+aliases:
+  - comment on a promotion
+  - leave a note
+  - add a remark to a release
+route: /promotions
+requires:
+  feature_flag: Promotions
+  roles: []
+steps:
+  - text: Open **Promotions** and select the candidate.
+    anchor: nav-promotions
+  - text: Scroll to the comment box at the bottom of the detail page, type your note, and click **Save**.
+    anchor: promotion-comment-save
+related:
+  - approve-promotion
+  - assign-promotion-participant

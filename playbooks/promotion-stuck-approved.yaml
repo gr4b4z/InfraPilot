@@ -1,0 +1,156 @@
+id: promotion-stuck-approved
+symptom: promotion-stuck-approved
+title: Approved, but nothing deployed
+summary: >-
+  Approval publishes `promotion.approved`; a subscriber turns that into a commit; the commit triggers
+  a reconcile; the reconcile deploys and reports a deploy event that closes the candidate. A
+  promotion sitting at Approved means one of those links did not hold — and each link leaves
+  different evidence.
+source: mpt-release/docs/release-pipelines.md + InfraPilot promotion admin maintenance tools
+as_of: 2026-08-28
+causes:
+  - id: still-in-grace
+    title: It has not been waiting long enough to worry about
+    matches_when:
+      - within_grace_period
+    explanation: >-
+      The chain from approval to deploy event crosses a webhook delivery, a GitHub or ADO workflow
+      start, a git commit, and a reconcile run that has to take the per-environment deployment lock.
+      Minutes are normal.
+    confirm: Check again shortly, or look at whether the downstream workflow has started.
+    fix: Wait. If it is still Approved well beyond this, re-run the diagnosis — the evidence will have changed.
+
+  - id: superseded-in-practice
+    title: A newer version overtook it
+    matches_when:
+      - newer_candidate_exists
+      - no_deploy_event_since_approval
+    explanation: >-
+      Another candidate for the same service and target environment was created after this one. If
+      the newer version deployed, this one will never deploy on its own — the environment already
+      moved past it. Track A collapses bursts of approvals into a single release deliberately, so
+      this is expected when several promotions were approved together.
+    confirm: Compare this version with what the deployment state matrix currently shows for that environment.
+    fix: >-
+      If the newer version is the one you want, nothing to do — this candidate is residue and can be
+      left or rejected. If you specifically need this older version, raise it as a rollback instead.
+    fix_guide: request-rollback
+
+  - id: no-subscription
+    title: Nothing is listening for promotion.approved
+    matches_when:
+      - no_active_subscription
+    explanation: >-
+      Approval was recorded and the event was published, but no active webhook subscription matches
+      `promotion.approved` for this product and environment — so no `repository_dispatch` was sent
+      and no workflow ever started. Filters are the usual culprit: an empty filter list means "any",
+      so a subscription that was narrowed to specific products silently excludes a new one.
+    confirm: Open Webhooks and check the subscriptions listening for promotion.approved, and their product / service / environment filters.
+    fix: >-
+      Add this product and environment to an existing subscription's filters, or create a
+      subscription targeting the right repository. Then re-announce the approval from
+      Settings → Maintenance, which re-sends promotion.approved for promotions stuck at Approved.
+
+  - id: delivery-never-created
+    title: The announcement was never queued
+    matches_when:
+      - no_delivery_recorded
+    unless:
+      - no_active_subscription
+    explanation: >-
+      Subscriptions match, but no `promotion.approved` delivery is on record for this candidate. That
+      points at the approval predating the current delivery bookkeeping, or the announcement being
+      stopped inside its hold window — the short delay before the webhook goes out, which exists so a
+      cancelled approval can be retracted before anyone downstream hears about it.
+    confirm: Check the promotion's history for an approval that was cancelled and re-given.
+    fix: Re-announce it from Settings → Maintenance, which queues a fresh delivery for promotions stuck at Approved.
+
+  - id: delivery-failed
+    title: The webhook delivery failed
+    matches_when:
+      - delivery_failed
+    explanation: >-
+      The event was queued and sent, but the receiver rejected it or was unreachable. The recorded
+      HTTP status and response body say which. Common causes are an expired GitHub token, a
+      repository rename, or a dispatch type the workflow does not declare in its `types:` list.
+    confirm: Read the delivery's HTTP status and response body on the promotion, and the subscription's URL and target type.
+    fix: >-
+      Fix the receiver — token, URL, or the dispatch type name — then re-announce. Deliveries retry
+      on a 30s / 2m / 10m / 1h / 4h backoff, so a transient failure may still recover on its own.
+
+  - id: delivery-still-queued
+    title: The delivery is still being retried
+    matches_when:
+      - delivery_pending
+    explanation: >-
+      A delivery for this approval is queued and has not been given up on. Retries back off to 30s,
+      2m, 10m, 1h and 4h, so a receiver that was briefly down can leave a promotion waiting for a
+      while without anything being wrong.
+    confirm: The next retry time is recorded on the delivery.
+    fix: Wait for the retry. Re-announcing now would duplicate the dispatch rather than speed it up.
+
+  - id: no-diff-landing
+    title: The commit landed but produced no drift, so nothing deployed
+    matches_when:
+      - delivery_succeeded
+      - no_deploy_event_since_approval
+    explanation: >-
+      This is the most common genuine stall. The webhook arrived, the workflow ran green, and
+      `build-metadata.yaml` was written — but the version it declares was already what the cluster is
+      running. Reconcile is drift-driven and idempotent, so it correctly did nothing, and with no
+      deployment there is no deploy event to close the candidate.
+    confirm: >-
+      Check whether the target environment already shows this version in the deployment state matrix,
+      and whether the reconcile run for that environment reported no changes.
+    fix: >-
+      Run the Force Component Deployment workflow in mpt-release for this component and environment,
+      which bypasses the drift check. If the version really is already live, close the promotion
+      instead — Settings → Maintenance can reconcile completions for promotions whose deployment
+      already happened.
+
+  - id: reconcile-queued
+    title: A reconcile for that environment is still queued
+    matches_when:
+      - delivery_succeeded
+      - no_deploy_event_since_approval
+    explanation: >-
+      Reconcile runs with `cancel-in-progress: false, queue: max` per environment. A long-running
+      reconcile holds the lock and later ones wait rather than cancelling, because cancelling
+      mid-run could leave the cluster ahead of both git and InfraPortal. A promotion approved during
+      a long run sits at Approved until the queue drains.
+    confirm: Look at whether a Reconcile run for this environment is in progress or queued in mpt-release.
+    fix: Wait for the queue to drain. This resolves itself.
+
+  - id: deployed-but-not-closed
+    title: It deployed — the candidate was just never closed
+    matches_when:
+      - deploy_event_succeeded
+    explanation: >-
+      A successful deploy event for this exact version and environment exists after the approval, so
+      the deployment did happen. Completion only fires when a new succeeded deploy event lands, so a
+      candidate can be left open when the event arrived by a path that did not match it back.
+    confirm: The deploy event is on the service's activity timeline at the time shown in the evidence.
+    fix: >-
+      Run the completion reconcile in Settings → Maintenance, which closes promotions whose
+      deployment has already been recorded. Nothing needs redeploying.
+
+  - id: deploy-failed
+    title: The deployment ran and failed
+    matches_when:
+      - deploy_event_failed
+    explanation: >-
+      A deploy event exists for this version but its status is not succeeded, so the candidate stays
+      open. The failure logs captured with the event say why.
+    confirm: Open the deploy event and read its captured logs.
+    fix: Diagnose the failed deployment itself, fix the cause, and redeploy with Force Component Deployment.
+
+  - id: wrong-version-deployed
+    title: Something else deployed to that environment instead
+    matches_when:
+      - deploy_event_other_version
+    explanation: >-
+      Deploy events arrived for this service and environment after the approval, but for different
+      versions. Either a newer promotion won the race, or a rollback moved the environment somewhere
+      else entirely.
+    confirm: Compare the versions in the evidence with the service's activity timeline.
+    fix: Decide which version should be live, then promote or roll back to it deliberately.

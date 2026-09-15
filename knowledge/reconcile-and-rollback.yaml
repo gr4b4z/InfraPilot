@@ -1,0 +1,75 @@
+id: reconcile-and-rollback
+title: The reconcile loop, and why rollback is a forward deploy
+group: Process
+summary: >-
+  How the drift-closing reconcile workflow works, why it queues rather than cancels, and why there is
+  no "undo" anywhere in the system.
+aliases:
+  - what is reconcile
+  - how does reconcile work
+  - why did nothing deploy
+  - force component deployment
+  - how does rollback actually work
+  - is there an undo
+  - no diff
+tags:
+  - reconcile
+  - drift
+  - rollback
+  - force deployment
+  - idempotent
+  - concurrency
+source: mpt-release/README.md + docs/release-pipelines.md §3.3, §8.4
+as_of: 2026-08-28
+body: |
+  ## The loop
+
+  Reconcile is a control loop, not a promotion step. It compares the version declared in
+  `build-metadata.yaml` against what is actually running, and closes the gap:
+
+  1. `Get-DeploymentList.ps1` — compare declared vs deployed, resolve `instance.yaml`
+  2. `New-DeploymentMatrix.ps1` — split into helm / web(storage) / swa matrices
+  3. `helm upgrade` / blob upload / SWA deploy
+  4. `POST /api/deployments/events` — with logs attached on failure
+  5. `POST /api/promotions` — create the next candidate (e.g. dev → test)
+  6. commit `deployment-status.yaml` back
+
+  It is triggered by pushes touching `<env>/**/build-metadata.yaml`, and can be run manually.
+
+  ## Two properties that surprise people
+
+  **It is idempotent and drift-driven.** If the cluster already matches git, reconcile does nothing
+  and reports nothing. So *a landing that produces no diff deploys nothing* — re-declaring a version
+  that is already running is a no-op. To redeploy the same version deliberately, use the **Force
+  Component Deployment** workflow, which bypasses the drift check.
+
+  This is the single most common reason a promotion is approved, the commit lands, the workflow runs
+  green, and yet no deploy event appears.
+
+  **Concurrency is `cancel-in-progress: false, queue: max` per environment — deliberately.**
+  Cancelling a reconcile mid-run could leave the cluster ahead of both git and InfraPortal, with no
+  record of what actually got applied. So a second reconcile waits instead. A promotion approved
+  while a long reconcile is running will sit at Approved until the queue drains; that is correct
+  behaviour, not a stall.
+
+  ## Rollback is a forward deploy
+
+  There is no undo anywhere in any of the three tracks. An earlier version is **re-declared** and
+  redeployed:
+
+  - **Track B/C** — copy `archive/build-metadata-<version>.yaml` over `build-metadata.yaml`.
+    Reconcile sees drift and redeploys. No CI cycle is needed, because the artifact already exists.
+  - **Track A** — an approved rollback puts the earlier version into the release branch's manifest,
+    and the branch deploys like any other.
+
+  This is why rollback targets are restricted to versions that have already run in that environment:
+  the artifact and its manifest must exist, and "already ran here" is the cheapest proof of that.
+
+  It is also why a rollback produces an ordinary deploy event with `isRollback: true` rather than a
+  special kind of record — from the cluster's point of view nothing unusual happened.
+related:
+  - delivery-tracks
+  - deploy-event-sources
+related_guides:
+  - request-rollback
+  - approve-rollback

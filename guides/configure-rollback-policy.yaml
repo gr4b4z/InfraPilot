@@ -1,0 +1,30 @@
+id: configure-rollback-policy
+title: Configure who can raise and approve rollbacks
+group: Rollbacks
+summary: >-
+  Set, per product and environment, which roles may raise a rollback and which must approve it.
+aliases:
+  - rollback policy
+  - who can approve rollbacks
+  - rollback permissions
+  - set up rollback approval
+  - enrol a product in rollbacks
+route: /settings/rollbacks
+requires:
+  feature_flag: Rollbacks
+  roles:
+    - InfraPortal.Admin
+steps:
+  - text: Open **Settings**, then the **Rollbacks** tab.
+    anchor: nav-settings
+    route: /settings/rollbacks
+  - text: >-
+      Each row is one product and environment pair. Set who may raise a rollback there and who
+      approves it.
+    anchor: settings-rollbacks-policies
+    note: >-
+      A product and environment with no policy is *not enrolled*, which is not the same as having
+      no gate — rollbacks cannot be raised there at all.
+related:
+  - request-rollback
+  - approve-rollback

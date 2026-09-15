@@ -1,0 +1,54 @@
+id: promotion-stuck-pending
+symptom: promotion-stuck-pending
+title: Pending, waiting on a gate
+summary: >-
+  A Pending candidate is waiting for people, not plumbing. Its policy says what has to happen before
+  it can advance.
+source: mpt-release/docs/release-pipelines.md §5.2 + InfraPilot promotion policy engine
+as_of: 2026-08-28
+causes:
+  - id: work-items-outstanding
+    title: Work items in the bundle are not signed off
+    matches_when:
+      - work_items_outstanding
+    explanation: >-
+      Policies at `stable → staging` and `staging → prod` track work items, and at `staging → prod`
+      every item must be approved before the gate clears. Sign-off is scoped to the target
+      environment, so items approved for staging are asked about again for prod — deliberately.
+    confirm: The promotion's work item list shows which are outstanding and who they are assigned to.
+    fix: Get the outstanding items signed off, or raise an issue on one if it should not block.
+    fix_guide: approve-promotion
+
+  - id: awaiting-approver
+    title: Nobody has approved it yet
+    matches_when:
+      - no_approvals_recorded
+    unless:
+      - work_items_outstanding
+    explanation: >-
+      No approval decision has been recorded. The policy for this edge names who can clear it —
+      typically QA Manager, and Guardians for `swo-extension-mscsp`. Approvers are not notified
+      automatically unless a subscription is configured to tell them.
+    confirm: The approval card on the promotion lists every gate and who can clear it.
+    fix: Ask a named approver to review it. Assigning a QA participant makes the ownership visible.
+    fix_guide: assign-promotion-participant
+
+  - id: partially-approved
+    title: Some gates are cleared, others are not
+    matches_when: []
+    explanation: >-
+      Multi-step policies need every step cleared. Approvals already recorded stay recorded; the
+      candidate advances when the last outstanding gate clears.
+    confirm: The approval card shows which gates are green and which remain.
+    fix: Clear the remaining gates.
+    fix_guide: approve-promotion
+
+  - id: superseded-by-newer
+    title: A newer candidate exists and this one may no longer be wanted
+    matches_when:
+      - newer_candidate_exists
+    explanation: >-
+      Another candidate for the same service and target was created later. Approving this older one
+      would promote a version the team has already moved past.
+    confirm: Compare with the newest candidate for that service and environment.
+    fix: Approve the newer candidate and reject this one, unless you specifically want this version.

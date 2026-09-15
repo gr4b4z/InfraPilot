@@ -625,11 +625,50 @@ src/
   Platform.Api/
   Platform.Web/
 catalog/
+guides/        assistant walkthroughs  (GUIDES_PATH)
+knowledge/     assistant reference topics (KNOWLEDGE_PATH)
+playbooks/     assistant failure causes  (PLAYBOOKS_PATH)
 infra/
 docs/
 Dockerfile
 docker-compose.yml
 ```
+
+## Assistant Content
+
+Three YAML corpora feed the in-app assistant. All are loaded once at startup, ship in the image, and
+are validated by tests — a broken reference fails the build rather than degrading an answer silently.
+
+| Directory | Answers | Shape |
+|---|---|---|
+| `guides/` | "How do I roll back?" | Ordered steps, each optionally naming a `data-guide-anchor` the UI spotlights |
+| `knowledge/` | "What does this webhook do?", "Why does prod need sign-off?" | Markdown prose with `source` and `as_of` attribution |
+| `playbooks/` | "Why is this promotion stuck?" | Causes selected by observation flags the diagnostics compute from live state |
+
+### Adding a guide
+
+Write a YAML file in `guides/` with `id`, `title`, `route`, and `steps`. To point at a control, add
+`data-guide-anchor="some-name"` to the element and name it in the step's `anchor`. Nav items are
+anchored automatically as `nav-<route>`. `GuideCorpusTests` fails if an anchor, route or `related`
+id does not exist.
+
+### Adding a knowledge topic
+
+Write a YAML file in `knowledge/` with `id`, `title`, `summary`, `body` (Markdown), plus `source` and
+`as_of`. Those last two are required: these topics describe pipelines in other repositories
+(`mpt-release`, `marketplace`, `ops-build-templates-aks-releases`), so every claim has to be
+traceable and dated. Add `aliases` for how people actually phrase the question — that is what the
+keyword search ranks on.
+
+### Adding a failure cause
+
+Write a cause under the relevant `playbooks/` file with `matches_when` listing observation flags from
+`Observations`. The diagnostics compute those flags from live state and only offer causes whose flags
+hold, so the assistant cannot invent an explanation. A cause keyed on a flag nothing emits is dead —
+`DiagnosticsCorpusTests` fails the build for exactly that.
+
+To make a new condition diagnosable: add the flag to `Observations`, emit it in `DiagnosticsService`,
+and write the cause that uses it.
 
 ## Troubleshooting
 

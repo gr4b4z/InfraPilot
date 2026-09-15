@@ -243,6 +243,7 @@ export function RollbacksPage() {
         </div>
         <button
           onClick={openCreate}
+          data-guide-anchor="rollbacks-new-button"
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-90 shrink-0"
           style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
         >
@@ -258,6 +259,7 @@ export function RollbacksPage() {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
+          data-guide-anchor="rollbacks-status-filter"
           className="rounded-lg border px-3 py-1.5 text-[13px]"
           style={{
             borderColor: 'var(--border-color)',
@@ -331,7 +333,7 @@ export function RollbacksPage() {
       ) : (
         <div className="space-y-6">
           {active.length > 0 && (
-            <div>
+            <div data-guide-anchor="rollbacks-open-list">
               <h2
                 className="text-[11px] font-semibold uppercase tracking-wider mb-3"
                 style={{ color: 'var(--text-muted)' }}
@@ -511,6 +513,7 @@ function RollbackCard({
               <button
                 onClick={onApprove}
                 disabled={busy}
+                data-guide-anchor="rollback-approve-button"
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--success-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
               >
@@ -522,6 +525,7 @@ function RollbackCard({
               <button
                 onClick={onReject}
                 disabled={busy}
+                data-guide-anchor="rollback-reject-button"
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{ backgroundColor: 'var(--danger-bg)', color: 'var(--danger)', opacity: busy ? 0.6 : 1 }}
               >
@@ -534,6 +538,7 @@ function RollbackCard({
               <button
                 onClick={onStartOverride}
                 disabled={busy}
+                data-guide-anchor="rollback-override-button"
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
                 style={{
                   border: '1px solid var(--warning)',

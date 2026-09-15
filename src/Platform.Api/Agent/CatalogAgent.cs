@@ -5,10 +5,14 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Diagnostics;
+using Platform.Api.Features.Guides;
+using Platform.Api.Features.Knowledge;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure;
+using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -23,10 +27,22 @@ public class CatalogAgent
     private readonly PromotionService _promotionService;
     private readonly EnvironmentAliasResolver _environments;
     private readonly IIdentityService _identity;
+    private readonly GuideRegistry _guides;
+    private readonly KnowledgeRegistry _knowledge;
+    private readonly DiagnosticsService _diagnostics;
+    private readonly ICurrentUser _currentUser;
     private readonly PlatformDbContext _db;
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
     private readonly ILogger<CatalogAgent> _logger;
+
+    /// <summary>
+    /// Walkthrough the model asked to start this turn, set by the start_guide tool and read once
+    /// the tool loop finishes. Carried on the instance rather than threaded through ExecuteTool's
+    /// return tuple, which 32 call sites already share — CatalogAgent is registered scoped, so
+    /// there is exactly one instance per HTTP request and one HandleAsync call on it.
+    /// </summary>
+    private GuidePlan? _pendingGuide;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -74,6 +90,45 @@ public class CatalogAgent
         - Use assign_promotion_participant when the user wants to add someone to a promotion. Role is free-form — the platform canonicalises it ("QA", "Triggered By", "release manager" are all fine). If the user gives a name but no email, call search_directory_users first to resolve.
         - Use add_promotion_comment to leave a note on a promotion.
         - Confirm destructive actions (removing participants) before calling remove_promotion_participant.
+
+        When a user asks HOW to do something, WHERE something is, or how a part of the portal works
+        ("how do I roll back?", "where do I approve this?", "how do release notes work?"):
+        - ALWAYS call search_guides first. Never answer a how-to from memory — button names, page
+          layout and which features are switched on are specific to this installation, and a
+          confidently wrong set of steps is worse than none.
+        - When a guide matches, call start_guide with its id. That navigates the user to the right
+          page and highlights each control in turn on their screen. Do not merely describe the
+          steps and stop — showing them is the point.
+        - Then keep your reply short: say in one or two sentences what they are about to do and
+          anything they should watch out for. The UI renders the steps, so listing them again is
+          noise.
+        - Respect the `permission` field that comes back. If the user lacks the role, say up front
+          who they need to ask — still show them the walkthrough so they can see what it involves.
+        - If no guide matches, say plainly that there is no walkthrough for it yet and offer the
+          closest one from the `available` list. Do not invent steps.
+
+        When a user asks how the DELIVERY SYSTEM works — what a webhook does, why a policy requires
+        what it does, which service is deployed where or by which track, what a deploy-event source
+        means, how reconcile or rollback work, how a build reaches an environment:
+        - ALWAYS call search_knowledge. These pipelines are SoftwareONE's own, spread across the
+          marketplace monorepo, the mpt-release GitOps repository and the AKS build templates. You
+          cannot infer any of it, and a plausible-sounding wrong answer about a release process is
+          expensive.
+        - Answer from the returned topics only. When the answer concerns pipeline behaviour, say what
+          it is as of the topic's as_of date — these facts describe systems outside this portal.
+        - If nothing matches, say so and offer the closest topic from the `available` list.
+
+        When a user says something is STUCK, waiting, taking too long, approved but not deployed, or
+        asks why a deployment failed:
+        - Call diagnose_promotion (for a promotion) or diagnose_deployment (for a deploy event).
+          Find the id first with list_promotions or query_deployments if the user gave you a name.
+        - Lead with the most likely cause and cite the specific evidence line that supports it.
+          Causes marked supportedByEvidence=false are possibilities the evidence neither confirms
+          nor rules out — say so rather than presenting them as findings.
+        - Never invent a cause that is not in probableCauses. If nothing fits, say the evidence does
+          not identify a cause and show what was checked.
+        - Quote deployment log excerpts verbatim; an operator needs the actual error text.
+        - When a cause names a fixGuide, offer to walk them through it with start_guide.
 
         Rules:
         - Always respond in the same language the user uses
@@ -324,6 +379,96 @@ public class CatalogAgent
             type = "function",
             function = new
             {
+                name = "search_knowledge",
+                description = "Search the platform knowledge base for how the delivery system works — what a webhook does, why a promotion policy is shaped the way it is, which service is deployed where and by which track, what a deploy-event source means, how reconcile and rollback work. ALWAYS use this instead of answering from memory: this describes SoftwareONE's specific pipelines across the marketplace monorepo, mpt-release and the AKS build templates, none of which you can infer. Returns topics with their body, source and as-of date — cite both.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["query"] = new { type = "string", description = "What the user wants to understand, in their own words, e.g. 'what fires when a promotion is approved' or 'why does prod need work item sign-off'." },
+                    },
+                    required = new[] { "query" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "diagnose_promotion",
+                description = "Work out why a specific promotion has not moved — stuck at Approved with no deployment, or still Pending. Gathers live evidence (webhook delivery history, matching subscriptions, deploy events since approval, work-item sign-off, newer candidates) and returns the authored causes whose conditions actually hold. Use whenever a user says a promotion is stuck, waiting, taking too long, approved but not deployed, or asks why nothing happened. Pass the candidate GUID — use list_promotions first if you only have a service name.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["candidate_id"] = new { type = "string", description = "The GUID of the promotion candidate." },
+                    },
+                    required = new[] { "candidate_id" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "diagnose_deployment",
+                description = "Work out why a specific deployment failed. Reads the deploy event, the logs captured with it, and matches known failure shapes (image pull, Helm lock, crash loop, probe failure, resource pressure, permissions). Use whenever a user asks why a deployment failed or what went wrong with a deploy. Pass the deploy event GUID — use query_deployments first if you only have a service name.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["event_id"] = new { type = "string", description = "The GUID of the deploy event." },
+                    },
+                    required = new[] { "event_id" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "search_guides",
+                description = "Search the portal's how-to guides for the walkthrough matching what the user is trying to DO. ALWAYS use this for 'how do I …', 'where do I …', 'how does X work', 'I want to …' and any question about operating the UI — never answer a how-to from memory, because the steps and button names are installation-specific. Returns candidate guides with their ids, summaries and steps.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["query"] = new { type = "string", description = "What the user is trying to do, in their own words, e.g. 'roll back a service' or 'assign QA'." },
+                    },
+                    required = new[] { "query" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "start_guide",
+                description = "Start a walkthrough: navigates the user to the right page and highlights each button and field in turn on their screen. Call this immediately after search_guides finds the right guide — do not just describe the steps in text and stop. Then summarise the guide briefly in your reply; the steps themselves are rendered by the UI, so do not repeat them verbatim.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["guide_id"] = new { type = "string", description = "The id of the guide, exactly as returned by search_guides." },
+                    },
+                    required = new[] { "guide_id" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
                 name = "generate_form",
                 description = "Render the request form for a catalog service inline in the chat so the user can fill it without leaving the conversation. Call this when the user explicitly asks to start or open a request for a specific catalog service.",
                 parameters = new
@@ -347,6 +492,10 @@ public class CatalogAgent
         PromotionService promotionService,
         EnvironmentAliasResolver environments,
         IIdentityService identity,
+        GuideRegistry guides,
+        KnowledgeRegistry knowledge,
+        DiagnosticsService diagnostics,
+        ICurrentUser currentUser,
         PlatformDbContext db,
         HttpClient httpClient,
         IConfiguration configuration,
@@ -359,6 +508,10 @@ public class CatalogAgent
         _promotionService = promotionService;
         _environments = environments;
         _identity = identity;
+        _guides = guides;
+        _knowledge = knowledge;
+        _diagnostics = diagnostics;
+        _currentUser = currentUser;
         _db = db;
         _httpClient = httpClient;
         _configuration = configuration;
@@ -486,6 +639,7 @@ public class CatalogAgent
             FieldSuggestions = fieldSuggestions?.Count > 0 ? fieldSuggestions : null,
             Cards = cards.Count > 0 ? cards : null,
             A2uiSurface = a2uiSurface,
+            Guide = _pendingGuide,
         };
     }
 
@@ -616,6 +770,42 @@ public class CatalogAgent
     /// Returns the tool list for this turn. Always includes BaseToolDefinitions.
     /// When the user is on a catalog form, also adds a fill_fields tool with field-specific parameters.
     /// </summary>
+    /// <summary>Human-readable age, so the model does not have to format a TimeSpan itself.</summary>
+    private static string DescribeAge(TimeSpan span) => span switch
+    {
+        { TotalMinutes: < 1 } => "less than a minute",
+        { TotalHours: < 1 } => $"{(int)span.TotalMinutes} minutes",
+        { TotalDays: < 1 } => $"{(int)span.TotalHours} hours",
+        _ => $"{(int)span.TotalDays} days",
+    };
+
+    /// <summary>
+    /// Describes, for the calling user, whether they can actually complete a guide. Returned to the
+    /// model alongside the steps so it can lead with "you'll need an admin for this" instead of
+    /// walking someone toward a button that will not be on their screen. Guides are never withheld
+    /// on this basis — "why can't I see Approve?" is the very question being asked.
+    /// </summary>
+    private string DescribePermission(GuideDefinition guide)
+    {
+        var parts = new List<string>();
+
+        if (guide.Requires.Roles.Count > 0)
+        {
+            var userRoles = _currentUser.Roles;
+            var satisfied = guide.Requires.Roles.Any(required =>
+                userRoles.Contains(required, StringComparer.OrdinalIgnoreCase));
+
+            parts.Add(satisfied
+                ? "The user holds the role this action needs."
+                : $"This action needs one of: {string.Join(", ", guide.Requires.Roles)}. The user does NOT hold it — tell them who to ask rather than implying they can finish it themselves.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(guide.Requires.FeatureFlag))
+            parts.Add($"Requires the '{guide.Requires.FeatureFlag}' feature to be enabled for this installation; if the user cannot see the page, that flag is off.");
+
+        return parts.Count > 0 ? string.Join(" ", parts) : "No special role needed.";
+    }
+
     private async Task<(object[] Tools, CatalogDefinition? FormDefinition)> BuildToolList(ChatPageContext? pageContext)
     {
         if (string.IsNullOrWhiteSpace(pageContext?.CurrentSlug))
@@ -1152,6 +1342,173 @@ public class CatalogAgent
                     }
                 }
 
+                case "search_knowledge":
+                {
+                    var query = args.GetProperty("query").GetString() ?? "";
+                    var matches = _knowledge.Search(query);
+
+                    if (matches.Count == 0)
+                    {
+                        return (JsonSerializer.Serialize(new
+                        {
+                            matches = Array.Empty<object>(),
+                            note = "No topic matched. These are the topics that exist — offer the closest, or say plainly that this is not documented. Do not answer a platform question from general knowledge; these pipelines are installation-specific.",
+                            available = _knowledge.All.Select(t => new { t.Id, t.Title, t.Group, t.Summary }),
+                        }, JsonOptions), null, null, null);
+                    }
+
+                    return (JsonSerializer.Serialize(new
+                    {
+                        matches = matches.Select(m => new
+                        {
+                            m.Item.Id,
+                            m.Item.Title,
+                            m.Item.Group,
+                            m.Item.Summary,
+                            m.Item.Body,
+                            m.Item.Source,
+                            asOf = m.Item.AsOf,
+                            related = m.Item.Related,
+                            relatedGuides = m.Item.RelatedGuides,
+                        }),
+                        note = "Answer from these topics only. State the as-of date when the answer concerns pipeline behaviour, because these facts describe systems outside this portal and can go stale.",
+                    }, JsonOptions), null, null, null);
+                }
+
+                case "diagnose_promotion":
+                {
+                    if (!Guid.TryParse(args.GetProperty("candidate_id").GetString(), out var cid))
+                        return ("Invalid candidate_id — must be a GUID. Use list_promotions to find it.", null, null, null);
+
+                    var diagnosis = await _diagnostics.DiagnosePromotionAsync(cid);
+                    if (diagnosis is null)
+                        return ($"No promotion candidate found with id {cid}.", null, null, null);
+
+                    return (JsonSerializer.Serialize(new
+                    {
+                        promotion = new
+                        {
+                            diagnosis.CandidateId,
+                            diagnosis.Product,
+                            diagnosis.Service,
+                            diagnosis.SourceEnv,
+                            diagnosis.TargetEnv,
+                            diagnosis.Version,
+                            diagnosis.Status,
+                            diagnosis.ApprovedAt,
+                            ageDescription = DescribeAge(diagnosis.Age),
+                        },
+                        whatShouldHappen = diagnosis.SymptomSummary,
+                        evidence = diagnosis.Evidence,
+                        observations = diagnosis.Observations,
+                        probableCauses = diagnosis.ProbableCauses.Select(c => new
+                        {
+                            c.Cause.Id,
+                            c.Cause.Title,
+                            c.Cause.Explanation,
+                            confirm = c.Cause.Confirm,
+                            fix = c.Cause.Fix,
+                            fixGuide = c.Cause.FixGuide,
+                            supportedByEvidence = c.Specificity > 0,
+                        }),
+                        note = "Causes are ordered most-likely first; supportedByEvidence=false means it is a general possibility the evidence neither confirms nor rules out — present those as such. Lead with the most likely cause and cite the evidence line that points to it. Do not invent causes beyond this list. If a cause names a fixGuide, offer to walk the user through it with start_guide.",
+                    }, JsonOptions), null, null, null);
+                }
+
+                case "diagnose_deployment":
+                {
+                    if (!Guid.TryParse(args.GetProperty("event_id").GetString(), out var eid))
+                        return ("Invalid event_id — must be a GUID. Use query_deployments to find it.", null, null, null);
+
+                    var diagnosis = await _diagnostics.DiagnoseDeploymentAsync(eid);
+                    if (diagnosis is null)
+                        return ($"No deploy event found with id {eid}.", null, null, null);
+
+                    return (JsonSerializer.Serialize(new
+                    {
+                        deployment = new
+                        {
+                            diagnosis.EventId,
+                            diagnosis.Product,
+                            diagnosis.Service,
+                            diagnosis.Environment,
+                            diagnosis.Version,
+                            diagnosis.Status,
+                            diagnosis.Source,
+                            diagnosis.DeployedAt,
+                        },
+                        whatShouldHappen = diagnosis.SymptomSummary,
+                        evidence = diagnosis.Evidence,
+                        observations = diagnosis.Observations,
+                        logExcerpts = diagnosis.LogExcerpts,
+                        probableCauses = diagnosis.ProbableCauses.Select(c => new
+                        {
+                            c.Cause.Id,
+                            c.Cause.Title,
+                            c.Cause.Explanation,
+                            confirm = c.Cause.Confirm,
+                            fix = c.Cause.Fix,
+                            fixGuide = c.Cause.FixGuide,
+                            supportedByEvidence = c.Specificity > 0,
+                        }),
+                        note = "Quote the relevant line from logExcerpts verbatim — an operator needs the actual error, not a paraphrase of it. Lead with the most likely cause. Do not invent causes beyond this list.",
+                    }, JsonOptions), null, null, null);
+                }
+
+                case "search_guides":
+                {
+                    var query = args.GetProperty("query").GetString() ?? "";
+                    var matches = _guides.Search(query);
+
+                    if (matches.Count == 0)
+                    {
+                        // Hand back the full inventory rather than nothing: the model can then say
+                        // what the portal does cover, which beats an unqualified "I don't know".
+                        var inventory = _guides.All.Select(g => new { g.Id, g.Title, g.Group, g.Summary });
+                        return (JsonSerializer.Serialize(new
+                        {
+                            matches = Array.Empty<object>(),
+                            note = "No guide matched. These are all the guides that exist — offer the closest one, or say plainly that this action has no walkthrough yet.",
+                            available = inventory,
+                        }, JsonOptions), null, null, null);
+                    }
+
+                    var payload = matches.Select(m => new
+                    {
+                        m.Guide.Id,
+                        m.Guide.Title,
+                        m.Guide.Group,
+                        m.Guide.Summary,
+                        route = m.Guide.Route,
+                        stepCount = m.Guide.Steps.Count,
+                        steps = m.Guide.Steps.Select(s => s.Text),
+                        permission = DescribePermission(m.Guide),
+                        related = m.Guide.Related,
+                    });
+
+                    return (JsonSerializer.Serialize(new { matches = payload }, JsonOptions), null, null, null);
+                }
+
+                case "start_guide":
+                {
+                    var guideId = args.GetProperty("guide_id").GetString() ?? "";
+                    var guide = _guides.GetById(guideId);
+                    if (guide is null)
+                        return ($"No guide with id '{guideId}'. Call search_guides first and use an id from its results.", null, null, null);
+
+                    _pendingGuide = GuidePlan.From(guide);
+
+                    return (JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        started = guide.Id,
+                        guide.Title,
+                        route = guide.Route,
+                        permission = DescribePermission(guide),
+                        note = "The walkthrough is now running on the user's screen — they are being navigated to the page and each step is highlighted in turn. Summarise what they are about to do in one or two sentences; do not list the steps again.",
+                    }, JsonOptions), null, null, null);
+                }
+
                 case "generate_form":
                 {
                     var slug = args.GetProperty("slug").GetString()!;
@@ -1462,4 +1819,66 @@ public class CatalogAgentResponse
     /// Structured data cards for rich rendering in the chat sidebar.
     /// </summary>
     public List<AgentCard>? Cards { get; set; }
+
+    /// <summary>
+    /// Set when the agent started a walkthrough. The client navigates to the guide's route and
+    /// steps the user through the highlighted controls.
+    /// </summary>
+    [JsonPropertyName("guide")]
+    public GuidePlan? Guide { get; set; }
+}
+
+/// <summary>
+/// A walkthrough as sent to the browser: where to go, and what to highlight at each step. Flattened
+/// from <see cref="GuideDefinition"/> so the client never sees authoring-only fields.
+/// </summary>
+public class GuidePlan
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = "";
+
+    [JsonPropertyName("summary")]
+    public string Summary { get; set; } = "";
+
+    /// <summary>Route the walkthrough opens on.</summary>
+    [JsonPropertyName("route")]
+    public string Route { get; set; } = "";
+
+    [JsonPropertyName("steps")]
+    public List<GuidePlanStep> Steps { get; set; } = [];
+
+    public static GuidePlan From(GuideDefinition guide) => new()
+    {
+        Id = guide.Id,
+        Title = guide.Title,
+        Summary = guide.Summary,
+        Route = guide.Route,
+        Steps = [.. guide.Steps.Select(s => new GuidePlanStep
+        {
+            Text = s.Text,
+            Anchor = s.Anchor,
+            Route = s.Route,
+            Note = s.Note,
+        })],
+    };
+}
+
+public class GuidePlanStep
+{
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = "";
+
+    /// <summary>`data-guide-anchor` value to spotlight, when the step points at a control.</summary>
+    [JsonPropertyName("anchor")]
+    public string? Anchor { get; set; }
+
+    /// <summary>Route to move to before this step, when it differs from the previous one.</summary>
+    [JsonPropertyName("route")]
+    public string? Route { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
 }

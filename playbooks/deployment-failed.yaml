@@ -1,0 +1,120 @@
+id: deployment-failed
+symptom: deployment-failed
+title: The deployment failed
+summary: >-
+  A deploy event came back with a failed status. Reconcile attaches the deployment logs to the event
+  when that happens, so the actual Helm or Kubernetes error is usually right there.
+source: mpt-release reconcile deploy steps + ops-build-templates-aks-releases/aks-docker-templates
+as_of: 2026-08-28
+causes:
+  - id: image-pull
+    title: The image could not be pulled
+    matches_when:
+      - log_image_pull_failure
+    explanation: >-
+      Kubernetes could not fetch the container image — `ImagePullBackOff`, `ErrImagePull` or
+      `manifest unknown`. Either the tag does not exist in ACR, or the cluster's pull credentials do
+      not cover that registry. A `manifest unknown` specifically means the chart references a tag
+      that was never pushed, which points at a publish step that partially failed.
+    confirm: Check that the image tag in the failing pod matches a tag actually present in ACR.
+    fix: >-
+      Re-run the build's publish stage to push the missing image, or fix the pull secret. Registration
+      is idempotent, so re-publishing is safe.
+
+  - id: helm-lock
+    title: Another Helm operation is in progress
+    matches_when:
+      - log_helm_lock
+    explanation: >-
+      Helm refuses to act while another install, upgrade or rollback holds the release lock. This
+      usually means a previous reconcile was interrupted rather than allowed to finish — which is
+      exactly why reconcile is configured never to cancel itself mid-run.
+    confirm: '`helm history <release> -n <namespace>` shows a release stuck in a pending state.'
+    fix: Roll the release back to its last deployed revision or mark the pending one failed, then re-run reconcile.
+
+  - id: helm-no-deployed-release
+    title: Helm has no deployed release to upgrade from
+    matches_when:
+      - log_helm_no_deployed_release
+    explanation: >-
+      The release exists but its last revision failed, so `helm upgrade` has nothing good to build
+      on. Common after a first install that never became healthy.
+    confirm: '`helm history <release>` shows every revision as failed.'
+    fix: Uninstall the release and let reconcile install it fresh, having first fixed what made the original install fail.
+
+  - id: crash-loop
+    title: The container starts and then crashes
+    matches_when:
+      - log_crash_loop
+    explanation: >-
+      The image pulled and the pod scheduled, but the process exits repeatedly. This is an
+      application-level failure — missing configuration or secret, a failed migration, or an
+      unreachable dependency — not a delivery failure.
+    confirm: The captured logs contain the container's own output; read the stack trace or startup error.
+    fix: Fix the configuration or dependency, then redeploy. Rolling back to the previous version restores service while you investigate.
+    fix_guide: request-rollback
+
+  - id: probe-failure
+    title: The readiness or liveness probe never passed
+    matches_when:
+      - log_probe_failure
+    explanation: >-
+      The container runs but never reports healthy, so the rollout never completes. Either the app is
+      genuinely unhealthy, or the probe's path, port or timeout does not match how the app actually
+      starts — a slow-starting service with a short probe timeout fails this way while being fine.
+    confirm: Compare the probe configuration in the chart against the app's real startup time and health endpoint.
+    fix: Fix the app's health, or widen the probe's initial delay in the chart and redeploy.
+
+  - id: insufficient-resources
+    title: The cluster could not schedule the pod
+    matches_when:
+      - log_insufficient_resources
+    explanation: >-
+      No node had enough CPU or memory for the pod's requests. Either the requests grew, or the node
+      pool is full because something else scaled up.
+    confirm: '`kubectl describe pod` shows the scheduling failure and the shortfall.'
+    fix: Scale the node pool, or reduce the pod's resource requests if they are larger than the service needs.
+
+  - id: timeout
+    title: The deployment timed out waiting
+    matches_when:
+      - log_timeout
+    explanation: >-
+      Helm or kubectl gave up waiting for the rollout. The underlying reason is usually one of the
+      causes above — the timeout is the symptom, not the cause. Check the pod state at the moment it
+      expired.
+    confirm: Look at the pod's state and events in the captured logs rather than at the timeout line.
+    fix: Diagnose the underlying rollout failure; extending the timeout only delays the same outcome.
+
+  - id: permission-denied
+    title: The deploying identity was refused
+    matches_when:
+      - log_permission_denied
+    explanation: >-
+      A `forbidden` or `unauthorized` response means the workload identity or service principal lacks
+      a permission it needs — on the cluster, on ACR, or on the storage account for a web deployment.
+      Often follows a credential rotation or a new namespace.
+    confirm: Identify which resource was refused in the logs, then check that identity's role assignment on it.
+    fix: Grant the missing role assignment and re-run reconcile.
+
+  - id: synthetic-source
+    title: This is not a real deployment
+    matches_when:
+      - synthetic_source
+    explanation: >-
+      The event's source is a ledger marker — `release-track`, `mpt-manifest` or `manual` — so
+      nothing was deployed to a cluster and there is no cluster-side failure to find. A failed status
+      here reflects how the record was written, not a rollout.
+    confirm: The source is shown in the evidence.
+    fix: Nothing to redeploy. If the record is wrong, correct it as a manual ledger entry.
+
+  - id: no-logs
+    title: No logs were captured, so the cause is not recoverable from here
+    matches_when:
+      - no_logs_captured
+    explanation: >-
+      Reconcile attaches logs when a deployment fails, so their absence usually means the failure
+      happened before the deploy step could capture anything — the workflow died early, or the event
+      was reported by something other than reconcile.
+    confirm: Open the workflow run referenced on the event and read it directly.
+    fix: Read the run in GitHub Actions or Azure DevOps; that is where the output is.
