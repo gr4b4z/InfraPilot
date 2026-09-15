@@ -44,6 +44,12 @@ public class CatalogAgent
     /// </summary>
     private GuidePlan? _pendingGuide;
 
+    /// <summary>
+    /// Where the model asked to take the user this turn, set by navigate_to. Same per-request
+    /// lifetime reasoning as <see cref="_pendingGuide"/>.
+    /// </summary>
+    private NavigationPlan? _pendingNavigation;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -77,12 +83,11 @@ public class CatalogAgent
         - Use get_deployment_state to show the current version matrix for a product
         - Use query_deployments to show recent deployment activity (what was deployed today, what changed in production, etc.)
         - The system will render rich data cards for deployment results
-        - Include navigation links in your response so the user can open the full deployment view. URL format:
-          - State matrix: /deployments/{product}
-          - Activity view: /deployments/{product}?tab=activity
-          - Activity with time filter: /deployments/{product}?tab=activity&atime=today
-          - Activity with environment: /deployments/{product}?tab=activity&env=production
-          - Combined filters: /deployments/{product}?tab=activity&atime=24h&env=staging
+        - NEVER write a portal URL yourself. Use navigate_to to move the user, or copy a `url` field
+          exactly as a tool returned it. A service lives under its product — a link to a service
+          needs BOTH (`/deployments/{product}/{service}`), and getting that wrong sends the user to
+          a page that does not exist. The tools already know which product owns a service; you do
+          not have to.
 
         When a user asks about promotions (who needs to approve, pending promotions, assigning QA, leaving a note on a promotion, etc.):
         - Use list_promotions to find candidates — filter by status, product, service, target_env, or a reference (PR number, work item key).
@@ -138,7 +143,19 @@ public class CatalogAgent
         - Quote deployment log excerpts verbatim; an operator needs the actual error text.
         - When a cause names a fixGuide, offer to walk them through it with start_guide.
 
+        Being useful means moving the user's screen, not just describing things:
+        - "show me", "open", "take me to", "go to", "let's look at", "where is" — these are requests
+          to NAVIGATE. Call navigate_to. Answering one of these in prose while leaving the user
+          where they were is a failure, even if the prose is correct.
+        - After navigating, one short sentence about what they are now looking at. Do not paste the
+          link as well — they are already there.
+        - When you have just answered a question and there is an obvious place to see it in full,
+          take them there rather than offering a link to click.
+        - Where a walkthrough exists for what they want to do, start_guide is better than navigate_to
+          — it moves them AND points at the controls.
+
         Rules:
+        - NEVER construct a portal URL. Use navigate_to, or copy a `url` a tool returned verbatim.
         - Always respond in the same language the user uses
         - Be concise
         - When suggesting field corrections, explain WHY briefly
@@ -379,6 +396,41 @@ public class CatalogAgent
                         ["query"] = new { type = "string", description = "Name or email fragment — at least 2 characters." },
                     },
                     required = new[] { "query" },
+                },
+            },
+        },
+        new
+        {
+            type = "function",
+            function = new
+            {
+                name = "navigate_to",
+                description = "Take the user to a page in the portal. Call this whenever they say show / open / take me to / go to / let's look at — showing means moving their screen, not describing the destination in text. Also call it after answering when there is an obvious place to continue. Never build a URL yourself: this resolves the correct route, including looking up a service's product so the link cannot be wrong.",
+                parameters = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["target"] = new
+                        {
+                            type = "string",
+                            description = "What to open.",
+                            @enum = new[]
+                            {
+                                "deployments", "product", "product_activity", "service", "service_history",
+                                "deploy_event", "promotions", "promotion", "rollbacks", "release_notes",
+                                "requests", "request", "approvals", "catalog", "catalog_item",
+                                "work_item", "analytics", "artifacts", "webhooks", "settings",
+                            },
+                        },
+                        ["product"] = new { type = "string", description = "Product slug, e.g. 'mpt-extensions'. Optional for `service` — it is looked up when omitted." },
+                        ["service"] = new { type = "string", description = "Service name, e.g. 'mpt-extension-adobe'." },
+                        ["id"] = new { type = "string", description = "GUID for promotion, deploy_event or request." },
+                        ["key"] = new { type = "string", description = "Work item key, or catalog slug, or settings tab." },
+                        ["environment"] = new { type = "string", description = "Environment filter for product_activity, e.g. 'production'." },
+                        ["time"] = new { type = "string", description = "Time filter for product_activity: 'today', '24h', '7d'." },
+                    },
+                    required = new[] { "target" },
                 },
             },
         },
@@ -648,6 +700,7 @@ public class CatalogAgent
             Cards = cards.Count > 0 ? cards : null,
             A2uiSurface = a2uiSurface,
             Guide = _pendingGuide,
+            Navigation = _pendingNavigation,
         };
     }
 
@@ -808,6 +861,138 @@ public class CatalogAgent
     /// Returns the tool list for this turn. Always includes BaseToolDefinitions.
     /// When the user is on a catalog form, also adds a fill_fields tool with field-specific parameters.
     /// </summary>
+    /// <summary>
+    /// Turns a semantic destination into a real route, or an explanation of why it cannot.
+    /// </summary>
+    /// <remarks>
+    /// The service branch is the point of this method. A service link needs its product, the model
+    /// frequently only knows the service name, and guessing produced the wrong URL — so the product
+    /// is looked up from the deployment record rather than assumed, and a service that belongs to
+    /// several products asks rather than picks.
+    /// </remarks>
+    private async Task<(string? Route, string? Label, string? Problem)> ResolveNavigation(
+        string target, string? product, string? service, string? key, string? environment, string? time, Guid id)
+    {
+        switch (target)
+        {
+            case "deployments":
+                return (PortalRoutes.Deployments(), "Deployments", null);
+
+            case "product":
+            case "product_activity":
+            {
+                if (string.IsNullOrWhiteSpace(product))
+                    return (null, null, "A product is required for this target. Call list_products if you are unsure.");
+
+                return target == "product"
+                    ? (PortalRoutes.Product(product), $"{product} deployment state", null)
+                    : (PortalRoutes.ProductActivity(product, environment, time), $"{product} deployment activity", null);
+            }
+
+            case "service":
+            case "service_history":
+            {
+                if (string.IsNullOrWhiteSpace(service))
+                    return (null, null, "A service is required for this target.");
+
+                if (string.IsNullOrWhiteSpace(product))
+                {
+                    var owners = await _db.DeployEvents.AsNoTracking()
+                        .Where(e => e.Service == service)
+                        .Select(e => e.Product)
+                        .Distinct()
+                        .Take(5)
+                        .ToListAsync();
+
+                    if (owners.Count == 0)
+                        return (null, null, $"No deployments are recorded for service '{service}', so its product is unknown. Check the name with list_products or query_deployments.");
+
+                    if (owners.Count > 1)
+                        return (null, null, $"Service '{service}' exists under several products ({string.Join(", ", owners)}). Ask the user which one they mean, then call navigate_to again with `product` set.");
+
+                    product = owners[0];
+                }
+
+                return target == "service"
+                    ? (PortalRoutes.Service(product, service), $"{service} in {product}", null)
+                    : (PortalRoutes.ServiceHistory(product, service), $"{service} deployment history", null);
+            }
+
+            case "deploy_event":
+                return id == Guid.Empty
+                    ? (null, null, "A deploy event id (GUID) is required.")
+                    : (PortalRoutes.DeployEvent(id), "Deployment detail", null);
+
+            case "promotions":
+                return (PortalRoutes.Promotions(), "Promotions", null);
+
+            case "promotion":
+            {
+                if (id == Guid.Empty)
+                    return (null, null, "A promotion candidate id (GUID) is required. Use list_promotions to find it.");
+
+                // Checked rather than trusted: sending someone to a promotion that does not exist is
+                // a worse answer than saying so.
+                var candidate = await _db.PromotionCandidates.AsNoTracking()
+                    .Where(c => c.Id == id)
+                    .Select(c => new { c.Service, c.SourceEnv, c.TargetEnv })
+                    .FirstOrDefaultAsync();
+
+                return candidate is null
+                    ? (null, null, $"No promotion candidate with id {id}.")
+                    : (PortalRoutes.Promotion(id),
+                       $"{candidate.Service} {candidate.SourceEnv} → {candidate.TargetEnv}", null);
+            }
+
+            case "rollbacks":
+                return (PortalRoutes.Rollbacks(), "Rollbacks", null);
+
+            case "release_notes":
+                return string.IsNullOrWhiteSpace(product)
+                    ? (PortalRoutes.ReleaseNotes(), "Release notes", null)
+                    : (PortalRoutes.ReleaseNotesForProduct(product), $"{product} release notes", null);
+
+            case "requests":
+                return (PortalRoutes.Requests(), "Requests", null);
+
+            case "request":
+                return id == Guid.Empty
+                    ? (null, null, "A request id (GUID) is required.")
+                    : (PortalRoutes.Request(id), "Request detail", null);
+
+            case "approvals":
+                return (PortalRoutes.Approvals(), "Approvals", null);
+
+            case "catalog":
+                return (PortalRoutes.Catalog(), "Service catalog", null);
+
+            case "catalog_item":
+                return string.IsNullOrWhiteSpace(key)
+                    ? (null, null, "A catalog slug is required in `key`.")
+                    : (PortalRoutes.CatalogItem(key), $"{key} request form", null);
+
+            case "work_item":
+                return string.IsNullOrWhiteSpace(service) || string.IsNullOrWhiteSpace(key)
+                    ? (null, null, "Both `service` and `key` are required for a work item.")
+                    : (PortalRoutes.WorkItem(service, key), $"Work item {key}", null);
+
+            case "analytics":
+                return (PortalRoutes.Analytics(), "Analytics", null);
+
+            case "artifacts":
+                return (PortalRoutes.Artifacts(), "Artifacts", null);
+
+            case "webhooks":
+                return (PortalRoutes.Webhooks(), "Webhooks", null);
+
+            case "settings":
+                return (PortalRoutes.Settings(key), key is null ? "Settings" : $"Settings — {key}", null);
+
+            default:
+                return (null, null, $"Unknown navigation target '{target}'.");
+        }
+    }
+
     /// <summary>Human-readable age, so the model does not have to format a TimeSpan itself.</summary>
     private static string DescribeAge(TimeSpan span) => span switch
     {
@@ -1111,7 +1296,24 @@ public class CatalogAgent
                         return ("Provide at least a product or a service to look up deployment state.", null, null, null);
 
                     var stateData = await _queryService.GetDeploymentState(product, service);
-                    var resultJson = JsonSerializer.Serialize(stateData, JsonOptions);
+
+                    // Each service carries its own link. The model used to be given a URL template
+                    // and got the product/service split wrong; handing it finished links removes the
+                    // opportunity. Only possible when the owning product is known.
+                    var owningProduct = product ?? stateData.Product;
+                    var resultJson = JsonSerializer.Serialize(new
+                    {
+                        state = stateData,
+                        links = owningProduct is null ? null : new
+                        {
+                            product = PortalRoutes.Product(owningProduct),
+                            activity = PortalRoutes.ProductActivity(owningProduct),
+                            services = stateData.Services.ToDictionary(
+                                s => s,
+                                s => PortalRoutes.Service(owningProduct, s)),
+                        },
+                        note = "Use navigate_to to move the user. If you do write a link, copy one from `links` verbatim — never assemble one.",
+                    }, JsonOptions);
                     var title = (product, service) switch
                     {
                         (not null, not null) => $"Deployment State — {product} / {service}",
@@ -1378,6 +1580,43 @@ public class CatalogAgent
                         _logger.LogWarning(ex, "Directory search failed for query '{Query}'", q);
                         return ("[]", null, null, null);
                     }
+                }
+
+                case "navigate_to":
+                {
+                    var target = args.GetProperty("target").GetString() ?? "";
+                    var product = args.TryGetProperty("product", out var np) ? np.GetString() : null;
+                    var service = args.TryGetProperty("service", out var ns) ? ns.GetString() : null;
+                    var key = args.TryGetProperty("key", out var nk) ? nk.GetString() : null;
+                    var env = args.TryGetProperty("environment", out var ne) ? ne.GetString() : null;
+                    var time = args.TryGetProperty("time", out var nt) ? nt.GetString() : null;
+                    Guid.TryParse(args.TryGetProperty("id", out var ni) ? ni.GetString() : null, out var id);
+
+                    var (route, label, problem) = await ResolveNavigation(target, product, service, key, env, time, id);
+                    if (problem is not null)
+                        return (problem, null, null, null);
+
+                    _pendingNavigation = new NavigationPlan
+                    {
+                        Route = route!,
+                        Label = label!,
+                        // Landing on a product matrix having asked about one service means the row
+                        // still has to be found by eye. Ring it instead.
+                        Highlight = target == "product" && !string.IsNullOrWhiteSpace(service)
+                            ? $"service-row:{service}"
+                            : null,
+                        HighlightLabel = target == "product" && !string.IsNullOrWhiteSpace(service)
+                            ? service
+                            : null,
+                    };
+
+                    return (JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        route,
+                        label,
+                        note = "The user's screen is now on this page. Say in one short sentence what they are looking at — do not paste the link, they are already there.",
+                    }, JsonOptions), null, null, null);
                 }
 
                 case "search_knowledge":
@@ -1877,6 +2116,12 @@ public class CatalogAgentResponse
     /// </summary>
     [JsonPropertyName("guide")]
     public GuidePlan? Guide { get; set; }
+
+    /// <summary>
+    /// Set when the agent moved the user to a page. The client navigates on receipt.
+    /// </summary>
+    [JsonPropertyName("navigation")]
+    public NavigationPlan? Navigation { get; set; }
 }
 
 /// <summary>
@@ -1932,4 +2177,31 @@ public class GuidePlanStep
 
     [JsonPropertyName("note")]
     public string? Note { get; set; }
+}
+
+/// <summary>
+/// Where the assistant is taking the user. Emitted by navigate_to; the client performs the
+/// navigation so "show me X" moves the screen instead of printing a link.
+/// </summary>
+public class NavigationPlan
+{
+    /// <summary>Relative portal route, built by <see cref="PortalRoutes"/>.</summary>
+    [JsonPropertyName("route")]
+    public string Route { get; set; } = "";
+
+    /// <summary>Short human name for the destination, for the "opened X" line in the chat.</summary>
+    [JsonPropertyName("label")]
+    public string Label { get; set; } = "";
+
+    /// <summary>
+    /// A `data-guide-anchor` to ring once the page has loaded, when the destination is a list and
+    /// the user was looking for one row in it. Landing on a page is not the same as finding the
+    /// thing on it.
+    /// </summary>
+    [JsonPropertyName("highlight")]
+    public string? Highlight { get; set; }
+
+    /// <summary>What the highlighted element is, shown in the spotlight tooltip.</summary>
+    [JsonPropertyName("highlightLabel")]
+    public string? HighlightLabel { get; set; }
 }

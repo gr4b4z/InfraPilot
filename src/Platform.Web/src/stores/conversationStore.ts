@@ -16,6 +16,8 @@ export interface ChatMessage {
   a2uiSurface?: string;
   /** Walkthrough started by the start_guide tool — kept so the user can replay it later */
   guide?: GuidePlan;
+  /** Where the assistant took the user, so the transcript records the move */
+  navigation?: { route: string; label: string };
   /** Whether this is an ambient notification (SSE push) */
   isNotification?: boolean;
   isLoading?: boolean;
