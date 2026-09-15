@@ -8,6 +8,7 @@ import { buildAgentUrl } from '@/lib/runtimeConfig';
 import { authHeaders } from '@/lib/authHeaders';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import type { A2UIComponent, CatalogItem } from '@/lib/types';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 interface CatalogDetail {
   item: CatalogItem;
@@ -219,9 +220,15 @@ export function RequestPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          {detail.item.name}
-        </h1>
+        <div className="flex items-center gap-1">
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            {detail.item.name}
+          </h1>
+          <HelpButton
+            page={detail.item.name}
+            question={`How do I fill in and submit the "${detail.item.name}" request?`}
+          />
+        </div>
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
           {detail.item.description}
         </p>

@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { LayoutGrid, Search, TrendingUp, Clock, CheckCircle, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 const categories = ['ci-cd', 'infrastructure', 'access', 'data', 'general'];
 
@@ -38,9 +39,12 @@ export function CatalogPage() {
       {/* Page header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Service Catalog
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Service Catalog
+            </h1>
+            <HelpButton page="Service Catalog" />
+          </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Browse and request infrastructure services for your team
           </p>

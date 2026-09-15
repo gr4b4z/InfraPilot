@@ -67,6 +67,7 @@ import {
   workItemDetailPath,
 } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
@@ -321,9 +322,21 @@ export function PromotionDetailPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            {candidate.product} / {candidate.service}
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              {candidate.product} / {candidate.service}
+            </h1>
+            {/* Carries the candidate id so the assistant can diagnose this exact promotion rather
+                than asking the user which one they mean. */}
+            <HelpButton
+              page="Promotion"
+              question={
+                candidate.status === 'Approved' || candidate.status === 'Pending'
+                  ? `What is happening with promotion ${candidate.id}, and what do I need to do?`
+                  : `What can I do with promotion ${candidate.id}?`
+              }
+            />
+          </div>
           <div className="mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
             <PromotionRoute
               product={candidate.product}
