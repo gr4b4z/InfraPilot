@@ -871,6 +871,9 @@ export function ProductDeploymentsPage() {
               {services.map((service, serviceIdx) => (
                 <tr
                   key={service}
+                  // Addressable so the assistant can ring this exact row after sending the user
+                  // here — "where is auth-api" lands on the matrix with the row already picked out.
+                  data-guide-anchor={`service-row:${service}`}
                   style={{ borderBottom: '1px solid var(--border-color)' }}
                 >
                   <td
