@@ -27,6 +27,43 @@ public class GuideRegistry
         string.IsNullOrWhiteSpace(id) ? null : _byId.GetValueOrDefault(id.Trim());
 
     /// <summary>
+    /// Guides that apply to a page the user is currently on.
+    /// </summary>
+    /// <remarks>
+    /// Matched deterministically rather than left to the model to infer from the path, because
+    /// "what can I do here?" has an exact answer and guessing it wrong is worse than saying nothing.
+    /// A guide matches when the current path is its route or sits beneath it, so
+    /// <c>/promotions/{id}</c> still offers the promotion guides, and when any step navigates there,
+    /// so a guide that crosses into Settings is offered on the page it ends on too.
+    /// </remarks>
+    public List<GuideDefinition> ForRoute(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return [];
+
+        var current = Normalize(path);
+
+        return [.. _guides
+            .Where(g => Covers(g.Route, current) || g.Steps.Any(s => Covers(s.Route, current)))
+            // Deepest route first: on /settings/rollbacks the policy guide is a better answer than
+            // one that merely mentions /settings.
+            .OrderByDescending(g => Normalize(g.Route).Count(c => c == '/'))
+            .ThenBy(g => g.Title, StringComparer.OrdinalIgnoreCase)];
+    }
+
+    private static bool Covers(string? guideRoute, string currentPath)
+    {
+        if (string.IsNullOrWhiteSpace(guideRoute)) return false;
+
+        var route = Normalize(guideRoute);
+        if (route.Length == 0) return false;
+
+        return currentPath.Equals(route, StringComparison.OrdinalIgnoreCase)
+            || currentPath.StartsWith(route + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Normalize(string path) => '/' + path.Trim().Trim('/');
+
+    /// <summary>
     /// Keyword search over titles, aliases, summaries and step text. Deliberately not an embedding
     /// search: the corpus is tens of entries, the vocabulary is the product's own nouns, and a
     /// scored keyword match is debuggable in a way a vector store is not. Revisit if the corpus

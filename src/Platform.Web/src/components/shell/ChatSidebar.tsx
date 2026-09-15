@@ -24,6 +24,8 @@ export function ChatSidebar() {
     toggleSidebarExpanded,
     startNewThread,
     getHistoryForAgent,
+    pendingQuestion,
+    consumePendingQuestion,
   } = useConversationStore();
 
   const [input, setInput] = useState('');
@@ -145,6 +147,23 @@ export function ChatSidebar() {
       setLoading(false);
     }
   };
+
+  // A Help button elsewhere on the page queued a question. Consuming it before sending is what stops
+  // a re-render from asking twice; the user message is added here rather than inside sendMessage so
+  // the question they effectively asked is visible in the transcript.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const question = consumePendingQuestion();
+    if (!question) return;
+
+    // Sent from a microtask rather than the effect body: sendMessage sets state immediately, and
+    // doing that while React is committing this effect cascades an extra render. The closure is the
+    // one from the render that queued the question, so the page context it sends is current.
+    queueMicrotask(() => {
+      addMessage({ role: 'user', text: question });
+      void sendMessage(question);
+    });
+  }, [pendingQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNavigate = (slug: string) => {
     setContext({ catalogSlug: slug, step: 'form' });

@@ -5,6 +5,7 @@ import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { ScrollText, Loader2 } from 'lucide-react';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 export function ReleaseNotesIndexPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
@@ -15,9 +16,12 @@ export function ReleaseNotesIndexPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          Release Notes
-        </h1>
+        <div className="flex items-center gap-1">
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            Release Notes
+          </h1>
+          <HelpButton page="Release Notes" />
+        </div>
         <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
           Pick a product to view its release notes.
         </p>

@@ -91,6 +91,14 @@ public class CatalogAgent
         - Use add_promotion_comment to leave a note on a promotion.
         - Confirm destructive actions (removing participants) before calling remove_promotion_participant.
 
+        When a user asks what they can do on the page they are on ("what do I do here?", "help"):
+        - The page context below lists the walkthroughs that apply to this exact page. Say in one or
+          two sentences what the page is for, then offer those by name.
+        - If exactly one applies and the user's intent is clear, start it with start_guide rather
+          than asking which they want.
+        - If none is listed for this page, say what the page is for and offer the closest guide from
+          search_guides. Never invent steps for a page with no walkthrough.
+
         When a user asks HOW to do something, WHERE something is, or how a part of the portal works
         ("how do I roll back?", "where do I approve this?", "how do release notes work?"):
         - ALWAYS call search_guides first. Never answer a how-to from memory — button names, page
@@ -643,13 +651,29 @@ public class CatalogAgent
         };
     }
 
-    private static string BuildPageContextHint(ChatPageContext ctx)
+    private string BuildPageContextHint(ChatPageContext ctx)
     {
         var currentPath = SanitizeInline(ctx.CurrentPath, 200);
         var currentSlug = SanitizeInline(ctx.CurrentSlug, 100);
 
         var sb = new StringBuilder();
         sb.AppendLine($"\nCurrent page: {currentPath}");
+
+        // Which walkthroughs apply here is an exact question, so it is answered exactly rather than
+        // left to the model to infer from the path. This is what makes the page Help buttons
+        // reliable: "what can I do here?" is answerable without a search that might miss.
+        var here = _guides.ForRoute(ctx.CurrentPath);
+        if (here.Count > 0)
+        {
+            sb.AppendLine("Walkthroughs available on this page (start one with start_guide, do not just describe it):");
+            foreach (var guide in here.Take(8))
+                sb.AppendLine($"  {guide.Id} — {guide.Title}: {guide.Summary.Trim()}");
+        }
+        else
+        {
+            sb.AppendLine("No walkthrough is authored for this page. If the user asks what to do here, "
+                + "say what the page is for, then search_guides for the task they describe — do not invent steps.");
+        }
 
         if (!string.IsNullOrEmpty(currentSlug))
         {

@@ -62,6 +62,7 @@ import {
   ShieldCheck,
   Lock,
 } from 'lucide-react';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 /**
  * Per-candidate work-item signoff state for the list. The list API returns the candidate's own
@@ -859,9 +860,12 @@ export function PromotionsPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Promotions
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Promotions
+            </h1>
+            <HelpButton page="Promotions" />
+          </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Review and approve version promotions across environments
           </p>

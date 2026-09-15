@@ -7,6 +7,7 @@ import { useDocumentTitle } from '@/lib/pageTitle';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import { FileText, ArrowUpRight, Inbox, User, Users } from 'lucide-react';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 type Scope = 'mine' | 'all';
 
@@ -47,9 +48,12 @@ export function RequestsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Requests
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Requests
+            </h1>
+            <HelpButton page="Requests" />
+          </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {scope === 'mine' ? 'Track your infrastructure service requests' : 'All team infrastructure requests'}
           </p>

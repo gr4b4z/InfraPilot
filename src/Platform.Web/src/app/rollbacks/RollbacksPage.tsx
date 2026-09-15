@@ -26,6 +26,7 @@ import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { FilterPanel } from '@/components/ui/FilterPanel';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 const STATUS_CONFIG: Record<
   RollbackStatus,
@@ -234,9 +235,12 @@ export function RollbacksPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Rollbacks
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Rollbacks
+            </h1>
+            <HelpButton page="Rollbacks" />
+          </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Revert services to a prior version, manually or by aligning to a reference environment
           </p>

@@ -34,6 +34,11 @@ interface ConversationState {
   sidebarOpen: boolean;
   /** When true the chat takes over the full content area (main view is hidden). */
   sidebarExpanded: boolean;
+  /**
+   * A question queued by something outside the chat, waiting for ChatSidebar to pick it up.
+   * Not persisted — a reload should not re-ask what the user asked in a previous session.
+   */
+  pendingQuestion: string | null;
 
   // Actions
   addMessage: (msg: Omit<ChatMessage, 'timestamp'>) => void;
@@ -41,6 +46,14 @@ interface ConversationState {
   setContext: (ctx: Partial<ConversationContext>) => void;
   updateFormData: (key: string, value: unknown) => void;
   setSidebarOpen: (open: boolean) => void;
+  /**
+   * Ask the assistant something from outside the chat — the per-page Help buttons use this.
+   * Opens the panel and leaves the question for ChatSidebar to send, so callers do not need to
+   * know how a turn is assembled (page context, history, auth).
+   */
+  askAssistant: (question: string) => void;
+  /** Takes the queued question, clearing it so a re-render cannot send it twice. */
+  consumePendingQuestion: () => string | null;
   toggleSidebar: () => void;
   toggleSidebarExpanded: () => void;
   startNewThread: () => void;
@@ -64,6 +77,7 @@ export const useConversationStore = create<ConversationState>()(
       context: {},
       sidebarOpen: false,
       sidebarExpanded: false,
+      pendingQuestion: null,
 
       addMessage: (msg) =>
         set((state) => ({
@@ -92,6 +106,14 @@ export const useConversationStore = create<ConversationState>()(
         })),
 
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
+
+      askAssistant: (question) => set({ sidebarOpen: true, pendingQuestion: question }),
+
+      consumePendingQuestion: () => {
+        const { pendingQuestion } = get();
+        if (pendingQuestion) set({ pendingQuestion: null });
+        return pendingQuestion;
+      },
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       toggleSidebarExpanded: () => set((state) => ({ sidebarExpanded: !state.sidebarExpanded })),
 

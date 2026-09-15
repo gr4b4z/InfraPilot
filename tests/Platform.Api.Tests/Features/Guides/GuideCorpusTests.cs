@@ -151,6 +151,60 @@ public class GuideCorpusTests
             && segments.Skip(1).All(segment => declared.Contains(segment));
     }
 
+    /// <summary>
+    /// The per-page Help buttons are only as good as this lookup: it is what turns "what can I do
+    /// here?" into a specific answer instead of a guess from the path.
+    /// </summary>
+    [Theory]
+    [InlineData("/rollbacks", "request-rollback")]
+    [InlineData("/rollbacks", "approve-rollback")]
+    [InlineData("/promotions", "approve-promotion")]
+    [InlineData("/deployments", "check-deployed-version")]
+    [InlineData("/catalog", "request-catalog-service")]
+    [InlineData("/requests", "track-request")]
+    [InlineData("/release-notes", "generate-release-notes")]
+    [InlineData("/settings/rollbacks", "configure-rollback-policy")]
+    public void Page_Offers_Its_Guides(string path, string expectedGuideId)
+    {
+        var guides = Registry.Value.ForRoute(path);
+
+        Assert.Contains(guides, g => g.Id == expectedGuideId);
+    }
+
+    /// <summary>A detail page belongs to the section it sits under, so it offers the same guides.</summary>
+    [Theory]
+    [InlineData("/promotions/9f0d3a2c-0000-0000-0000-000000000000", "approve-promotion")]
+    [InlineData("/deployments/identity-platform", "check-deployed-version")]
+    public void Detail_Pages_Inherit_Their_Sections_Guides(string path, string expectedGuideId)
+        => Assert.Contains(Registry.Value.ForRoute(path), g => g.Id == expectedGuideId);
+
+    [Fact]
+    public void A_Page_With_No_Guides_Offers_Nothing_Rather_Than_Guessing()
+        => Assert.Empty(Registry.Value.ForRoute("/webhooks"));
+
+    /// <summary>
+    /// `/settings/rollbacks` must not pull in every guide that merely mentions `/settings`, and
+    /// `/rollbacks` must not match it either — prefix matching has to respect segment boundaries.
+    /// </summary>
+    [Fact]
+    public void Route_Matching_Respects_Segment_Boundaries()
+    {
+        var settingsGuides = Registry.Value.ForRoute("/settings/rollbacks");
+        Assert.Contains(settingsGuides, g => g.Id == "configure-rollback-policy");
+
+        // The rollbacks page is not underneath settings, so the settings-only guide is not offered.
+        var rollbackGuides = Registry.Value.ForRoute("/rollbacks");
+        Assert.DoesNotContain(rollbackGuides, g => g.Route == "/settings/rollbacks");
+    }
+
+    [Fact]
+    public void Unknown_Or_Empty_Paths_Are_Safe()
+    {
+        Assert.Empty(Registry.Value.ForRoute(null));
+        Assert.Empty(Registry.Value.ForRoute(""));
+        Assert.Empty(Registry.Value.ForRoute("/no-such-page"));
+    }
+
     /// <summary>All `data-guide-anchor` values present in the web source.</summary>
     private static HashSet<string> DeclaredAnchors()
     {
