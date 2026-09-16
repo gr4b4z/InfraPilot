@@ -18,6 +18,8 @@ export interface ChatMessage {
   guide?: GuidePlan;
   /** Where the assistant took the user, so the transcript records the move */
   navigation?: { route: string; label: string };
+  /** What the assistant ringed on the page for this answer, so the chip can bring the rings back */
+  highlights?: Array<{ anchor: string; label?: string }>;
   /** Whether this is an ambient notification (SSE push) */
   isNotification?: boolean;
   isLoading?: boolean;

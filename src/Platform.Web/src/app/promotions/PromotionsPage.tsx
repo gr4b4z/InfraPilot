@@ -1253,6 +1253,8 @@ function CandidateCard({
   return (
     <div
       {...rowProps}
+      // Addressable by id so the assistant can ring the one candidate it is talking about.
+      data-guide-anchor={`promotion-row:${candidate.id}`}
       className="card-hover rounded-xl border p-4 cursor-pointer flex items-start gap-3"
       style={{
         borderColor: urgent ? cfg.color + '40' : 'var(--border-color)',

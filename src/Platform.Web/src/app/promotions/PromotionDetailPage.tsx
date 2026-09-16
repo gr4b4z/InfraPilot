@@ -369,7 +369,11 @@ export function PromotionDetailPage() {
               }
             />
           </div>
-          <div className="mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+          <div
+            className="mt-1.5 text-[13px]"
+            style={{ color: 'var(--text-secondary)' }}
+            data-guide-anchor="promotion-route"
+          >
             <PromotionRoute
               product={candidate.product}
               service={candidate.service}
@@ -416,6 +420,7 @@ export function PromotionDetailPage() {
         {deploymentHref ? (
           <Link
             to={deploymentHref}
+            data-guide-anchor="promotion-status"
             className="badge transition-opacity hover:opacity-80 hover:underline"
             style={{ backgroundColor: cfg.bg, color: cfg.color }}
             title="View the deployment that shipped this version"
@@ -424,7 +429,11 @@ export function PromotionDetailPage() {
             {candidate.status}
           </Link>
         ) : (
-          <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
+          <span
+            className="badge"
+            data-guide-anchor="promotion-status"
+            style={{ backgroundColor: cfg.bg, color: cfg.color }}
+          >
             <StatusIcon size={10} />
             {candidate.status}
           </span>
@@ -606,6 +615,7 @@ export function PromotionDetailPage() {
              bottom of the main column because it can be long; the full width keeps it readable. */}
           {sourceEvent && sourceEvent.references.length > 0 && (
             <div
+              data-guide-anchor="promotion-references"
               className="rounded-xl border p-5"
               style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
             >
@@ -661,6 +671,7 @@ export function PromotionDetailPage() {
 
           {/* Timestamps */}
           <div
+            data-guide-anchor="promotion-timestamps"
             className="rounded-xl border p-5"
             style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
           >
@@ -1562,6 +1573,7 @@ function PromotionApprovalCard({
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setPending({ action: 'reject' })}
+              data-guide-anchor="promotion-reject-button"
               {...{ [ROW_ACTION_ATTR]: 'reject' }}
               disabled={actionLoading}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
@@ -2012,6 +2024,9 @@ function ApprovalProgressBody({
                             <button
                               type="button"
                               onClick={() => onApprove(eligible)}
+                              // One name for every gate's button: "where do I approve?" rings all
+                              // the places this user can, which is the honest answer.
+                              data-guide-anchor="promotion-approve-button"
                               {...(key === firstEligibleKey ? { [ROW_ACTION_ATTR]: 'approve' } : {})}
                               disabled={actionLoading || approveBlocked}
                               aria-describedby={approveBlocked ? approveBlockedId : undefined}
