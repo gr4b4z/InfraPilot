@@ -5,6 +5,7 @@ import { activeKeyboardRow, focusIdleKeyboardList } from '@/hooks/keyboardList';
 import { invokeRowAction, type RowAction } from '@/lib/keys';
 import { useUiStore } from '@/stores/uiStore';
 import { useHiddenThemeStore } from '@/stores/hiddenThemeStore';
+import { useHighlightStore } from '@/stores/highlightStore';
 import { CommandPalette } from './CommandPalette';
 import { HiddenThemeScene } from './HiddenThemeScene';
 import { HiddenThemeToast } from './HiddenThemeToast';
@@ -66,6 +67,13 @@ export function KeyboardLayer() {
   const escape = useCallback(() => {
     if (document.querySelector('[role="dialog"]')) return;
     if (navDrawerOpen) return;
+    // The assistant's rings are an overlay too: the first Escape takes them off the page, and only
+    // a second one leaves it.
+    const highlights = useHighlightStore.getState();
+    if (highlights.targets.length > 0) {
+      highlights.clear();
+      return;
+    }
     navigate(-1);
   }, [navigate, navDrawerOpen]);
 

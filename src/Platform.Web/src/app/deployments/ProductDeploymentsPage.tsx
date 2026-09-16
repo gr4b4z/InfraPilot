@@ -845,6 +845,8 @@ export function ProductDeploymentsPage() {
                 {environments.map((env) => (
                   <th
                     key={env}
+                    // Addressable so "what's on staging?" can ring the whole column.
+                    data-guide-anchor={`env-column:${env}`}
                     className="text-center px-4 py-3 font-medium"
                     style={{ color: 'var(--text-muted)' }}
                   >
@@ -913,6 +915,7 @@ export function ProductDeploymentsPage() {
                       key={env}
                       index={serviceIdx * environments.length + envIdx}
                       service={service}
+                      env={env}
                       envLabel={getDisplayName(env)}
                       cell={getCell(service, env)}
                       pending={pendingPromotions.get(`${service}::${env}`)}
@@ -1009,6 +1012,7 @@ export function ProductDeploymentsPage() {
 function MatrixCell({
   index,
   service,
+  env,
   envLabel,
   cell,
   pending,
@@ -1017,6 +1021,8 @@ function MatrixCell({
 }: {
   index: number;
   service: string;
+  /** Stored environment key — the anchor uses it, so the assistant's `env-cell:` names match the data. */
+  env: string;
   envLabel: string;
   cell: DeploymentStateEntry | undefined;
   /** A Pending promotion targeting this (service, environment), if there is one. */
@@ -1037,10 +1043,15 @@ function MatrixCell({
 
   // Nothing deployed here yet. A pending promotion still belongs on the cell — a first deploy into
   // an environment is exactly the case where "something is queued for this slot" is worth knowing.
+  // One name per (service, environment), on the empty cell too: "is X on prod yet?" rings the
+  // dash as readily as a version.
+  const anchor = `env-cell:${service}:${env}`;
+
   if (!cell) {
     return (
       <td
         {...rowProps}
+        data-guide-anchor={anchor}
         className="text-center px-4 py-3"
         style={{ color: 'var(--text-muted)' }}
       >
@@ -1052,6 +1063,7 @@ function MatrixCell({
   return (
     <td
       {...rowProps}
+      data-guide-anchor={anchor}
       className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
       style={{
         borderLeft: highlighted ? '3px solid var(--accent)' : '3px solid transparent',

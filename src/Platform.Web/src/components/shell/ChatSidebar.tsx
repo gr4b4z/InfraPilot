@@ -8,6 +8,8 @@ import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
 import { GuideCard } from '@/components/guide/GuideCard';
 import { NavigationChip } from '@/components/guide/NavigationChip';
 import { useGuideStore } from '@/stores/guideStore';
+import { useHighlightStore } from '@/stores/highlightStore';
+import { usePageContextStore, collectAnchors } from '@/stores/pageContextStore';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
 import { authHeaders } from '@/lib/authHeaders';
 
@@ -38,6 +40,8 @@ export function ChatSidebar() {
   const isDesktop = useIsDesktop();
   const assistantName = getAssistantName();
   const startGuide = useGuideStore((s) => s.start);
+  const showHighlights = useHighlightStore((s) => s.show);
+  const clearHighlights = useHighlightStore((s) => s.clear);
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -75,6 +79,15 @@ export function ChatSidebar() {
 
     setLoading(true);
     addMessage({ role: 'assistant', text: '', isLoading: true });
+    // Rings belong to the answer they came with. A new question retires them.
+    clearHighlights();
+
+    // The screen, as it is at this moment: what the page says it is showing (kept current by the
+    // page itself), anything the caller added, and every element the assistant could point at.
+    // The assistant is told to read this before the conversation history, so it has to go out with
+    // every message — not only from the Help buttons.
+    const screen = usePageContextStore.getState();
+    const mergedState = { ...screen.state, ...(pageState ?? {}) };
 
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
@@ -84,10 +97,12 @@ export function ChatSidebar() {
           threadId,
           message: msg,
           pageContext: {
-            currentPath: location.pathname,
+            currentPath: location.pathname + location.search,
             currentSlug: currentSlug || undefined,
             formData: currentSlug ? (context.formData || undefined) : undefined,
-            pageState: pageState ?? undefined,
+            page: screen.page ?? undefined,
+            pageState: Object.keys(mergedState).length > 0 ? mergedState : undefined,
+            anchors: collectAnchors(),
           },
           history: getHistoryForAgent(),
         }),
@@ -125,34 +140,25 @@ export function ChatSidebar() {
         a2uiSurface: data.a2uiSurface || undefined,
         guide: data.guide || undefined,
         navigation: data.navigation || undefined,
+        highlights: Array.isArray(data.highlights) && data.highlights.length > 0 ? data.highlights : undefined,
       });
 
-      // "Show me X" means move the screen. Skipped when a guide is also running — the guide owns
+      // The answer may move the screen. Skipped when a guide is also running — the guide owns
       // navigation from here, and two routers fighting over the same turn lands nowhere useful.
       if (data.navigation?.route && !data.guide) {
         if (!isDesktop) setSidebarOpen(false);
         if (data.navigation.route !== location.pathname + location.search) {
           navigate(data.navigation.route);
         }
+      }
 
-        // Landing on a list is not the same as finding the row. A single-step plan reuses the
-        // walkthrough spotlight to ring it, with its own Done button to dismiss.
-        if (data.navigation.highlight) {
-          startGuide({
-            id: `navigation:${data.navigation.route}`,
-            title: data.navigation.label,
-            summary: '',
-            route: data.navigation.route,
-            steps: [
-              {
-                text: data.navigation.highlightLabel
-                  ? `Here is **${data.navigation.highlightLabel}**.`
-                  : 'Here it is.',
-                anchor: data.navigation.highlight,
-              },
-            ],
-          });
-        }
+      // Ring what the answer talked about — on the page just navigated to, or on this one. The
+      // layer waits for the destination to render, so this is safe to call before the route lands.
+      if (Array.isArray(data.highlights) && data.highlights.length > 0 && !data.guide) {
+        const route = data.navigation?.route ?? location.pathname;
+        showHighlights(data.highlights, route.split('?')[0]);
+        // On a phone the chat covers the page the rings are on.
+        if (!isDesktop) setSidebarOpen(false);
       }
 
       // The agent started a walkthrough — navigate and light up the first control. On a phone the
@@ -305,8 +311,14 @@ export function ChatSidebar() {
             )}
 
             {msg.guide && <GuideCard plan={msg.guide} />}
-            {msg.navigation && (
-              <NavigationChip route={msg.navigation.route} label={msg.navigation.label} />
+            {msg.navigation ? (
+              <NavigationChip
+                route={msg.navigation.route}
+                label={msg.navigation.label}
+                highlights={msg.highlights}
+              />
+            ) : (
+              msg.highlights && <NavigationChip label="" highlights={msg.highlights} />
             )}
 
             {/* Structured data cards */}
@@ -374,7 +386,12 @@ export function ChatSidebar() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') sendMessage();
+              // The app-wide Escape binding ignores keys typed into inputs, and this box has focus
+              // whenever the panel is open — so it clears the assistant's rings itself.
+              if (e.key === 'Escape') clearHighlights();
+            }}
             placeholder={currentSlug ? `Ask about ${currentSlug}...` : 'Ask anything...'}
             disabled={loading}
             className="flex-1 px-3 py-2 text-sm rounded-lg border outline-none transition-colors focus:border-[var(--accent)]"

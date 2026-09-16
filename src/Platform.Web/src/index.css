@@ -621,3 +621,14 @@ body {
   color: var(--text-muted);
   margin: 0.5em 0;
 }
+
+/* Rings the assistant draws around what it is talking about. A single pulse on arrival so the eye
+   finds them; steady afterwards so they do not compete with the page while the user reads. */
+.assistant-ring {
+  animation: assistant-ring-in 0.6s ease-out;
+}
+@keyframes assistant-ring-in {
+  0%   { box-shadow: 0 0 0 0 var(--accent); opacity: 0; }
+  40%  { opacity: 1; }
+  100% { box-shadow: 0 0 0 4px var(--accent-muted, rgba(0, 0, 0, 0.08)); opacity: 1; }
+}
