@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { useHighlightStore, type HighlightTarget } from '@/stores/highlightStore';
 import { useGuideStore } from '@/stores/guideStore';
+import { visibleRect } from '@/lib/visibleRect';
 
 interface Ring {
   anchor: string;
@@ -11,6 +12,8 @@ interface Ring {
   left: number;
   width: number;
   height: number;
+  /** Top edge of the scroll area the target sits in — the caption must not be drawn above it. */
+  clipTop: number;
 }
 
 /** Frames to wait for an anchor to appear before giving up on it — data and navigation both land late. */
@@ -68,18 +71,23 @@ export function HighlightLayer() {
       const next: Ring[] = [];
       for (const target of targets) {
         for (const el of findAll(target)) {
-          const r = el.getBoundingClientRect();
-          if (r.width === 0 && r.height === 0) continue;
-          next.push({ anchor: target.anchor, label: target.label, top: r.top, left: r.left, width: r.width, height: r.height });
+          // Clipped to what is actually on screen: a row scrolled out of its table gets no ring
+          // hovering over the header where it would be.
+          const v = visibleRect(el);
+          if (!v) continue;
+          next.push({ anchor: target.anchor, label: target.label, ...v.rect, clipTop: v.clip.top });
         }
       }
 
       // Bring the first ringed element into view once, when it first exists — not on every frame,
-      // which would fight the user's own scrolling.
-      if (!scrolled && next.length > 0) {
-        scrolled = true;
-        const first = findAll(targets.find((t) => t.anchor === next[0].anchor)!)[0];
-        first?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // which would fight the user's own scrolling. Found by presence, not visibility: the whole
+      // point is that it may be off screen.
+      if (!scrolled) {
+        const first = targets.map((t) => findAll(t)[0]).find(Boolean);
+        if (first) {
+          scrolled = true;
+          first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
       }
 
       // Nothing found after a generous wait: the anchors are not on this page. Fall silent rather
@@ -112,7 +120,8 @@ export function HighlightLayer() {
       {rings.map((ring, i) => {
         const showLabel = !!ring.label && !captioned.has(ring.anchor);
         if (showLabel) captioned.add(ring.anchor);
-        const labelAbove = ring.top > 36;
+        // Above the ring unless that would put the caption over whatever sits above the scroll area.
+        const labelAbove = ring.top - 30 >= ring.clipTop;
 
         return (
           <div key={`${ring.anchor}-${i}`}>
@@ -169,7 +178,10 @@ function sameRings(a: Ring[], b: Ring[]): boolean {
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
-    if (x.anchor !== y.anchor || x.top !== y.top || x.left !== y.left || x.width !== y.width || x.height !== y.height) {
+    if (
+      x.anchor !== y.anchor || x.top !== y.top || x.left !== y.left ||
+      x.width !== y.width || x.height !== y.height || x.clipTop !== y.clipTop
+    ) {
       return false;
     }
   }
