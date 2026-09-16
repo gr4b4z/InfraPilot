@@ -220,7 +220,7 @@ export function ServiceDetailPage() {
       )}
 
       {/* ── Environments ── where the service runs right now, one card per environment. */}
-      <section>
+      <section data-guide-anchor="service-environments">
         <h2 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
           Environments
         </h2>
@@ -339,6 +339,9 @@ function EnvironmentCard({ index, cell, service, pending, detailHref }: {
   return (
     <div
       {...rowProps}
+      // Same name as the matrix cell for this (service, environment), so the assistant rings "the
+      // staging version" the same way on either page.
+      data-guide-anchor={`env-cell:${service}:${cell.environment}`}
       className="card-hover rounded-xl border p-3 flex flex-col gap-2 transition-colors cursor-pointer"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
     >
