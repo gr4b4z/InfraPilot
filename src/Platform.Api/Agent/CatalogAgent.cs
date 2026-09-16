@@ -73,6 +73,9 @@ public class CatalogAgent
     /// <summary>Every `data-guide-anchor` on the user's screen this turn, as reported by the client.</summary>
     private HashSet<string>? _pageAnchors;
 
+    /// <summary>A name correction made while resolving a navigate_to, for the model to say out loud.</summary>
+    private string? _navigationNote;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -125,6 +128,16 @@ public class CatalogAgent
           service or product page on their own and ring the cells the question was about; you do not
           need a separate navigate_to or a "show me". Answer with the versions in one or two lines
           and say the page is now in front of them.
+        - Names are often misspelt or partial: "mpt-extentions-adobe", "adobe", "identity platform".
+          Pass them exactly as the user wrote them — the tools correct typos and expand a fragment to
+          every service containing it. When a result carries `nameResolution` notes, repeat the
+          correction in one clause ("assuming you meant mpt-extension-adobe"). When several services
+          matched, answer for each and name them; that IS the answer to "when was adobe updated".
+          Never say a service does not exist until a tool has returned `knownServices` without it —
+          and then offer the two or three closest names from that list.
+        - "When was X last updated / deployed?" → query_deployments with `service: X` and NO `since`.
+          The tool widens the window itself when nothing happened today. Lead with the date and how
+          long ago it was.
         - The system will render rich data cards for deployment results
         - NEVER write a portal URL yourself. Use navigate_to to move the user, or copy a `url` field
           exactly as a tool returned it. A service lives under its product — a link to a service
@@ -284,7 +297,7 @@ public class CatalogAgent
                     properties = new Dictionary<string, object>
                     {
                         ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional — omit to query across all products (typically when filtering by service instead)." },
-                        ["service"] = new { type = "string", description = "Service name, e.g. 'auth-api'. Optional — use when the user asks about a specific service rather than a product." },
+                        ["service"] = new { type = "string", description = "Service name as the user wrote it — misspellings and fragments ('adobe') are resolved. Optional — use when the user asks about a specific service rather than a product." },
                     },
                     required = Array.Empty<string>(),
                 },
@@ -303,9 +316,9 @@ public class CatalogAgent
                     properties = new Dictionary<string, object>
                     {
                         ["product"] = new { type = "string", description = "Product slug, e.g. 'identity-platform'. Optional — omit to query across all products." },
-                        ["service"] = new { type = "string", description = "Service name, e.g. 'auth-api'. Optional — use when the user asks about a specific service." },
+                        ["service"] = new { type = "string", description = "Service name as the user wrote it — misspellings and fragments ('adobe') are resolved to every matching service. Optional." },
                         ["environment"] = new { type = "string", description = "Environment name, e.g. 'production', 'staging'. Case-insensitive — 'Production' or 'Staging' also work. Optional." },
-                        ["since"] = new { type = "string", description = "ISO8601 datetime — only return deployments after this time. Defaults to start of today if omitted." },
+                        ["since"] = new { type = "string", description = "ISO8601 datetime — only return deployments after this time. Omit for 'today' — and ALWAYS omit for 'when was X last deployed', the tool widens to the most recent on its own." },
                     },
                     required = Array.Empty<string>(),
                 },
@@ -468,7 +481,7 @@ public class CatalogAgent
                             },
                         },
                         ["product"] = new { type = "string", description = "Product slug, e.g. 'mpt-extensions'. Optional for `service` — it is looked up when omitted." },
-                        ["service"] = new { type = "string", description = "Service name, e.g. 'mpt-extension-adobe'." },
+                        ["service"] = new { type = "string", description = "Service name as the user wrote it; misspellings are corrected." },
                         ["id"] = new { type = "string", description = "GUID for promotion, deploy_event or request." },
                         ["key"] = new { type = "string", description = "Work item key, or catalog slug, or settings tab." },
                         ["environment"] = new { type = "string", description = "Environment filter for product_activity, e.g. 'production'." },
@@ -971,31 +984,63 @@ public class CatalogAgent
         return (_cachedProducts, _cachedServices);
     }
 
-    private async Task<(string? Product, string? Service)> ResolveProductOrService(
-        string? rawProduct, string? rawService, string? userMessage = null)
+    /// <summary>
+    /// What a deployment question is about, after the names in it have been matched to real data.
+    /// <see cref="Services"/> holds several entries when a fragment ("adobe") or an ambiguous typo
+    /// fits more than one service; the callers answer for all of them. <see cref="Notes"/> are
+    /// sentences for the model to pass on — every correction made on the user's behalf is one.
+    /// </summary>
+    private sealed record ScopeResolution(string? Product, List<string> Services, List<string> Notes)
+    {
+        public bool Empty => Product is null && Services.Count == 0;
+    }
+
+    private async Task<ScopeResolution> ResolveScope(string? rawProduct, string? rawService, string? userMessage = null)
     {
         var (products, services) = await LoadDeploymentIndex();
-        string? product = null, service = null;
+        string? product = null;
+        var matched = new List<string>();
+        var notes = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(rawService))
-            service = FuzzyMatch(rawService, services) ?? rawService;
-
-        if (!string.IsNullOrWhiteSpace(rawProduct))
         {
-            product = FuzzyMatch(rawProduct, products);
+            var r = NameResolver.Resolve(rawService, services);
+            matched = r.Matches;
+            if (r.Note("service") is { } n) notes.Add(n);
 
-            if (product is null && string.IsNullOrWhiteSpace(service))
+            // Not a service at all — perhaps the model put a product in the service slot.
+            if (!r.Found && NameResolver.Resolve(rawService, products) is { Single: { } p })
             {
-                // Model passed a service under the product slot — reroute.
-                service = FuzzyMatch(rawProduct, services);
+                product = p;
+                notes.Add($"'{rawService}' is a product, not a service; answering for the whole product.");
             }
         }
 
-        // Safety net: the model often guesses a plausible product ignoring the user's
-        // message. If the user clearly named exactly one known service but the model
-        // didn't pass one, override to use service filtering. Skip when the message
-        // names multiple services — we can't pick one fairly, let the model decide.
-        if (string.IsNullOrWhiteSpace(service) && !string.IsNullOrWhiteSpace(userMessage))
+        if (!string.IsNullOrWhiteSpace(rawProduct))
+        {
+            var r = NameResolver.Resolve(rawProduct, products);
+            if (r.Single is not null)
+            {
+                product = r.Single;
+                if (r.Note("product") is { } n) notes.Add(n);
+            }
+            else if (r.Found)
+            {
+                notes.Add($"'{rawProduct}' could be any of these products: {string.Join(", ", r.Matches)}. Ask which, or answer per product.");
+            }
+            else if (matched.Count == 0)
+            {
+                // Model passed a service under the product slot — reroute.
+                var sr = NameResolver.Resolve(rawProduct, services);
+                matched = sr.Matches;
+                if (sr.Found) notes.Add($"'{rawProduct}' is a service, not a product." + (sr.Note("service") is { } n ? " " + n : ""));
+            }
+        }
+
+        // Safety net: the model often guesses a plausible product ignoring the user's message. If
+        // the user clearly named exactly one known service but the model didn't pass one, use it.
+        // Skip when the message names several — we can't pick one fairly, let the model decide.
+        if (matched.Count == 0 && !string.IsNullOrWhiteSpace(userMessage))
         {
             var lowerMsg = userMessage.ToLowerInvariant();
             var mentioned = services.Where(s =>
@@ -1003,29 +1048,87 @@ public class CatalogAgent
                     lowerMsg, $@"(?<![a-z0-9-]){System.Text.RegularExpressions.Regex.Escape(s.ToLowerInvariant())}(?![a-z0-9-])"))
                 .ToList();
             if (mentioned.Count == 1)
+                matched = mentioned;
+        }
+
+        // A product that owns none of the matched services was a guess; the services win.
+        if (product is not null && matched.Count > 0)
+        {
+            var inProduct = new List<string>();
+            foreach (var s in matched)
+                if (await _queryService.ProductContainsService(product, s)) inProduct.Add(s);
+
+            if (inProduct.Count == 0)
             {
-                service = mentioned[0];
-                // If the model's guessed product doesn't actually contain this service, drop it.
-                if (product is not null && !await _queryService.ProductContainsService(product, service))
-                    product = null;
+                notes.Add($"None of these services belong to '{product}'; ignoring the product.");
+                product = null;
+            }
+            else if (inProduct.Count < matched.Count)
+            {
+                matched = inProduct;
             }
         }
 
-        if (product is null && !string.IsNullOrWhiteSpace(rawProduct) && string.IsNullOrWhiteSpace(service))
-            product = rawProduct; // let downstream query report empty naturally
-
-        _logger.LogInformation("Resolved deployment filter: rawProduct={RawProduct} rawService={RawService} → product={Product} service={Service}",
-            SanitizeInline(rawProduct, 120), SanitizeInline(rawService, 120), product, service);
-        return (product, service);
+        _logger.LogInformation("Resolved deployment scope: rawProduct={RawProduct} rawService={RawService} → product={Product} services={Services}",
+            SanitizeInline(rawProduct, 120), SanitizeInline(rawService, 120), product, string.Join(",", matched));
+        return new ScopeResolution(product, matched, notes);
     }
 
-    private static string? FuzzyMatch(string raw, List<string> candidates)
+    /// <summary>
+    /// The tool result when nothing in the data resembles what was asked for. Hands back the real
+    /// names so the model can offer the closest few instead of a bare "not found".
+    /// </summary>
+    private async Task<string> UnresolvedScopeResult(string? rawProduct, string? rawService)
     {
-        if (candidates.Contains(raw)) return raw;
-        var normalized = raw.Trim().ToLowerInvariant().Replace(' ', '-');
-        return candidates.FirstOrDefault(c => string.Equals(c, normalized, StringComparison.OrdinalIgnoreCase))
-            ?? candidates.FirstOrDefault(c => c.Replace("-", " ").Equals(raw, StringComparison.OrdinalIgnoreCase))
-            ?? candidates.FirstOrDefault(c => c.Contains(normalized, StringComparison.OrdinalIgnoreCase));
+        var (products, services) = await LoadDeploymentIndex();
+        var asked = string.Join(" / ", new[] { rawProduct, rawService }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        return JsonSerializer.Serialize(new
+        {
+            error = $"No product or service resembles '{asked}'.",
+            knownProducts = products.Take(40),
+            knownServices = services.Take(80),
+            note = "If one of these is obviously what the user meant, call the tool again with it and say what you assumed. Otherwise tell the user it is not known and offer the two or three closest names from these lists.",
+        }, JsonOptions);
+    }
+
+    /// <summary>Deployment state for every service in scope, merged into one matrix when there are several.</summary>
+    private async Task<DeploymentStateCardData> LoadState(ScopeResolution scope)
+    {
+        if (scope.Services.Count <= 1)
+            return await _queryService.GetDeploymentState(scope.Product, scope.Services.FirstOrDefault());
+
+        var merged = new DeploymentStateCardData { Product = scope.Product };
+        foreach (var service in scope.Services)
+        {
+            var part = await _queryService.GetDeploymentState(scope.Product, service);
+            merged.Product ??= part.Product;
+            merged.Cells.AddRange(part.Cells);
+        }
+        merged.Services = merged.Cells.Select(c => c.Service).Distinct().OrderBy(s => s).ToList();
+        merged.Environments = merged.Cells.Select(c => c.Environment).Distinct().OrderBy(e => e).ToList();
+        return merged;
+    }
+
+    /// <summary>Recent deployments for every service in scope, newest first across all of them.</summary>
+    private async Task<DeploymentActivityCardData> LoadActivity(ScopeResolution scope, string? environment, DateTimeOffset since, int limit = 50)
+    {
+        if (scope.Services.Count <= 1)
+            return await _queryService.GetRecentDeployments(scope.Product, environment, since, limit, scope.Services.FirstOrDefault());
+
+        var merged = new DeploymentActivityCardData
+        {
+            Product = scope.Product,
+            Environment = environment,
+            Since = since,
+            NavigationUrl = scope.Product is null ? null : PortalRoutes.ProductActivity(scope.Product, environment),
+        };
+        foreach (var service in scope.Services)
+        {
+            var part = await _queryService.GetRecentDeployments(scope.Product, environment, since, limit, service);
+            merged.Items.AddRange(part.Items);
+        }
+        merged.Items = merged.Items.OrderByDescending(i => i.DeployedAt).Take(limit).ToList();
+        return merged;
     }
 
     private static string SanitizeInline(string? value, int maxLength)
@@ -1054,6 +1157,34 @@ public class CatalogAgent
     private async Task<(string? Route, string? Label, string? Problem)> ResolveNavigation(
         string target, string? product, string? service, string? key, string? environment, string? time, Guid id)
     {
+        // Names arrive as the user typed them. A typo must not become a 404.
+        if (target is "product" or "product_activity" or "service" or "service_history" or "release_notes")
+        {
+            var (products, services) = await LoadDeploymentIndex();
+
+            if (!string.IsNullOrWhiteSpace(product))
+            {
+                var r = NameResolver.Resolve(product, products);
+                if (r.Single is not null) product = r.Single;
+                else if (r.Found) return (null, null, $"'{product}' could be any of these products: {string.Join(", ", r.Matches)}. Ask the user which.");
+                else if (target != "release_notes") return (null, null, $"No product resembles '{product}'. Known products: {string.Join(", ", products.Take(40))}.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(service))
+            {
+                var r = NameResolver.Resolve(service, services);
+                if (r.Single is not null)
+                {
+                    service = r.Single;
+                    if (r.Note("service") is { } n) _navigationNote = n;
+                }
+                else if (r.Found)
+                    return (null, null, $"'{service}' matches several services: {string.Join(", ", r.Matches)}. Either ask which, or call navigate_to with target=product for the product that owns them so the user sees all rows.");
+                else
+                    return (null, null, $"No service resembles '{service}'. Known services: {string.Join(", ", services.Take(80))}.");
+            }
+        }
+
         switch (target)
         {
             case "deployments":
@@ -1178,12 +1309,12 @@ public class CatalogAgent
     /// The one product that has ever deployed a service, or null when there is none or several.
     /// Used where a service name arrives without its product and guessing would build a wrong link.
     /// </summary>
-    private async Task<string?> SoleOwnerOf(string? service)
+    private async Task<string?> SoleOwnerOf(IReadOnlyCollection<string> services)
     {
-        if (string.IsNullOrWhiteSpace(service)) return null;
+        if (services.Count == 0) return null;
 
         var owners = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Service == service)
+            .Where(e => services.Contains(e.Service))
             .Select(e => e.Product)
             .Distinct()
             .Take(2)
@@ -1203,7 +1334,7 @@ public class CatalogAgent
     /// environments' columns ringed. Already on the matrix and asking about one of its services →
     /// stay, and ring the row rather than leaving for the service page.
     /// </remarks>
-    private object? PlanDeploymentStateScreen(string? product, string? service, DeploymentStateCardData state, string? userMessage)
+    private object? PlanDeploymentStateScreen(string? product, IReadOnlyList<string> services, DeploymentStateCardData state, string? userMessage)
     {
         if (string.IsNullOrWhiteSpace(product)) return null;
 
@@ -1212,8 +1343,25 @@ public class CatalogAgent
         string route;
         string label;
 
-        if (!string.IsNullOrWhiteSpace(service))
+        if (services.Count > 1)
         {
+            // Several services ("adobe" → three of them): the matrix shows them side by side. Ring
+            // each row, and the named environments' cells within them.
+            route = PortalRoutes.Product(product);
+            label = $"{product} deployment state";
+            foreach (var s in services)
+            {
+                highlights.Add(new HighlightTarget { Anchor = PortalAnchors.ServiceRow(s), Label = s });
+                highlights.AddRange(mentioned.Select(env => new HighlightTarget
+                {
+                    Anchor = PortalAnchors.EnvCell(s, env),
+                    Label = VersionLabel(state, s, env),
+                }));
+            }
+        }
+        else if (services.Count == 1)
+        {
+            var service = services[0];
             var stayOnMatrix = RouteMatch.IsOn(_currentPath, PortalRoutes.Product(product));
             route = stayOnMatrix ? PortalRoutes.Product(product) : PortalRoutes.Service(product, service);
             label = stayOnMatrix ? $"{product} deployment state" : $"{service} in {product}";
@@ -1597,25 +1745,31 @@ public class CatalogAgent
                 {
                     var rawProduct = args.TryGetProperty("product", out var pp) ? pp.GetString() : null;
                     var rawService = args.TryGetProperty("service", out var ss) ? ss.GetString() : null;
-                    var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
 
-                    if (string.IsNullOrWhiteSpace(product) && string.IsNullOrWhiteSpace(service))
+                    if (string.IsNullOrWhiteSpace(rawProduct) && string.IsNullOrWhiteSpace(rawService))
                         return ("Provide at least a product or a service to look up deployment state.", null, null, null);
 
-                    var stateData = await _queryService.GetDeploymentState(product, service);
+                    var scope = await ResolveScope(rawProduct, rawService, userMessage);
+                    if (scope.Empty)
+                        return (await UnresolvedScopeResult(rawProduct, rawService), null, null, null);
+
+                    var stateData = await LoadState(scope);
+                    var service = scope.Services.Count == 1 ? scope.Services[0] : null;
+                    var product = scope.Product;
 
                     // Each service carries its own link. The model used to be given a URL template
                     // and got the product/service split wrong; handing it finished links removes the
                     // opportunity. Only possible when the owning product is known.
-                    var owningProduct = product ?? stateData.Product ?? await SoleOwnerOf(service);
+                    var owningProduct = product ?? stateData.Product ?? await SoleOwnerOf(scope.Services);
 
                     // Asking for a version is asking to see it: move the screen there and ring the
                     // cells the question named, without waiting for the model to think of it.
-                    var screen = PlanDeploymentStateScreen(owningProduct, service, stateData, userMessage);
+                    var screen = PlanDeploymentStateScreen(owningProduct, scope.Services, stateData, userMessage);
 
                     var resultJson = JsonSerializer.Serialize(new
                     {
                         state = stateData,
+                        nameResolution = scope.Notes.Count > 0 ? scope.Notes : null,
                         links = owningProduct is null ? null : new
                         {
                             product = PortalRoutes.Product(owningProduct),
@@ -1629,11 +1783,12 @@ public class CatalogAgent
                             ? "Use navigate_to to move the user. If you do write a link, copy one from `links` verbatim — never assemble one."
                             : "The user's screen is being moved to `screen.page` and `screen.ringed` are ringed. Do not call navigate_to or paste a link for this; give the versions in a line or two and say the page is in front of them. Add `highlight` calls only for further cells you mention.",
                     }, JsonOptions);
-                    var title = (product, service) switch
+                    var serviceLabel = scope.Services.Count > 0 ? string.Join(", ", scope.Services) : null;
+                    var title = (product, serviceLabel) switch
                     {
-                        (not null, not null) => $"Deployment State — {product} / {service}",
+                        (not null, not null) => $"Deployment State — {product} / {serviceLabel}",
                         (not null, _) => $"Deployment State — {product}",
-                        (_, not null) => $"Deployment State — {service}",
+                        (_, not null) => $"Deployment State — {serviceLabel}",
                         _ => "Deployment State",
                     };
 
@@ -1649,43 +1804,75 @@ public class CatalogAgent
                 {
                     var rawProduct = args.TryGetProperty("product", out var p) ? p.GetString() : null;
                     var rawService = args.TryGetProperty("service", out var svc) ? svc.GetString() : null;
-                    var (product, service) = await ResolveProductOrService(rawProduct, rawService, userMessage);
+                    var scope = await ResolveScope(rawProduct, rawService, userMessage);
+
+                    // A name was given and nothing resembles it — say so with the real names, rather
+                    // than silently querying everything.
+                    if (scope.Empty && (!string.IsNullOrWhiteSpace(rawProduct) || !string.IsNullOrWhiteSpace(rawService)))
+                        return (await UnresolvedScopeResult(rawProduct, rawService), null, null, null);
+
                     // Users naturally say "Production", or whatever their own pipeline calls the
                     // environment; the DB stores the canonical key. Resolve before querying.
                     var environment = await ResolveEnvFilter(args.TryGetProperty("environment", out var env) ? env.GetString() : null);
-                    var since = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
+                    DateTimeOffset? sinceGiven = args.TryGetProperty("since", out var sinceVal) && DateTimeOffset.TryParse(sinceVal.GetString(), out var sd)
                         ? sd
-                        : DateTimeOffset.UtcNow.Date;
+                        : null;
 
-                    var activityData = await _queryService.GetRecentDeployments(product, environment, since, service: service);
+                    var activityData = await LoadActivity(scope, environment, sinceGiven ?? DateTimeOffset.UtcNow.Date);
+
+                    // "When was adobe last updated" has an answer even when nothing happened today.
+                    // If the model gave no window and today is empty, show the most recent instead.
+                    var widened = false;
+                    if (activityData.Items.Count == 0 && sinceGiven is null && !scope.Empty)
+                    {
+                        activityData = await LoadActivity(scope, environment, DateTimeOffset.UtcNow.AddYears(-10), limit: 10);
+                        widened = activityData.Items.Count > 0;
+                    }
 
                     // "What was deployed today" has a page; take the user to it with the same filters
                     // applied rather than answering next to a link they still have to click.
+                    var product = scope.Product;
                     if (product is not null)
                     {
                         var route = PortalRoutes.ProductActivity(product, environment);
                         if (!string.Equals(_currentLocation, route, StringComparison.OrdinalIgnoreCase))
                             RecordAutoScreen(route, $"{product} deployment activity", []);
                     }
-                    else if (service is not null && await SoleOwnerOf(service) is { } owner)
+                    else if (scope.Services.Count == 1 && await SoleOwnerOf(scope.Services) is { } owner)
                     {
-                        RecordAutoScreen(PortalRoutes.ServiceHistory(owner, service), $"{service} deployment history", []);
+                        RecordAutoScreen(PortalRoutes.ServiceHistory(owner, scope.Services[0]), $"{scope.Services[0]} deployment history", []);
+                    }
+                    else if (scope.Services.Count > 1 && await SoleOwnerOf(scope.Services) is { } commonOwner)
+                    {
+                        RecordAutoScreen(PortalRoutes.ProductActivity(commonOwner, environment), $"{commonOwner} deployment activity",
+                            scope.Services.Select(s => new HighlightTarget { Anchor = PortalAnchors.ServiceRow(s), Label = s }));
                     }
 
-                    var resultJson = JsonSerializer.Serialize(activityData, JsonOptions);
-
-                    var scope = (product, service) switch
+                    var resultJson = JsonSerializer.Serialize(new
                     {
-                        (not null, not null) => $" — {product} / {service}",
+                        activity = activityData,
+                        matchedServices = scope.Services.Count > 0 ? scope.Services : null,
+                        nameResolution = scope.Notes.Count > 0 ? scope.Notes : null,
+                        note = widened
+                            ? "Nothing was deployed today, so these are the most recent deployments overall — say when the last one was and how long ago."
+                            : activityData.Items.Count == 0
+                                ? "No deployments in this window. Say so plainly; if the user asked when something last happened, call again with an earlier `since`."
+                                : null,
+                    }, JsonOptions);
+
+                    var serviceLabel = scope.Services.Count > 0 ? string.Join(", ", scope.Services) : null;
+                    var scopeLabel = (product, serviceLabel) switch
+                    {
+                        (not null, not null) => $" — {product} / {serviceLabel}",
                         (not null, _) => $" — {product}",
-                        (_, not null) => $" — {service}",
+                        (_, not null) => $" — {serviceLabel}",
                         _ => "",
                     };
 
                     return (resultJson, new AgentCard
                     {
                         Type = "deployment-activity",
-                        Title = $"Recent Deployments{scope}",
+                        Title = $"Recent Deployments{scopeLabel}",
                         Data = activityData,
                     }, null, null);
                 }
@@ -1708,6 +1895,23 @@ public class CatalogAgent
 
                     var product = args.TryGetProperty("product", out var pr) ? pr.GetString() : null;
                     var service = args.TryGetProperty("service", out var sv) ? sv.GetString() : null;
+
+                    // Names as typed: a misspelt product would otherwise filter everything out. The
+                    // service filter is a substring match downstream, so a fragment is left alone
+                    // and only an outright typo is corrected.
+                    var nameNotes = new List<string>();
+                    var (knownProducts, knownServices) = await LoadDeploymentIndex();
+                    if (!string.IsNullOrWhiteSpace(product) && NameResolver.Resolve(product, knownProducts) is { Single: { } fixedProduct } pr2)
+                    {
+                        product = fixedProduct;
+                        if (pr2.Note("product") is { } n) nameNotes.Add(n);
+                    }
+                    if (!string.IsNullOrWhiteSpace(service) && NameResolver.Resolve(service, knownServices) is { Kind: NameMatchKind.Corrected, Single: { } fixedService } sr2)
+                    {
+                        service = fixedService;
+                        if (sr2.Note("service") is { } n) nameNotes.Add(n);
+                    }
+
                     // Env in display-name or alias form ("Production", "prod") still lands on the
                     // canonical key.
                     var targetEnv = await ResolveEnvFilter(args.TryGetProperty("target_env", out var te) ? te.GetString() : null);
@@ -1748,7 +1952,11 @@ public class CatalogAgent
                         createdAt = c.CreatedAt,
                     }).ToList();
 
-                    var resultJson = JsonSerializer.Serialize(projected, JsonOptions);
+                    var resultJson = JsonSerializer.Serialize(new
+                    {
+                        candidates = projected,
+                        nameResolution = nameNotes.Count > 0 ? nameNotes : null,
+                    }, JsonOptions);
                     return (resultJson, null, null, null);
                 }
 
@@ -1921,6 +2129,7 @@ public class CatalogAgent
                     var time = args.TryGetProperty("time", out var nt) ? nt.GetString() : null;
                     Guid.TryParse(args.TryGetProperty("id", out var ni) ? ni.GetString() : null, out var id);
 
+                    _navigationNote = null;
                     var (route, label, problem) = await ResolveNavigation(target, product, service, key, env, time, id);
                     if (problem is not null)
                         return (problem, null, null, null);
@@ -1937,6 +2146,7 @@ public class CatalogAgent
                         ok = true,
                         route,
                         label,
+                        nameResolution = _navigationNote,
                         note = "The user's screen is now on this page. Say in one short sentence what they are looking at — do not paste the link, they are already there. Ring what they should look at with `highlight`; the destination's anchors follow the documented patterns.",
                     }, JsonOptions), null, null, null);
                 }

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Check, X, Info } from 'lucide-react';
 import { useGuideStore } from '@/stores/guideStore';
+import { visibleRect } from '@/lib/visibleRect';
 
 /** Gap between the highlighted control and the tooltip, and between the tooltip and the viewport edge. */
 const GAP = 12;
@@ -68,7 +69,14 @@ export function GuideSpotlight() {
 
       setAnchorMissing(false);
       settleAttempts = 0;
-      const r = el.getBoundingClientRect();
+      // Clipped to the scroll area the control sits in. Scrolled out of view, the control gets no
+      // ring hovering over the header; the tooltip centres itself until it is scrolled back.
+      const visible = visibleRect(el);
+      if (!visible) {
+        setRect((prev) => (prev === null ? prev : null));
+        return;
+      }
+      const r = visible.rect;
       // Only publish a genuinely different box. The loop runs every frame to track a moving
       // target, and a fresh object each time would re-render the overlay at 60fps for nothing.
       setRect((prev) =>
