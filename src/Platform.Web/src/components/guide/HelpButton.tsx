@@ -1,9 +1,7 @@
 import { HelpCircle } from 'lucide-react';
 import { useConversationStore } from '@/stores/conversationStore';
+import { usePageContext, cleanContext, type ContextValue } from '@/stores/pageContextStore';
 import { getAssistantName } from '@/lib/runtimeConfig';
-
-/** A value a page can describe itself with. Empty and nullish entries are dropped. */
-type ContextValue = string | number | boolean | null | undefined;
 
 interface Props {
   /**
@@ -13,11 +11,11 @@ interface Props {
   page: string;
   /**
    * What the user is looking at right now — the applied filters, the record in front of them, its
-   * status. Read at click time, so the values are whatever is on screen at that moment.
+   * status. Published to the assistant on every turn while this button is mounted, not only when it
+   * is clicked, so "how do I approve that?" typed into the chat is answered for this record.
    *
-   * Sent to the assistant as structured context rather than folded into the question: the model
-   * gets the precise situation, while the transcript still reads like something a person would say.
-   * Naming the values in the sentence produces lines like "I'm looking at products 0".
+   * Sent as structured context rather than folded into the question: the model gets the precise
+   * situation, while the transcript still reads like something a person would say.
    */
   context?: Record<string, ContextValue>;
   /**
@@ -31,18 +29,22 @@ interface Props {
 }
 
 /**
- * Asks the assistant what to do here, with no typing.
+ * Asks the assistant what to do here, with no typing — and, while mounted, tells the assistant what
+ * this page is showing.
  *
  * The walkthroughs and knowledge base only pay off if people find them, and nobody discovers a
  * feature by guessing that a chat panel knows about it. This puts the question one click from the
- * thing it is about, and builds that question from what is on screen — the backend resolves the
- * route to the guides authored for it, and the page state narrows the answer to the user's actual
- * situation rather than the page in the abstract.
+ * thing it is about. The same description of the screen goes out with every typed message too, via
+ * the page-context store, which is what lets the assistant resolve "this" to the record on screen.
  */
 export function HelpButton({ page, context, question, size = 'md', className = '' }: Props) {
   const askAssistant = useConversationStore((s) => s.askAssistant);
   const assistantName = getAssistantName();
   const px = size === 'sm' ? 13 : 15;
+
+  // The button is on every page that has something worth describing, so it doubles as the place
+  // that describes it. A page with no Help button can call usePageContext itself.
+  usePageContext(page, context);
 
   const asked = question ?? `What can I do on the ${page} page?`;
 
@@ -65,24 +67,4 @@ export function HelpButton({ page, context, question, size = 'md', className = '
       <HelpCircle size={px} />
     </button>
   );
-}
-
-/**
- * Drops entries the page could not fill in. A filter nobody set and a field nobody typed are not
- * context — sending them as empty strings would have the assistant explain absences that are merely
- * defaults.
- *
- * A zero is kept, because "no products yet" and "no policies configured" are exactly the situations
- * where someone reaches for Help.
- */
-function cleanContext(context?: Record<string, ContextValue>): Record<string, string> | undefined {
-  if (!context) return undefined;
-
-  const cleaned: Record<string, string> = {};
-  for (const [key, value] of Object.entries(context)) {
-    if (value === null || value === undefined || value === '') continue;
-    cleaned[key] = String(value);
-  }
-
-  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }

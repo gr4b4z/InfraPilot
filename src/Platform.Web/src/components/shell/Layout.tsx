@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
 import { GuideSpotlight } from '@/components/guide/GuideSpotlight';
+import { HighlightLayer } from '@/components/guide/HighlightLayer';
 import { KeyboardLayer } from './KeyboardLayer';
 import { useRealtimeEvents } from '@/hooks/useRealtimeEvents';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
@@ -58,7 +59,9 @@ export function Layout() {
           <ChatSidebar />
         </div>
       </div>
-      {/* Above the shell so it can ring controls anywhere on the page, including the nav itself. */}
+      {/* Above the shell so they can ring controls anywhere on the page, including the nav itself.
+          The rings are the assistant pointing at what it just said; the spotlight is a walkthrough. */}
+      <HighlightLayer />
       <GuideSpotlight />
     </div>
   );

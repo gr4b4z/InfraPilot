@@ -22,6 +22,7 @@ import {
   workItemDetailPath,
 } from '@/lib/workItem';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
+import { HelpButton } from '@/components/guide/HelpButton';
 import { Linkified } from '@/lib/linkify';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { refreshMyTasks } from '@/stores/myTasksStore';
@@ -333,6 +334,24 @@ export function WorkItemDetailPage() {
                 <span style={{ color: 'var(--text-muted)' }}> / </span>
                 {detail.workItemKey}
               </h1>
+              {/* Tells the assistant which work item is open and whether this user can sign it off,
+                  so "how do I approve that?" is answered for this ticket — not for the promotion the
+                  conversation may have been about a moment earlier. */}
+              <HelpButton
+                page="Work item"
+                context={{
+                  workItem: detail.workItemKey,
+                  service: detail.service,
+                  product: detail.product,
+                  targetEnv: detail.targetEnv,
+                  title: detail.title,
+                  signOff: headlineStyle?.label,
+                  myDecision: detail.myDecision,
+                  canSignOff: detail.canApprove,
+                  blockedReason: detail.canApprove ? undefined : detail.blockedReason,
+                }}
+                question="What do I need to do with this work item?"
+              />
             </div>
             {/* What kind of ticket this is and how urgent, in the tracker's own words. Beside the
                 name because they change how everything below is read: a Highest-priority Bug and a
@@ -346,6 +365,7 @@ export function WorkItemDetailPage() {
                 href={detail.url}
                 target="_blank"
                 rel="noopener noreferrer"
+                data-guide-anchor="work-item-tracker-link"
                 {...{ [ROW_ACTION_ATTR]: 'open-external' }}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] font-semibold shrink-0 transition-colors hover:bg-[var(--accent-bg)]"
                 style={{
@@ -419,6 +439,7 @@ export function WorkItemDetailPage() {
           {headline && headlineStyle && (
             <span
               className="badge shrink-0"
+              data-guide-anchor="work-item-status"
               style={{ backgroundColor: headlineStyle.bg, color: headlineStyle.color }}
               title={`${detail.service} / ${detail.workItemKey} — this service's instance`}
             >
@@ -1006,6 +1027,7 @@ function DecisionCard({
 
   return (
     <div
+      data-guide-anchor="work-item-signoff"
       className="rounded-xl border p-5"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
@@ -1051,6 +1073,7 @@ function DecisionCard({
             {mine !== 'Approved' && (
               <button
                 onClick={() => decide('Approved')}
+                data-guide-anchor="work-item-approve-button"
                 {...{ [ROW_ACTION_ATTR]: 'approve' }}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
@@ -1063,6 +1086,7 @@ function DecisionCard({
             {mine !== 'Issue' && (
               <button
                 onClick={() => decide('Issue')}
+                data-guide-anchor="work-item-issue-button"
                 {...{ [ROW_ACTION_ATTR]: 'issue' }}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
@@ -1076,6 +1100,7 @@ function DecisionCard({
             {mine !== 'Blocked' && (
               <button
                 onClick={() => decide('Blocked')}
+                data-guide-anchor="work-item-block-button"
                 {...{ [ROW_ACTION_ATTR]: 'block' }}
                 disabled={busy !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"

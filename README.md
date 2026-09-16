@@ -652,6 +652,20 @@ Write a YAML file in `guides/` with `id`, `title`, `route`, and `steps`. To poin
 anchored automatically as `nav-<route>`. `GuideCorpusTests` fails if an anchor, route or `related`
 id does not exist.
 
+### How the assistant sees the screen
+
+Every chat turn carries the page the user has open: its name and state (published by the page's
+`HelpButton`, or by calling `usePageContext` directly), and the list of every `data-guide-anchor`
+in the DOM. The assistant is instructed to treat that as the primary referent — "how do I approve
+that?" means the record on screen, not the one the conversation was about — and to ring what it
+talks about with its `highlight` tool, which only accepts anchors from that list.
+
+To make something pointable, give it a `data-guide-anchor`. Fixed controls take a fixed name
+(`promotion-approve-button`); elements whose identity is data follow a pattern the server also
+knows (`PortalAnchors`): `service-row:<service>`, `env-cell:<service>:<environment>`,
+`env-column:<environment>`, `promotion-row:<id>`. Asking for a service's version navigates to its
+page and rings those cells without the model having to ask.
+
 ### Adding a knowledge topic
 
 Write a YAML file in `knowledge/` with `id`, `title`, `summary`, `body` (Markdown), plus `source` and
