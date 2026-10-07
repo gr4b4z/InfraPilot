@@ -109,11 +109,21 @@ export async function logout(): Promise<void> {
 const SILENT_ATTEMPTS = 2;
 const SILENT_RETRY_DELAY_MS = 1000;
 
+// The hidden-iframe renewal itself failed (no answer came back through the redirect bridge). Once
+// the refresh token is gone that iframe is the only silent path left, so if it keeps failing,
+// retrying silently forever would leave the tab with failing requests and no way to sign in.
+const SILENT_FRAME_FAILURES: ReadonlySet<string> = new Set([
+  BrowserAuthErrorCodes.timedOut,
+  BrowserAuthErrorCodes.iframeClosedPrematurely,
+  BrowserAuthErrorCodes.redirectBridgeEmptyResponse,
+]);
+
 /**
- * A token without user interaction, or null when only the user can fix it (no account, or Entra
- * answered interaction_required: refresh token and session expired, consent, MFA). Anything else —
- * a timeout, a network error, Entra 429/5xx — is transient and a redirect wouldn't fix it: retry
- * once after a short pause, then throw so only this request fails and the next one starts over.
+ * A token without user interaction, or null when only the user can fix it: no account, Entra
+ * answered interaction_required (refresh token and session expired, consent, MFA), or the silent
+ * iframe failed on the retry too. Anything else — a network error, Entra 429/5xx — is transient
+ * and a redirect wouldn't fix it: retry once after a short pause, then throw so only this request
+ * fails and the next one starts over.
  */
 async function silentToken(instance: PublicClientApplication, forceRefresh: boolean): Promise<string | null> {
   for (let attempt = 1; ; attempt++) {
@@ -124,7 +134,10 @@ async function silentToken(instance: PublicClientApplication, forceRefresh: bool
       return result.accessToken;
     } catch (err) {
       if (err instanceof InteractionRequiredAuthError) return null;
-      if (attempt >= SILENT_ATTEMPTS) throw err;
+      if (attempt >= SILENT_ATTEMPTS) {
+        if (err instanceof AuthError && SILENT_FRAME_FAILURES.has(err.errorCode)) return null;
+        throw err;
+      }
       await new Promise((resolve) => setTimeout(resolve, SILENT_RETRY_DELAY_MS));
     }
   }
