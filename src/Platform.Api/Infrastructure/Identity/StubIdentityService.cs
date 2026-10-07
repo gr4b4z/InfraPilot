@@ -48,6 +48,30 @@ public class StubIdentityService : IIdentityService
             : [new UserInfo("user-1", "Dev User", "dev@localhost")];
     }
 
+    /// <summary>
+    /// Local users whose roles include one of the groups, by id or name — the same "a group is a
+    /// role name" rule local mode applies at approval time — and whose name or email contains the
+    /// query. No dev-user fallback: an empty result is the answer when nobody in the group matches,
+    /// and the picker says so.
+    /// </summary>
+    public async Task<IReadOnlyList<UserInfo>> SearchUsersInGroups(
+        string query, IReadOnlyList<GroupInfo> groups, CancellationToken ct = default)
+    {
+        var names = groups
+            .SelectMany(g => new[] { g.Id, g.DisplayName })
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var candidates = await _db.LocalUsers
+            .Where(u => u.IsActive && (u.Name.Contains(query) || u.Email.Contains(query)))
+            .ToListAsync(ct);
+
+        return candidates
+            .Where(u => u.Roles.Any(names.Contains))
+            .Select(u => new UserInfo(u.Id.ToString(), u.Name, u.Email))
+            .ToList();
+    }
+
     // Static dev groups so the policy editor's group picker is usable under local auth. In local
     // mode the approval-time check matches groups by name against the user's Roles claim, so Id and
     // DisplayName are intentionally the same value here.

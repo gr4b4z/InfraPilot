@@ -32,7 +32,7 @@ public static class AppSettingsEndpoints
                     .ToList(),
                 Roles: (body.Roles ?? [])
                     .Where(r => !string.IsNullOrWhiteSpace(r.Key))
-                    .Select(r => new RoleConfigDto(r.Key.Trim(), (r.DisplayName ?? "").Trim()))
+                    .Select(RoleConfigValidator.Clean)
                     .ToList(),
                 ActivityTemplate: (body.ActivityTemplate ?? [])
                     .Where(l => !string.IsNullOrWhiteSpace(l.Template))
@@ -43,7 +43,9 @@ public static class AppSettingsEndpoints
             // than merely untidy — an alias claimed by two environments, or one that is also an
             // environment of its own, has no single answer at resolution time. Rejected whole: a
             // partial save would leave the admin looking at a list that isn't what they submitted.
+            // Role aliases have the same failure mode — one name answering to two roles.
             var errors = EnvironmentAliasValidator.Validate(cleaned.Environments);
+            errors.AddRange(RoleConfigValidator.Validate(cleaned.Roles));
             if (errors.Count > 0) return Results.BadRequest(new { error = errors[0], errors });
 
             await settings.SaveSettings(cleaned, ct);

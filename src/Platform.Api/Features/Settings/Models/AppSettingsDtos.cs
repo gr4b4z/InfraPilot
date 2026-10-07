@@ -1,3 +1,5 @@
+using Platform.Api.Features.Promotions.Models;
+
 namespace Platform.Api.Features.Settings.Models;
 
 /// <summary>
@@ -34,7 +36,21 @@ public record EnvironmentConfigDto(
     bool IsProduction = false,
     List<string>? Aliases = null);
 
-public record RoleConfigDto(string Key, string DisplayName);
+// Aliases are the other names producers use for this same role — Jira's "QA" field arriving as
+// `qa` on a ticket whose policy asks for a `qa-owner`. Every place that compares roles resolves
+// through them (RoleAliasMap), so a participant sent under an alias fills the canonical role,
+// labels as it, and is replaced when somebody is assigned to it. Stored canonicalised.
+//
+// AssigneeGroups narrow who the assignment picker offers for this role to the members of these
+// directory groups (any of them). Empty means anybody in the directory. A picker filter, not a
+// write gate: ingest still records whoever a producer named.
+//
+// Both optional so settings rows written before they existed deserialize unchanged.
+public record RoleConfigDto(
+    string Key,
+    string DisplayName,
+    List<string>? Aliases = null,
+    List<GroupRef>? AssigneeGroups = null);
 
 public record ActivityTemplateLineDto(string Template, string Style);
 

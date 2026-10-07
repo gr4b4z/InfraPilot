@@ -588,10 +588,17 @@ class ApiClient {
     }>(`/promotions/${id}`);
   }
 
-  searchPromotionUsers(q: string) {
+  /**
+   * Directory search for the assignment pickers. With `role`, a role an admin restricted to
+   * directory groups (Settings → Participant Roles) only returns their members, and `restrictedTo`
+   * names those groups.
+   */
+  searchPromotionUsers(q: string, role?: string | null) {
+    const roleParam = role ? `&role=${encodeURIComponent(role)}` : '';
     return this.request<{
       users: Array<{ id: string; displayName: string; email: string }>;
-    }>(`/promotions/users/search?q=${encodeURIComponent(q)}`);
+      restrictedTo?: PromotionPolicyGroupRef[];
+    }>(`/promotions/users/search?q=${encodeURIComponent(q)}${roleParam}`);
   }
 
   searchPromotionGroups(q: string) {
@@ -636,6 +643,23 @@ class ApiClient {
     return this.request<{ participants: PromotionSourceEventParticipant[] }>(
       `/promotions/${candidateId}/references/${encodeURIComponent(referenceKey)}/participants`,
       { method: 'PATCH', body: JSON.stringify({ role, assignee }) },
+    );
+  }
+
+  /**
+   * Put one person in a role on every work item of a promotion candidate at once — replacing whoever
+   * each had in it, or with `onlyMissing` only on the ones that have nobody. `assignee: null` clears
+   * the role everywhere. Returns the work-item keys by outcome.
+   */
+  assignPromotionWorkItemsParticipant(
+    candidateId: string,
+    role: string,
+    assignee: { email: string; displayName: string } | null,
+    onlyMissing = false,
+  ) {
+    return this.request<{ role: string; updated: string[]; unchanged: string[]; skipped: string[] }>(
+      `/promotions/${candidateId}/work-items/participants`,
+      { method: 'PATCH', body: JSON.stringify({ role, assignee, onlyMissing }) },
     );
   }
 
@@ -1366,7 +1390,14 @@ export interface AppSettingsPayload {
     isProduction?: boolean;
     aliases?: string[] | null;
   }[];
-  roles: { key: string; displayName: string }[];
+  /** `aliases` are other names producers send for the role; `assigneeGroups` narrow the person
+   *  picker for it to members of those directory groups. */
+  roles: {
+    key: string;
+    displayName: string;
+    aliases?: string[] | null;
+    assigneeGroups?: PromotionPolicyGroupRef[] | null;
+  }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
 }
 

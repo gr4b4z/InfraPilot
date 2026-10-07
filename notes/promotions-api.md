@@ -340,6 +340,15 @@ its own. Per-id outcome like bulk approve: `{ "results": [ { "id", "ok": true, "
 - `POST /api/promotions/{id}/participants`, `DELETE /api/promotions/{id}/participants/{role}`.
 - `PATCH /api/promotions/{id}/references/{referenceKey}/participants` — assign / reassign / clear a
   person on one work-item reference. Body `{ "role", "assignee": { "email", "displayName" } | null }`.
+- `PATCH /api/promotions/{id}/work-items/participants` — the same on **every** work item of the
+  candidate at once (the promotion page's "Assign to all"). Body
+  `{ "role", "assignee": { "email", "displayName" } | null, "onlyMissing"?: bool }`. Replaces whoever
+  each ticket had in the role (aliases included); `onlyMissing` skips tickets that already have
+  somebody. Same role/permission rules as the per-reference route (configured role, QA or Admin).
+  Returns `{ role, updated: [keys], unchanged: [keys], skipped: [keys] }`; one system comment, audit
+  row and `promotion.updated` (`changeType: work-items.participant.upserted|removed`) per call.
+- `GET /api/promotions/users/search?q=&role=` — with `role`, a role restricted to directory groups
+  (see below) only returns their members; the response's `restrictedTo` names the groups.
 - `GET /api/promotions/roles`, `GET /api/promotions/users/search?q=`,
   `GET /api/promotions/groups/search?q=` — directory-backed pickers (resolve against AD/Graph in
   MSAL mode; local users/static groups in dev). Note `roles` here reports the roles **observed in
@@ -416,6 +425,18 @@ Two different role sets, easily confused:
 **Ingest is exempt from both.** A producer's payload is a record of what happened, so any role is
 accepted and stored as sent. Roles that aren't in the configured vocabulary are reported back as
 `unknownRoles` on the work-items queue and flagged as unrecognised in the UI.
+
+Each configured role may also carry:
+
+- **`aliases`** — other names producers send for it (`qa` on `qa-owner`, for Jira's "QA" field).
+  Resolved **on read** everywhere roles are compared — required-role completeness
+  (`workItemRoleGaps`, `missingRoles`), the queue's role/person filters, a policy's
+  `requiredWorkItemRoles` — so existing tickets count immediately; nothing is rewritten. Manual
+  assignment through an alias stores the canonical key and replaces the aliased entry. An alias may
+  not also be a role of its own, nor belong to two roles (`PUT /api/settings` → `400`).
+- **`assigneeGroups`** — `[{ id, name }]` directory groups; the person search for the role
+  (`users/search?role=`) only returns their members (Graph transitive membership; locally, users whose
+  roles include the group). A picker filter, not a write gate.
 
 ---
 

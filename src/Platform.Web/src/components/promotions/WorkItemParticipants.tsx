@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api';
 import type { PromotionSourceEventParticipant } from '@/lib/api';
-import { roleDisplay, useConfiguredRoles, useIsUnrecognisedRole } from '@/lib/roleLabel';
+import {
+  roleDisplay,
+  useConfiguredRoles,
+  useIsUnrecognisedRole,
+  useRoleAssigneeGroups,
+} from '@/lib/roleLabel';
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
@@ -478,7 +483,13 @@ function ParticipantChip({
  * Pass `onRemove` to offer clearing the slot from inside the popover — the row layout uses this
  * instead of a separate destructive button beside the person.
  *
- * Falls back to manual email entry when the directory returns no hits (local-auth dev).
+ * The search is for the chosen role: a role an admin restricted to directory groups (Settings →
+ * Participant Roles) only offers their members, and the popover names the groups. Otherwise it falls
+ * back to manual email entry when the directory returns no hits (local-auth dev) — but not for a
+ * restricted role, where typing an address would step straight around the restriction.
+ *
+ * `heading`, `initialRole` and `renderOptions` let a caller reuse the picker for something other than
+ * one slot — the promotion page's "Assign to all" puts its scope choice in `renderOptions`.
  */
 export function InlineUserPicker({
   role,
@@ -489,6 +500,9 @@ export function InlineUserPicker({
   busy,
   align = 'left',
   anchorRef,
+  heading,
+  initialRole = '',
+  renderOptions,
 }: {
   role: string | null;
   onPick: (picked: { role: string; email: string; displayName: string }) => void;
@@ -501,9 +515,15 @@ export function InlineUserPicker({
   align?: 'left' | 'right';
   /** The control the picker hangs off. */
   anchorRef: React.RefObject<HTMLElement | null>;
+  /** Replaces the "Assign person" / "Assign <role>" title line. */
+  heading?: string;
+  /** Pre-selected role when the role is picked inside the popover (`role` = null). */
+  initialRole?: string;
+  /** Extra controls under the search, given the role currently chosen ('' when none yet). */
+  renderOptions?: (role: string) => ReactNode;
 }) {
   const roleEditable = role === null;
-  const [roleInput, setRoleInput] = useState('');
+  const [roleInput, setRoleInput] = useState(initialRole);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
   const [searching, setSearching] = useState(false);
@@ -513,6 +533,16 @@ export function InlineUserPicker({
   const isUnrecognised = useIsUnrecognisedRole();
   const lockedRoleUnrecognised = !roleEditable && isUnrecognised(role);
 
+  // Resolve the role to send: either the locked prop or the one picked from the list.
+  const effectiveRole = (role ?? roleInput).trim();
+  const canSubmit = effectiveRole.length > 0 && !lockedRoleUnrecognised;
+  // Who the search is limited to for this role. The server applies the same restriction; this copy
+  // is what lets the popover say so before anything has been typed.
+  const assigneeGroups = useRoleAssigneeGroups(effectiveRole);
+  const restricted = assigneeGroups.length > 0;
+  const groupNames = assigneeGroups.map((g) => g.name || g.id).join(', ');
+
+  // Re-run when the role changes too: picking a restricted role narrows the hits already on screen.
   useEffect(() => {
     const q = query.trim();
     if (q.length < 2 || lockedRoleUnrecognised) { setResults([]); return; }
@@ -520,7 +550,7 @@ export function InlineUserPicker({
     setSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await api.searchPromotionUsers(q);
+        const res = await api.searchPromotionUsers(q, effectiveRole || null);
         if (!cancelled) setResults(res.users);
       } catch {
         if (!cancelled) setResults([]);
@@ -529,11 +559,7 @@ export function InlineUserPicker({
       }
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [query, lockedRoleUnrecognised]);
-
-  // Resolve the role to send: either the locked prop or the one picked from the list.
-  const effectiveRole = (role ?? roleInput).trim();
-  const canSubmit = effectiveRole.length > 0 && !lockedRoleUnrecognised;
+  }, [query, lockedRoleUnrecognised, effectiveRole]);
 
   // Which result the arrow keys are on. -1 means "none yet", so the first ArrowDown lands on the
   // first result rather than the second. Reset whenever the result set changes, since index 2 of
@@ -548,6 +574,7 @@ export function InlineUserPicker({
   };
 
   const submitManual = () => {
+    if (restricted) return;
     const q = query.trim();
     // Cheap email-shape check. Server validates again with the same rule.
     if (!q.includes('@') || !q.includes('.')) return;
@@ -590,7 +617,7 @@ export function InlineUserPicker({
       style={{ backgroundColor: 'var(--bg-primary)' }}
     >
       <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
-        {roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`}
+        {heading ?? (roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`)}
       </div>
       {roleEditable && (
         <select
@@ -656,6 +683,14 @@ export function InlineUserPicker({
           onKeyDown={onSearchKeyDown}
         />
       )}
+      {!lockedRoleUnrecognised && restricted && (
+        <p className="text-[11px] px-1 mt-1 flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+          <Users size={10} style={{ flexShrink: 0 }} />
+          <span className="truncate" title={groupNames}>
+            Only members of {groupNames}
+          </span>
+        </p>
+      )}
       {!lockedRoleUnrecognised && query.trim().length >= 2 && (
         <div
           ref={resultsRef}
@@ -669,7 +704,12 @@ export function InlineUserPicker({
               Searching...
             </div>
           )}
-          {!searching && results.length === 0 && (
+          {!searching && results.length === 0 && restricted && (
+            <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Nobody in {groupNames} matches &ldquo;{query.trim()}&rdquo;.
+            </div>
+          )}
+          {!searching && results.length === 0 && !restricted && (
             <button
               type="button"
               onClick={submitManual}
@@ -712,6 +752,7 @@ export function InlineUserPicker({
           ))}
         </div>
       )}
+      {renderOptions && !lockedRoleUnrecognised && renderOptions(effectiveRole)}
       <div className="mt-2 flex items-center justify-between gap-2">
         {onRemove ? (
           <button

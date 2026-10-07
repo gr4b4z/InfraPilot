@@ -65,8 +65,12 @@ public static class ParticipantRoleSeeder
             if (settings is not null)
             {
                 var existing = settings.Roles ?? [];
+                // A default the admin already folded into another role as an alias is present too:
+                // re-adding it as a role of its own would make the row fail RoleConfigValidator and
+                // undo the fold.
                 var present = existing
-                    .Select(r => RoleNormalizer.Normalize(r.Key))
+                    .SelectMany(r => (r.Aliases ?? []).Prepend(r.Key))
+                    .Select(RoleNormalizer.Normalize)
                     .Where(k => k.Length > 0)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
