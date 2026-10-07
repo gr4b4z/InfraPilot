@@ -38,7 +38,8 @@ public class PromotionApprovalAuthorizer
     /// Checks whether the current user is in <paramref name="approverGroup"/>. Matches against
     /// (a) their role claims (for policies using a role string like "InfraPortal.Approver"),
     /// (b) their group claims (for policies using an Entra group object ID), and
-    /// (c) live Graph membership (fallback, via <see cref="IIdentityService"/>).
+    /// (c) directory membership (fallback, via <see cref="IIdentityService"/>; for Graph, a
+    /// process-wide cached member list keyed by group object id).
     /// </summary>
     /// <param name="allowAdminShortcut">
     /// When <c>true</c> (the default, and what promotions use) an admin is treated as a member of
@@ -60,7 +61,9 @@ public class PromotionApprovalAuthorizer
         if (_currentUser.Roles.Contains(approverGroup, StringComparer.OrdinalIgnoreCase)) return true;
         if (_currentUser.IsInGroup(approverGroup)) return true;
 
-        // Fall back to Graph. A stub/local identity service returns an empty list, which is fine.
+        // Fall back to the directory. The Graph implementation caches member lists process-wide,
+        // answers a non-object-id reference (a name) and a failed read with no members, and logs
+        // those itself; this catch is for other implementations' errors (and cancellation).
         try
         {
             var members = await _identity.GetGroupMembers(approverGroup, ct);

@@ -167,7 +167,10 @@ if (!string.IsNullOrEmpty(graphTenantId) && !graphTenantId.StartsWith('<')
             graphTenantId, graphClientId, graphClientSecret);
         return new Microsoft.Graph.GraphServiceClient(credential);
     });
-    builder.Services.AddScoped<IIdentityService, EntraIdGraphService>();
+    // Singleton so its group-membership cache is shared by every request (one Graph read per group
+    // per TTL instead of one per approval check); it holds nothing request-specific.
+    builder.Services.AddMemoryCache();
+    builder.Services.AddSingleton<IIdentityService, EntraIdGraphService>();
 }
 else
 {
