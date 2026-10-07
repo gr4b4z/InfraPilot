@@ -787,11 +787,29 @@ class ApiClient {
     );
   }
 
-  bulkApprovePromotions(ids: string[], comment?: string) {
-    return this.request<{ results: Array<{ id: string; ok: boolean; status?: string; error?: string }> }>(
-      `/promotions/bulk/approve`,
-      { method: 'POST', body: JSON.stringify({ ids, comment }) },
-    );
+  /**
+   * Approves several promotions in one call, partially: one outcome per id, a refusal on one row
+   * never stops the rest. With `gate`, every row approves that gate ("Release Approval"), which
+   * means every requirement of it the caller is eligible for. That is mass approve. Without it, each
+   * row is a plain approve and needs the caller to be eligible for exactly one open requirement.
+   */
+  bulkApprovePromotions(ids: string[], comment?: string, gate?: string) {
+    return this.request<{ results: BulkApproveOutcome[] }>(`/promotions/bulk/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, comment, gate }),
+    });
+  }
+
+  /**
+   * Admin bypass for a batch: each Pending promotion is forced to Approved without satisfying its
+   * gate, audited and announced exactly as {@link bypassPromotion} does for one. One reason covers
+   * them all and is required. Per-id outcome, like bulk approve.
+   */
+  bulkBypassPromotions(ids: string[], reason: string) {
+    return this.request<{ results: BulkDecisionOutcome[] }>(`/promotions/admin/candidates/bulk/bypass`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, reason }),
+    });
   }
 
   // ── Work-item (ticket) approvals ───────────────────────────────────────
@@ -1611,6 +1629,13 @@ export interface PromotionCandidate {
    */
   pendingGates?: string[];
   /**
+   * The subset of `pendingGates` the current user could approve right now: they are an approver
+   * for it, have not signed it yet, it is still short of approvals, and the work-item gate is not
+   * holding the promotion. `canApprove` is "this is non-empty". Mass approve reads it per row.
+   * Only the list computes it. Absent on the detail response and on an older API.
+   */
+  approvableGates?: string[];
+  /**
    * Whether the policy's work-item gate is holding this promotion back — every work item must be
    * signed off before anyone may approve any step. Read alongside `pendingGates`: the steps listed
    * there are short of approvals but *held*, not waiting, so a promotion with this set is waiting on
@@ -1619,6 +1644,26 @@ export interface PromotionCandidate {
    */
   workItemsOutstanding?: boolean;
 }
+
+/** One row of a bulk decision: it went through (with the status it is at now), or why not. */
+export type BulkDecisionOutcome =
+  | { id: string; ok: true; status: PromotionStatus }
+  | { id: string; ok: false; error: string };
+
+/**
+ * One row of a bulk approve. A success also says which requirements were signed (gate mode only)
+ * and what the promotion still waits on: a gate that was not the last leaves it Pending.
+ */
+export type BulkApproveOutcome =
+  | {
+      id: string;
+      ok: true;
+      status: PromotionStatus;
+      approvedAs?: string[];
+      pendingGates?: string[];
+      workItemsOutstanding?: boolean;
+    }
+  | { id: string; ok: false; error: string };
 
 // ── Promotions audit ──────────────────────────────────────────────────────
 /**

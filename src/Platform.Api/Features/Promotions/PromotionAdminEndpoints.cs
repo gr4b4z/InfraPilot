@@ -38,6 +38,46 @@ public static class PromotionAdminEndpoints
             }
         });
 
+        // Bypass in bulk: mass approve's admin column. One reason covers the batch, the same way one
+        // comment covers a bulk approve, and each candidate is bypassed and audited on its own
+        // (promotion.bypassed, promotion.approved webhook), exactly as the single endpoint above does it.
+        // Partial success, per-id outcome. A row already decided by someone else must not sink the rest.
+        group.MapPost("/candidates/bulk/bypass", async (
+            PromotionService service, PlatformDbContext db, BulkBypassPromotionRequest? request, CancellationToken ct) =>
+        {
+            var reason = (request?.Reason ?? "").Trim();
+            if (reason.Length == 0)
+                return Results.BadRequest(new { error = "A reason is required to bypass a promotion." });
+
+            var results = new List<object>();
+            foreach (var id in request?.Ids ?? Array.Empty<Guid>())
+            {
+                try
+                {
+                    var candidate = await service.BypassAsync(id, reason, ct);
+                    results.Add(new { id, ok = true, status = candidate.Status.ToString() });
+                }
+                catch (Exception ex) when (ex is KeyNotFoundException or ArgumentException or InvalidOperationException)
+                {
+                    results.Add(new { id, ok = false, error = ex.Message });
+                }
+                catch (DbUpdateException)
+                {
+                    // Lost a race with another decision on this row. Untrack the failed write so the
+                    // rows after it can still save.
+                    db.ChangeTracker.Clear();
+                    results.Add(new
+                    {
+                        id,
+                        ok = false,
+                        error = "Somebody else decided on this promotion at the same moment — refresh and try again.",
+                    });
+                }
+            }
+
+            return Results.Ok(new { results });
+        });
+
         // ── Completion reconciliation ───────────────────────────────────────
         // Settles open promotions that the target environment's deploy history has already decided:
         // closes the ones whose version shipped, supersedes the ones a newer version overtook.
@@ -557,6 +597,9 @@ public record UpsertRequirementRequest(
 
 /// <summary>Body for the admin bypass endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
 public record BypassPromotionRequest(string? Reason);
+
+/// <summary>Body for the bulk bypass endpoint: the candidates, and the one reason that covers them all.</summary>
+public record BulkBypassPromotionRequest(Guid[]? Ids, string? Reason);
 
 /// <summary>
 /// Body for the reconcile endpoint. All optional: omit <c>Product</c> / <c>TargetEnv</c> to sweep
