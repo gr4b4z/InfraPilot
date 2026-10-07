@@ -1127,6 +1127,8 @@ public class PromotionGateTests
 
                 RemoveService<IWebhookDispatcher>(services);
                 services.AddSingleton(WebhookDispatcher);
+
+                TestHostIsolation.Apply(services);
             });
         }
 

@@ -756,6 +756,8 @@ public class WorkItemRequiredRolesTests
                 services.AddSingleton<DbConnection>(_connection);
                 services.AddDbContext<PlatformDbContext, SqliteTestDbContext>((sp, options) =>
                     options.UseSqlite(sp.GetRequiredService<DbConnection>()));
+
+                TestHostIsolation.Apply(services);
             });
         }
 
