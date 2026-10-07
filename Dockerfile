@@ -40,7 +40,11 @@ COPY knowledge /app/knowledge
 COPY playbooks /app/playbooks
 
 ENV ASPNETCORE_ENVIRONMENT=Production
+# Loopback only — nginx is the container's one public listener. The base image sets
+# ASPNETCORE_HTTP_PORTS=8080, which URLS overrides anyway; clearing it stops the API warning about that
+# at every start.
 ENV ASPNETCORE_URLS=http://127.0.0.1:8081
+ENV ASPNETCORE_HTTP_PORTS=
 ENV CatalogPath=/app/catalog
 ENV GUIDES_PATH=/app/guides
 ENV KNOWLEDGE_PATH=/app/knowledge
