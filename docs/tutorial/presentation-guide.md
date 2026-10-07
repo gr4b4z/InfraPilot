@@ -122,7 +122,10 @@ succeeded deploy of V on the target closes the candidate whatever state it is in
 10. **Bulk approve**: on the Promotions list, select several Pending candidates the admin may
     approve and approve them together; each still records its own approval and comment. (A prod
     candidate only becomes approvable once QA has signed off all of its work items, so sign a
-    couple off as QA first if you want more than scene B to pick from.)
+    couple off as QA first if you want more than scene B to pick from.) For the release-night
+    version, press **Mass approve**: pick `prod`, pick the gate, and the checklist shows every
+    promotion waiting on it. The ones held by work items are greyed out with the reason, and as
+    Admin you can tick them to **bypass** with one reason.
 11. **Who approves what is per edge**: the `stable → staging` promotions are gated by the QA lead,
     not the release manager — as Admin, the Approve button on one of them says so.
 
