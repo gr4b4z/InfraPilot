@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
@@ -49,6 +50,17 @@ if (!string.IsNullOrEmpty(appInsightsCs) && !appInsightsCs.StartsWith('<'))
         options.ConnectionString = appInsightsCs;
     });
 }
+
+// Request log — one line per request: method, path and query, status, duration. It stands in for
+// ASP.NET Core's own per-request Information logs (hosting, routing, result execution), which the
+// logging configuration turns off with "Microsoft.AspNetCore": "Warning". The hub leaves the query
+// out (see MapHub below): the SignalR client sends its access token there.
+builder.Services.AddHttpLogging(options =>
+{
+    options.LoggingFields = HttpLoggingFields.RequestMethod | HttpLoggingFields.RequestPath
+        | HttpLoggingFields.RequestQuery | HttpLoggingFields.ResponseStatusCode | HttpLoggingFields.Duration;
+    options.CombineLogs = true;
+});
 
 // Database — provider is selectable via config (Postgres default, SqlServer alternative).
 // We register a provider-specific subclass of PlatformDbContext so EF can disambiguate the two
@@ -400,6 +412,7 @@ app.Services.GetRequiredService<PlaybookRegistry>();
 }
 
 // Middleware pipeline
+app.UseHttpLogging();
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 
@@ -466,8 +479,11 @@ app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(Authori
 // it cannot reach directly. Role-aware guidance also depends on there being a user to ask about.
 app.MapGroup("/agent").MapAgentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 
-// Realtime hub — WebSocket (with SignalR's fallbacks) for entity-changed signals
-app.MapHub<EventsHub>("/api/hubs/events").RequireAuthorization();
+// Realtime hub — WebSocket (with SignalR's fallbacks) for entity-changed signals. Its request log
+// line has no query string: that is where the SignalR client puts ?access_token=….
+app.MapHub<EventsHub>("/api/hubs/events").RequireAuthorization()
+    .WithHttpLogging(HttpLoggingFields.RequestMethod | HttpLoggingFields.RequestPath
+        | HttpLoggingFields.ResponseStatusCode | HttpLoggingFields.Duration);
 
 app.Run();
 
