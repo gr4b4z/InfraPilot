@@ -1,4 +1,4 @@
-import { isMsalEnabled, reauthenticate } from './auth';
+import { acquireToken, isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
 import { authHeaders } from './authHeaders';
 
@@ -46,7 +46,7 @@ class ApiClient {
     this.token = token;
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}, isRetry = false): Promise<T> {
     const headers = await authHeaders(
       (options.headers as Record<string, string>) || {},
       this.token,
@@ -58,12 +58,18 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      // A 401 under MSAL means the session expired or was revoked. Silent renewal
-      // can't recover and a reload won't either (the stale account lingers in
-      // sessionStorage), so force an interactive redirect instead of leaving the
-      // UI stuck with no data. Local-auth 401s keep their existing behaviour.
+      // A 401 under MSAL means the API rejected the token — revoked, or the session ended early.
+      // Retry once with a freshly issued one (acquireToken signs in by itself if Entra needs the
+      // user); only if that is rejected too, sign in interactively rather than leaving the UI
+      // stuck with no data. Local-auth 401s keep their existing behaviour.
       if (response.status === 401 && isMsalEnabled()) {
-        await reauthenticate();
+        if (!isRetry) {
+          const fresh = await acquireToken({ forceRefresh: true }).catch(() => null);
+          if (fresh) return this.request<T>(path, options, true);
+        } else {
+          // Failing to start the redirect still fails this request with the API error below.
+          await reauthenticate().catch(() => undefined);
+        }
       }
       const error = await response.json().catch(() => ({ error: response.statusText }));
       throw new Error(error.error || `API error: ${response.status}`);
