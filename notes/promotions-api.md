@@ -140,10 +140,24 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 
 ### `GET /api/promotions` — list
 Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`, `gate`,
-`gateOnly`.
+`gateOnly`, `view`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
 current user (Pending + authorized for ≥1 open requirement + not already decided) and a
 **`deploysOnApproval`** boolean read off its policy snapshot.
+
+**Response size — `view`.** `full` (the default) returns every candidate's references whole, in
+`sourceEventReferences` — the same list `GET /api/promotions/{id}` returns. `view=summary` returns
+the same response with each reference cut down to the fields a list row renders: `type`, `url`,
+`provider`, `key`, `revision`, `title`, `subTitle`, `priority`, `workItemType`. Left out (absent, not
+null): `content`, the reference-level `participants`, `commits`, `resolution`, `occurredAt`. Every
+candidate-level field is unchanged, and the `reference` filter still matches against the full
+references. Anything else is a `400`.
+
+Use `summary` for screens that list promotions — it is what the Promotions page and the my-tasks
+rollup poll with, and references' bodies are most of a list response's weight. Do **not** use it to
+read references you will send back: release automation that re-POSTs a candidate's references on
+upsert (`Update-InfraPortalPromotionWorkItems.ps1`) must read the default view, or the next upsert
+would drop the fields `summary` leaves out.
 
 **Filtering by approval gate.** `gate` is an approval-step name as the policy spells it
 ("Release Approval"; an unnamed step is "Approval"), matched case-insensitively, and narrows the

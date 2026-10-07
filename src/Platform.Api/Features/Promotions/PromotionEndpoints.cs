@@ -49,7 +49,8 @@ public static class PromotionEndpoints
             string? reference,
             string? gate,
             bool? gateOnly,
-            int? limit) =>
+            int? limit,
+            string? view) =>
         {
             PromotionStatus? parsed = null;
             if (!string.IsNullOrEmpty(status))
@@ -58,6 +59,15 @@ public static class PromotionEndpoints
                     return Results.BadRequest(new { error = $"Unknown status '{status}'" });
                 parsed = s;
             }
+
+            // `view=summary` is the list views' opt-in to a lighter payload — see SummaryReference for
+            // what it leaves out. Anything else that reads this list keeps the full shape by default:
+            // release automation re-POSTs the references it reads here, so a slimmed default would
+            // quietly strip them on the next upsert.
+            var resolvedView = string.IsNullOrEmpty(view) ? "full" : view.ToLowerInvariant();
+            if (!ListViews.Contains(resolvedView))
+                return Results.BadRequest(new { error = "'view' must be one of: full, summary" });
+            var summary = resolvedView == "summary";
 
             // Different defaults when the UI is showing everything vs a single status.
             // - All-statuses view: cap the resolved tail at 25 (Pending is always uncapped).
@@ -116,7 +126,8 @@ public static class PromotionEndpoints
                     .ToList();
             }
 
-            var approvable = await svc.GetApprovableRequirementsManyAsync(candidates);
+            // Handed the gate statuses so the work-item gate behind both is evaluated once per request.
+            var approvable = await svc.GetApprovableRequirementsManyAsync(candidates, gateStatuses);
             var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
             var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
@@ -141,7 +152,8 @@ public static class PromotionEndpoints
                         sourceBranch: sourceBranch,
                         decidedWorkItemKeys: decidedKeys,
                         gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None),
-                        roleAliases: roleAliases);
+                        roleAliases: roleAliases,
+                        summaryReferences: summary);
                 }),
             });
         });
@@ -917,6 +929,33 @@ public static class PromotionEndpoints
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+    /// <summary>The list's <c>view</c> values. <c>full</c> is the default.</summary>
+    private static readonly string[] ListViews = ["full", "summary"];
+
+    private static object ShapeReferences(List<ReferenceDto> references, bool summary)
+        => summary ? references.Select(SummaryReference).ToList() : references;
+
+    /// <summary>
+    /// A reference as the <c>view=summary</c> list carries it: what a list row names, links and labels
+    /// it by, in the order the full shape has them. Left out are the fields no list view reads, which
+    /// are also the heavy ones — <c>content</c> (a ticket's or PR's whole description), the
+    /// reference-scoped <c>participants</c>, the <c>commits</c> a work item was derived from (already
+    /// folded into <c>subTitle</c> by WorkItemDisplay), <c>resolution</c> and <c>occurredAt</c>.
+    /// Absent rather than null, so a reader can't mistake "not sent" for "empty".
+    /// </summary>
+    private static object SummaryReference(ReferenceDto r) => new
+    {
+        type = r.Type,
+        url = r.Url,
+        provider = r.Provider,
+        key = r.Key,
+        revision = r.Revision,
+        title = r.Title,
+        subTitle = r.SubTitle,
+        priority = r.Priority,
+        workItemType = r.WorkItemType,
+    };
+
     private static object ToDto(
         PromotionCandidate c,
         bool canApprove,
@@ -939,7 +978,10 @@ public static class PromotionEndpoints
         // The configured role vocabulary, so completeness counts a participant sent under an alias
         // (`qa`) as the role it names (`qa-owner`). Null ⇒ plain canonicalisation; the read paths that
         // render completeness (list, detail) always supply it.
-        RoleAliasMap? roleAliases = null) => new
+        RoleAliasMap? roleAliases = null,
+        // True ⇒ references go out in the list's `view=summary` shape (see SummaryReference). Only the
+        // list asks for it, and only when the caller opted in.
+        bool summaryReferences = false) => new
     {
         id = c.Id,
         product = c.Product,
@@ -976,8 +1018,9 @@ public static class PromotionEndpoints
         // messages of the ticket's commits underneath — see Deployments.WorkItemDisplay), so the
         // promotion page names a ticket the same way the work-item queue and detail page do. Every
         // other reference is passed through untouched.
-        sourceEventReferences = Deployments.WorkItemDisplay.ApplyToReferences(
-            sourceEventReferences ?? Array.Empty<ReferenceDto>()),
+        sourceEventReferences = ShapeReferences(
+            Deployments.WorkItemDisplay.ApplyToReferences(sourceEventReferences ?? Array.Empty<ReferenceDto>()),
+            summaryReferences),
         canApprove,
         // The approval steps this promotion is still short of approvals on, named as the policy names
         // them ("Release Approval"). Empty on anything that isn't Pending, on auto-approve edges, and
@@ -1037,8 +1080,12 @@ public static class PromotionEndpoints
     /// the same answer the stored value would hold, and it makes existing history read correctly
     /// without a backfill.</para>
     ///
-    /// <para>One query for the whole candidate set: a coarse product/service/env IN filter, then
-    /// reduced in memory.</para>
+    /// <para>One query for the whole candidate set, and it reads one deploy row per answer rather than
+    /// the target's history: each candidate row looks up its own newest deploy (and, for a legacy
+    /// closed one, its newest succeeded deploy before the close) as a correlated TOP 1 on the
+    /// <c>(product, service, environment, deployedAt)</c> index. Driving it from the candidates' own
+    /// rows keeps the only IN list on their primary keys; per-column product/service/env lists would
+    /// match their whole cross product and bring back every history row of it.</para>
     /// </summary>
     private static async Task<Dictionary<Guid, (string? Current, string? Baseline)>> LoadTargetVersionsAsync(
         PlatformDbContext db,
@@ -1047,55 +1094,23 @@ public static class PromotionEndpoints
     {
         if (candidates.Count == 0) return new();
 
-        var triples = candidates
-            .Select(c => new { c.Product, c.Service, c.TargetEnv })
-            .Distinct()
-            .ToList();
-
-        var products = triples.Select(t => t.Product).Distinct().ToList();
-        var services = triples.Select(t => t.Service).Distinct().ToList();
-        var envs = triples.Select(t => t.TargetEnv).Distinct().ToList();
-
-        var events = await db.DeployEvents
-            .AsNoTracking()
-            .Where(e => products.Contains(e.Product)
-                     && services.Contains(e.Service)
-                     && envs.Contains(e.Environment))
-            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt, e.Status })
-            .ToListAsync(ct);
-
-        var wanted = triples.Select(t => (t.Product, t.Service, t.TargetEnv)).ToHashSet();
-        // Newest first, so "current" is the head and "as of T" is the first entry before T.
-        var history = events
-            .Where(e => wanted.Contains((e.Product, e.Service, e.Environment)))
-            .GroupBy(e => (e.Product, e.Service, e.Environment))
-            .ToDictionary(
-                g => g.Key,
-                g => g.OrderByDescending(e => e.DeployedAt)
-                      .Select(e => (e.Version, e.DeployedAt, e.Status))
-                      .ToList());
+        var ids = candidates.Select(c => c.Id).Distinct().ToList();
+        var rows = await TargetVersionsQuery(db, ids).ToDictionaryAsync(r => r.Id, ct);
 
         var result = new Dictionary<Guid, (string? Current, string? Baseline)>();
         foreach (var c in candidates)
         {
-            history.TryGetValue((c.Product, c.Service, c.TargetEnv), out var timeline);
-            var current = timeline is { Count: > 0 } ? timeline[0].Version : null;
+            rows.TryGetValue(c.Id, out var row);
+            var current = row?.Current;
 
             string? baseline = c.FromVersion;
             if (string.IsNullOrEmpty(baseline))
             {
                 // No stored baseline. Closed candidates get one reconstructed as of the moment they
-                // closed; an open one is still measured against live state, which is correct for it.
-                DateTimeOffset? asOf = c.Status switch
-                {
-                    PromotionStatus.Deployed => c.DeployedAt ?? c.CreatedAt,
-                    PromotionStatus.Rejected or PromotionStatus.Superseded => c.CreatedAt,
-                    _ => null,
-                };
-                // Succeeded only, matching how the stored value is captured on create: a failed
-                // deploy never changed what the environment was running.
-                baseline = asOf is { } t && timeline is not null
-                    ? timeline.FirstOrDefault(e => e.DeployedAt < t && e.Status == "succeeded").Version
+                // closed (see TargetVersionsQuery); an open one is still measured against live state,
+                // which is correct for it.
+                baseline = c.Status is PromotionStatus.Deployed or PromotionStatus.Rejected or PromotionStatus.Superseded
+                    ? row?.Reconstructed
                     : current;
             }
 
@@ -1104,6 +1119,47 @@ public static class PromotionEndpoints
 
         return result;
     }
+
+    private sealed record TargetVersionRow(Guid Id, string? Current, string? Reconstructed);
+
+    /// <summary>
+    /// The SQL half of <see cref="LoadTargetVersionsAsync"/>, per candidate id:
+    /// <list type="bullet">
+    ///   <item><c>Current</c> — the target's newest deploy event, whatever became of it.</item>
+    ///   <item><c>Reconstructed</c> — only for a closed candidate with no stored
+    ///   <see cref="PromotionCandidate.FromVersion"/>: the newest <i>succeeded</i> deploy strictly
+    ///   before it closed (Deployed: its landing, else its creation) or was created (Rejected /
+    ///   Superseded). Succeeded only, matching how the stored value is captured on create: a failed
+    ///   deploy never changed what the environment was running. Null for every other row.</item>
+    /// </list>
+    /// Both are scalar subqueries ordered by <c>DeployedAt</c> and capped at one row, which SQL Server,
+    /// Postgres and SQLite all translate.
+    /// </summary>
+    private static IQueryable<TargetVersionRow> TargetVersionsQuery(PlatformDbContext db, List<Guid> ids)
+        => db.PromotionCandidates
+            .AsNoTracking()
+            .Where(c => ids.Contains(c.Id))
+            .Select(c => new TargetVersionRow(
+                c.Id,
+                db.DeployEvents
+                    .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv)
+                    .OrderByDescending(e => e.DeployedAt)
+                    .Select(e => e.Version)
+                    .FirstOrDefault(),
+                (c.FromVersion == null || c.FromVersion == "")
+                && (c.Status == PromotionStatus.Deployed
+                    || c.Status == PromotionStatus.Rejected
+                    || c.Status == PromotionStatus.Superseded)
+                    ? db.DeployEvents
+                        .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv
+                                 && e.Status == "succeeded"
+                                 && e.DeployedAt < (c.Status == PromotionStatus.Deployed
+                                     ? c.DeployedAt ?? c.CreatedAt
+                                     : c.CreatedAt))
+                        .OrderByDescending(e => e.DeployedAt)
+                        .Select(e => e.Version)
+                        .FirstOrDefault()
+                    : null));
 
     // Batch-looks up the branch each build-sourced candidate's version was built from, keyed by
     // (product, service, version) — the build registry's own unique triple. Candidates promoted
@@ -1125,8 +1181,8 @@ public static class PromotionEndpoints
         var services = triples.Select(t => t.Service).Distinct().ToList();
         var versions = triples.Select(t => t.Version).Distinct().ToList();
 
-        // Same shape as LoadTargetVersionsAsync: a coarse IN filter, then the exact triples
-        // reduced in memory — the extra rows a coarse filter drags in are cheap next to a query
+        // A coarse IN filter, then the exact triples reduced in memory — the build registry holds
+        // one row per triple, so the extra rows a coarse filter drags in are cheap next to a query
         // per candidate.
         var builds = await db.Builds
             .AsNoTracking()
@@ -1153,7 +1209,7 @@ public static class PromotionEndpoints
     /// and a signed-off item is past needing one.
     ///
     /// <para>One query for the whole candidate set, the same coarse-IN-then-reduce shape as
-    /// <see cref="LoadTargetVersionsAsync"/>. The set may name tickets these candidates don't
+    /// <see cref="LoadSourceBranchesAsync"/>. The set may name tickets these candidates don't
     /// carry (another promotion on the same edge decided them); harmless, because the consumer only
     /// ever looks up keys the candidate actually references.</para>
     /// </summary>
