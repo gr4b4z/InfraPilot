@@ -182,6 +182,26 @@ public record DeploymentStateDto(
     EnrichmentDto? Enrichment,
     DeployRun? Run = null);
 
+/// <summary>
+/// A state row as <c>GET /api/deployments/state?view=summary</c> carries it: every scalar field of
+/// <see cref="DeploymentStateDto"/>, in the same order, without its four nested ones — references
+/// (with their bodies and people), participants, enrichment and run. Those are nearly all of a full
+/// response's weight, and none of the web views that read the matrix renders them: a cell shows the
+/// version, status, rollback marker and age, and the pickers built from it read service and
+/// environment names.
+/// </summary>
+public record DeploymentStateSummaryDto(
+    Guid Id,
+    string Product,
+    string Service,
+    string Environment,
+    string Version,
+    string? PreviousVersion,
+    bool IsRollback,
+    string Status,
+    string Source,
+    DateTimeOffset DeployedAt);
+
 // --- Detail view ---
 
 /// <summary>

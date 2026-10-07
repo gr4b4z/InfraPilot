@@ -165,9 +165,17 @@ class ApiClient {
     return this.request<import('./types').ProductSummary[]>('/deployments/products');
   }
 
-  getDeploymentState(params?: { product?: string; environment?: string; serviceName?: string }) {
-    const query = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]).toString() : '';
-    return this.request<import('./types').DeploymentStateEntry[]>(`/deployments/state${query}`);
+  /**
+   * The current state matrix in its `view=summary` shape: every row without its `references`,
+   * `participants`, `enrichment` and `run` — most of the full response's weight, and none of it read
+   * by the matrix or the pickers built from it. Something that needs to render those wants the
+   * endpoint's default (full) view instead.
+   */
+  getDeploymentStateSummary(params?: { product?: string; environment?: string; serviceName?: string }) {
+    const entries = Object.entries({ ...params, view: 'summary' }).filter(([, v]) => v) as [string, string][];
+    return this.request<import('./types').DeploymentStateSummary[]>(
+      `/deployments/state?${new URLSearchParams(entries).toString()}`,
+    );
   }
 
   // Build registry

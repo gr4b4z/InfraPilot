@@ -120,12 +120,22 @@ public static class DeploymentEndpoints
         // The environment filter is alias-resolved, here and on every read below: a pipeline that
         // posts to "prod" queries for "prod" too, and it has to get back the rows it just wrote â€”
         // which are stored under whatever canonical key the alias points at.
+        //
+        // `view=summary` is the web app's opt-in to a lighter payload — see DeploymentStateSummaryDto
+        // for what it leaves out. Everything else keeps the full shape by default: pipelines, scripts
+        // and the agent skill read references and participants off this response.
         group.MapGet("/state", async (
             DeploymentService service, EnvironmentAliasResolver environments,
-            string? product, string? environment, string? serviceName, CancellationToken ct) =>
+            string? product, string? environment, string? serviceName, string? view, CancellationToken ct) =>
         {
+            var resolvedView = string.IsNullOrEmpty(view) ? "full" : view.ToLowerInvariant();
+            if (!StateViews.Contains(resolvedView))
+                return Results.BadRequest(new { error = "'view' must be one of: full, summary" });
+
             var env = await environments.ResolveFilterAsync(environment, ct);
-            return Results.Ok(await service.GetState(product, env, serviceName, ct));
+            return resolvedView == "summary"
+                ? Results.Ok(await service.GetStateSummary(product, env, serviceName, ct))
+                : Results.Ok(await service.GetState(product, env, serviceName, ct));
         });
 
         // Cross-product service search — the deployments page's "find a service without knowing
@@ -253,6 +263,9 @@ public static class DeploymentEndpoints
 
     public record AssignReferenceParticipantRequest(string Role, AssigneeBody? Assignee);
     public record AssigneeBody(string? Email, string? DisplayName);
+
+    /// <summary>The state matrix's <c>view</c> values. <c>full</c> is the default.</summary>
+    private static readonly string[] StateViews = ["full", "summary"];
 
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "succeeded", "failed", "in_progress" };
