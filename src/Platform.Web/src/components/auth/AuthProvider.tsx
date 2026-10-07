@@ -1,14 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { MsalProvider, useMsal, useMsalAuthentication } from '@azure/msal-react';
-import { InteractionType } from '@azure/msal-browser';
-import { getMsalInstance, isMsalEnabled, getLoginRequest } from '@/lib/auth';
+import { MsalProvider, useMsal } from '@azure/msal-react';
+import { InteractionStatus } from '@azure/msal-browser';
+import { getMsalInstance, isMsalEnabled, initializeMsal, reauthenticate, getActiveAccount } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useUserPrefsStore } from '@/stores/userPrefsStore';
-import { isLocalAuthEnabled } from '@/lib/authConfig';
+import { getAuthMode, isLocalAuthEnabled } from '@/lib/authConfig';
 import { getStoredToken, fetchCurrentUser } from '@/lib/localAuth';
 import { LoginPage } from '@/app/login/LoginPage';
+import { AuthErrorScreen } from './AuthErrorScreen';
 import { Loader2 } from 'lucide-react';
 
 const DEV_USER = createAuthUser(
@@ -22,7 +23,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const msalEnabled = isMsalEnabled();
   const localAuth = isLocalAuthEnabled();
   const msalInstance = getMsalInstance();
+  // The hardcoded dev user is for dev builds and an explicit no-auth backend only — never a
+  // fallback for a misconfigured or unreachable one.
+  const devUserAllowed = import.meta.env.DEV || getAuthMode() === 'none';
   const [msalReady, setMsalReady] = useState(!msalEnabled);
+  const [msalError, setMsalError] = useState<string | null>(null);
   const [localAuthChecked, setLocalAuthChecked] = useState(!localAuth);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
 
@@ -38,14 +43,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (msalEnabled) {
       if (!msalInstance) return;
       // Initialize MSAL and handle any pending redirect
-      msalInstance
-        .initialize()
-        .then(() => msalInstance.handleRedirectPromise())
+      initializeMsal()
         .then(() => setMsalReady(true))
         .catch((err) => {
           console.error('MSAL initialization failed:', err);
-          useAuthStore.getState().setUser(DEV_USER);
-          setMsalReady(true);
+          setMsalError(err instanceof Error ? err.message : String(err));
         });
       return;
     }
@@ -72,8 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // Neither MSAL nor local auth — legacy dev mode with hardcoded user
-    useAuthStore.getState().setUser(DEV_USER);
-  }, [msalEnabled, localAuth, msalInstance]);
+    if (devUserAllowed) useAuthStore.getState().setUser(DEV_USER);
+  }, [msalEnabled, localAuth, msalInstance, devUserAllowed]);
+
+  if (msalError) {
+    return <AuthErrorScreen title="Authentication failed" message={msalError} />;
+  }
 
   // MSAL loading
   if (msalEnabled && !msalReady) {
@@ -93,6 +99,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   if (localAuth) {
     if (!localAuthChecked) return <LoadingScreen />;
     if (!isAuthenticated) return <LoginPage />;
+  } else if (!devUserAllowed) {
+    return (
+      <AuthErrorScreen
+        title="Sign-in is not configured"
+        message={`The server's auth configuration (mode "${getAuthMode()}") is incomplete or unsupported. Contact your administrator.`}
+      />
+    );
   }
 
   return <>{children}</>;
@@ -103,20 +116,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
  * Must be rendered inside MsalProvider.
  */
 function MsalAuthGuard({ children }: { children: ReactNode }) {
-  const loginRequest = getLoginRequest();
-  const { accounts } = useMsal();
-  const { login, error } = useMsalAuthentication(InteractionType.Redirect, loginRequest);
+  const { accounts, inProgress } = useMsal();
+  const [error, setError] = useState<Error | null>(null);
   const setUser = useAuthStore((s) => s.setUser);
   const setLoading = useAuthStore((s) => s.setLoading);
+  const signedIn = accounts.length > 0;
 
   useEffect(() => {
-    if (accounts.length === 0) {
-      // Not yet authenticated — MSAL will redirect
+    if (signedIn || error || inProgress !== InteractionStatus.None) return;
+    // Not yet authenticated — redirect to sign in. A hidden tab waits until it is shown; by then
+    // another tab has usually signed in and the shared cache supplies the account.
+    reauthenticate().catch((err: unknown) => setError(err instanceof Error ? err : new Error(String(err))));
+  }, [signedIn, error, inProgress]);
+
+  useEffect(() => {
+    if (!signedIn) {
       setLoading(true);
       return;
     }
 
-    const account = accounts[0];
+    const account = getActiveAccount() ?? accounts[0];
     const claims = account.idTokenClaims as Record<string, unknown> | undefined;
 
     const id = (claims?.oid as string) ?? account.localAccountId ?? 'unknown';
@@ -125,29 +144,14 @@ function MsalAuthGuard({ children }: { children: ReactNode }) {
     const roles = (claims?.roles as string[]) ?? [];
 
     setUser(createAuthUser(id, name, email, roles));
-  }, [accounts, setUser, setLoading]);
+  }, [accounts, signedIn, setUser, setLoading]);
 
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen gap-4" style={{ backgroundColor: 'var(--bg-primary)' }}>
-        <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
-          Authentication failed
-        </p>
-        <p className="text-[13px] max-w-md text-center" style={{ color: 'var(--text-muted)' }}>
-          {error.message}
-        </p>
-        <button
-          onClick={() => login(InteractionType.Redirect, loginRequest)}
-          className="px-4 py-2 text-[13px] font-medium rounded-lg text-white"
-          style={{ backgroundColor: 'var(--accent)' }}
-        >
-          Try Again
-        </button>
-      </div>
-    );
+  if (error && !signedIn) {
+    // Clearing the error re-runs the sign-in effect above.
+    return <AuthErrorScreen title="Authentication failed" message={error.message} onRetry={() => setError(null)} />;
   }
 
-  if (accounts.length === 0) {
+  if (!signedIn) {
     return <LoadingScreen message="Redirecting to sign in..." />;
   }
 
