@@ -1,5 +1,6 @@
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure;
 
 namespace Platform.Api.Features.Promotions;
@@ -18,6 +19,11 @@ namespace Platform.Api.Features.Promotions;
 /// <see cref="PromotionService.RefreshPolicySnapshotsAsync"/>). A persisted "incomplete" flag would
 /// have needed a backfill for each of those three paths.</para>
 ///
+/// <para><b>Aliases.</b> Every role comparison here goes through a <see cref="RoleAliasMap"/> when the
+/// caller passes one, so a participant sent as <c>qa</c> fills a policy's <c>qa-owner</c> once an admin
+/// lists <c>qa</c> as its alias — and a policy that asks for the alias asks for the role. Callers that
+/// pass none get plain <see cref="RoleNormalizer"/> canonicalisation, the pre-alias behaviour.</para>
+///
 /// <para>This is deliberately not part of the approval gate. It records data completeness, not
 /// authority; the blocking work-item condition remains
 /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>.</para>
@@ -26,8 +32,8 @@ namespace Platform.Api.Features.Promotions;
 /// assignment, and once a reviewer has recorded a decision on the item (any
 /// <see cref="WorkItemApproval"/> — approved, an issue, or a block) there is nobody left to put on
 /// it: the sign-off it was waiting for has happened. So every surface reads its completeness through
-/// a decided check — <see cref="MissingRoles(IReadOnlyList{ParticipantDto}, IReadOnlyList{string}, bool)"/>
-/// and the <see cref="Evaluate(PromotionCandidate, IReadOnlySet{string})"/> overload — and a signed-off
+/// a decided check — <see cref="MissingRoles(IReadOnlyList{ParticipantDto}, IReadOnlyList{string}, bool, RoleAliasMap?)"/>
+/// and the <see cref="Evaluate(PromotionCandidate, IReadOnlySet{string}?, RoleAliasMap?)"/> overload — and a signed-off
 /// ticket drops out of the "Not assigned" queue instead of sitting there with a warning nobody can
 /// clear.</para>
 /// </summary>
@@ -38,10 +44,10 @@ public static class WorkItemRoleRequirements
     /// candidate's own policy snapshot. Best-effort: a missing or unparseable snapshot yields an empty
     /// list, so a data problem shows up as "no requirement" rather than flagging every work item.
     /// </summary>
-    public static IReadOnlyList<string> RequiredRoles(PromotionCandidate candidate)
+    public static IReadOnlyList<string> RequiredRoles(PromotionCandidate candidate, RoleAliasMap? aliases = null)
     {
         var snapshot = TryReadSnapshot(candidate);
-        return snapshot is null ? Array.Empty<string>() : RequiredRoles(snapshot);
+        return snapshot is null ? Array.Empty<string>() : RequiredRoles(snapshot, aliases);
     }
 
     /// <summary>
@@ -71,10 +77,12 @@ public static class WorkItemRoleRequirements
     /// <summary>
     /// Canonicalises and dedupes a snapshot's required roles. The admin endpoint already stores them
     /// canonical; re-normalising here covers snapshots written by hand, by a seed, or by an older
-    /// build.
+    /// build. Alias-resolved, so a policy saved as requiring <c>qa</c> before <c>qa</c> was folded into
+    /// <c>qa-owner</c> now requires the <c>qa-owner</c> — and a policy listing both requires it once.
     /// </summary>
-    public static IReadOnlyList<string> RequiredRoles(ResolvedPolicySnapshot snapshot)
+    public static IReadOnlyList<string> RequiredRoles(ResolvedPolicySnapshot snapshot, RoleAliasMap? aliases = null)
     {
+        aliases ??= RoleAliasMap.Empty;
         // An edge that creates no work items has nothing to require people on. Short-circuiting here
         // rather than at each caller is what keeps every surface consistent: the promotions list, the
         // promotion page, the queue rows and the work-item page all read their roles through this.
@@ -85,7 +93,7 @@ public static class WorkItemRoleRequirements
         var result = new List<string>(roles.Count);
         foreach (var role in roles)
         {
-            var canonical = RoleNormalizer.Normalize(role);
+            var canonical = aliases.Resolve(role);
             if (canonical.Length == 0 || !seen.Add(canonical)) continue;
             result.Add(canonical);
         }
@@ -101,14 +109,15 @@ public static class WorkItemRoleRequirements
     ///   <item>Promotion-level participants (<see cref="PromotionCandidate.Participants"/>) — for
     ///         any role not already resolved by the reference-level layer.</item>
     /// </list>
-    /// Each canonical role appears at most once.
+    /// Each canonical role appears at most once — after alias resolution, so a ticket carrying both
+    /// a <c>qa</c> and a <c>qa-owner</c> where one is the other's alias shows one QA owner, the first.
     /// </summary>
     public static IReadOnlyList<ParticipantDto> ResolveParticipants(
-        PromotionCandidate candidate, string workItemKey)
-        => ResolveParticipants(candidate.References, candidate.Participants, workItemKey);
+        PromotionCandidate candidate, string workItemKey, RoleAliasMap? aliases = null)
+        => ResolveParticipants(candidate.References, candidate.Participants, workItemKey, aliases);
 
     /// <summary>
-    /// <see cref="ResolveParticipants(PromotionCandidate, string)"/> over already-deserialised lists.
+    /// <see cref="ResolveParticipants(PromotionCandidate, string, RoleAliasMap?)"/> over already-deserialised lists.
     /// <see cref="PromotionCandidate.References"/> and <see cref="PromotionCandidate.Participants"/> parse
     /// their JSON column on every read, so callers walking several work items of one candidate (the
     /// promotions list, <see cref="Evaluate"/>) hoist the two reads out of the loop.
@@ -116,8 +125,10 @@ public static class WorkItemRoleRequirements
     public static IReadOnlyList<ParticipantDto> ResolveParticipants(
         IReadOnlyList<ReferenceDto> references,
         IReadOnlyList<PromotionParticipant> promotionParticipants,
-        string workItemKey)
+        string workItemKey,
+        RoleAliasMap? aliases = null)
     {
+        aliases ??= RoleAliasMap.Empty;
         var merged = new List<ParticipantDto>();
         var seenCanonical = new HashSet<string>(StringComparer.Ordinal);
 
@@ -129,7 +140,7 @@ public static class WorkItemRoleRequirements
         {
             foreach (var p in refParticipants)
             {
-                var canonical = RoleNormalizer.Normalize(p.Role);
+                var canonical = aliases.Resolve(p.Role);
                 if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
                 merged.Add(p);
             }
@@ -138,7 +149,7 @@ public static class WorkItemRoleRequirements
         // ── Layer 2: promotion-level participants for any role not yet covered ──
         foreach (var p in promotionParticipants)
         {
-            var canonical = RoleNormalizer.Normalize(p.Role);
+            var canonical = aliases.Resolve(p.Role);
             if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
             merged.Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
         }
@@ -150,18 +161,20 @@ public static class WorkItemRoleRequirements
     /// Which of <paramref name="requiredRoles"/> nobody holds on this work item, in the order the
     /// policy lists them. A role counts as filled only when a participant in it carries a non-empty
     /// email — a name with nobody reachable behind it isn't an owner, and it's the same bar the
-    /// assignee filter applies.
+    /// assignee filter applies. A participant in an alias of a required role fills it.
     /// </summary>
     public static List<string> MissingRoles(
-        IReadOnlyList<ParticipantDto> participants, IReadOnlyList<string> requiredRoles)
+        IReadOnlyList<ParticipantDto> participants, IReadOnlyList<string> requiredRoles,
+        RoleAliasMap? aliases = null)
     {
         if (requiredRoles.Count == 0) return new();
+        aliases ??= RoleAliasMap.Empty;
 
         var filled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in participants)
         {
             if (string.IsNullOrWhiteSpace(p.Email)) continue;
-            var canonical = RoleNormalizer.Normalize(p.Role);
+            var canonical = aliases.Resolve(p.Role);
             if (canonical.Length > 0) filled.Add(canonical);
         }
 
@@ -170,11 +183,12 @@ public static class WorkItemRoleRequirements
 
     /// <summary>Convenience overload for one work item of a candidate.</summary>
     public static List<string> MissingRoles(
-        PromotionCandidate candidate, string workItemKey, IReadOnlyList<string> requiredRoles)
-        => MissingRoles(ResolveParticipants(candidate, workItemKey), requiredRoles);
+        PromotionCandidate candidate, string workItemKey, IReadOnlyList<string> requiredRoles,
+        RoleAliasMap? aliases = null)
+        => MissingRoles(ResolveParticipants(candidate, workItemKey, aliases), requiredRoles, aliases);
 
     /// <summary>
-    /// <see cref="MissingRoles(IReadOnlyList{ParticipantDto}, IReadOnlyList{string})"/> with the
+    /// <see cref="MissingRoles(IReadOnlyList{ParticipantDto}, IReadOnlyList{string}, RoleAliasMap?)"/> with the
     /// decided rule applied: a work item somebody has already ruled on has no unfilled roles to
     /// report, whatever its participants say (see the type summary). Every read surface goes through
     /// this overload so none of them can drift back into warning about a settled ticket.
@@ -182,27 +196,28 @@ public static class WorkItemRoleRequirements
     public static List<string> MissingRoles(
         IReadOnlyList<ParticipantDto> participants,
         IReadOnlyList<string> requiredRoles,
-        bool decided)
-        => decided ? new() : MissingRoles(participants, requiredRoles);
+        bool decided,
+        RoleAliasMap? aliases = null)
+        => decided ? new() : MissingRoles(participants, requiredRoles, aliases);
 
     /// <summary>
     /// Every work item on the candidate that is missing at least one required role, deduped on key in
     /// reference order. Empty when the policy declares no required roles — which is the common case, so
     /// callers can render the whole "needs attention" affordance off <c>Count == 0</c>.
     /// </summary>
-    public static List<WorkItemRoleGap> Evaluate(PromotionCandidate candidate)
-        => Evaluate(candidate, decidedWorkItemKeys: null);
+    public static List<WorkItemRoleGap> Evaluate(PromotionCandidate candidate, RoleAliasMap? aliases = null)
+        => Evaluate(candidate, decidedWorkItemKeys: null, aliases);
 
     /// <summary>
-    /// <see cref="Evaluate(PromotionCandidate)"/> with the decided rule applied:
+    /// <see cref="Evaluate(PromotionCandidate, RoleAliasMap?)"/> with the decided rule applied:
     /// <paramref name="decidedWorkItemKeys"/> are the candidate's work items that already carry a
     /// decision, and they never appear as gaps (see the type summary). Callers that can see the
     /// decisions pass the set; the ones that can't pass <c>null</c> and get the raw completeness.
     /// </summary>
     public static List<WorkItemRoleGap> Evaluate(
-        PromotionCandidate candidate, IReadOnlySet<string>? decidedWorkItemKeys)
+        PromotionCandidate candidate, IReadOnlySet<string>? decidedWorkItemKeys, RoleAliasMap? aliases = null)
     {
-        var required = RequiredRoles(candidate);
+        var required = RequiredRoles(candidate, aliases);
         if (required.Count == 0) return new();
 
         // Both JSON columns are read once here rather than per work item — this runs for every row of
@@ -221,8 +236,8 @@ public static class WorkItemRoleRequirements
             // signed-off bundle costs nothing to evaluate.
             if (decidedWorkItemKeys is not null && decidedWorkItemKeys.Contains(key)) continue;
 
-            var participants = ResolveParticipants(references, promotionParticipants, key);
-            var missing = MissingRoles(participants, required);
+            var participants = ResolveParticipants(references, promotionParticipants, key, aliases);
+            var missing = MissingRoles(participants, required, aliases);
             if (missing.Count == 0) continue;
             // One line only here, so it's the ticket's name — not the commit subjects underneath it.
             gaps.Add(new WorkItemRoleGap(
@@ -237,3 +252,16 @@ public static class WorkItemRoleRequirements
 /// policy-required roles nobody holds on it.
 /// </summary>
 public record WorkItemRoleGap(string WorkItemKey, string? Title, IReadOnlyList<string> MissingRoles);
+
+/// <summary>
+/// What <see cref="PromotionService.AssignWorkItemsParticipantAsync"/> did, by work-item key:
+/// <see cref="Updated"/> changed, <see cref="Unchanged"/> already had exactly that (or, on a clear,
+/// nobody in the role), <see cref="Skipped"/> were left alone because they already had somebody and
+/// only gaps were asked for. <see cref="Role"/> is the role as stored — the canonical key when an
+/// alias was sent.
+/// </summary>
+public record WorkItemsAssignmentResult(
+    string Role,
+    IReadOnlyList<string> Updated,
+    IReadOnlyList<string> Unchanged,
+    IReadOnlyList<string> Skipped);

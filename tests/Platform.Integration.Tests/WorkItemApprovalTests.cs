@@ -2108,6 +2108,10 @@ public class WorkItemApprovalTests
 
         public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<GroupInfo>>(Array.Empty<GroupInfo>());
+
+        public Task<IReadOnlyList<UserInfo>> SearchUsersInGroups(
+            string query, IReadOnlyList<GroupInfo> groups, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
     }
 
     /// <summary>

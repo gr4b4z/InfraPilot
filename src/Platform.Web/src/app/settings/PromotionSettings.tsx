@@ -1,8 +1,7 @@
 import { Fragment, useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
-import { canonicaliseRoleKey } from '@/lib/roleKey';
+import { roleDisplay, useConfiguredRoles, useResolveRoleKey } from '@/lib/roleLabel';
 import {
   api,
   type PromotionPolicy,
@@ -213,7 +212,8 @@ function validateSteps(steps: PromotionPolicyStep[]): Record<string, string> {
  *
  * A role that was picked before an admin removed it from the vocabulary is still rendered — as its raw
  * canonical key — so an existing requirement can be seen and cleared instead of silently persisting
- * through every save.
+ * through every save. One picked under a name that has since become an alias (`qa`, folded into
+ * `qa-owner`) selects the role it names, which is what the server requires for it.
  */
 function RequiredRolesPicker({
   values,
@@ -226,18 +226,23 @@ function RequiredRolesPicker({
   disabled?: boolean;
 }) {
   const configured = useConfiguredRoles();
+  const resolve = useResolveRoleKey();
+  const selectedKeys = useMemo(() => new Set(values.map((v) => resolve(v))), [values, resolve]);
   const options = useMemo(() => {
     const out = configured.map((r) => ({ key: r.key, label: r.displayName, known: true }));
-    for (const v of values) {
-      const key = canonicaliseRoleKey(v);
+    for (const key of selectedKeys) {
       if (!key || out.some((o) => o.key === key)) continue;
       out.push({ key, label: key, known: false });
     }
     return out;
-  }, [configured, values]);
+  }, [configured, selectedKeys]);
 
+  // Matched through the aliases both ways, so turning a role off also drops a pick saved under one of
+  // its other names.
   const toggle = (key: string) => {
-    onChange(values.includes(key) ? values.filter((v) => v !== key) : [...values, key]);
+    onChange(
+      selectedKeys.has(key) ? values.filter((v) => resolve(v) !== key) : [...values, key],
+    );
   };
 
   if (options.length === 0) {
@@ -251,7 +256,7 @@ function RequiredRolesPicker({
   return (
     <div className="flex flex-wrap gap-1.5">
       {options.map((o) => {
-        const selected = values.includes(o.key);
+        const selected = selectedKeys.has(o.key);
         return (
           <button
             key={o.key}

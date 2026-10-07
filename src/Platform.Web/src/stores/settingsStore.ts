@@ -4,7 +4,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
 import { resolveEnvKey } from '@/lib/envAlias';
-import { canonicaliseRoleKey } from '@/lib/roleKey';
+import { canonicaliseRoleKey, resolveRoleKey } from '@/lib/roleKey';
 // Type-only import in envStage keeps this from being a runtime cycle.
 import { defaultStageRank } from '@/lib/envStage';
 
@@ -30,6 +30,13 @@ export interface RoleConfig {
   // backend normalises on write so this lookup is deterministic.
   key: string;
   displayName: string;
+  /** Other names producers send for this same role (Jira's `qa` for a `qa-owner`). Resolved on
+   *  read, server and client alike, so a participant sent under one fills, labels and is replaced
+   *  as this role. Stored canonicalised. */
+  aliases?: string[] | null;
+  /** Directory groups the assignment picker narrows this role to — anyone in any of them. Empty
+   *  means the whole directory. */
+  assigneeGroups?: { id: string; name: string }[] | null;
 }
 
 export interface ActivityTemplateLine {
@@ -159,10 +166,12 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Both sides are canonicalised before matching: participant roles reach the client as the
   // producer sent them ("QA", "triggeredBy") when role normalisation is switched off server-side,
   // and a configured entry should still label them rather than falling through to the humaniser.
+  // Alias-resolved too, so Jira's `qa` reads as "QA owner" once it is listed as that role's alias.
   getRoleDisplayName: (key) => {
     if (!key) return '';
-    const canonical = canonicaliseRoleKey(key);
-    const role = get().roles.find((r) => canonicaliseRoleKey(r.key) === canonical);
+    const roles = get().roles;
+    const canonical = resolveRoleKey(key, roles);
+    const role = roles.find((r) => canonicaliseRoleKey(r.key) === canonical);
     if (role) return role.displayName;
     return humaniseRoleKey(canonical || key);
   },
