@@ -47,6 +47,7 @@ import { PromotionRoute } from '@/components/promotions/PromotionRoute';
 import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
 import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { AssignToAllWorkItems } from '@/components/promotions/AssignToAllWorkItems';
 import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import {
   MissingRolesBadge,
@@ -2183,6 +2184,8 @@ function WorkItemsCard({
   workItems: PromotionSourceEventReference[];
   onChanged: () => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
+  const canManageWorkItems = useAuthStore((s) => !!(s.user?.isQA || s.user?.isAdmin));
   // Which work items have nobody in a role the policy requires, and which roles those are. Derived
   // server-side onto the candidate, so it is already right for items attached after the promotion was
   // created and after a policy edit re-gated it.
@@ -2231,7 +2234,16 @@ function WorkItemsCard({
         >
           <Ticket size={12} /> Work items ({workItems.length})
         </h2>
-        <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
+          {/* One person into a role on every work item at once — the per-row Assign, for the bundle. */}
+          <AssignToAllWorkItems
+            candidate={candidate}
+            workItems={workItems}
+            readOnly={readOnly}
+            onChanged={onChanged}
+          />
+        </div>
       </div>
 
       {/* Card-level notice: names the roles nobody is in, so the ask is legible without reading every
@@ -2240,7 +2252,11 @@ function WorkItemsCard({
         <div className="mb-3">
           <MissingRolesNotice
             roles={distinctMissingRoles}
-            action="Assign someone on the affected work items below."
+            action={
+              canManageWorkItems && !readOnly
+                ? 'Assign someone on the affected work items below, or use Assign to all.'
+                : 'Assign someone on the affected work items below.'
+            }
           />
         </div>
       )}

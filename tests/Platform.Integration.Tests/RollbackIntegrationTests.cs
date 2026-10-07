@@ -726,5 +726,9 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<GroupInfo>>(
                 [new GroupInfo(RollbackFactory.ApproverGroup, RollbackFactory.ApproverGroup)]);
+
+        public Task<IReadOnlyList<UserInfo>> SearchUsersInGroups(
+            string query, IReadOnlyList<GroupInfo> groups, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
     }
 }

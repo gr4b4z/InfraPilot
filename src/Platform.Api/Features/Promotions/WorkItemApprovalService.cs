@@ -50,6 +50,7 @@ public class WorkItemApprovalService
     private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<WorkItemApprovalService> _logger;
     private readonly IPlatformEventPublisher _events;
+    private readonly ParticipantRoleCatalog _roles;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -76,7 +77,8 @@ public class WorkItemApprovalService
         PromotionService promotion,
         UserPreferencesService userPrefs,
         ILogger<WorkItemApprovalService> logger,
-        IPlatformEventPublisher events)
+        IPlatformEventPublisher events,
+        ParticipantRoleCatalog roles)
     {
         _db = db;
         _auth = auth;
@@ -87,6 +89,7 @@ public class WorkItemApprovalService
         _userPrefs = userPrefs;
         _logger = logger;
         _events = events;
+        _roles = roles;
     }
 
     // ---------------------------------------------------------------------
@@ -609,6 +612,10 @@ public class WorkItemApprovalService
         var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
             queueCandidates.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct);
 
+        // Role aliases, so a ticket whose QA owner arrived as `qa` counts as having one for the
+        // completeness check, the role narrowings and the person filter alike.
+        var aliases = await _roles.MapAsync(ct);
+
         // Index work-items by their candidate for fast lookup.
         var workItemsByCandidate = workItems
             .GroupBy(w => w.CandidateId)
@@ -657,7 +664,7 @@ public class WorkItemApprovalService
 
             // Roles the policy says every work item on this candidate must have somebody in. Read from
             // the snapshot we already deserialised, so the per-row completeness check costs nothing.
-            var requiredRoles = WorkItemRoleRequirements.RequiredRoles(snapshot);
+            var requiredRoles = WorkItemRoleRequirements.RequiredRoles(snapshot, aliases);
             var requiredRoleSet = requiredRoles.Count == 0
                 ? null
                 : new HashSet<string>(requiredRoles, StringComparer.OrdinalIgnoreCase);
@@ -684,9 +691,9 @@ public class WorkItemApprovalService
 
                 // The people on THIS work item — its own reference participants, with the
                 // promotion-level fallback — which is exactly what the row shows.
-                var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
+                var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey, aliases);
                 // Any role counts as an assignment — see AssignableParticipants.
-                var ticketAssignees = AssignableParticipants(ticketParticipants, roleSet: null);
+                var ticketAssignees = AssignableParticipants(ticketParticipants, roleSet: null, aliases);
 
                 // Update the assignee summary BEFORE narrowing — computed against the unfiltered
                 // authorized list. Only people in a role this item's policy REQUIRES count: the
@@ -695,7 +702,7 @@ public class WorkItemApprovalService
                 // requires no roles contributes nobody. Dedupe per (email, role) within the item.
                 var rollupAssignees = requiredRoleSet is null
                     ? new List<MergedParticipant>()
-                    : AssignableParticipants(ticketParticipants, requiredRoleSet);
+                    : AssignableParticipants(ticketParticipants, requiredRoleSet, aliases);
                 var seenOnItem = new HashSet<(string Email, string Role)>();
                 foreach (var p in rollupAssignees)
                 {
@@ -719,7 +726,7 @@ public class WorkItemApprovalService
                 // An item somebody has already ruled on reports none: the warning asks for an
                 // assignment, and the sign-off it was waiting for has happened.
                 var missingRoles = WorkItemRoleRequirements.MissingRoles(
-                    ticketParticipants, requiredRoles, decided: decidedByAnyone.Contains(tup));
+                    ticketParticipants, requiredRoles, decided: decidedByAnyone.Contains(tup), aliases);
 
                 // "Not assigned": at least one role the policy requires has nobody in it. Decided
                 // items are excluded by the empty missingRoles above.
@@ -744,7 +751,7 @@ public class WorkItemApprovalService
                     // Under roleRequirement=Assigned, narrow to the policy-required roles; otherwise
                     // every named person counts (ticketAssignees is already the any-role set).
                     var inMatchRoles = matchRoleSet is not null
-                        ? AssignableParticipants(ticketParticipants, matchRoleSet)
+                        ? AssignableParticipants(ticketParticipants, matchRoleSet, aliases)
                         : ticketAssignees;
 
                     bool keep;
@@ -904,6 +911,7 @@ public class WorkItemApprovalService
         var overall = await WorkItemOverallStatus.LoadAsync(_db,
             approvals.Select(a => new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv)), ct);
 
+        var aliases = await _roles.MapAsync(ct);
         var result = new List<PendingTicketView>();
         foreach (var a in approvals)
         {
@@ -924,14 +932,14 @@ public class WorkItemApprovalService
             // Participants (best-effort — only meaningful when we have a candidate).
             IReadOnlyList<ParticipantDto> ticketParticipants = c2 is null
                 ? Array.Empty<ParticipantDto>()
-                : GetWorkItemParticipants(c2, a.WorkItemKey);
+                : GetWorkItemParticipants(c2, a.WorkItemKey, aliases);
 
             // The roles the item's policy asks for, for the row's own reporting. No missing ones are
             // reported on this path: every row here IS a decision, and a ruled-on item is not waiting
             // for anybody to be assigned (see WorkItemRoleRequirements).
             var requiredRoles = c2 is null
                 ? Array.Empty<string>()
-                : WorkItemRoleRequirements.RequiredRoles(c2);
+                : WorkItemRoleRequirements.RequiredRoles(c2, aliases);
 
             result.Add(new PendingTicketView(
                 WorkItemKey: a.WorkItemKey,
@@ -956,7 +964,7 @@ public class WorkItemApprovalService
                 CandidateStatus: c2?.Status.ToString() ?? "Unknown",
                 RequiredRoles: requiredRoles,
                 MissingRoles: WorkItemRoleRequirements.MissingRoles(
-                    ticketParticipants, requiredRoles, decided: true),
+                    ticketParticipants, requiredRoles, decided: true, aliases),
                 Decision: a.Decision.ToString(),
                 DecidedAt: a.CreatedAt,
                 DecidedByEmail: a.ApproverEmail,
@@ -1053,8 +1061,9 @@ public class WorkItemApprovalService
         // what the assign control can actually fill. Once anybody has ruled on the item there is
         // nothing to ask for: the page keeps its Assign controls but stops warning
         // (see WorkItemRoleRequirements).
-        var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key);
-        var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary);
+        var aliases = await _roles.MapAsync(ct);
+        var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key, aliases);
+        var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary, aliases);
         var decided = ctx.Approvals.Count > 0;
 
         return new WorkItemDetail(
@@ -1081,7 +1090,7 @@ public class WorkItemApprovalService
             MyDecision: ctx.MyDecision,
             Participants: participants,
             RequiredRoles: requiredRoles,
-            MissingRoles: WorkItemRoleRequirements.MissingRoles(participants, requiredRoles, decided),
+            MissingRoles: WorkItemRoleRequirements.MissingRoles(participants, requiredRoles, decided, aliases),
             Approvals: ctx.Approvals,
             Comments: comments,
             Commits: commits,
@@ -1562,8 +1571,8 @@ public class WorkItemApprovalService
     /// read on every row of the queue and the shared name reads less clearly at those call sites.
     /// </summary>
     private static IReadOnlyList<ParticipantDto> GetWorkItemParticipants(
-        PromotionCandidate candidate, string workItemKey)
-        => WorkItemRoleRequirements.ResolveParticipants(candidate, workItemKey);
+        PromotionCandidate candidate, string workItemKey, RoleAliasMap aliases)
+        => WorkItemRoleRequirements.ResolveParticipants(candidate, workItemKey, aliases);
 
     /// <summary>
     /// Narrows a work item's effective participants (see
@@ -1582,13 +1591,15 @@ public class WorkItemApprovalService
     /// them: a policy that requires a role is asking for somebody in it, whatever it is called.</para>
     /// </summary>
     private static List<MergedParticipant> AssignableParticipants(
-        IReadOnlyList<ParticipantDto> participants, HashSet<string>? roleSet)
+        IReadOnlyList<ParticipantDto> participants, HashSet<string>? roleSet, RoleAliasMap aliases)
     {
         var result = new List<MergedParticipant>();
 
         foreach (var p in participants)
         {
-            var canon = RoleNormalizer.Normalize(p.Role);
+            // Alias-resolved, so the assignee summary reports a `qa` participant under the role it
+            // names and the person dropdown built from it filters to something.
+            var canon = aliases.Resolve(p.Role);
             if (canon.Length == 0) continue;
             if (roleSet is null ? PipelineMetadataRoles.Contains(canon) : !roleSet.Contains(canon)) continue;
             if (string.IsNullOrEmpty(p.Email)) continue;

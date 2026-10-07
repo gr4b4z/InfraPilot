@@ -55,7 +55,8 @@ public class PromotionCancelApprovalTests : IDisposable
             TestOptions.Normalization(),
             TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
-            TestProductOverrides.For(_db));
+            TestProductOverrides.For(_db),
+            TestRoleCatalog.For(_db));
     }
 
     public void Dispose() => _db.Dispose();
