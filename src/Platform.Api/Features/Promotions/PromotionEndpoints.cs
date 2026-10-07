@@ -41,6 +41,7 @@ public static class PromotionEndpoints
             PromotionService svc,
             PlatformDbContext db,
             EnvironmentAliasResolver environments,
+            ParticipantRoleCatalog roleCatalog,
             string? status,
             string? product,
             string? service,
@@ -119,6 +120,7 @@ public static class PromotionEndpoints
             var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
             var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
+            var roleAliases = await roleCatalog.MapAsync();
 
             return Results.Ok(new
             {
@@ -138,14 +140,15 @@ public static class PromotionEndpoints
                         fromVersion: target.Baseline,
                         sourceBranch: sourceBranch,
                         decidedWorkItemKeys: decidedKeys,
-                        gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None));
+                        gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None),
+                        roleAliases: roleAliases);
                 }),
             });
         });
 
         // Single candidate — includes the full approval trail for the detail view.
         group.MapGet("/{id:guid}", async (
-            PromotionService svc, PlatformDbContext db, Guid id) =>
+            PromotionService svc, PlatformDbContext db, ParticipantRoleCatalog roleCatalog, Guid id) =>
         {
             var c = await svc.GetByIdAsync(id);
             if (c is null) return Results.NotFound();
@@ -248,7 +251,8 @@ public static class PromotionEndpoints
                     targetCurrentVersion: target.Current,
                     fromVersion: target.Baseline,
                     sourceBranch: sourceBranch,
-                    decidedWorkItemKeys: decidedWorkItems),
+                    decidedWorkItemKeys: decidedWorkItems,
+                    roleAliases: await roleCatalog.MapAsync()),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -299,10 +303,18 @@ public static class PromotionEndpoints
         // User search for the assign-participant picker. Proxies to IIdentityService — hits Entra
         // Graph when configured, falls back to local users otherwise. Returns empty list for
         // short queries so we don't flood Graph on every keystroke.
+        //
+        // `role` names the participant role the person is being picked for. When an admin restricted
+        // that role to directory groups (Settings → Participant Roles → Assignee groups, resolved
+        // through the role's aliases) only their members are returned, and `restrictedTo` names the
+        // groups so the picker can say why someone is missing. No role, or a role without groups,
+        // searches the whole directory as before.
         group.MapGet("/users/search", async (
             IIdentityService identity,
+            ParticipantRoleCatalog roleCatalog,
             ILoggerFactory loggerFactory,
             string? q,
+            string? role,
             CancellationToken ct) =>
         {
             var log = loggerFactory.CreateLogger("PromotionEndpoints.UserSearch");
@@ -310,19 +322,27 @@ public static class PromotionEndpoints
             // Sanitise any user-provided value before logging — strips CR/LF and other control
             // characters so a crafted query string can't inject fake log lines (log forging).
             var loggableQuery = SanitizeForLog(query);
+            var groups = string.IsNullOrWhiteSpace(role)
+                ? Array.Empty<GroupRef>()
+                : await roleCatalog.GetAssigneeGroupsAsync(role, ct);
+            var restrictedTo = groups.Select(g => new { id = g.Id, name = g.Name }).ToList();
+
             if (query.Length < 2)
             {
                 log.LogInformation("User search skipped (query too short, length={Length})", query.Length);
-                return Results.Ok(new { users = Array.Empty<object>() });
+                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo });
             }
 
             log.LogInformation(
-                "User search started (provider={Provider}, query='{Query}')",
-                identity.GetType().Name, loggableQuery);
+                "User search started (provider={Provider}, query='{Query}', groups={GroupCount})",
+                identity.GetType().Name, loggableQuery, groups.Count);
 
             try
             {
-                var users = await identity.SearchUsers(query, ct);
+                var users = groups.Count == 0
+                    ? await identity.SearchUsers(query, ct)
+                    : await identity.SearchUsersInGroups(
+                        query, groups.Select(g => new GroupInfo(g.Id, g.Name)).ToList(), ct);
                 log.LogInformation(
                     "User search returned {Count} result(s) for query '{Query}' via {Provider}",
                     users.Count, loggableQuery, identity.GetType().Name);
@@ -335,6 +355,7 @@ public static class PromotionEndpoints
                         displayName = u.DisplayName,
                         email = u.Email,
                     }),
+                    restrictedTo,
                 });
             }
             catch (Exception ex)
@@ -344,7 +365,7 @@ public static class PromotionEndpoints
                 log.LogWarning(ex,
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
-                return Results.Ok(new { users = Array.Empty<object>() });
+                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo });
             }
         });
 
@@ -465,6 +486,46 @@ public static class PromotionEndpoints
                     : new ParticipantDto(body.Role, body.Assignee.DisplayName, body.Assignee.Email);
                 var participants = await svc.UpsertReferenceParticipantAsync(id, referenceKey, body.Role, assignee);
                 return Results.Ok(new { participants });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        // The same assignment on every work item of the candidate at once — the promotion page's
+        // "Assign to all". Body: { role, assignee: { email, displayName } | null, onlyMissing? }.
+        // Writes reference-level participants, so it replaces whoever each ticket had in the role
+        // (aliases included) rather than sitting underneath them the way a promotion-level participant
+        // does. `onlyMissing` leaves tickets that already have somebody in the role alone. Same role
+        // and permission rules as the per-reference route above.
+        group.MapPatch("/{id:guid}/work-items/participants", async (
+            PromotionService svc, ParticipantRoleCatalog roleCatalog,
+            Guid id, AssignWorkItemsParticipantRequest body) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Role))
+                return Results.BadRequest(new { error = "role is required" });
+            if (body.Assignee is not null && !await roleCatalog.IsConfiguredAsync(body.Role))
+            {
+                return Results.BadRequest(new
+                {
+                    error = ParticipantRoleCatalog.RejectionMessage(
+                        body.Role, await roleCatalog.GetCanonicalKeysAsync()),
+                });
+            }
+            try
+            {
+                var assignee = body.Assignee is null
+                    ? null
+                    : new ParticipantDto(body.Role, body.Assignee.DisplayName, body.Assignee.Email);
+                var result = await svc.AssignWorkItemsParticipantAsync(
+                    id, body.Role, assignee, body.OnlyMissing ?? false);
+                return Results.Ok(new
+                {
+                    role = result.Role,
+                    updated = result.Updated,
+                    unchanged = result.Unchanged,
+                    skipped = result.Skipped,
+                });
             }
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
@@ -874,7 +935,11 @@ public static class PromotionEndpoints
         // Which approval gates the candidate is still waiting on — see PromotionGateStatus. Supplied
         // by the list, which computes it for every row in one batch; null everywhere else, and read
         // as "nothing outstanding" rather than fetched per candidate.
-        PromotionGateStatus? gateStatus = null) => new
+        PromotionGateStatus? gateStatus = null,
+        // The configured role vocabulary, so completeness counts a participant sent under an alias
+        // (`qa`) as the role it names (`qa-owner`). Null ⇒ plain canonicalisation; the read paths that
+        // render completeness (list, detail) always supply it.
+        RoleAliasMap? roleAliases = null) => new
     {
         id = c.Id,
         product = c.Product,
@@ -943,8 +1008,8 @@ public static class PromotionEndpoints
         // (see WorkItemRoleRequirements) — automatically correct after a late work-item attachment, a
         // reassignment, or a policy edit. Work items already signed off are not reported: the gap
         // asks for somebody to be assigned, and a decided item is past that.
-        requiredWorkItemRoles = WorkItemRoleRequirements.RequiredRoles(c),
-        workItemRoleGaps = WorkItemRoleRequirements.Evaluate(c, decidedWorkItemKeys).Select(g => new
+        requiredWorkItemRoles = WorkItemRoleRequirements.RequiredRoles(c, roleAliases),
+        workItemRoleGaps = WorkItemRoleRequirements.Evaluate(c, decidedWorkItemKeys, roleAliases).Select(g => new
         {
             workItemKey = g.WorkItemKey,
             title = g.Title,
@@ -1083,7 +1148,7 @@ public static class PromotionEndpoints
     /// The work items already ruled on, per <c>(product, service, targetEnv)</c> — the grain a
     /// work-item decision keys on, and therefore shared by every candidate of that service on the
     /// same edge. Feeds
-    /// <see cref="WorkItemRoleRequirements.Evaluate(PromotionCandidate, IReadOnlySet{string})"/>, which
+    /// <see cref="WorkItemRoleRequirements.Evaluate(PromotionCandidate, IReadOnlySet{string}?, RoleAliasMap?)"/>, which
     /// drops a decided item from the "needs attention" gaps: the affordance asks for an assignment,
     /// and a signed-off item is past needing one.
     ///
@@ -1193,4 +1258,10 @@ public record UpsertParticipantRequest(string? Role, string? DisplayName, string
 /// <c>Assignee</c> clears the given role on that reference.</summary>
 public record AssignReferenceParticipantRequest(string? Role, AssignReferenceParticipantTarget? Assignee);
 public record AssignReferenceParticipantTarget(string? Email, string? DisplayName);
+
+/// <summary>Body for assigning one participant to every work item of a candidate at once. A null
+/// <c>Assignee</c> clears the role everywhere; <c>OnlyMissing</c> skips tickets that already have
+/// somebody in it.</summary>
+public record AssignWorkItemsParticipantRequest(
+    string? Role, AssignReferenceParticipantTarget? Assignee, bool? OnlyMissing);
 public record CommentRequest(string? Body);

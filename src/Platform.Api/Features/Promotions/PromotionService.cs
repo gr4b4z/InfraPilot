@@ -38,6 +38,7 @@ public class PromotionService
     private readonly EnvironmentAliasResolver _environments;
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceProductOverrideService _productOverrides;
+    private readonly ParticipantRoleCatalog _roles;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -72,7 +73,8 @@ public class PromotionService
         IOptionsMonitor<NormalizationOptions> normalization,
         EnvironmentAliasResolver environments,
         UserPreferencesService userPrefs,
-        ServiceProductOverrideService productOverrides)
+        ServiceProductOverrideService productOverrides,
+        ParticipantRoleCatalog roles)
     {
         _db = db;
         _resolver = resolver;
@@ -84,6 +86,7 @@ public class PromotionService
         _environments = environments;
         _userPrefs = userPrefs;
         _productOverrides = productOverrides;
+        _roles = roles;
         _logger = logger;
     }
 
@@ -826,8 +829,9 @@ public class PromotionService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Adds or replaces a participant on the candidate keyed by role (case-insensitive). Raises
-    /// <c>promotion.updated</c>. Role is trimmed; display casing is preserved on the stored record.
+    /// Adds or replaces a participant on the candidate keyed by role (case-insensitive, alias-aware).
+    /// Raises <c>promotion.updated</c>. Role is trimmed; display casing is preserved on the stored
+    /// record, except that a role given as an alias is stored as the role it names.
     /// </summary>
     public async Task<PromotionCandidate> UpsertParticipantAsync(
         Guid candidateId, PromotionParticipant participant, CancellationToken ct = default)
@@ -835,18 +839,23 @@ public class PromotionService
         // Storage-time canonicalisation is opt-in via `Normalization:Roles` in appsettings.
         // Dedupe, however, is always done on the normalised key so that "QA" and "qa" don't
         // end up as two participants on the same candidate regardless of the policy.
-        var storedRole = _normalization.CurrentValue.ApplyRole(participant.Role);
+        var aliases = await _roles.MapAsync(ct);
+        var storedRole = ConvergeRole(_normalization.CurrentValue.ApplyRole(participant.Role), aliases);
         if (string.IsNullOrEmpty(storedRole))
             throw new InvalidOperationException("Participant role is required");
-        var canonicalKey = RoleNormalizer.Normalize(storedRole);
+        var canonicalKey = aliases.Resolve(storedRole);
 
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
 
         var list = candidate.Participants;
-        var idx = list.FindIndex(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        var idx = list.FindIndex(p => aliases.Resolve(p.Role) == canonicalKey);
         var entry = new PromotionParticipant(storedRole, participant.DisplayName, participant.Email);
-        if (idx >= 0) list[idx] = entry; else list.Add(entry);
+        // Every entry the role resolves to goes, not just the first: a candidate ingested with both a
+        // "qa" and a "qa-owner" keeps one person in the role once "qa" is the other's alias. Nothing
+        // before idx matches, so it is still the replaced entry's position.
+        list.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
+        if (idx >= 0) list.Insert(idx, entry); else list.Add(entry);
         candidate.Participants = list;
 
         var who = entry.DisplayName ?? entry.Email ?? "(unnamed)";
@@ -872,15 +881,16 @@ public class PromotionService
     public async Task<PromotionCandidate> RemoveParticipantAsync(
         Guid candidateId, string role, CancellationToken ct = default)
     {
-        // Match on the normalised key regardless of how roles are stored so the caller can
-        // pass "QA", "qa", or "qa-lead" interchangeably.
-        var canonicalKey = RoleNormalizer.Normalize(role);
+        // Match on the normalised, alias-resolved key regardless of how roles are stored so the
+        // caller can pass "QA", "qa", or "qa-lead" interchangeably.
+        var aliases = await _roles.MapAsync(ct);
+        var canonicalKey = aliases.Resolve(role);
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
 
         var list = candidate.Participants;
         var before = list.Count;
-        list.RemoveAll(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        list.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
         if (list.Count == before) return candidate;
 
         candidate.Participants = list;
@@ -903,7 +913,9 @@ public class PromotionService
     /// work-item <b>reference</b> of a candidate — this is what the work-items queue's "Assign"
     /// action writes to. Candidates are self-contained (there is no deploy event to override), so the
     /// assignment lives directly on the candidate's <c>References[key].Participants</c>, which is
-    /// exactly what <c>GetWorkItemParticipants</c> reads back. Dedupe is on the normalised role.
+    /// exactly what <c>GetWorkItemParticipants</c> reads back. Dedupe is on the normalised,
+    /// alias-resolved role, so assigning a QA owner replaces a <c>qa</c> the ticket arrived with once
+    /// <c>qa</c> is an alias of <c>qa-owner</c>, and the new entry is stored under the canonical key.
     /// Returns the reference's updated participant list.
     /// </summary>
     public async Task<IReadOnlyList<ParticipantDto>> UpsertReferenceParticipantAsync(
@@ -914,10 +926,11 @@ public class PromotionService
         if (!(_currentUser.IsQA || _currentUser.IsAdmin))
             throw new UnauthorizedAccessException("Assigning work-item participants requires the QA or Admin role");
 
-        var storedRole = _normalization.CurrentValue.ApplyRole(role);
+        var aliases = await _roles.MapAsync(ct);
+        var storedRole = ConvergeRole(_normalization.CurrentValue.ApplyRole(role), aliases);
         if (string.IsNullOrEmpty(storedRole))
             throw new InvalidOperationException("Participant role is required");
-        var canonicalKey = RoleNormalizer.Normalize(storedRole);
+        var canonicalKey = aliases.Resolve(storedRole);
 
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
@@ -931,7 +944,7 @@ public class PromotionService
                 $"Work-item reference '{referenceKey}' not found on candidate {candidateId}");
 
         var participants = (refs[idx].Participants ?? new List<ParticipantDto>()).ToList();
-        participants.RemoveAll(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        participants.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
         if (assignee is not null)
             participants.Add(new ParticipantDto(storedRole, assignee.DisplayName, assignee.Email));
 
@@ -963,6 +976,141 @@ public class PromotionService
             });
 
         return participants;
+    }
+
+    /// <summary>
+    /// <see cref="UpsertReferenceParticipantAsync"/> for every work item on the candidate in one write
+    /// — the promotion page's "Assign to all". Each work-item reference gets <paramref name="assignee"/>
+    /// in <paramref name="role"/>, replacing whoever it had there (aliases included); a null assignee
+    /// clears the role everywhere.
+    ///
+    /// <para>Reference-level on purpose. A promotion-level participant only fills a role a ticket
+    /// doesn't already have (see <see cref="WorkItemRoleRequirements.ResolveParticipants(PromotionCandidate, string, RoleAliasMap?)"/>),
+    /// so it cannot <i>update</i> one: the ticket that arrived with the wrong QA owner would keep
+    /// them.</para>
+    ///
+    /// <para><paramref name="onlyMissing"/> skips tickets that already have somebody reachable in the
+    /// role — on the ticket or through a promotion-level participant — which is the "fill the gaps"
+    /// variant. Tickets already holding exactly this person are left alone and reported as unchanged,
+    /// so the system comment, audit row and webhook describe only what moved. One comment, one audit
+    /// row and one <c>promotion.updated</c> for the whole batch; nothing is written when nothing
+    /// changes.</para>
+    /// </summary>
+    public async Task<WorkItemsAssignmentResult> AssignWorkItemsParticipantAsync(
+        Guid candidateId, string role, ParticipantDto? assignee, bool onlyMissing, CancellationToken ct = default)
+    {
+        // Same jurisdiction as the per-reference assignment.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Assigning work-item participants requires the QA or Admin role");
+
+        var aliases = await _roles.MapAsync(ct);
+        var storedRole = ConvergeRole(_normalization.CurrentValue.ApplyRole(role), aliases);
+        if (string.IsNullOrEmpty(storedRole))
+            throw new InvalidOperationException("Participant role is required");
+        var canonicalKey = aliases.Resolve(storedRole);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var refs = candidate.References;
+        var promotionParticipants = candidate.Participants;
+        var updated = new List<string>();
+        var unchanged = new List<string>();
+        var skipped = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < refs.Count; i++)
+        {
+            var reference = refs[i];
+            if (!string.Equals(reference.Type, "work-item", StringComparison.OrdinalIgnoreCase)) continue;
+            var key = (reference.Key ?? "").Trim();
+            // First entry per key, the one the per-reference route writes and the readers resolve.
+            if (key.Length == 0 || !seen.Add(key)) continue;
+
+            var participants = (reference.Participants ?? new List<ParticipantDto>()).ToList();
+            var inRole = participants.Where(p => aliases.Resolve(p.Role) == canonicalKey).ToList();
+
+            if (assignee is null)
+            {
+                if (inRole.Count == 0) { unchanged.Add(key); continue; }
+            }
+            else
+            {
+                if (onlyMissing)
+                {
+                    var effective = WorkItemRoleRequirements.ResolveParticipants(
+                        refs, promotionParticipants, key, aliases);
+                    if (WorkItemRoleRequirements.MissingRoles(effective, [canonicalKey], aliases).Count == 0)
+                    {
+                        skipped.Add(key);
+                        continue;
+                    }
+                }
+                if (inRole.Count == 1
+                    && string.Equals(inRole[0].Role, storedRole, StringComparison.Ordinal)
+                    && string.Equals(inRole[0].Email?.Trim(), assignee.Email?.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    unchanged.Add(key);
+                    continue;
+                }
+            }
+
+            participants.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
+            if (assignee is not null)
+                participants.Add(new ParticipantDto(storedRole, assignee.DisplayName, assignee.Email));
+            refs[i] = reference with { Participants = participants };
+            updated.Add(key);
+        }
+
+        var result = new WorkItemsAssignmentResult(storedRole, updated, unchanged, skipped);
+        if (updated.Count == 0) return result;
+
+        candidate.References = refs;
+        var keyList = updated.Count <= 10
+            ? string.Join(", ", updated)
+            : string.Join(", ", updated.Take(10)) + $" and {updated.Count - 10} more";
+        var items = updated.Count == 1 ? "work item" : $"{updated.Count} work items";
+        StageSystemComment(candidate.Id, assignee is null
+            ? $"{Actor} cleared the {storedRole} on {items}: {keyList}."
+            : $"{Actor} assigned {assignee.DisplayName ?? assignee.Email ?? "(unnamed)"} "
+              + $"as {storedRole} on {items}: {keyList}.");
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions",
+            assignee is null
+                ? "promotion.work-items.participant.removed"
+                : "promotion.work-items.participant.upserted",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                referenceKeys = updated, role = storedRole, canonicalKey, onlyMissing,
+                assignee?.DisplayName, assignee?.Email,
+            });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new
+            {
+                changeType = assignee is null ? "work-items.participant.removed" : "work-items.participant.upserted",
+                referenceKeys = updated,
+                role = storedRole,
+            });
+
+        return result;
+    }
+
+    /// <summary>
+    /// The role to store for one a caller supplied: unchanged, unless it is an alias, in which case
+    /// the role it names. Manual writes converge on the canonical key so the data stops carrying two
+    /// names for one role; ingest is never routed through here.
+    /// </summary>
+    private static string ConvergeRole(string storedRole, RoleAliasMap aliases)
+    {
+        if (string.IsNullOrEmpty(storedRole)) return storedRole;
+        var resolved = aliases.Resolve(storedRole);
+        return resolved == RoleNormalizer.Normalize(storedRole) ? storedRole : resolved;
     }
 
     /// <summary>
