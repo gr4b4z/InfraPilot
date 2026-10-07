@@ -6,6 +6,7 @@ import { resolveReferenceHref } from '@/lib/refUrl';
 import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
 import { WorkItemsNeedingAttentionBadge } from '@/components/promotions/MissingRoles';
 import { BulkApprovalEffectLine } from '@/components/promotions/ApprovalEffect';
+import { MassApproveDialog } from '@/components/promotions/MassApproveDialog';
 import { approvalDeploys } from '@/lib/approvalEffect';
 import {
   readEnumPref,
@@ -61,6 +62,7 @@ import {
   Filter,
   ShieldCheck,
   Lock,
+  ListChecks,
 } from 'lucide-react';
 import { HelpButton } from '@/components/guide/HelpButton';
 
@@ -320,6 +322,7 @@ export function PromotionsPage() {
   }>({ products: [], targetEnvs: [], gates: [] });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [massApproveOpen, setMassApproveOpen] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
   // Cookie-persisted so the tab you work from is the tab you come back to — unless a link named one.
   const [view, setView] = useState<PromotionView>(initial.view);
@@ -835,6 +838,16 @@ export function PromotionsPage() {
     }
   };
 
+  // After a mass approval (or bypass) the same re-read as after a bulk approve: approved rows have left
+  // Pending, signed-but-waiting rows have fewer gates, and the user's task counters are stale.
+  const handleMassApproveApplied = () => {
+    setSelected(new Set());
+    fetchData({ silent: true });
+    fetchAwaitingDeploy({ silent: true });
+    refreshLazySets();
+    refreshMyTasks();
+  };
+
   const handleBulkApprove = async () => {
     if (selected.size === 0) return;
     setBulkLoading(true);
@@ -857,8 +870,9 @@ export function PromotionsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+      {/* Header. Wraps on a phone: three actions beside the title don't fit in 375px, and the row
+          below is a better home for them than a sideways-scrolling page. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div>
           <div className="flex items-center gap-1">
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
@@ -879,6 +893,25 @@ export function PromotionsPage() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* Release night: one gate, one environment, dozens of promotions. The dialog is where that
+              is a single decision rather than forty trips through the detail page. Offered to everyone
+              — whether a row is yours to sign is a per-row answer the dialog shows, and an admin gets
+              bypass there too. */}
+          <button
+            type="button"
+            onClick={() => setMassApproveOpen(true)}
+            data-guide-anchor="promotions-mass-approve"
+            className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
+            style={{
+              borderColor: 'var(--success)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--success)',
+            }}
+            title="Approve one gate on many promotions to an environment at once"
+          >
+            <ListChecks size={12} />
+            Mass approve
+          </button>
           {/* The audit page answers the questions this list can't: what already happened, and who did
               it. Linked from here because that is where somebody stands when they think to ask — and
               it carries the current product/service/env narrowing across, so the question stays
@@ -905,6 +938,16 @@ export function PromotionsPage() {
           <CopyViewLinkButton params={currentParams()} />
         </div>
       </div>
+
+      {massApproveOpen && (
+        <MassApproveDialog
+          isAdmin={isAdmin}
+          initialTargetEnv={targetEnvFilter || undefined}
+          initialGate={gateFilter || undefined}
+          onClose={() => setMassApproveOpen(false)}
+          onApplied={handleMassApproveApplied}
+        />
+      )}
 
       {/* Secondary filters */}
       <FilterPanel

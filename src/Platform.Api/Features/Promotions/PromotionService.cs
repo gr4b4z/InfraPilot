@@ -1441,6 +1441,75 @@ public class PromotionService
     }
 
     /// <summary>
+    /// Approves one named gate ("Release Approval") on a candidate: records the current user's approval
+    /// on every requirement of that approval step they are eligible for and that is still open. Mass
+    /// approve calls it per row. Somebody signing off a release across an environment approves "the
+    /// Release Approval gate", not one specific requirement, so the caller names the gate and the
+    /// requirements follow.
+    ///
+    /// <para>Each requirement goes through <see cref="ApproveAsync"/>, so the guards are the same ones a
+    /// single approval meets: the work-item gate, the legacy-decision rule, the audit row and the
+    /// re-evaluation that may flip the candidate to Approved. It stops early once the candidate leaves
+    /// Pending. A gate the user has nothing left to sign on throws with the reason. The bulk endpoint
+    /// reports that reason per row.</para>
+    /// </summary>
+    /// <returns>The candidate after the last approval, and the requirements approved, in policy order.</returns>
+    public async Task<GateApprovalResult> ApproveGateAsync(
+        Guid candidateId, string gate, string? comment, CancellationToken ct = default)
+    {
+        var gateName = (gate ?? "").Trim();
+        if (gateName.Length == 0)
+            throw new ArgumentException("Name the gate to approve.", nameof(gate));
+
+        var candidate = await LoadPendingAsync(candidateId, ct);
+        var snapshot = ReadSnapshot(candidate);
+        var gateRequirements = snapshot.ApprovalSteps
+            .Where(s => string.Equals(StepDisplayName(s), gateName, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(s => s.Requirements)
+            .ToList();
+        if (gateRequirements.Count == 0)
+            throw new InvalidOperationException($"This promotion has no '{gateName}' gate.");
+
+        var targets = (await GetEligibleRequirementsAsync(candidate, ct))
+            .Where(r => string.Equals(GateName(r.StepName), gateName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (targets.Count == 0)
+        {
+            // Nothing of this gate is left for this user. Say which of the three it is, most specific
+            // first.
+            var authorized = false;
+            foreach (var req in gateRequirements)
+            {
+                if (!await _auth.IsAuthorizedForRequirementAsync(req, _currentUser.Email, ct)) continue;
+                authorized = true;
+                break;
+            }
+            if (!authorized)
+                throw new UnauthorizedAccessException($"You are not an approver for '{gateName}' on this promotion.");
+
+            var mine = await LoadMyDecisionsAsync(candidateId, ct);
+            if (mine.Any(d => d.StepName is null && d.RequirementName is null))
+                throw new InvalidOperationException("You have already made a decision on this promotion");
+            if (mine.Any(d => d.Decision == PromotionDecision.Approved
+                              && string.Equals(GateName(d.StepName), gateName, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"You have already approved '{gateName}' on this promotion.");
+            throw new RequirementAlreadySatisfiedException(
+                $"'{gateName}' is already satisfied — nothing to approve there.");
+        }
+
+        var approved = new List<RequirementRef>();
+        foreach (var target in targets)
+        {
+            candidate = await ApproveAsync(candidateId, comment, target.StepName, target.RequirementName, ct);
+            approved.Add(target);
+            if (candidate.Status != PromotionStatus.Pending) break;
+        }
+
+        return new GateApprovalResult(candidate, approved);
+    }
+
+    /// <summary>
     /// Re-evaluates a Pending candidate against its policy gate and transitions it to
     /// <see cref="PromotionStatus.Approved"/> when the gate is satisfied. Idempotent and a no-op
     /// for candidates that are no longer Pending — safe to call from any path that may have
@@ -3129,7 +3198,25 @@ public class PromotionService
     public async Task<IReadOnlyDictionary<Guid, bool>> CanUserApproveManyAsync(
         IEnumerable<PromotionCandidate> candidates, CancellationToken ct = default)
     {
-        var result = new Dictionary<Guid, bool>();
+        var approvable = await GetApprovableRequirementsManyAsync(candidates, ct);
+        return approvable.ToDictionary(kv => kv.Key, kv => kv.Value.Count > 0);
+    }
+
+    /// <summary>
+    /// The requirements the current user could approve <b>right now</b>, per candidate, for a whole
+    /// list — what <see cref="CanUserApproveManyAsync"/> reduces to a yes/no, kept whole so the list can
+    /// also say <i>which</i> gates are yours ("you can sign Release Approval here, not QA Review"). Mass
+    /// approve picks one gate across a whole environment and needs exactly that per row.
+    ///
+    /// <para>Same conditions as <see cref="CanUserApproveManyAsync"/>: a candidate that isn't Pending,
+    /// is auto-approve, carries this user's legacy decision or is held by its work-item gate maps to an
+    /// empty list. Otherwise it lists every requirement the user is authorized for, hasn't approved, and
+    /// is still open — in policy order, like <see cref="GetEligibleRequirementsAsync"/>.</para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<RequirementRef>>> GetApprovableRequirementsManyAsync(
+        IEnumerable<PromotionCandidate> candidates, CancellationToken ct = default)
+    {
+        var result = new Dictionary<Guid, IReadOnlyList<RequirementRef>>();
         var list = candidates.ToList();
         if (list.Count == 0) return result;
 
@@ -3177,29 +3264,31 @@ public class PromotionService
 
         foreach (var c in list)
         {
-            if (c.Status != PromotionStatus.Pending) { result[c.Id] = false; continue; }
+            result[c.Id] = Array.Empty<RequirementRef>();
+            if (c.Status != PromotionStatus.Pending) continue;
             var snapshot = ReadSnapshot(c);
-            if (snapshot.IsAutoApprove) { result[c.Id] = false; continue; }
-            if (decidedSet.Contains(c.Id)) { result[c.Id] = false; continue; }
+            if (snapshot.IsAutoApprove) continue;
+            if (decidedSet.Contains(c.Id)) continue;
             // The work-item gate outranks everything below: while it holds, no requirement is
             // approvable, so which ones the user matches doesn't matter.
-            if (gateBlocked.Contains(c.Id)) { result[c.Id] = false; continue; }
+            if (gateBlocked.Contains(c.Id)) continue;
 
             // Which requirements this user is authorized for and hasn't approved yet. Collected by
             // index rather than short-circuiting on the first hit, because the open-ness test below
             // needs all of them: one matched requirement being satisfied says nothing about another.
             var approvedByMe = myGates.GetValueOrDefault(c.Id);
-            var authorizedIndexes = new List<int>();
+            var authorized = new List<(int Index, RequirementRef Ref)>();
             var ri = -1;
             foreach (var step in snapshot.ApprovalSteps)
             foreach (var req in step.Requirements)
             {
                 ri++;
                 if (approvedByMe is not null && approvedByMe.Contains((step.Name ?? "", req.Name ?? ""))) continue;
+                var reqRef = new RequirementRef(step.Name ?? "", req.Name ?? "");
                 // User-list match is free; check it first.
                 if (req.Users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase)))
                 {
-                    authorizedIndexes.Add(ri);
+                    authorized.Add((ri, reqRef));
                     continue;
                 }
                 foreach (var group in req.Groups)
@@ -3209,18 +3298,25 @@ public class PromotionService
                         member = await _auth.IsInApproverGroupAsync(group, ct);
                         groupMembership[group.Id] = member;
                     }
-                    if (member) { authorizedIndexes.Add(ri); break; }
+                    if (member) { authorized.Add((ri, reqRef)); break; }
                 }
             }
-            if (authorizedIndexes.Count == 0) { result[c.Id] = false; continue; }
+            if (authorized.Count == 0) continue;
 
             // Nobody has approved yet ⇒ nothing can be satisfied ⇒ every matched requirement is open.
             // Skip the matcher for what is by far the common case on a pending list.
             var recorded = approvalsByCandidate.GetValueOrDefault(c.Id);
-            if (recorded is null or { Count: 0 }) { result[c.Id] = true; continue; }
+            if (recorded is null or { Count: 0 })
+            {
+                result[c.Id] = authorized.Select(a => a.Ref).ToList();
+                continue;
+            }
 
             var match = MatchRecorded(snapshot, recorded);
-            result[c.Id] = authorizedIndexes.Any(i => !match.Requirements[i].Satisfied);
+            result[c.Id] = authorized
+                .Where(a => !match.Requirements[a.Index].Satisfied)
+                .Select(a => a.Ref)
+                .ToList();
         }
 
         return result;
@@ -3346,8 +3442,15 @@ public class PromotionService
     /// blank. Shared by the progress panel, the gate statuses and the filter vocabulary so a filter
     /// value always matches the label the reader saw.
     /// </summary>
-    private static string StepDisplayName(ApprovalStep step)
-        => string.IsNullOrEmpty(step.Name) ? "Approval" : step.Name;
+    private static string StepDisplayName(ApprovalStep step) => GateName(step.Name);
+
+    /// <summary>
+    /// <see cref="StepDisplayName"/> for a bare step name — what a recorded or eligible
+    /// <see cref="RequirementRef"/> carries — so a gate named in the list and a gate named in a bulk
+    /// approval are the same string.
+    /// </summary>
+    public static string GateName(string? stepName)
+        => string.IsNullOrEmpty(stepName) ? "Approval" : stepName;
 
     /// <summary>
     /// Of <paramref name="candidates"/>, those whose policy holds human approval back until every work
@@ -3772,6 +3875,12 @@ public record RequirementProgress(
 /// recorded on a <see cref="PromotionApproval"/> and the choice an approver can pin when approving.
 /// </summary>
 public record RequirementRef(string StepName, string RequirementName);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ApproveGateAsync"/>: the candidate after the last approval
+/// (Approved when that satisfied its gate, otherwise still Pending) and the requirements approved.
+/// </summary>
+public record GateApprovalResult(PromotionCandidate Candidate, IReadOnlyList<RequirementRef> Approved);
 
 /// <summary>
 /// Outcome of <see cref="PromotionService.ReconcileCompletionsAsync"/>. <c>Examined</c> counts every

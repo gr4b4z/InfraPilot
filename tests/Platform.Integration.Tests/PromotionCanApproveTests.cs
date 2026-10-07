@@ -367,6 +367,118 @@ public class PromotionCanApproveTests
         Assert.False(await CanApproveAsync(factory, candidateId));
     }
 
+    // ── Which gates are yours (approvableGates, mass approve) ────────────────
+
+    [Fact]
+    public async Task ApprovableRequirements_NameOnlyTheGatesThisUserIsAnApproverFor()
+    {
+        // The per-row answer mass approve reads: QA is this user's gate, Release Approval is somebody
+        // else's, although the promotion waits on both.
+        await using var factory = new GateFixture();
+        factory.AsUser("qa@example.com", groups: new[] { "QaGroup" });
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1, steps: new()
+            {
+                new ApprovalStep("QA Review", new()
+                {
+                    new ApproverRequirement("QA", new() { new GroupRef("QaGroup", "QaGroup") }, new(), 1),
+                }),
+                new ApprovalStep("Release Approval", new()
+                {
+                    new ApproverRequirement("Release Manager", new() { new GroupRef(ApproverGroup, ApproverGroup) }, new(), 1),
+                }),
+            })).Id;
+        }
+
+        var approvable = await ApprovableAsync(factory, candidateId);
+        Assert.Equal(new[] { new RequirementRef("QA Review", "QA") }, approvable);
+    }
+
+    [Fact]
+    public async Task ApprovableRequirements_AreEmptyWhileTheWorkItemGateHolds()
+    {
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        Assert.Empty(await ApprovableAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task ApproveGate_RefusesWhileTheWorkItemGateHolds()
+    {
+        // The gate-scoped approve goes through ApproveAsync, so the work-item guard applies to every
+        // row of a mass approval just as it does to one click on the detail page.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        using var actScope = factory.Services.CreateScope();
+        var svc = actScope.ServiceProvider.GetRequiredService<PromotionService>();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ApproveGateAsync(candidateId, "Approval", null));
+        Assert.Contains("work items", ex.Message);
+    }
+
+    [Fact]
+    public async Task ApproveGate_SignsOnlyTheNamedGate_WhenTheUserIsInBoth()
+    {
+        // The plain approve would refuse this user with "multiple requirements available". Naming the
+        // gate settles which one is meant.
+        await using var factory = new GateFixture();
+        factory.AsUser("pawel@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1, steps: TwoGates())).Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var result = await svc.ApproveGateAsync(candidateId, "Release Approval", null);
+            Assert.Equal(PromotionStatus.Pending, result.Candidate.Status);
+            Assert.Equal(new[] { new RequirementRef("Release Approval", "Release Manager") }, result.Approved);
+        }
+
+        Assert.Equal(new[] { new RequirementRef("QA Review", "QA Manager") }, await ApprovableAsync(factory, candidateId));
+    }
+
+    private static async Task<IReadOnlyList<RequirementRef>> ApprovableAsync(GateFixture factory, Guid candidateId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+        var candidate = await db.PromotionCandidates.AsNoTracking()
+            .FirstAsync(c => c.Id == candidateId);
+        var result = await svc.GetApprovableRequirementsManyAsync(new[] { candidate });
+        return result[candidateId];
+    }
+
     /// <summary>Two steps, one requirement each, both behind the same approver group.</summary>
     private static List<ApprovalStep> TwoGates(int minApprovers = 1) => new()
     {
