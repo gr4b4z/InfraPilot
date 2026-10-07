@@ -28,6 +28,9 @@ export function useRealtimeEvents(): void {
   }, [isAuthenticated, addMessage]);
 
   // Anything awaiting the user's action lives in these entity streams. The 60s poll in
-  // useMyTasksPolling stays as the fallback for missed events.
-  useEntityEvent(['promotion', 'work-item', 'approval', 'request'], () => refreshMyTasks());
+  // useMyTasksPolling stays as the fallback for missed events. Passing when the change was seen
+  // lets a fetch issued since then (the tab's own catch-up on being shown, say) stand for this one.
+  useEntityEvent(['promotion', 'work-item', 'approval', 'request'], (_evt, changedAt) =>
+    refreshMyTasks(changedAt),
+  );
 }
