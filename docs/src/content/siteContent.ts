@@ -670,7 +670,7 @@ X-Api-Key: <your-api-key>
     paragraphs: [
       'A promotion candidate represents "service X version V should move from a source env to a target env." Candidates are created by an external system — typically the pipeline that computed the env-to-env diff — via `POST /api/promotions`, authenticated with an API key (`X-Api-Key`) and scoped to the product. InfraPilot does not auto-generate candidates from the deploy stream, and there is no promotion topology.',
       'Each candidate is self-contained: the create request supplies the authoritative net change set as `references` (work items, PRs, commits) plus `fromRevision`/`toRevision`, so the candidate carries everything it needs rather than pulling it from a deploy event. Only `work-item` references feed the approval gate; PR and commit references are stored for display and traceability. The create request may also carry promotion-level participants, and references may carry their own reference-scoped participants (a ticket\'s QA, a PR\'s reviewer). Role strings are canonicalised on write; display names are controlled by an admin-managed role dictionary in Settings.',
-      'The non-admin endpoints are queue and review actions: list, detail, approve, reject, bulk approve, comments, and participants. Listing supports filtering by status, product, service, target environment, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped. Each candidate carries a `canApprove` flag for the current user and a `deploysOnApproval` flag from its policy (whether approving is the last gate before the version is live, or whether the run it starts stops at an approval outside InfraPortal), and the detail response adds `approvalProgress` (the live gate state) and `eligibleRequirements` (the open requirements the current user may approve).',
+      'The non-admin endpoints are queue and review actions: list, detail, approve, reject, bulk approve, comments, and participants. Listing supports filtering by status, product, service, target environment, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped. Each candidate carries a `canApprove` flag for the current user, the `approvableGates` the current user could sign right now, and a `deploysOnApproval` flag from its policy (whether approving is the last gate before the version is live, or whether the run it starts stops at an approval outside InfraPortal), and the detail response adds `approvalProgress` (the live gate state) and `eligibleRequirements` (the open requirements the current user may approve).',
       'A directory-search endpoint proxies Entra ID (via Microsoft Graph) when configured and falls back to local users otherwise, so the portal can resolve real people and groups when assigning participants or configuring policies.',
       'Create is idempotent on the natural key `(product, service, sourceEnv, targetEnv, version)`: re-posting the same version updates the existing non-terminal candidate rather than duplicating it, and posting a newer version on the same edge marks the prior still-Pending candidate `Superseded` (a pure state flip — the new candidate is self-contained and inherits nothing). The gate still blocks approval while the source environment has drifted off the candidate version. See "Promotion and rollback logic" for the full model.',
       'Admin endpoints configure the per-edge approval policy that drives the gate.',
@@ -1963,7 +1963,7 @@ Content-Type: application/json
         { method: '`POST`', path: '`/api/promotions/{id}/approve`', auth: 'CanApprove policy', description: 'Approve one promotion candidate.' },
         { method: '`POST`', path: '`/api/promotions/{id}/reject`', auth: 'CanApprove policy', description: 'Reject one promotion candidate.' },
         { method: '`POST`', path: '`/api/promotions/{id}/cancel-approval`', auth: 'CanApprove policy', description: 'Undo an approval: an Approved candidate that has not been dispatched goes back to Pending and its sign-offs are cleared. 400 once the candidate is Deploying or later, or when the policy auto-approves (there is no human decision to retract).' },
-        { method: '`POST`', path: '`/api/promotions/bulk/approve`', auth: 'CanApprove policy', description: 'Bulk-approve multiple candidates and return per-id outcomes.' },
+        { method: '`POST`', path: '`/api/promotions/bulk/approve`', auth: 'CanApprove policy', description: 'Bulk-approve multiple candidates and return per-id outcomes. With `gate`, every row approves that approval gate (each requirement of it the caller is eligible for) — what Mass approve on the Promotions page sends.' },
       ],
     },
     {
@@ -1984,7 +1984,9 @@ Content-Type: application/json
         { field: '`comment`', type: 'string', required: 'No', description: 'Optional comment for single approve or reject requests.' },
         { field: '`stepName`', type: 'string', required: 'No', description: 'Approve-as selection: the step to approve under. Auto-picked when the caller is eligible for exactly one open requirement.' },
         { field: '`requirementName`', type: 'string', required: 'No', description: 'Approve-as selection: the requirement to approve under (paired with `stepName`).' },
-        { field: '`ids`', type: 'Guid[]', required: 'Yes', description: 'Required for bulk approve; list of candidate ids to process.' },
+        { field: '`ids`', type: 'Guid[]', required: 'Yes', description: 'Required for bulk approve and bulk bypass; list of candidate ids to process.' },
+        { field: '`gate`', type: 'string', required: 'No', description: 'Bulk approve only: the approval-step name every row approves ("Release Approval"), case-insensitive. Omit for a plain approve per row.' },
+        { field: '`reason`', type: 'string', required: 'Yes (bypass)', description: 'Bulk bypass only: why the batch goes out without its gate; recorded on every bypassed candidate.' },
       ],
     },
     {
@@ -1996,6 +1998,8 @@ Content-Type: application/json
         { method: '`POST`', path: '`/api/promotions/admin/policies`', auth: 'Catalog admin', description: 'Create a promotion policy.' },
         { method: '`PUT`', path: '`/api/promotions/admin/policies/{id}`', auth: 'Catalog admin', description: 'Update a promotion policy.' },
         { method: '`DELETE`', path: '`/api/promotions/admin/policies/{id}`', auth: 'Catalog admin', description: 'Delete a promotion policy.' },
+        { method: '`POST`', path: '`/api/promotions/admin/candidates/{id}/bypass`', auth: 'Catalog admin', description: 'Force one Pending candidate to Approved without satisfying its gate. Requires a reason; audited and announced with the usual promotion.approved webhook.' },
+        { method: '`POST`', path: '`/api/promotions/admin/candidates/bulk/bypass`', auth: 'Catalog admin', description: 'Bypass a batch of Pending candidates with one reason, returning per-id outcomes.' },
       ],
     },
     {

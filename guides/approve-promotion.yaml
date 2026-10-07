@@ -35,3 +35,4 @@ steps:
 related:
   - assign-promotion-participant
   - comment-on-promotion
+  - mass-approve-promotions

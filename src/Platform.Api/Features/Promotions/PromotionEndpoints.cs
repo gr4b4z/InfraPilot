@@ -115,7 +115,7 @@ public static class PromotionEndpoints
                     .ToList();
             }
 
-            var capability = await svc.CanUserApproveManyAsync(candidates);
+            var approvable = await svc.GetApprovableRequirementsManyAsync(candidates);
             var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
             var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
@@ -129,7 +129,9 @@ public static class PromotionEndpoints
                     decidedWorkItems.TryGetValue((c.Product, c.Service, c.TargetEnv), out var decidedKeys);
                     // sourceEventReferences carries the candidate's own net change set so the list
                     // card keeps rendering refs without a deploy-event join (D14 dropped the link).
-                    return ToDto(c, capability.GetValueOrDefault(c.Id),
+                    var mine = approvable.GetValueOrDefault(c.Id) ?? Array.Empty<RequirementRef>();
+                    return ToDto(c, mine.Count > 0,
+                        approvableGates: ApprovableGates(mine),
                         sourceEventParticipants: Array.Empty<ParticipantDto>(),
                         sourceEventReferences: c.References,
                         targetCurrentVersion: target.Current,
@@ -576,24 +578,65 @@ public static class PromotionEndpoints
         // Bulk approve — succeeds partially: returns per-id outcome so the UI can show
         // which ones went through and which failed. Rejecting in bulk is intentionally
         // omitted — treating mass-reject as a lighter action is a UX footgun.
+        //
+        // With `gate`, each row approves that gate ("Release Approval") — every requirement of it the
+        // caller is eligible for (PromotionService.ApproveGateAsync). That is what mass approve sends:
+        // one gate across an environment, the same question for every row. Without it, each row is a
+        // plain approve, which needs the caller to be eligible for exactly one open requirement.
         group.MapPost("/bulk/approve", async (
-            PromotionService svc, PromotionBulkRequest body) =>
+            PromotionService svc, PlatformDbContext db, PromotionBulkRequest body) =>
         {
-            var results = new List<object>();
+            var gate = body.Gate?.Trim();
+            var outcomes = new List<(Guid Id, PromotionCandidate? Candidate, IReadOnlyList<RequirementRef> ApprovedAs, string? Error)>();
             foreach (var id in body.Ids ?? Array.Empty<Guid>())
             {
                 try
                 {
-                    var candidate = await svc.ApproveAsync(id, body.Comment);
-                    results.Add(new { id, ok = true, status = candidate.Status.ToString() });
+                    if (string.IsNullOrEmpty(gate))
+                    {
+                        var candidate = await svc.ApproveAsync(id, body.Comment);
+                        outcomes.Add((id, candidate, Array.Empty<RequirementRef>(), null));
+                    }
+                    else
+                    {
+                        var result = await svc.ApproveGateAsync(id, gate, body.Comment);
+                        outcomes.Add((id, result.Candidate, result.Approved, null));
+                    }
                 }
-                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or UnauthorizedAccessException)
+                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException
+                                               or UnauthorizedAccessException or ArgumentException)
                 {
-                    results.Add(new { id, ok = false, error = ex.Message });
+                    outcomes.Add((id, null, Array.Empty<RequirementRef>(), ex.Message));
+                }
+                catch (DbUpdateException)
+                {
+                    // A concurrent decision on the same row (the unique approval index). The failed
+                    // insert is still tracked and would fail every save after it, so drop it and carry on.
+                    db.ChangeTracker.Clear();
+                    outcomes.Add((id, null, Array.Empty<RequirementRef>(),
+                        "Somebody else decided on this promotion at the same moment — refresh and try again."));
                 }
             }
 
-            return Results.Ok(new { results });
+            // What each approved row still waits on, in one batch. A row whose gate was not the last
+            // stays Pending, and saying which gates are left is what makes that read as progress.
+            var gateStatuses = await svc.GetGateStatusesAsync(
+                outcomes.Where(o => o.Candidate is not null).Select(o => o.Candidate!).ToList());
+
+            return Results.Ok(new
+            {
+                results = outcomes.Select(o => o.Candidate is null
+                    ? (object)new { id = o.Id, ok = false, error = o.Error }
+                    : new
+                    {
+                        id = o.Id,
+                        ok = true,
+                        status = o.Candidate.Status.ToString(),
+                        approvedAs = o.ApprovedAs.Select(r => r.RequirementName),
+                        pendingGates = gateStatuses.GetValueOrDefault(o.Id, PromotionGateStatus.None).OutstandingSteps,
+                        workItemsOutstanding = gateStatuses.GetValueOrDefault(o.Id, PromotionGateStatus.None).WorkItemsOutstanding,
+                    }),
+            });
         });
 
         // The target envs a registered build can be promoted to for this service: every edge whose
@@ -803,9 +846,22 @@ public static class PromotionEndpoints
         return JsonSerializer.Deserialize<T>(json, SourceEventJsonOptions);
     }
 
+    /// <summary>
+    /// The gates a set of approvable requirements belongs to, named as the list names them (see
+    /// <see cref="PromotionService.GateName"/>), each once, in policy order.
+    /// </summary>
+    private static IReadOnlyList<string> ApprovableGates(IReadOnlyList<RequirementRef> requirements)
+        => requirements
+            .Select(r => PromotionService.GateName(r.StepName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     private static object ToDto(
         PromotionCandidate c,
         bool canApprove,
+        // Which of the candidate's gates the current user could approve right now — see
+        // GetApprovableRequirementsManyAsync. Supplied by the list only, like gateStatus below.
+        IReadOnlyList<string>? approvableGates = null,
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
         IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
         string? targetCurrentVersion = null,
@@ -863,6 +919,11 @@ public static class PromotionEndpoints
         // on responses that don't compute it. Short of approvals is not the same as open: read it
         // together with workItemsOutstanding below, which says the steps are held rather than waiting.
         pendingGates = gateStatus?.OutstandingSteps ?? Array.Empty<string>(),
+        // The subset of those the current user could approve right now: authorized, not yet signed by
+        // them, still open, and not held by the work-item gate. canApprove is "this is non-empty".
+        // Mass approve reads it per row to tell "yours to approve as Release Approval" apart from
+        // "waiting on Release Approval, but not on you". Empty on responses that don't compute it.
+        approvableGates = approvableGates ?? Array.Empty<string>(),
         // True when the policy's work-item gate is holding this promotion back — nobody may approve
         // any of the steps above until every work item is signed off. It is what the promotion is
         // actually waiting on, so the card says "work items" rather than naming a padlocked gate, and
@@ -1121,7 +1182,11 @@ public record CreatePromotionDto(
 public record CreateFromBuildRequest(Guid BuildId, string TargetEnv);
 
 public record PromotionDecisionRequest(string? Comment, string? StepName = null, string? RequirementName = null);
-public record PromotionBulkRequest(Guid[] Ids, string? Comment);
+/// <summary>
+/// Body for bulk approve. <c>Gate</c> names the approval step every row approves ("Release
+/// Approval"). Omit it for a plain approve per row.
+/// </summary>
+public record PromotionBulkRequest(Guid[] Ids, string? Comment, string? Gate = null);
 public record UpsertParticipantRequest(string? Role, string? DisplayName, string? Email);
 
 /// <summary>Body for assigning a participant to a work-item reference of a candidate. A null
