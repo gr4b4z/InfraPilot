@@ -3198,7 +3198,7 @@ public class PromotionService
     public async Task<IReadOnlyDictionary<Guid, bool>> CanUserApproveManyAsync(
         IEnumerable<PromotionCandidate> candidates, CancellationToken ct = default)
     {
-        var approvable = await GetApprovableRequirementsManyAsync(candidates, ct);
+        var approvable = await GetApprovableRequirementsManyAsync(candidates, ct: ct);
         return approvable.ToDictionary(kv => kv.Key, kv => kv.Value.Count > 0);
     }
 
@@ -3212,9 +3212,17 @@ public class PromotionService
     /// is auto-approve, carries this user's legacy decision or is held by its work-item gate maps to an
     /// empty list. Otherwise it lists every requirement the user is authorized for, hasn't approved, and
     /// is still open — in policy order, like <see cref="GetEligibleRequirementsAsync"/>.</para>
+    ///
+    /// <para><paramref name="gateStatuses"/> is what <see cref="GetGateStatusesAsync"/> already said
+    /// about these candidates, when the caller has it (the promotions list asks both). Its
+    /// <see cref="PromotionGateStatus.WorkItemsOutstanding"/> is the same work-item-gate answer this
+    /// method would otherwise query for, so passing it evaluates that gate once per request instead
+    /// of twice. It must cover every candidate; one missing from it reads as not held.</para>
     /// </summary>
     public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<RequirementRef>>> GetApprovableRequirementsManyAsync(
-        IEnumerable<PromotionCandidate> candidates, CancellationToken ct = default)
+        IEnumerable<PromotionCandidate> candidates,
+        IReadOnlyDictionary<Guid, PromotionGateStatus>? gateStatuses = null,
+        CancellationToken ct = default)
     {
         var result = new Dictionary<Guid, IReadOnlyList<RequirementRef>>();
         var list = candidates.ToList();
@@ -3254,8 +3262,12 @@ public class PromotionService
                     .ToList());
 
         // Candidates whose work-item gate is currently holding approval back. Two queries for the
-        // whole list.
-        var gateBlocked = await GetWorkItemGateBlockedAsync(list, ct);
+        // whole list — none when the caller already has the gate statuses.
+        var gateBlocked = gateStatuses is null
+            ? await GetWorkItemGateBlockedAsync(list, ct)
+            : list.Where(c => gateStatuses.GetValueOrDefault(c.Id)?.WorkItemsOutstanding == true)
+                .Select(c => c.Id)
+                .ToHashSet();
 
         // Cache group membership lookups: one Graph call per unique approver group across all
         // candidates' requirement trees.

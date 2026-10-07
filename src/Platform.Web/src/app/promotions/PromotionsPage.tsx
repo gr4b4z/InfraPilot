@@ -539,7 +539,7 @@ export function PromotionsPage() {
   const fetchData = ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     api
-      .listPromotions({ status: 'Pending', ...filterParams() })
+      .listPromotions({ status: 'Pending', ...filterParams(), view: 'summary' })
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
@@ -550,7 +550,7 @@ export function PromotionsPage() {
   const fetchAwaitingDeploy = ({ silent = false } = {}) => {
     if (!silent) setAwaitingDeployLoading(true);
     api
-      .listPromotions({ status: 'Approved', ...filterParams() })
+      .listPromotions({ status: 'Approved', ...filterParams(), view: 'summary' })
       .then((data) => setAwaitingDeploy(data.candidates || []))
       .catch(() => setAwaitingDeploy([]))
       .finally(() => setAwaitingDeployLoading(false));
@@ -591,13 +591,13 @@ export function PromotionsPage() {
     const stillCurrent = () => filterKeyRef.current === keyAtStart;
     if (archive !== null) {
       api
-        .listPromotions(filterParams())
+        .listPromotions({ ...filterParams(), view: 'summary' })
         .then((data) => { if (stillCurrent()) setArchive(data.candidates || []); })
         .catch(() => { /* keep the rows on screen; the next event retries */ });
     }
     if (rejected !== null) {
       api
-        .listPromotions({ status: 'Rejected', ...filterParams() })
+        .listPromotions({ status: 'Rejected', ...filterParams(), view: 'summary' })
         .then((data) => { if (stillCurrent()) setRejected(data.candidates || []); })
         .catch(() => { /* as above */ });
     }
@@ -629,7 +629,7 @@ export function PromotionsPage() {
     if ((view === 'all' || view === 'resolved') && archive === null) {
       setArchiveLoading(true);
       api
-        .listPromotions(filterParams())
+        .listPromotions({ ...filterParams(), view: 'summary' })
         .then((data) => { if (!cancelled) setArchive(data.candidates || []); })
         .catch(() => { if (!cancelled) setArchive([]); })
         .finally(() => { if (!cancelled) setArchiveLoading(false); });
@@ -637,7 +637,7 @@ export function PromotionsPage() {
     if (view === 'rejected' && rejected === null) {
       setRejectedLoading(true);
       api
-        .listPromotions({ status: 'Rejected', ...filterParams() })
+        .listPromotions({ status: 'Rejected', ...filterParams(), view: 'summary' })
         .then((data) => { if (!cancelled) setRejected(data.candidates || []); })
         .catch(() => { if (!cancelled) setRejected([]); })
         .finally(() => { if (!cancelled) setRejectedLoading(false); });

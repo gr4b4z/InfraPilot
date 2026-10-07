@@ -560,6 +560,12 @@ class ApiClient {
      */
     gateOnly?: boolean;
     limit?: number;
+    /**
+     * `summary` leaves each reference's heavy fields out — `content`, `participants`, `commits`,
+     * `resolution`, `occurredAt` — none of which a list row reads. For list views only: anything that
+     * renders a reference's body or people, or sends references back, needs the default.
+     */
+    view?: 'summary';
   }) {
     const entries: [string, string][] = [];
     if (params?.status) entries.push(['status', params.status]);
@@ -570,6 +576,7 @@ class ApiClient {
     if (params?.gate) entries.push(['gate', params.gate]);
     if (params?.gate && params.gateOnly) entries.push(['gateOnly', 'true']);
     if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.view) entries.push(['view', params.view]);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<{ candidates: PromotionCandidate[] }>(`/promotions/${query}`);
   }
