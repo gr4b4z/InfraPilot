@@ -422,6 +422,49 @@ stored values so the database is consistent. Two things did not move: `POST /rej
 rather than aliased (an alias would keep `/blocks` working while silently changing which decision it
 records), and audit rows written before the rename keep their original action names.
 
+### Work-items queue — `GET /api/work-items/me/pending`
+
+What the web app's *Work items queue* page reads. Two modes, picked by `status`:
+
+| Param | Applies to | Meaning |
+|---|---|---|
+| `status` | — | `pending` (default) — work items awaiting sign-off that the caller can decide. `decided` — the decision history (every decision by anyone, newest first). |
+| `assignee` | both | Pending: narrows to items where that email holds a role (`unassigned` = nobody in an assignment role). Decided: narrows to that **decider**, case-insensitively (`unassigned` is ignored). |
+| `roleRequirement` | pending | `assigned` — `assignee` must hold a role the item's policy requires; `missing` — a required role has nobody in it. |
+| `since` | decided | ISO timestamp; decisions at or after it. Omit for all time. |
+| `limit` | decided | Rows per page. Default `100`, clamped to `1..500`. |
+| `cursor` | decided | The previous page's `nextCursor`, for the page after it. Omit for the first page. Opaque — pass back what the server returned; anything else is a `400`. |
+
+Pending response: `{ tickets: [...], assignees: [{ email, displayName, role, count }] }`, unpaged —
+it is bounded by the work in flight. `assignees` is the person-filter rollup, computed before the
+`assignee` narrowing.
+
+Decided response — **paged**, every time window included (a busy month is as unbounded as all
+time):
+
+```json
+{
+  "tickets":    [ /* this page's rows, newest decision first */ ],
+  "assignees":  [ { "email": "…", "displayName": "…", "role": "", "count": 12 } ],
+  "total":      1234,
+  "hasMore":    true,
+  "nextCursor": "NjM4…"
+}
+```
+
+- Order is `(decidedAt DESC, id DESC)` — newest first as before, with the decision's id breaking
+  ties, so walking the pages returns exactly the one-shot list: no row twice, none skipped.
+- The cursor is a keyset position, not an offset. A decision's time never changes (a change of mind
+  rewrites the decision on the same row) and new decisions land at the top, so the pages after a
+  cursor are unaffected by decisions arriving in between; refetch the first page to see those.
+- `assignees` (the "decided by" dropdown, before the decider narrowing) and `total` (decisions in
+  the window after the decider narrowing) describe the whole window, not the page, and come on
+  every page.
+- `nextCursor` is `null` and `hasMore` is `false` on the last page.
+- **Compatibility:** `tickets` and `assignees` are unchanged in shape, but a caller that sends no
+  `limit` now gets the newest 100 decisions rather than the whole window. Follow `nextCursor` to
+  read further.
+
 ### Participant roles
 
 Two different role sets, easily confused:

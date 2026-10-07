@@ -1,4 +1,7 @@
+using System.Buffers.Text;
+using System.Globalization;
 using System.Linq.Expressions;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
@@ -863,23 +866,39 @@ public class WorkItemApprovalService
         return new PendingQueueResult(result, assigneeRows);
     }
 
+    /// <summary>Rows per decided-view page when the caller doesn't say.</summary>
+    public const int DecidedPageSize = 100;
+
+    /// <summary>The most rows one decided-view page returns, whatever the caller asks for.</summary>
+    public const int DecidedPageSizeMax = 500;
+
     /// <summary>
     /// Returns rows representing recent ticket decisions across the platform — both approvals
     /// and non-approvals by anyone. Use <paramref name="decision"/> to narrow to a single
     /// decision; pass <c>null</c> for all of them. <paramref name="since"/> caps the query to recent
-    /// decisions (recommended — full history is unbounded).
+    /// decisions; <c>null</c> is all time.
     ///
-    /// <para>For each <see cref="WorkItemApproval"/>, picks the most recent candidate that carries
-    /// the ticket (any candidate status — including Approved, Deployed, Rejected, Superseded). The
-    /// returned <see cref="PendingQueueResult.Assignees"/> carries the decider rollup rather than
-    /// work-item participants — the decided view's "who decided" dropdown.</para>
+    /// <para>Keyset-paged, newest decision first: at most <paramref name="limit"/> rows (clamped to
+    /// 1..<see cref="DecidedPageSizeMax"/>) strictly after <paramref name="after"/>, ordered by
+    /// <c>(CreatedAt DESC, Id DESC)</c> — the id only breaks ties, so the order is total and a
+    /// position never moves. Every window is paged, bounded ones included: a busy month of
+    /// decisions is as unbounded as "all time" is.</para>
+    ///
+    /// <para>For each <see cref="WorkItemApproval"/> on the page, picks the most recent candidate
+    /// that carries the ticket (any candidate status — including Approved, Deployed, Rejected,
+    /// Superseded). The returned <see cref="DecidedQueueResult.Assignees"/> carries the decider
+    /// rollup rather than work-item participants — the decided view's "who decided" dropdown — and,
+    /// like <see cref="DecidedQueueResult.Total"/>, covers the whole window, not just the page.</para>
     /// </summary>
-    public async Task<PendingQueueResult> GetDecidedAsync(
+    public async Task<DecidedQueueResult> GetDecidedAsync(
         WorkItemDecision? decision,
         DateTimeOffset? since,
         string? decidedBy = null,
+        int limit = DecidedPageSize,
+        DecidedCursor? after = null,
         CancellationToken ct = default)
     {
+        limit = Math.Clamp(limit, 1, DecidedPageSizeMax);
         var query = _db.WorkItemApprovals.AsNoTracking().AsQueryable();
 
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
@@ -888,25 +907,35 @@ public class WorkItemApprovalService
         if (decision is { } d) query = query.Where(a => a.Decision == d);
         if (since is { } cutoff) query = query.Where(a => a.CreatedAt >= cutoff);
 
-        var approvals = await query
-            .OrderByDescending(a => a.CreatedAt)
-            .ToListAsync(ct);
-        if (approvals.Count == 0)
-            return new PendingQueueResult(new(), new());
-
         // Decider rollup — computed BEFORE the decidedBy narrowing (mirrors the pending path's
         // pre-narrow assignee summary) so the front-end "who decided" dropdown never offers a
-        // zero-result person. Deciders carry no role, so Role is left empty. One row per email;
-        // the display name is the first non-empty one seen (approvals are newest-first).
+        // zero-result person. Aggregated in the database, one row per (email, name) as spelled, so
+        // its size is the number of deciders however long the window; it also yields the total.
+        var deciders = await query
+            .GroupBy(a => new { a.ApproverEmail, a.ApproverName })
+            .Select(g => new
+            {
+                Email = g.Key.ApproverEmail,
+                Name = g.Key.ApproverName,
+                Count = g.Count(),
+                Latest = g.Max(a => a.CreatedAt),
+            })
+            .ToListAsync(ct);
+        if (deciders.Count == 0)
+            return new DecidedQueueResult(new(), new(), Total: 0, NextCursor: null);
+
+        // Deciders carry no role, so Role is left empty. One row per email (case-insensitive); the
+        // email as most recently spelled and the most recent non-empty name win — walking the
+        // groups newest-first reproduces what a newest-first walk over the rows themselves picks.
         var deciderAccumulator = new Dictionary<string, AssigneeAccumulator>(StringComparer.OrdinalIgnoreCase);
-        foreach (var a in approvals)
+        foreach (var g in deciders.OrderByDescending(g => g.Latest))
         {
-            if (string.IsNullOrEmpty(a.ApproverEmail)) continue;
-            if (!deciderAccumulator.TryGetValue(a.ApproverEmail, out var acc))
-                acc = new AssigneeAccumulator(a.ApproverName, 0);
-            else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(a.ApproverName))
-                acc = acc with { DisplayName = a.ApproverName };
-            deciderAccumulator[a.ApproverEmail] = acc with { Count = acc.Count + 1 };
+            if (string.IsNullOrEmpty(g.Email)) continue;
+            if (!deciderAccumulator.TryGetValue(g.Email, out var acc))
+                acc = new AssigneeAccumulator(g.Name, 0);
+            else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(g.Name))
+                acc = acc with { DisplayName = g.Name };
+            deciderAccumulator[g.Email] = acc with { Count = acc.Count + g.Count };
         }
         var deciderRows = deciderAccumulator
             .Select(kv => new PendingAssigneeView(
@@ -919,21 +948,49 @@ public class WorkItemApprovalService
             .ToList();
 
         // Narrow to a single decider when requested. Case-insensitive, matching the pending
-        // path's email comparison.
+        // path's email comparison: the rollup knows every spelling of the email in the window, so
+        // the database matches those exactly rather than lower-casing the column.
+        var total = deciders.Sum(g => g.Count);
         var trimmedDecider = decidedBy?.Trim();
         if (!string.IsNullOrEmpty(trimmedDecider))
         {
-            approvals = approvals
-                .Where(a => string.Equals(a.ApproverEmail, trimmedDecider, StringComparison.OrdinalIgnoreCase))
+            var spellings = deciders
+                .Where(g => string.Equals(g.Email, trimmedDecider, StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            if (approvals.Count == 0)
-                return new PendingQueueResult(new(), deciderRows);
+            if (spellings.Count == 0)
+                return new DecidedQueueResult(new(), deciderRows, Total: 0, NextCursor: null);
+            total = spellings.Sum(g => g.Count);
+            var emails = spellings.Select(g => g.Email).Distinct().ToList();
+            query = query.Where(a => EF.Parameter(emails).Contains(a.ApproverEmail));
         }
 
-        // Candidate-scoped work-item rows for every (key, product, service, targetEnv) the decisions
-        // touch, each with the identity columns of the candidate carrying it — enough to pick the
-        // newest carrier below. The filters are coarse (a cross product, re-checked exactly below),
-        // and each list is one array parameter, so an all-time view stays one cached plan.
+        // The page. A decision's CreatedAt never changes (a change of mind rewrites the decision on
+        // the same row), and new decisions land at the top, so the rows after a cursor are the same
+        // rows however many decisions arrive between two requests.
+        if (after is { } position)
+        {
+            var at = position.DecidedAt;
+            var id = position.Id;
+            query = query.Where(a => a.CreatedAt < at || (a.CreatedAt == at && a.Id.CompareTo(id) < 0));
+        }
+        var approvals = await query
+            .OrderByDescending(a => a.CreatedAt)
+            .ThenByDescending(a => a.Id)
+            .Take(limit + 1)
+            .ToListAsync(ct);
+        DecidedCursor? next = null;
+        if (approvals.Count > limit)
+        {
+            approvals.RemoveAt(limit);
+            next = new DecidedCursor(approvals[^1].CreatedAt, approvals[^1].Id);
+        }
+        if (approvals.Count == 0)
+            return new DecidedQueueResult(new(), deciderRows, total, NextCursor: null);
+
+        // Candidate-scoped work-item rows for every (key, product, service, targetEnv) the page's
+        // decisions touch, each with the identity columns of the candidate carrying it — enough to
+        // pick the newest carrier below. The filters are coarse (a cross product, re-checked exactly
+        // below), and each list is one array parameter, so every page is one cached plan.
         var keys = approvals.Select(a => a.WorkItemKey).Distinct().ToList();
         var products = approvals.Select(a => a.Product).Distinct().ToList();
         var services = approvals.Select(a => a.Service).Distinct().ToList();
@@ -1036,7 +1093,7 @@ public class WorkItemApprovalService
                     new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv))?.ToSummary()));
         }
 
-        return new PendingQueueResult(result, deciderRows);
+        return new DecidedQueueResult(result, deciderRows, total, next);
     }
 
     /// <summary>
@@ -2056,14 +2113,63 @@ public record PendingAssigneeView(
     int Count);
 
 /// <summary>
-/// Composite return for <c>GET /api/work-items/me/pending</c>. Carries the rendered ticket
-/// list plus the person dropdown's contents, so it can be populated without a second call.
+/// Composite return for <c>GET /api/work-items/me/pending</c>'s pending views. Carries the rendered
+/// ticket list plus the person dropdown's contents, so it can be populated without a second call.
+/// The decided view returns a <see cref="DecidedQueueResult"/> page instead.
 /// </summary>
 public record PendingQueueResult(
     List<PendingTicketView> Tickets,
-    /// <summary>Unfiltered (email, required-role) rollup — the person dropdown's contents. On the
-    /// decided path this is the decider rollup instead (role is empty there).</summary>
+    /// <summary>Unfiltered (email, required-role) rollup — the person dropdown's contents.</summary>
     List<PendingAssigneeView> Assignees);
+
+/// <summary>
+/// One page of <c>GET /api/work-items/me/pending?status=decided</c>: the decisions on the page, plus
+/// what describes the whole window rather than the page — the decider rollup and the total.
+/// </summary>
+public record DecidedQueueResult(
+    List<PendingTicketView> Tickets,
+    /// <summary>Decider rollup over the whole window, before the decider narrowing.</summary>
+    List<PendingAssigneeView> Assignees,
+    /// <summary>Decisions in the window after the decider narrowing — every page, not this one.</summary>
+    int Total,
+    /// <summary>Where the next page starts; null when this page is the last.</summary>
+    DecidedCursor? NextCursor);
+
+/// <summary>
+/// A position in the decided view: the last row of a page, by the view's sort key
+/// <c>(CreatedAt DESC, Id DESC)</c>. Travels as an opaque string — clients hand back what a page
+/// returned and never build one.
+/// </summary>
+public readonly record struct DecidedCursor(DateTimeOffset DecidedAt, Guid Id)
+{
+    public string Encode()
+        => Base64Url.EncodeToString(Encoding.ASCII.GetBytes($"{DecidedAt.UtcTicks}.{Id:N}"));
+
+    /// <summary>Reads a cursor <see cref="Encode"/> produced; false for anything else.</summary>
+    public static bool TryParse(string? value, out DecidedCursor cursor)
+    {
+        cursor = default;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        string text;
+        try
+        {
+            text = Encoding.ASCII.GetString(Base64Url.DecodeFromChars(value.Trim()));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        var dot = text.IndexOf('.');
+        if (dot <= 0
+            || !long.TryParse(text.AsSpan(0, dot), NumberStyles.None, CultureInfo.InvariantCulture, out var ticks)
+            || ticks > DateTimeOffset.MaxValue.UtcTicks
+            || !Guid.TryParseExact(text.AsSpan(dot + 1), "N", out var id))
+            return false;
+        // UTC, as the database hands times back — Npgsql refuses a timestamptz parameter with an offset.
+        cursor = new DecidedCursor(new DateTimeOffset(ticks, TimeSpan.Zero), id);
+        return true;
+    }
+}
 
 /// <summary>
 /// One work item the "No live promotion" sweep found, or acted on. Carries the dead promotion's
