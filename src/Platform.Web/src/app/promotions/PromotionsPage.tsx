@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { getWorkItemContextCached } from '@/lib/workItemContextCache';
 import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
 import { WorkItemsNeedingAttentionBadge } from '@/components/promotions/MissingRoles';
 import { BulkApprovalEffectLine } from '@/components/promotions/ApprovalEffect';
@@ -694,7 +695,9 @@ export function PromotionsPage() {
   // Work-item signoff state for the rows on screen. One request per work item per candidate, fanned
   // out concurrently within a candidate and sequentially across them so a wide tab doesn't open
   // hundreds of sockets at once. A cancellation guard avoids overwriting state when the list churns
-  // mid-flight (a filter or tab change).
+  // mid-flight (a filter or tab change). Answers come through a short-lived cache that the realtime
+  // events themselves invalidate, so the reruns below — a remount, a reshuffled row set, a work-item
+  // event — only refetch the work items that actually changed.
   const progressTargets = useMemo(
     () => displayed.slice(0, PROGRESS_CANDIDATE_LIMIT),
     [displayed],
@@ -732,8 +735,7 @@ export function PromotionsPage() {
         try {
           const ctxs = await Promise.all(
             tickets.map((t) =>
-              api
-                .getWorkItemContext(t.key ?? '', c.product, c.service, c.targetEnv)
+              getWorkItemContextCached(t.key ?? '', c.product, c.service, c.targetEnv)
                 .then((ctx) => ({ key: t.key ?? '', ctx }))
                 .catch(() => ({ key: t.key ?? '', ctx: null })),
             ),
