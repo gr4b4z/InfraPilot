@@ -25,7 +25,7 @@ the thread is a reliable history of what happened to the promotion. The design r
 |---|---|---|
 | `POST /api/promotions` (create) | **API key** (`X-Api-Key`) + per-key rate limit + product scope | CI / external systems |
 | Other `/api/promotions/*` (read, approve, reject, comments, participants) | **User** (`CanApprove` policy) | The web UI / approvers |
-| `/api/promotions/admin/*` (policies) | **User** (`CatalogAdmin` policy) | Admins |
+| `/api/promotions/admin/*` (policies, bypass) | **User** (`CatalogAdmin` policy) | Admins |
 
 > Note: `POST /api/promotions` overrides the group's user-auth with API-key auth, mirroring
 > `POST /api/deployments/events`. The product scope is enforced from the key's `allowed_product`
@@ -164,6 +164,13 @@ Every candidate carries the same state as two fields:
 - **`workItemsOutstanding`** — whether the policy's work-item gate is also holding it. A promotion
   with one `pendingGates` entry and this set is *not* one signature from going out.
 
+A third field says which of those gates are the caller's:
+
+- **`approvableGates`** — the subset of `pendingGates` the current user could approve right now:
+  an approver for it, not yet signed by them, still short of approvals, and not held by the
+  work-item gate. `canApprove` is "this is non-empty". Mass approve reads it per row to separate
+  "yours to sign as Release Approval" from "waiting on Release Approval, but not on you".
+
 `deploysOnApproval` answers "what does pressing Approve do?", the question the queue could not
 previously answer. `true` (the default, and what a candidate whose snapshot predates the field
 reads as): InfraPortal's gate is the only gate — once satisfied, the release automation deploys the
@@ -300,8 +307,32 @@ approved — so a client can offer one approve action per gate.
 Body: `{ "comment"?: string }`. One rejection from an authorized approver terminates the candidate.
 
 ### `POST /api/promotions/bulk/approve`
-Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
-`{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }`.
+Body: `{ "ids": ["<guid>", ...], "comment"?: string, "gate"?: string }`. Partial success, per-id
+outcome — one row being refused never stops the rest:
+`{ "results": [ { "id", "ok": true, "status", "approvedAs", "pendingGates", "workItemsOutstanding" } | { "id", "ok": false, "error" } ] }`.
+
+- **With `gate`** (an approval-step name as `pendingGates` spells it, case-insensitive): each row
+  approves that gate — every requirement of it the caller is eligible for and is still open, one
+  recorded approval per requirement, through the same guards as a single approve. `approvedAs`
+  lists the requirements signed. A row the caller cannot sign fails with the reason: not an approver
+  for that gate, already signed it, the gate is already satisfied, the promotion has no such gate,
+  or its work items still hold it. This is what the Promotions page's **Mass approve** dialog sends.
+- **Without `gate`**: each row is a plain approve, so a caller eligible for more than one open
+  requirement on a row gets that row back as `ok: false` (name the gate instead).
+
+`status` is the promotion's status afterwards — `Approved` when that was its last gate, otherwise
+still `Pending`, with `pendingGates` saying what is left.
+
+### `POST /api/promotions/admin/candidates/{id}/bypass` — admin
+Body: `{ "reason": string }` (required, else `400`). Forces a Pending promotion to `Approved`
+without satisfying its gate — work-item gate included. Audited as `promotion.bypassed` with the
+reason, and fires the same `promotion.approved` webhook a normal approval does, tagged
+`trigger: "administrator-bypass"`. Returns `{ "id", "status" }`; `400` when it is no longer Pending.
+
+### `POST /api/promotions/admin/candidates/bulk/bypass` — admin
+Body: `{ "ids": ["<guid>", ...], "reason": string }`. The bypass above for a batch, one reason for
+all of them (empty ⇒ `400`, nothing bypassed). Each promotion is bypassed, audited and announced on
+its own. Per-id outcome like bulk approve: `{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }`.
 
 ### Other
 - `GET /api/promotions/{id}/comments`, `POST /api/promotions/{id}/comments`,
