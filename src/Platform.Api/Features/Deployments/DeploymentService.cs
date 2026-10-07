@@ -609,7 +609,9 @@ public class DeploymentService
     /// </summary>
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
-        var query = _db.DeployEvents.ExcludingDeletedServices(_db);
+        // Read-only: the rows are mapped straight to DTOs, so tracking every matrix row (each carrying
+        // its JSON columns) buys nothing.
+        var query = _db.DeployEvents.AsNoTracking().ExcludingDeletedServices(_db);
         if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
         if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
@@ -633,13 +635,17 @@ public class DeploymentService
     {
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
 
+        // One row per (product, service, environment). A summary only counts those and reads the
+        // newest timestamp, which is the group's MAX — so the query aggregates over the narrow index
+        // instead of ranking whole event rows (JSON columns and all) to pick each group's latest.
         var latest = await _db.DeployEvents
+            .AsNoTracking()
             .Where(e => !hidden.Contains(e.Product))
             // Retired services stop counting towards the per-environment service totals too, or the
             // product card would keep advertising components the product page no longer lists.
             .ExcludingDeletedServices(_db)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
+            .Select(g => new { g.Key.Product, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
 
         var grouped = latest

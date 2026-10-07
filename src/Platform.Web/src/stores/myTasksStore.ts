@@ -76,7 +76,7 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
       // Settled, not all-or-nothing: a failure on one side shouldn't blank out the other side's
       // count, which would read as "you're all caught up" when it isn't.
       const [promotionsResult, workItemsResult, unassignedResult] = await Promise.allSettled([
-        api.listPromotions({ status: 'Pending' }),
+        api.listPromotions({ status: 'Pending', view: 'summary' }),
         // Without an email there is no "me" to narrow to, and an empty `assignee` would widen
         // the query to the entire approver-group backlog. Skip rather than over-count.
         email
