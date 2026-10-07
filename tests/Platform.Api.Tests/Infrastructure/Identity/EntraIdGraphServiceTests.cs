@@ -17,9 +17,9 @@ namespace Platform.Api.Tests.Infrastructure.Identity;
 
 /// <summary>
 /// Group-membership reads in <see cref="EntraIdGraphService"/>: the process-wide cache, failure
-/// caching, object-id-only lookups, and paging. A real <see cref="GraphServiceClient"/> runs over a
-/// fake HTTP handler that serves canned Graph responses and counts requests — nothing leaves the
-/// process.
+/// caching, object-id-only lookups, transitive user membership, and paging. A real
+/// <see cref="GraphServiceClient"/> runs over a fake HTTP handler that serves canned Graph responses
+/// and counts requests — nothing leaves the process.
 /// </summary>
 public class EntraIdGraphServiceTests
 {
@@ -159,9 +159,10 @@ public class EntraIdGraphServiceTests
     // ── Paging and shape ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Every_page_is_read_with_a_trimmed_select_and_only_users_are_kept()
+    public async Task Every_page_is_read_transitively_with_a_trimmed_select()
     {
-        const string next = $"https://graph.microsoft.com/v1.0/groups/{GroupId}/members?$skiptoken=page2";
+        const string next =
+            $"https://graph.microsoft.com/v1.0/groups/{GroupId}/transitiveMembers/microsoft.graph.user?$skiptoken=page2";
         _graph.Respond = req => req.RequestUri!.Query.Contains("skiptoken")
             ? MembersPage(null, ("u3", "c@example.com"))
             : MembersPage(next, ("u1", "a@example.com"), ("u2", "b@example.com"));
@@ -171,10 +172,34 @@ public class EntraIdGraphServiceTests
         Assert.Equal(new[] { "u1", "u2", "u3" }, members.Select(m => m.Id));
         Assert.Equal(2, _graph.RequestCount);
 
+        // Nested-group members included, users only: the transitive list with the user cast (which
+        // the SDK spells graph.user, short for microsoft.graph.user).
         var first = _graph.Requests.First();
-        Assert.Contains($"/groups/{GroupId}/members", first);
+        Assert.Contains($"/groups/{GroupId}/transitiveMembers/graph.user?", first);
         Assert.Contains("$select=id,displayName,mail,userPrincipalName", first);
         Assert.Contains("$top=999", first);
+        // The cast is an advanced query — and the follow-up page needs the header too.
+        Assert.Contains("$count=true", first);
+        Assert.All(_graph.ConsistencyLevels, h => Assert.Equal("eventual", h));
+    }
+
+    [Fact]
+    public async Task Only_users_are_kept()
+    {
+        // The cast means Graph shouldn't send anything else, but nothing else may become an approver.
+        _graph.Respond = _ => Json(new
+        {
+            value = new object[]
+            {
+                new Dictionary<string, object?> { ["@odata.type"] = "#microsoft.graph.user", ["id"] = "u1", ["mail"] = "a@example.com" },
+                new Dictionary<string, object?> { ["@odata.type"] = "#microsoft.graph.group", ["id"] = "nested-group" },
+                new Dictionary<string, object?> { ["@odata.type"] = "#microsoft.graph.servicePrincipal", ["id"] = "sp" },
+                new Dictionary<string, object?> { ["@odata.type"] = "#microsoft.graph.device", ["id"] = "device" },
+            },
+        });
+
+        var member = Assert.Single(await _sut.GetGroupMembers(GroupId));
+        Assert.Equal("u1", member.Id);
     }
 
     [Fact]
@@ -225,7 +250,7 @@ public class EntraIdGraphServiceTests
 
         // One read for the object id; the display name never reaches Graph.
         var request = Assert.Single(_graph.Requests);
-        Assert.Contains($"/groups/{GroupId}/members", request);
+        Assert.Contains($"/groups/{GroupId}/transitiveMembers/graph.user?", request);
     }
 
     [Fact]
@@ -255,19 +280,18 @@ public class EntraIdGraphServiceTests
 
     // ── Fakes ────────────────────────────────────────────────────────────────
 
+    // A page of transitiveMembers/microsoft.graph.user: users only, and — like Graph's cast
+    // responses — without a per-item @odata.type.
     private static HttpResponseMessage MembersPage(string? nextLink, params (string Id, string Mail)[] users)
     {
         var value = users
             .Select(u => (object)new Dictionary<string, object?>
             {
-                ["@odata.type"] = "#microsoft.graph.user",
                 ["id"] = u.Id,
                 ["displayName"] = u.Id,
                 ["mail"] = u.Mail,
                 ["userPrincipalName"] = u.Mail,
             })
-            // A nested group among the members: not a user, so never an approver.
-            .Append(new Dictionary<string, object?> { ["@odata.type"] = "#microsoft.graph.group", ["id"] = "nested" })
             .ToArray();
 
         var body = new Dictionary<string, object?> { ["value"] = value };
@@ -287,6 +311,7 @@ public class EntraIdGraphServiceTests
     private sealed class FakeGraphHandler : HttpMessageHandler
     {
         private readonly ConcurrentQueue<string> _requests = new();
+        private readonly ConcurrentQueue<string?> _consistencyLevels = new();
 
         public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; }
             = _ => throw new InvalidOperationException("No Graph response configured");
@@ -297,10 +322,16 @@ public class EntraIdGraphServiceTests
         public IReadOnlyCollection<string> Requests => _requests;
         public int RequestCount => _requests.Count;
 
+        /// <summary>The <c>ConsistencyLevel</c> header of every request, in order (null when absent).</summary>
+        public IReadOnlyCollection<string?> ConsistencyLevels => _consistencyLevels;
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             _requests.Enqueue(Uri.UnescapeDataString(request.RequestUri!.PathAndQuery));
+            _consistencyLevels.Enqueue(request.Headers.TryGetValues("ConsistencyLevel", out var values)
+                ? string.Join(",", values)
+                : null);
             return RespondAsync is not null ? await RespondAsync(request) : Respond(request);
         }
     }
