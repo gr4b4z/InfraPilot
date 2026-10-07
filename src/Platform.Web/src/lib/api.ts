@@ -982,6 +982,13 @@ class ApiClient {
      * Ignored on the "decided" view.
      */
     roleRequirement?: 'assigned' | 'missing';
+    /**
+     * Rows per page on the "decided" view (server default 100, clamped to 1..500). The pending
+     * views are not paged and ignore it.
+     */
+    limit?: number;
+    /** The previous decided page's `nextCursor`, for the page after it. Omit for the first page. */
+    cursor?: string;
   }) {
     const params = new URLSearchParams();
     const assignee = args?.assignee?.trim();
@@ -990,6 +997,8 @@ class ApiClient {
     if (status && status !== 'pending') params.set('status', status);
     if (args?.since) params.set('since', args.since);
     if (args?.roleRequirement) params.set('roleRequirement', args.roleRequirement);
+    if (args?.limit) params.set('limit', String(args.limit));
+    if (args?.cursor) params.set('cursor', args.cursor);
     const qs = params.toString();
     const suffix = qs.length > 0 ? `?${qs}` : '';
     return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
@@ -2100,6 +2109,14 @@ export interface MyPendingWorkItemsResponse {
    * rollup instead (role is empty there).
    */
   assignees: PendingAssignee[];
+  // Decided view only — it comes a page at a time, newest decision first. The pending views
+  // return everything in one response and leave these out.
+  /** Decisions in the whole window (after the decider narrowing), not just this page. */
+  total?: number;
+  /** Whether rows exist after this page. */
+  hasMore?: boolean;
+  /** Pass back as `cursor` for the next page; null on the last one. */
+  nextCursor?: string | null;
 }
 
 export interface PromotionParticipant {
