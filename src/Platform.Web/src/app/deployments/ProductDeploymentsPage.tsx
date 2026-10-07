@@ -22,7 +22,7 @@ import {
   ChevronsUpDown,
   Trash2,
 } from 'lucide-react';
-import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import type { DeploymentStateSummary, DeployEvent } from '@/lib/types';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { api } from '@/lib/api';
 import type { PromotionCandidate } from '@/lib/api';
@@ -1024,7 +1024,7 @@ function MatrixCell({
   /** Stored environment key — the anchor uses it, so the assistant's `env-cell:` names match the data. */
   env: string;
   envLabel: string;
-  cell: DeploymentStateEntry | undefined;
+  cell: DeploymentStateSummary | undefined;
   /** A Pending promotion targeting this (service, environment), if there is one. */
   pending?: PromotionCandidate;
   highlighted: boolean;
@@ -1352,13 +1352,13 @@ function CompareView({
   mode,
   onRowClick,
 }: {
-  rows: { service: string; from?: DeploymentStateEntry; to?: DeploymentStateEntry }[];
+  rows: { service: string; from?: DeploymentStateSummary; to?: DeploymentStateSummary }[];
   fromEnv: string;
   toEnv: string;
   fromLabel: string;
   toLabel: string;
   mode: 'diff' | 'all';
-  onRowClick: (cell: DeploymentStateEntry) => void;
+  onRowClick: (cell: DeploymentStateSummary) => void;
 }) {
   if (!fromEnv || !toEnv || fromEnv === toEnv) {
     return (
