@@ -2034,6 +2034,8 @@ public class WorkItemApprovalTests
                 // service scope returns null, so we just shortcut to a fresh GUID.
                 RemoveService<IAuditLogger>(services);
                 services.AddScoped<IAuditLogger, ContextFreeAuditLogger>();
+
+                TestHostIsolation.Apply(services);
             });
         }
 
