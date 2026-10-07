@@ -21,7 +21,7 @@ public class EntraIdGraphService : IIdentityService
     public static readonly TimeSpan FailureTtl = TimeSpan.FromMinutes(1);
 
     // Only what UserInfo carries — Graph returns ~30 properties per user otherwise. 999 is the
-    // largest page /members serves, so even big groups take a handful of round trips.
+    // largest page /transitiveMembers serves, so even big groups take a handful of round trips.
     private static readonly string[] MemberFields = ["id", "displayName", "mail", "userPrincipalName"];
     private const int MemberPageSize = 999;
 
@@ -41,9 +41,10 @@ public class EntraIdGraphService : IIdentityService
     }
 
     /// <summary>
-    /// The users that are direct members of the group with object id <paramref name="groupId"/>,
-    /// across every result page. Cached for <see cref="MembershipTtl"/> per group and shared by all
-    /// callers.
+    /// The users that are members of the group with object id <paramref name="groupId"/>, directly
+    /// or through a nested group (the same transitive membership the token's <c>groups</c> claim
+    /// carries), across every result page. Cached for <see cref="MembershipTtl"/> per group and
+    /// shared by all callers.
     ///
     /// <para>Only directory object ids (GUIDs) are sent to Graph. A policy can also name a group by
     /// display name or app-role name — legacy bare strings, or text typed into the group picker —
@@ -106,24 +107,37 @@ public class EntraIdGraphService : IIdentityService
         }
     }
 
-    // Direct members only, like before: nested groups are not expanded. Members can also be groups,
-    // devices or service principals; only users can approve.
+    // Transitive, so someone in a group nested inside this one counts — as they already do through
+    // the token's `groups` claim, which Entra fills with transitive memberships. The
+    // microsoft.graph.user cast leaves out the nested groups themselves, devices and service
+    // principals: only users can approve. Graph documents the cast as an advanced directory query,
+    // hence ConsistencyLevel + $count; that index can trail a membership change briefly, which the
+    // 5-minute cache already tolerates.
     private async Task<IReadOnlyList<UserInfo>> ReadAllMembersAsync(string groupId)
     {
         var users = new List<UserInfo>();
-        var firstPage = await _graphClient.Groups[groupId].Members.GetAsync(r =>
+        var firstPage = await _graphClient.Groups[groupId].TransitiveMembers.GraphUser.GetAsync(r =>
         {
             r.QueryParameters.Select = MemberFields;
             r.QueryParameters.Top = MemberPageSize;
+            r.QueryParameters.Count = true;
+            r.Headers.Add("ConsistencyLevel", "eventual");
         });
         if (firstPage is null) return users.AsReadOnly();
 
-        var pages = PageIterator<DirectoryObject, DirectoryObjectCollectionResponse>.CreatePageIterator(
-            _graphClient, firstPage, member =>
+        var pages = PageIterator<User, UserCollectionResponse>.CreatePageIterator(
+            _graphClient, firstPage, user =>
             {
-                if (member is User { Id: { } id } user)
+                // The cast already filters server-side; this keeps a stray non-user from ever counting.
+                if (user is { Id: { } id, OdataType: null or "#microsoft.graph.user" })
                     users.Add(new UserInfo(id, user.DisplayName ?? "", user.Mail ?? user.UserPrincipalName ?? ""));
                 return true;
+            },
+            // Next-page requests are built from @odata.nextLink alone and don't carry the header.
+            next =>
+            {
+                next.Headers.Add("ConsistencyLevel", "eventual");
+                return next;
             });
         await pages.IterateAsync();
         return users.AsReadOnly();
