@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '@/lib/api';
-import type { ProductSummary, DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import type { ProductSummary, DeploymentStateSummary, DeployEvent } from '@/lib/types';
 
 /**
  * `silent` leaves `loading` alone, so the page keeps what it is showing until the fresh data swaps
@@ -13,7 +13,8 @@ export interface FetchOptions {
 
 interface DeploymentState {
   products: ProductSummary[];
-  stateMatrix: DeploymentStateEntry[];
+  /** Summary rows — the matrix renders none of a row's references, participants or run. */
+  stateMatrix: DeploymentStateSummary[];
   history: DeployEvent[];
   recentActivity: DeployEvent[];
   selectedProduct: string | null;
@@ -57,7 +58,7 @@ export const useDeploymentStore = create<DeploymentState>((set) => ({
   fetchState: async (product, environment, opts) => {
     if (!opts?.silent) set({ loading: true });
     try {
-      const stateMatrix = await api.getDeploymentState({ product, environment });
+      const stateMatrix = await api.getDeploymentStateSummary({ product, environment });
       set({ stateMatrix });
     } finally {
       if (!opts?.silent) set({ loading: false });
