@@ -52,6 +52,7 @@ public static class WorkItemEndpoints
         group.MapGet("/me/pending", async (
             WorkItemApprovalService svc,
             string? assignee, string? status, string? since, string? roleRequirement,
+            int? limit, string? cursor,
             CancellationToken ct) =>
         {
             // status: "pending" (default) | "decided" (combined approved + rejected for the user).
@@ -63,22 +64,48 @@ public static class WorkItemEndpoints
             DateTimeOffset? sinceCutoff = null;
             if (DateTimeOffset.TryParse(since, out var parsed)) sinceCutoff = parsed;
 
-            var queue = normalized switch
+            if (normalized == "decided")
             {
+                // The decided view is history, and history only grows, so it comes a page at a time:
+                // `limit` rows (default 100, clamped to 1..500), then `cursor` = the previous page's
+                // `nextCursor` for the next. The pending views are bounded by the work in flight and
+                // stay unpaged.
+                DecidedCursor? after = null;
+                if (!string.IsNullOrEmpty(cursor))
+                {
+                    if (!DecidedCursor.TryParse(cursor, out var position))
+                        return Results.BadRequest(new
+                        {
+                            error = "cursor is not valid — pass back the nextCursor of a previous page, or omit it for the first page.",
+                        });
+                    after = position;
+                }
+
                 // On the decided view `assignee` narrows by the decider (who clicked Approve /
                 // Reject) — a single email, resolved client-side ("Me" → current user). The
                 // "unassigned" sentinel is pending-only (a decided row always has a decider), so
                 // ignore it here rather than filter to a literal "unassigned" email.
-                "decided" => await svc.GetDecidedAsync(
+                var page = await svc.GetDecidedAsync(
                     decision: null,
                     since: sinceCutoff,
                     decidedBy: string.Equals(assignee?.Trim(), "unassigned", StringComparison.OrdinalIgnoreCase)
                         ? null
                         : assignee,
-                    ct),
-                _ => await svc.GetPendingForCurrentUserAsync(
-                    ct, assignee, ParseRoleRequirement(roleRequirement)),
-            };
+                    limit: limit ?? WorkItemApprovalService.DecidedPageSize,
+                    after: after,
+                    ct: ct);
+                return Results.Ok(new
+                {
+                    tickets = page.Tickets,
+                    assignees = page.Assignees,
+                    total = page.Total,
+                    hasMore = page.NextCursor is not null,
+                    nextCursor = page.NextCursor?.Encode(),
+                });
+            }
+
+            var queue = await svc.GetPendingForCurrentUserAsync(
+                ct, assignee, ParseRoleRequirement(roleRequirement));
             return Results.Ok(new
             {
                 tickets = queue.Tickets,

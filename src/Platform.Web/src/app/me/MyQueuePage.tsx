@@ -1,7 +1,12 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PendingAssignee, PendingTicket, WorkItemDecision } from '@/lib/api';
+import type {
+  MyPendingWorkItemsResponse,
+  PendingAssignee,
+  PendingTicket,
+  WorkItemDecision,
+} from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { useMyTasksStore, refreshMyTasks } from '@/stores/myTasksStore';
 import { readEnumPref, writePref, WORK_ITEMS_VIEW_PREF } from '@/lib/prefs';
@@ -102,7 +107,12 @@ export function MyQueuePage() {
     [],
   );
 
-  const [tickets, setTickets] = useState<PendingTicket[]>([]);
+  // The rows on screen, plus — on the decided view, which the server pages — where the next page
+  // starts and how many decisions the window holds. The pending tabs arrive whole and leave the
+  // paging fields empty.
+  const [rows, setRows] = useState<QueueRows>(NO_ROWS);
+  const tickets = rows.tickets;
+  const [loadingMore, setLoadingMore] = useState(false);
   // Server-supplied (email, required-role) rollup feeding the person dropdown. Computed against
   // the user's authorized list pre-narrowing — the queue itself, not the org directory — and
   // limited to people holding a policy-required role, so every person offered is one the filter
@@ -134,6 +144,12 @@ export function MyQueuePage() {
   // read back the same way the dropdowns that set them do.
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
 
+  // The query whose rows the page is showing. A response that arrives for any other — a tab or filter
+  // change while it was in flight, a "Load more" from before one — is dropped rather than shown
+  // against the wrong controls.
+  const queryKey = JSON.stringify([view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail]);
+  const shownQuery = useRef(queryKey);
+
   // Defined as an async function so the initial fetch from `useEffect` can be a
   // microtask (avoids the eslint react-hooks/set-state-in-effect rule and the
   // associated cascading-render warning) while still letting decision handlers
@@ -145,6 +161,7 @@ export function MyQueuePage() {
     decider: DeciderFilterValue,
     opts: { silent?: boolean } = {},
   ) => {
+    const key = JSON.stringify([nextView, filter, tf, decider, currentUserEmail]);
     // A silent fetch keeps the current rows mounted and swaps the response into them by key. Used
     // for realtime refreshes and post-decision reloads, where the list already shows the right
     // query — blanking it to a skeleton would only drop the reader's place.
@@ -153,12 +170,42 @@ export function MyQueuePage() {
     try {
       const apiArg = toApiArg(nextView, filter, currentUserEmail, tf, decider);
       const res = await api.getMyPendingWorkItems(apiArg);
-      setTickets(res.tickets ?? []);
+      if (shownQuery.current !== key) return;
+      const fresh = toQueueRows(res);
+      // A silent refresh of the decided view fetches its first page only; splicing it over the
+      // head of the list keeps the pages the reader pulled in with "Load more".
+      setRows((prev) => (opts.silent && nextView === 'decided' ? spliceFirstPage(prev, fresh) : fresh));
       setAssignees(res.assignees ?? []);
     } catch (err) {
+      if (shownQuery.current !== key) return;
       setError(err instanceof Error ? err.message : 'Failed to load work items');
     } finally {
-      setLoading(false);
+      if (shownQuery.current === key) setLoading(false);
+    }
+  };
+
+  /**
+   * The decided view's next page, appended. Re-reads the window from the controls as they are; the
+   * cursor carries the place. Dropped if the query moved on meanwhile, or if a refresh that could
+   * not splice restarted the list from a new first page (its cursor is no longer this one).
+   */
+  const loadMore = async () => {
+    const cursor = rows.nextCursor;
+    if (!cursor) return;
+    const key = queryKey;
+    setLoadingMore(true);
+    try {
+      const res = await api.getMyPendingWorkItems({
+        ...toApiArg(view, assigneeFilter, currentUserEmail, timeFrame, deciderFilter),
+        cursor,
+      });
+      if (shownQuery.current !== key) return;
+      setRows((prev) => appendPage(prev, cursor, toQueueRows(res)));
+      setAssignees(res.assignees ?? []);
+    } catch {
+      // Keep what's on screen — the button stays, so the retry is the same press again.
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -167,7 +214,7 @@ export function MyQueuePage() {
   const isBackgroundRefresh = useIsBackgroundRefresh();
 
   useEffect(() => {
-    const queryKey = JSON.stringify([view, assigneeFilter, timeFrame, deciderFilter, currentUserEmail]);
+    shownQuery.current = queryKey;
     void fetchData(view, assigneeFilter, timeFrame, deciderFilter, {
       silent: isBackgroundRefresh(queryKey),
     });
@@ -488,6 +535,7 @@ export function MyQueuePage() {
             assignees={assignees}
           />
         )}
+        {/* Choices come from the rows loaded — on the decided tab, the pages loaded so far. */}
         <ScopeFilter
           value={scopeFilter}
           onChange={handleScopeChange}
@@ -516,22 +564,29 @@ export function MyQueuePage() {
           ))}
         </div>
       ) : filteredTickets.length === 0 ? (
-        <QueueEmptyState
-          view={view}
-          filters={activeFilters}
-          onClearFilters={clearAllFilters}
-          /* Rows the tab loaded that the client-side scope narrowing then hid. Zero means the
-             narrowing that emptied the list happened server-side (or there was nothing to begin
-             with), which is a different sentence. */
-          hiddenByScope={hasActiveScope(scopeFilter) ? tickets.length : 0}
-        />
+        <>
+          <QueueEmptyState
+            view={view}
+            filters={activeFilters}
+            onClearFilters={clearAllFilters}
+            /* Rows the tab loaded that the client-side scope narrowing then hid. Zero means the
+               narrowing that emptied the list happened server-side (or there was nothing to begin
+               with), which is a different sentence. */
+            hiddenByScope={hasActiveScope(scopeFilter) ? tickets.length : 0}
+          />
+          {/* The scope narrowing is client-side, so it can empty the pages loaded so far while
+              later ones still hold matches. */}
+          {rows.nextCursor && (
+            <LoadMoreButton rows={rows} loading={loadingMore} onClick={() => void loadMore()} />
+          )}
+        </>
       ) : (
         <div>
           <h2
             className="text-[11px] font-semibold uppercase tracking-wider mb-3"
             style={{ color: 'var(--text-muted)' }}
           >
-            {VIEW_LABELS[view]} ({filteredTickets.length})
+            {VIEW_LABELS[view]} ({countLabel(filteredTickets.length, rows, hasActiveScope(scopeFilter))})
           </h2>
           <KeyboardList
             className="space-y-2"
@@ -552,6 +607,14 @@ export function MyQueuePage() {
               />
             ))}
           </KeyboardList>
+          {rows.nextCursor && (
+            <LoadMoreButton
+              className="mt-3"
+              rows={rows}
+              loading={loadingMore}
+              onClick={() => void loadMore()}
+            />
+          )}
         </div>
       )}
     </div>
@@ -570,6 +633,7 @@ function toApiArg(
       status?: 'pending' | 'decided';
       since?: string;
       roleRequirement?: 'assigned' | 'missing';
+      limit?: number;
     }
   | undefined {
   // Decision-history views ignore participant narrowing but DO honour the decider filter:
@@ -578,7 +642,12 @@ function toApiArg(
   if (view === 'decided') {
     const since = timeFrameToSince(timeFrame);
     const decidedBy = deciderToEmail(decider, currentUserEmail);
-    return { status: 'decided', ...(since ? { since } : {}), ...(decidedBy ? { assignee: decidedBy } : {}) };
+    return {
+      status: 'decided',
+      limit: DECIDED_PAGE_SIZE,
+      ...(since ? { since } : {}),
+      ...(decidedBy ? { assignee: decidedBy } : {}),
+    };
   }
 
   // On the "Assigned to me" tab the person is fixed by the tab (the filter's select is hidden
@@ -611,6 +680,125 @@ function toApiArg(
     case 'person':
       return filter.email ? { assignee: filter.email, roleRequirement: 'assigned' } : undefined;
   }
+}
+
+// ── Decided-view paging ──────────────────────────────────────────────────────────────────
+// The decided tab is the team's whole decision history, so the server hands it over a page at a
+// time, newest first, with a cursor for the next page; the pending tabs arrive whole. "Load more"
+// appends the next page. A realtime refresh refetches the first page only and splices it over the
+// head of the list (see spliceFirstPage), so the pages the reader pulled in stay put. A tab, filter
+// or time-frame change is a new query and starts again from its first page.
+
+/** Rows per decided page — what each "Load more" press brings in. */
+const DECIDED_PAGE_SIZE = 100;
+
+interface QueueRows {
+  tickets: PendingTicket[];
+  /** Where the decided view's next page starts; null when everything is on screen. */
+  nextCursor: string | null;
+  /** Decisions in the window, before the client-side scope narrowing. Null off the decided view. */
+  total: number | null;
+}
+
+const NO_ROWS: QueueRows = { tickets: [], nextCursor: null, total: null };
+
+function toQueueRows(res: MyPendingWorkItemsResponse): QueueRows {
+  return { tickets: res.tickets ?? [], nextCursor: res.nextCursor ?? null, total: res.total ?? null };
+}
+
+/** A decision's identity: one per (work item, decider), as the server's unique index has it. */
+function decisionKey(t: PendingTicket): string {
+  return [t.workItemKey, t.product, t.service, t.targetEnv, t.decidedByEmail ?? ''].join('\u0000');
+}
+
+/**
+ * Lays a refreshed first page over the decided rows on screen.
+ *
+ * Decisions only ever land at the top — a change of mind rewrites a decision where it is — so when
+ * the fresh page reaches into what is loaded, the loaded rows below its last one are still the right
+ * rows in the right order, and the cursor past them still holds. They stay, minus anything the fresh
+ * page now carries; loaded rows above that point that the fresh page lacks have left the window and
+ * go. The rows kept below show what they showed when loaded until the next new query — it is
+ * history, and only the head of it moves.
+ *
+ * If the fresh page doesn't reach the loaded rows (more than a page of decisions landed since),
+ * keeping them would leave a gap nobody could see, so the list restarts from the fresh page. So it
+ * does when the fresh page is the whole window.
+ */
+function spliceFirstPage(prev: QueueRows, fresh: QueueRows): QueueRows {
+  if (fresh.nextCursor === null || fresh.tickets.length === 0) return fresh;
+  const last = decisionKey(fresh.tickets[fresh.tickets.length - 1]);
+  const at = prev.tickets.findIndex((t) => decisionKey(t) === last);
+  if (at < 0) return fresh;
+  const onFresh = new Set(fresh.tickets.map(decisionKey));
+  return {
+    tickets: [
+      ...fresh.tickets,
+      ...prev.tickets.slice(at + 1).filter((t) => !onFresh.has(decisionKey(t))),
+    ],
+    nextCursor: prev.nextCursor,
+    total: fresh.total,
+  };
+}
+
+/**
+ * Appends the page that starts at `cursor`, deduped by decision. Skipped when the list no longer
+ * ends there: a refresh that couldn't splice restarted it while the page was in flight.
+ */
+function appendPage(prev: QueueRows, cursor: string, page: QueueRows): QueueRows {
+  if (prev.nextCursor !== cursor) return prev;
+  const loaded = new Set(prev.tickets.map(decisionKey));
+  return {
+    tickets: [...prev.tickets, ...page.tickets.filter((t) => !loaded.has(decisionKey(t)))],
+    nextCursor: page.nextCursor,
+    total: page.total,
+  };
+}
+
+/**
+ * The list heading's count. With pages still to load it says how much of the window is on screen
+ * ("100 of 1234") — or, while the client-side scope filter is hiding rows, only that there are at
+ * least this many, since the server's total knows nothing of that narrowing.
+ */
+function countLabel(shown: number, rows: QueueRows, scoped: boolean): string {
+  if (rows.nextCursor === null) return `${shown}`;
+  if (scoped || rows.total === null) return `${shown}+`;
+  return `${shown} of ${rows.total}`;
+}
+
+/** "Load N more" under the decided list — the promotions audit feed's button. */
+function LoadMoreButton({
+  rows,
+  loading,
+  onClick,
+  className = '',
+}: {
+  rows: QueueRows;
+  loading: boolean;
+  onClick: () => void;
+  className?: string;
+}) {
+  const remaining = rows.total === null ? DECIDED_PAGE_SIZE : rows.total - rows.tickets.length;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      className={`w-full rounded-xl border py-2.5 text-[13px] font-medium transition-opacity hover:opacity-80 ${className}`}
+      style={{
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-primary)',
+        color: 'var(--text-secondary)',
+        opacity: loading ? 0.6 : 1,
+      }}
+    >
+      {loading
+        ? 'Loading…'
+        : remaining > 0
+          ? `Load ${Math.min(DECIDED_PAGE_SIZE, remaining)} more`
+          : 'Load more'}
+    </button>
+  );
 }
 
 // ── Queue view (tabs) ────────────────────────────────────────────────────────────────────
