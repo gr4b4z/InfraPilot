@@ -609,6 +609,55 @@ public class DeploymentService
     /// </summary>
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
+        // Cell-key order, ordinal — what the grouped query this replaced returned wherever its
+        // GROUP BY ran sorted (SQLite always), now fixed rather than left to the plan.
+        var latest = (await LatestStateEvents(product, environment, serviceName).ToListAsync(ct))
+            .OrderBy(e => e.Product, StringComparer.Ordinal)
+            .ThenBy(e => e.Service, StringComparer.Ordinal)
+            .ThenBy(e => e.Environment, StringComparer.Ordinal)
+            .ToList();
+
+        var overrides = await LoadOverridesByEventAsync(latest.Select(e => e.Id), ct);
+        return latest.Select(e => MapToStateDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
+    }
+
+    /// <summary>
+    /// <see cref="GetState"/>'s rows, in the same order, as <c>view=summary</c> carries them (see
+    /// <see cref="DeploymentStateSummaryDto"/>). Only the scalar columns are selected, so the JSON
+    /// columns the full view deserializes never leave the database — and with no references to
+    /// show, there are no participant overrides to merge either.
+    /// </summary>
+    public async Task<List<DeploymentStateSummaryDto>> GetStateSummary(
+        string? product, string? environment, string? serviceName, CancellationToken ct = default)
+        => (await LatestStateEvents(product, environment, serviceName)
+                .Select(e => new DeploymentStateSummaryDto(
+                    e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
+                    e.IsRollback, e.Status, e.Source, e.DeployedAt))
+                .ToListAsync(ct))
+            .OrderBy(e => e.Product, StringComparer.Ordinal)
+            .ThenBy(e => e.Service, StringComparer.Ordinal)
+            .ThenBy(e => e.Environment, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// The matrix's rows: each (product, service, environment)'s newest event by <c>DeployedAt</c>,
+    /// whatever became of it — a failed or still-running deploy is what the environment last tried,
+    /// and a rollback is a deploy like any other.
+    ///
+    /// <para>Shaped to stay on the <c>(product, service, environment, deployedAt DESC)</c> index: the
+    /// distinct cells come off the index, each cell's newest id is a correlated TOP 1 seek on it, and
+    /// only those rows are then read whole, by primary key. Ranking every event with ROW_NUMBER
+    /// instead (what <c>GroupBy(...).First()</c> translates to) sorts the entire history, each row's
+    /// JSON columns included, to keep one row per cell. Ties on <c>DeployedAt</c> are ordered no
+    /// further, exactly as before, and resolve in index order — the same lookup shape ingest uses for
+    /// <c>PreviousVersion</c> and the promotions list for the target's current version.</para>
+    ///
+    /// <para>A join on the looked-up id rather than <c>Id IN (...)</c>: Postgres plans the IN form as a
+    /// hashed semi-join that evaluates the per-cell lookup twice. Unordered — the callers sort in
+    /// memory rather than have the database sort rows carrying JSON columns.</para>
+    /// </summary>
+    private IQueryable<DeployEvent> LatestStateEvents(string? product, string? environment, string? serviceName)
+    {
         // Read-only: the rows are mapped straight to DTOs, so tracking every matrix row (each carrying
         // its JSON columns) buys nothing.
         var query = _db.DeployEvents.AsNoTracking().ExcludingDeletedServices(_db);
@@ -616,14 +665,23 @@ public class DeploymentService
         if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
         if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
 
-        // Latest event per (product, service, environment) using a window-function approach
-        var latest = await query
-            .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
-            .ToListAsync(ct);
+        // The filters and the retired-service check are all on the cell's own key, so the per-cell
+        // lookup doesn't repeat them: every event of a cell that passed shares its key.
+        var latest = query
+            .Select(e => new { e.Product, e.Service, e.Environment })
+            .Distinct()
+            .Select(k => new
+            {
+                Id = _db.DeployEvents
+                    .Where(e => e.Product == k.Product && e.Service == k.Service && e.Environment == k.Environment)
+                    .OrderByDescending(e => e.DeployedAt)
+                    .Select(e => e.Id)
+                    .First(),
+            });
 
-        var overrides = await LoadOverridesByEventAsync(latest.Select(e => e.Id), ct);
-        return latest.Select(e => MapToStateDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
+        return from l in latest
+               join e in _db.DeployEvents.AsNoTracking() on l.Id equals e.Id
+               select e;
     }
 
     /// <summary>
