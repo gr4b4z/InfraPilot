@@ -1213,6 +1213,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
                 // Replace the webhook dispatcher with our captured mock.
                 RemoveService<IWebhookDispatcher>(services);
                 services.AddSingleton(WebhookDispatcher);
+
+                TestHostIsolation.Apply(services);
             });
         }
 
