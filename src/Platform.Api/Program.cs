@@ -36,6 +36,8 @@ using Platform.Api.Infrastructure.AzureDevOps;
 using Platform.Api.Infrastructure.Jira;
 using Platform.Api.Features.Webhooks;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
+using OpenTelemetry.Instrumentation.AspNetCore;
+using OpenTelemetry.Resources;
 using Platform.Api.Infrastructure.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -45,9 +47,25 @@ var appInsightsCs = builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING
     ?? builder.Configuration["ApplicationInsights:ConnectionString"];
 if (!string.IsNullOrEmpty(appInsightsCs) && !appInsightsCs.StartsWith('<'))
 {
-    builder.Services.AddOpenTelemetry().UseAzureMonitor(options =>
+    builder.Services.AddOpenTelemetry()
+        .UseAzureMonitor(options =>
+        {
+            options.ConnectionString = appInsightsCs;
+        })
+        // The component's name in Application Insights (cloud_RoleName). The distro's Container Apps
+        // detector would name it after the container app, and that beats OTEL_SERVICE_NAME — so the
+        // variable is read here, where it does win. The replica name stays the role instance.
+        .ConfigureResource(resource => resource.AddService(
+            builder.Configuration["OTEL_SERVICE_NAME"] is { Length: > 0 } serviceName ? serviceName : "infraportal-api",
+            autoGenerateServiceInstanceId: false));
+
+    // Request telemetry leaves out the health probe, which Container Apps calls every few seconds,
+    // and the realtime hub: its WebSocket requests stay open as long as the browser tab does, and
+    // would swamp the request-duration percentiles.
+    builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
     {
-        options.ConnectionString = appInsightsCs;
+        options.Filter = context => !context.Request.Path.StartsWithSegments("/health")
+            && !context.Request.Path.StartsWithSegments("/api/hubs");
     });
 }
 
