@@ -6,6 +6,11 @@ public record GroupInfo(string Id, string DisplayName);
 
 public interface IIdentityService
 {
+    /// <summary>
+    /// The users in group <paramref name="groupId"/> — directly or through a nested group, the same
+    /// membership an Entra <c>groups</c> token claim reflects. Who may approve a promotion (the
+    /// fallback after role and group claims) and who is notified about a catalog request approval.
+    /// </summary>
     Task<IReadOnlyList<UserInfo>> GetGroupMembers(string groupId, CancellationToken ct = default);
     Task<UserInfo?> GetUser(string userId, CancellationToken ct = default);
     Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default);
