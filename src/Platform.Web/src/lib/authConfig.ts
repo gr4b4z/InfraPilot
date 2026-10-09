@@ -1,4 +1,5 @@
 import { buildApiUrl } from './runtimeConfig';
+import { fetchJson, type ConnectionProblem } from './connection';
 
 interface AuthConfig {
   mode: string; // "msal", "local", or future types
@@ -9,19 +10,17 @@ interface AuthConfig {
 let cached: AuthConfig = { mode: 'none', clientId: '', tenantId: '' };
 
 /**
- * Fetch auth config from the backend. Call once at startup (before React mounts).
- * The backend decides the auth mode based on its own configuration.
+ * Fetch auth config from the backend. Call before rendering anything that reads it (see
+ * `StartupGate`). The backend decides the auth mode based on its own configuration.
+ *
+ * Returns why it failed, or null. A failure leaves the mode at `none`; it used to be taken as the
+ * answer, which signed everyone in as the built-in dev user against an API that wasn't there.
  */
-export async function loadAuthConfig(): Promise<void> {
-  try {
-    const response = await fetch(buildApiUrl('/auth/config'), { cache: 'no-store' });
-    if (response.ok) {
-      cached = await response.json();
-    }
-  } catch {
-    // Backend unreachable — fall back to no auth
-    cached = { mode: 'none', clientId: '', tenantId: '' };
-  }
+export async function loadAuthConfig(): Promise<ConnectionProblem | null> {
+  const result = await fetchJson<AuthConfig>(buildApiUrl('/auth/config'), { cache: 'no-store' });
+  if (!result.ok) return result.problem;
+  cached = result.data;
+  return null;
 }
 
 export function getAuthMode(): string {

@@ -1,6 +1,14 @@
 import { isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
 import { authHeaders } from './authHeaders';
+import {
+  GATEWAY_STATUSES,
+  httpProblem,
+  isAbortError,
+  networkProblem,
+  reportConnectionHealthy,
+  reportConnectionProblem,
+} from './connection';
 
 /**
  * A webhook subscription's filter dimensions as written. Each is a set; an omitted or empty one
@@ -52,10 +60,23 @@ class ApiClient {
       this.token,
     );
 
-    const response = await fetch(buildApiUrl(path), {
-      ...options,
-      headers,
-    });
+    const url = buildApiUrl(path);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (err) {
+      // No HTTP answer at all. A caller cancelling its own request says nothing about the API.
+      if (!isAbortError(err)) reportConnectionProblem(networkProblem(url, err));
+      throw err;
+    }
+
+    // Feeds the shell's connection banner: a gateway status means the API behind nginx is down;
+    // any other answer, even an error, proves it is up.
+    if (GATEWAY_STATUSES.has(response.status)) reportConnectionProblem(httpProblem(url, response));
+    else reportConnectionHealthy();
 
     if (!response.ok) {
       // A 401 under MSAL means the session expired or was revoked. Silent renewal
