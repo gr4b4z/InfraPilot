@@ -45,6 +45,13 @@ interface MyTasksState {
  * times over. Callers get the promise of the fetch already running.
  */
 let inFlight: Promise<void> | null = null;
+/** When the fetch in {@link inFlight} was issued. */
+let inFlightStartedAt = 0;
+/**
+ * When the last fetch that came back without failures was issued — the moment the counts on
+ * screen are known to be true as of. Zero until one has.
+ */
+let freshAsOf = 0;
 
 const EMPTY_QUEUE = { tickets: [] as PendingTicket[], assignees: [] };
 
@@ -57,6 +64,8 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
   error: null,
   refresh: () => {
     if (inFlight) return inFlight;
+    const startedAt = Date.now();
+    inFlightStartedAt = startedAt;
     inFlight = (async () => {
       const email = useAuthStore.getState().user?.email ?? '';
       // All three sources live behind the Promotions flag. When it's off there's nothing to count,
@@ -76,7 +85,7 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
       // Settled, not all-or-nothing: a failure on one side shouldn't blank out the other side's
       // count, which would read as "you're all caught up" when it isn't.
       const [promotionsResult, workItemsResult, unassignedResult] = await Promise.allSettled([
-        api.listPromotions({ status: 'Pending' }),
+        api.listPromotions({ status: 'Pending', view: 'summary' }),
         // Without an email there is no "me" to narrow to, and an empty `assignee` would widen
         // the query to the entire approver-group backlog. Skip rather than over-count.
         email
@@ -102,6 +111,7 @@ export const useMyTasksStore = create<MyTasksState>((set) => ({
         unassignedResult.status === 'fulfilled'
           ? (unassignedResult.value.tickets ?? [])
           : (failures.push('unassigned work items'), []);
+      if (failures.length === 0) freshAsOf = startedAt;
 
       set({
         promotions,
@@ -131,19 +141,27 @@ export function useMyTasksCount(): number {
 const POLL_INTERVAL_MS = 60_000;
 
 /**
- * Keeps the rollup fresh for the whole shell. Mounted once, in the Layout. Re-runs when the
- * signed-in identity resolves (the MSAL path sets the user an effect after the shell's first
- * paint, so the initial fetch would otherwise have no "me" to narrow by) and refetches while
- * the tab is visible.
+ * How recent a clean fetch has to be for a tab coming back into view to skip its catch-up. Flipping
+ * through a window of tabs would otherwise cost the whole rollup per tab, per flip. Changes made
+ * while the tab was hidden still arrive: the realtime subscription replays them on return.
+ */
+const VISIBLE_REFRESH_MIN_AGE_MS = 20_000;
+
+/**
+ * Keeps the rollup fresh for the whole shell. Mounted once, in the Layout. Waits for the signed-in
+ * identity (the MSAL path sets the user an effect after the shell's first paint, and a fetch before
+ * that would have no "me" to narrow work items by — only to be repeated a moment later), then
+ * refetches while the tab is visible.
  */
 export function useMyTasksPolling(): void {
+  const signedIn = useAuthStore((s) => s.user !== null);
   const email = useAuthStore((s) => s.user?.email ?? '');
   const promotionsEnabled = useFeatureFlagsStore((s) => s.flags[FeatureFlag.Promotions] !== false);
 
   useEffect(() => {
-    // Chained, not deduped: on the identity-arrival run there is usually a fetch already in
-    // flight from the mount run, and that one was issued with no "me" to narrow work items by.
-    // Joining it would leave the work-item count at zero until the next tick.
+    if (!signedIn) return;
+    // Chained, not deduped: a fetch already in flight when the identity changes was issued for the
+    // previous one, and joining it would leave the counts describing the wrong person.
     refreshMyTasks();
     const refresh = () => void useMyTasksStore.getState().refresh();
     const id = window.setInterval(() => {
@@ -151,14 +169,16 @@ export function useMyTasksPolling(): void {
       if (document.visibilityState === 'visible') refresh();
     }, POLL_INTERVAL_MS);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refresh();
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - freshAsOf < VISIBLE_REFRESH_MIN_AGE_MS) return;
+      refresh();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [email, promotionsEnabled]);
+  }, [signedIn, email, promotionsEnabled]);
 }
 
 /**
@@ -166,8 +186,13 @@ export function useMyTasksPolling(): void {
  * (approving a promotion, assigning a work item to someone). Chains behind a fetch already in
  * flight rather than joining it — that one was issued before the write and would come back with
  * the pre-change counts.
+ *
+ * `changedAt` is for refreshes prompted by a change seen elsewhere (a realtime event) at that
+ * moment: a fetch issued since then already reflects it, so one in flight is left to finish and a
+ * clean settled one is kept, rather than queueing another.
  */
-export function refreshMyTasks(): void {
+export function refreshMyTasks(changedAt?: number): void {
+  if (changedAt !== undefined && (inFlight ? inFlightStartedAt : freshAsOf) >= changedAt) return;
   if (inFlight) {
     void inFlight.then(() => useMyTasksStore.getState().refresh());
     return;

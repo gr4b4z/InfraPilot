@@ -134,17 +134,19 @@ public record WorkItemOverallStatus(
         var envs = wanted.Select(t => t.TargetEnv).Distinct().ToList();
 
         // Coarse IN over the cross product, exact match in memory — the same shape the queue uses.
+        // Each list is one array parameter, so a queue's worth of tickets is still one cached plan.
         // Blank-service rows are pre-migration leftovers with no candidate behind them and are not an
         // instance anybody can act on.
         var rows = await db.PromotionWorkItems.AsNoTracking()
-            .Where(w => keys.Contains(w.WorkItemKey) && products.Contains(w.Product)
-                     && envs.Contains(w.TargetEnv) && w.Service != "")
+            .Where(w => EF.Parameter(keys).Contains(w.WorkItemKey) && EF.Parameter(products).Contains(w.Product)
+                     && EF.Parameter(envs).Contains(w.TargetEnv) && w.Service != "")
             .Select(w => new { w.WorkItemKey, w.Product, w.TargetEnv, w.Service, w.Title, w.CreatedAt })
             .ToListAsync(ct);
         if (rows.Count == 0) return new();
 
         var decisions = await db.WorkItemApprovals.AsNoTracking()
-            .Where(a => keys.Contains(a.WorkItemKey) && products.Contains(a.Product) && envs.Contains(a.TargetEnv))
+            .Where(a => EF.Parameter(keys).Contains(a.WorkItemKey) && EF.Parameter(products).Contains(a.Product)
+                     && EF.Parameter(envs).Contains(a.TargetEnv))
             .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv, a.Service, a.Decision })
             .ToListAsync(ct);
         var decisionsByInstance = decisions

@@ -64,7 +64,7 @@ All under `{DEPLOYMENTS_URL}/api/deployments`, header `X-Api-Key` required:
 | Endpoint | Returns |
 |---|---|
 | `GET /products` | Product summaries (the portal's landing overview). |
-| `GET /state?product=&environment=&serviceName=` | Current version matrix — what is deployed where right now. All params optional filters. |
+| `GET /state?product=&environment=&serviceName=&view=` | Current version matrix — what is deployed where right now. All params optional filters. `view=summary` drops each row's references/participants/enrichment/run (a fraction of the size); the default is the full shape. |
 | `GET /services/search?q=&limit=` | Cross-product service search (case-insensitive substring; `q` required). |
 | `GET /services/{product}/{serviceName}?versionsLimit=` | Service detail: state per environment, recent distinct versions, promotions. |
 | `GET /history/{product}/{serviceName}?environment=&limit=` | Deployment history for one service (default limit 50). |

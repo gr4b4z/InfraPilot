@@ -458,6 +458,31 @@ from the deploy graph. See `docs/plans/external-promotion-creation.md` for the f
 Ingest still **completes** promotions: when a `succeeded` event lands a version on a
 promotion's target environment, the matching in-flight candidate is marked `Deployed`.
 
+## Reading current state — `GET /api/deployments/state`
+
+Query params (all optional): `product`, `environment`, `serviceName`, `view`. `environment` is
+alias-resolved the same way ingest resolves it, so a pipeline that posts to `prod` can read `prod`
+back.
+
+Returns an array with one row per (product, service, environment): the newest event there by
+`deployedAt`, **whatever its `status`** — a `failed` or `in_progress` deploy on top is what that cell
+shows, and a rollback is an event like any other. Two events sharing the newest `deployedAt` are not
+ordered further, so send distinct timestamps when it matters which one is current. Retired services
+are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
+`product`, `service`, `environment`, `version`, `previousVersion`, `isRollback`, `status`, `source`,
+`deployedAt`, plus `references` (with operator overrides merged in — see below), `participants`,
+`enrichment` and `run`.
+
+**Response size — `view`.** `full` (the default) returns the rows as above. `view=summary` returns the
+same rows, in the same order, with only the scalar fields: `id`, `product`, `service`, `environment`,
+`version`, `previousVersion`, `isRollback`, `status`, `source`, `deployedAt`. Left out (absent, not
+null): `references`, `participants`, `enrichment`, `run` — most of a full response's weight (in
+production the references alone are about three quarters of it). Anything else is a `400`.
+
+Use `summary` to answer "what runs where" — it is what the product page's matrix and the
+rollback/policy pickers request. Use the default whenever you read a row's references or people
+(work items, PRs, who deployed it).
+
 ## Operator overrides (assigning a participant from the UI)
 
 Routing is editable separately from ingest. Operators can assign, reassign, or clear a

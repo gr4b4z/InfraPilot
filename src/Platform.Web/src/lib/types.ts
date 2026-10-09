@@ -151,6 +151,14 @@ export interface DeploymentStateEntry {
   run?: DeployRun | null;
 }
 
+/**
+ * A state row as `GET /deployments/state?view=summary` returns it: every scalar field of
+ * {@link DeploymentStateEntry}, without the nested `references`, `participants`, `enrichment` and
+ * `run` — the bulk of the full payload, and nothing a matrix cell or a service/environment picker
+ * reads.
+ */
+export type DeploymentStateSummary = Omit<DeploymentStateEntry, 'references' | 'participants' | 'enrichment' | 'run'>;
+
 export interface DeployEvent extends DeploymentStateEntry {
   metadata: Record<string, unknown>;
 }

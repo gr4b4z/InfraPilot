@@ -113,7 +113,7 @@ export function CreateRollbackPanel({
       return;
     }
     api
-      .getDeploymentState({ product, environment: targetEnv })
+      .getDeploymentStateSummary({ product, environment: targetEnv })
       .then((rows) => setServices([...new Set(rows.map((r) => r.service))].sort()))
       .catch(() => setServices([]));
   }, [mode, product, targetEnv, prefill.service]);
@@ -148,7 +148,7 @@ export function CreateRollbackPanel({
       return;
     }
     api
-      .getDeploymentState({ product })
+      .getDeploymentStateSummary({ product })
       .then((rows) => setProductEnvs([...new Set(rows.map((r) => r.environment))]))
       .catch(() => setProductEnvs([]));
   }, [product]);

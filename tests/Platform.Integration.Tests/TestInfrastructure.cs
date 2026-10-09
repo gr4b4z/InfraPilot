@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
 
 // Integration tests share process-global state — notably the static feature-flag cache
@@ -31,6 +33,51 @@ public class SqliteTestDbContext : PlatformDbContext
         base.ConfigureConventions(configurationBuilder);
         configurationBuilder.Properties<DateTimeOffset>().HaveConversion<long>();
         configurationBuilder.Properties<DateTimeOffset?>().HaveConversion<long>();
+    }
+}
+
+/// <summary>
+/// Isolation every test host needs, whichever factory builds it. Call
+/// <see cref="Apply"/> from the factory's <c>ConfigureServices</c>.
+/// <see cref="TestHostIsolationTests"/> checks that every factory in this assembly does.
+/// </summary>
+public static class TestHostIsolation
+{
+    /// <summary>
+    /// Removes the API's own hosted background workers, and drops the process-wide feature-flag
+    /// cache so this host reads its flags from its own database.
+    ///
+    /// <para><b>Why the workers have to go.</b> A test host keeps its in-memory database alive
+    /// on a single <see cref="SqliteConnection"/>, and every DbContext in the host shares it.
+    /// That connection is not thread-safe. EF's SQLite provider also re-registers its SQL
+    /// functions on the connection each time it builds a DbContext, and SQLite refuses that while
+    /// any statement is running ("SQLite Error 5: unable to delete/modify user-function due to
+    /// active statements", or "database is locked"). The workers run on their own timers. They
+    /// include the webhook delivery pump, which runs every 5 s; the deploy-event work-item
+    /// backfill, which runs once 5 s after start; the executor poller, which runs every 10 s;
+    /// and the escalation timer. Whenever one of them was mid-query as a request opened its
+    /// DbContext, that request failed with a 500, and whichever test it belonged to failed. That
+    /// was usually the login in a test class constructor. The same race showed up in the other
+    /// direction as errors that the worker logged and swallowed. Production has a pooled
+    /// connection per context, so it does not have this problem. Tests that exercise a worker
+    /// drive it directly, so nothing depends on the timers.</para>
+    ///
+    /// <para>Framework hosted services (the web server itself, data protection's key-ring warm-up)
+    /// are kept; only types declared in the API assembly are removed, so a worker added later is
+    /// covered without touching this list.</para>
+    /// </summary>
+    public static void Apply(IServiceCollection services)
+    {
+        var apiAssembly = typeof(Program).Assembly;
+        var workers = services
+            .Where(d => d.ServiceType == typeof(IHostedService)
+                     && d.ImplementationType?.Assembly == apiAssembly)
+            .ToList();
+        foreach (var d in workers) services.Remove(d);
+
+        // FeatureFlags caches values process-wide for 30 s. Without this, a host could see the
+        // flags of the previous test class's database instead of its own.
+        FeatureFlags.ClearCacheForTesting();
     }
 }
 
@@ -72,6 +119,8 @@ public class TestFactory : WebApplicationFactory<Program>
             // Register SqliteTestDbContext (with DateTimeOffset->long conversion) as PlatformDbContext.
             services.AddDbContext<PlatformDbContext, SqliteTestDbContext>((sp, options) =>
                 options.UseSqlite(sp.GetRequiredService<DbConnection>()));
+
+            TestHostIsolation.Apply(services);
         });
     }
 

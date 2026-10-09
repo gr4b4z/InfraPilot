@@ -140,10 +140,24 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 
 ### `GET /api/promotions` — list
 Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`, `gate`,
-`gateOnly`.
+`gateOnly`, `view`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
 current user (Pending + authorized for ≥1 open requirement + not already decided) and a
 **`deploysOnApproval`** boolean read off its policy snapshot.
+
+**Response size — `view`.** `full` (the default) returns every candidate's references whole, in
+`sourceEventReferences` — the same list `GET /api/promotions/{id}` returns. `view=summary` returns
+the same response with each reference cut down to the fields a list row renders: `type`, `url`,
+`provider`, `key`, `revision`, `title`, `subTitle`, `priority`, `workItemType`. Left out (absent, not
+null): `content`, the reference-level `participants`, `commits`, `resolution`, `occurredAt`. Every
+candidate-level field is unchanged, and the `reference` filter still matches against the full
+references. Anything else is a `400`.
+
+Use `summary` for screens that list promotions — it is what the Promotions page and the my-tasks
+rollup poll with, and references' bodies are most of a list response's weight. Do **not** use it to
+read references you will send back: release automation that re-POSTs a candidate's references on
+upsert (`Update-InfraPortalPromotionWorkItems.ps1`) must read the default view, or the next upsert
+would drop the fields `summary` leaves out.
 
 **Filtering by approval gate.** `gate` is an approval-step name as the policy spells it
 ("Release Approval"; an unnamed step is "Approval"), matched case-insensitively, and narrows the
@@ -407,6 +421,49 @@ carried the ticket (status as-is), so the stored state is per service even where
 stored values so the database is consistent. Two things did not move: `POST /rejections` is gone
 rather than aliased (an alias would keep `/blocks` working while silently changing which decision it
 records), and audit rows written before the rename keep their original action names.
+
+### Work-items queue — `GET /api/work-items/me/pending`
+
+What the web app's *Work items queue* page reads. Two modes, picked by `status`:
+
+| Param | Applies to | Meaning |
+|---|---|---|
+| `status` | — | `pending` (default) — work items awaiting sign-off that the caller can decide. `decided` — the decision history (every decision by anyone, newest first). |
+| `assignee` | both | Pending: narrows to items where that email holds a role (`unassigned` = nobody in an assignment role). Decided: narrows to that **decider**, case-insensitively (`unassigned` is ignored). |
+| `roleRequirement` | pending | `assigned` — `assignee` must hold a role the item's policy requires; `missing` — a required role has nobody in it. |
+| `since` | decided | ISO timestamp; decisions at or after it. Omit for all time. |
+| `limit` | decided | Rows per page. Default `100`, clamped to `1..500`. |
+| `cursor` | decided | The previous page's `nextCursor`, for the page after it. Omit for the first page. Opaque — pass back what the server returned; anything else is a `400`. |
+
+Pending response: `{ tickets: [...], assignees: [{ email, displayName, role, count }] }`, unpaged —
+it is bounded by the work in flight. `assignees` is the person-filter rollup, computed before the
+`assignee` narrowing.
+
+Decided response — **paged**, every time window included (a busy month is as unbounded as all
+time):
+
+```json
+{
+  "tickets":    [ /* this page's rows, newest decision first */ ],
+  "assignees":  [ { "email": "…", "displayName": "…", "role": "", "count": 12 } ],
+  "total":      1234,
+  "hasMore":    true,
+  "nextCursor": "NjM4…"
+}
+```
+
+- Order is `(decidedAt DESC, id DESC)` — newest first as before, with the decision's id breaking
+  ties, so walking the pages returns exactly the one-shot list: no row twice, none skipped.
+- The cursor is a keyset position, not an offset. A decision's time never changes (a change of mind
+  rewrites the decision on the same row) and new decisions land at the top, so the pages after a
+  cursor are unaffected by decisions arriving in between; refetch the first page to see those.
+- `assignees` (the "decided by" dropdown, before the decider narrowing) and `total` (decisions in
+  the window after the decider narrowing) describe the whole window, not the page, and come on
+  every page.
+- `nextCursor` is `null` and `hasMore` is `false` on the last page.
+- **Compatibility:** `tickets` and `assignees` are unchanged in shape, but a caller that sends no
+  `limit` now gets the newest 100 decisions rather than the whole window. Follow `nextCursor` to
+  read further.
 
 ### Participant roles
 
