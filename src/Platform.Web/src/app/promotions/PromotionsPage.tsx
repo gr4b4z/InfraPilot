@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { getWorkItemContextCached } from '@/lib/workItemContextCache';
 import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
 import { WorkItemsNeedingAttentionBadge } from '@/components/promotions/MissingRoles';
 import { BulkApprovalEffectLine } from '@/components/promotions/ApprovalEffect';
@@ -538,7 +539,7 @@ export function PromotionsPage() {
   const fetchData = ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     api
-      .listPromotions({ status: 'Pending', ...filterParams() })
+      .listPromotions({ status: 'Pending', ...filterParams(), view: 'summary' })
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
@@ -549,7 +550,7 @@ export function PromotionsPage() {
   const fetchAwaitingDeploy = ({ silent = false } = {}) => {
     if (!silent) setAwaitingDeployLoading(true);
     api
-      .listPromotions({ status: 'Approved', ...filterParams() })
+      .listPromotions({ status: 'Approved', ...filterParams(), view: 'summary' })
       .then((data) => setAwaitingDeploy(data.candidates || []))
       .catch(() => setAwaitingDeploy([]))
       .finally(() => setAwaitingDeployLoading(false));
@@ -590,13 +591,13 @@ export function PromotionsPage() {
     const stillCurrent = () => filterKeyRef.current === keyAtStart;
     if (archive !== null) {
       api
-        .listPromotions(filterParams())
+        .listPromotions({ ...filterParams(), view: 'summary' })
         .then((data) => { if (stillCurrent()) setArchive(data.candidates || []); })
         .catch(() => { /* keep the rows on screen; the next event retries */ });
     }
     if (rejected !== null) {
       api
-        .listPromotions({ status: 'Rejected', ...filterParams() })
+        .listPromotions({ status: 'Rejected', ...filterParams(), view: 'summary' })
         .then((data) => { if (stillCurrent()) setRejected(data.candidates || []); })
         .catch(() => { /* as above */ });
     }
@@ -628,7 +629,7 @@ export function PromotionsPage() {
     if ((view === 'all' || view === 'resolved') && archive === null) {
       setArchiveLoading(true);
       api
-        .listPromotions(filterParams())
+        .listPromotions({ ...filterParams(), view: 'summary' })
         .then((data) => { if (!cancelled) setArchive(data.candidates || []); })
         .catch(() => { if (!cancelled) setArchive([]); })
         .finally(() => { if (!cancelled) setArchiveLoading(false); });
@@ -636,7 +637,7 @@ export function PromotionsPage() {
     if (view === 'rejected' && rejected === null) {
       setRejectedLoading(true);
       api
-        .listPromotions({ status: 'Rejected', ...filterParams() })
+        .listPromotions({ status: 'Rejected', ...filterParams(), view: 'summary' })
         .then((data) => { if (!cancelled) setRejected(data.candidates || []); })
         .catch(() => { if (!cancelled) setRejected([]); })
         .finally(() => { if (!cancelled) setRejectedLoading(false); });
@@ -694,7 +695,9 @@ export function PromotionsPage() {
   // Work-item signoff state for the rows on screen. One request per work item per candidate, fanned
   // out concurrently within a candidate and sequentially across them so a wide tab doesn't open
   // hundreds of sockets at once. A cancellation guard avoids overwriting state when the list churns
-  // mid-flight (a filter or tab change).
+  // mid-flight (a filter or tab change). Answers come through a short-lived cache that the realtime
+  // events themselves invalidate, so the reruns below — a remount, a reshuffled row set, a work-item
+  // event — only refetch the work items that actually changed.
   const progressTargets = useMemo(
     () => displayed.slice(0, PROGRESS_CANDIDATE_LIMIT),
     [displayed],
@@ -732,8 +735,7 @@ export function PromotionsPage() {
         try {
           const ctxs = await Promise.all(
             tickets.map((t) =>
-              api
-                .getWorkItemContext(t.key ?? '', c.product, c.service, c.targetEnv)
+              getWorkItemContextCached(t.key ?? '', c.product, c.service, c.targetEnv)
                 .then((ctx) => ({ key: t.key ?? '', ctx }))
                 .catch(() => ({ key: t.key ?? '', ctx: null })),
             ),

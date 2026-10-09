@@ -1,4 +1,4 @@
-import { isMsalEnabled, reauthenticate } from './auth';
+import { acquireToken, isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
 import { authHeaders } from './authHeaders';
 import {
@@ -54,7 +54,7 @@ class ApiClient {
     this.token = token;
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}, isRetry = false): Promise<T> {
     const headers = await authHeaders(
       (options.headers as Record<string, string>) || {},
       this.token,
@@ -79,12 +79,18 @@ class ApiClient {
     else reportConnectionHealthy();
 
     if (!response.ok) {
-      // A 401 under MSAL means the session expired or was revoked. Silent renewal
-      // can't recover and a reload won't either (the stale account lingers in
-      // sessionStorage), so force an interactive redirect instead of leaving the
-      // UI stuck with no data. Local-auth 401s keep their existing behaviour.
+      // A 401 under MSAL means the API rejected the token — revoked, or the session ended early.
+      // Retry once with a freshly issued one (acquireToken signs in by itself if Entra needs the
+      // user); only if that is rejected too, sign in interactively rather than leaving the UI
+      // stuck with no data. Local-auth 401s keep their existing behaviour.
       if (response.status === 401 && isMsalEnabled()) {
-        await reauthenticate();
+        if (!isRetry) {
+          const fresh = await acquireToken({ forceRefresh: true }).catch(() => null);
+          if (fresh) return this.request<T>(path, options, true);
+        } else {
+          // Failing to start the redirect still fails this request with the API error below.
+          await reauthenticate().catch(() => undefined);
+        }
       }
       const error = await response.json().catch(() => ({ error: response.statusText }));
       throw new Error(error.error || `API error: ${response.status}`);
@@ -180,9 +186,17 @@ class ApiClient {
     return this.request<import('./types').ProductSummary[]>('/deployments/products');
   }
 
-  getDeploymentState(params?: { product?: string; environment?: string; serviceName?: string }) {
-    const query = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]).toString() : '';
-    return this.request<import('./types').DeploymentStateEntry[]>(`/deployments/state${query}`);
+  /**
+   * The current state matrix in its `view=summary` shape: every row without its `references`,
+   * `participants`, `enrichment` and `run` — most of the full response's weight, and none of it read
+   * by the matrix or the pickers built from it. Something that needs to render those wants the
+   * endpoint's default (full) view instead.
+   */
+  getDeploymentStateSummary(params?: { product?: string; environment?: string; serviceName?: string }) {
+    const entries = Object.entries({ ...params, view: 'summary' }).filter(([, v]) => v) as [string, string][];
+    return this.request<import('./types').DeploymentStateSummary[]>(
+      `/deployments/state?${new URLSearchParams(entries).toString()}`,
+    );
   }
 
   // Build registry
@@ -575,6 +589,12 @@ class ApiClient {
      */
     gateOnly?: boolean;
     limit?: number;
+    /**
+     * `summary` leaves each reference's heavy fields out — `content`, `participants`, `commits`,
+     * `resolution`, `occurredAt` — none of which a list row reads. For list views only: anything that
+     * renders a reference's body or people, or sends references back, needs the default.
+     */
+    view?: 'summary';
   }) {
     const entries: [string, string][] = [];
     if (params?.status) entries.push(['status', params.status]);
@@ -585,6 +605,7 @@ class ApiClient {
     if (params?.gate) entries.push(['gate', params.gate]);
     if (params?.gate && params.gateOnly) entries.push(['gateOnly', 'true']);
     if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.view) entries.push(['view', params.view]);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<{ candidates: PromotionCandidate[] }>(`/promotions/${query}`);
   }
@@ -990,6 +1011,13 @@ class ApiClient {
      * Ignored on the "decided" view.
      */
     roleRequirement?: 'assigned' | 'missing';
+    /**
+     * Rows per page on the "decided" view (server default 100, clamped to 1..500). The pending
+     * views are not paged and ignore it.
+     */
+    limit?: number;
+    /** The previous decided page's `nextCursor`, for the page after it. Omit for the first page. */
+    cursor?: string;
   }) {
     const params = new URLSearchParams();
     const assignee = args?.assignee?.trim();
@@ -998,6 +1026,8 @@ class ApiClient {
     if (status && status !== 'pending') params.set('status', status);
     if (args?.since) params.set('since', args.since);
     if (args?.roleRequirement) params.set('roleRequirement', args.roleRequirement);
+    if (args?.limit) params.set('limit', String(args.limit));
+    if (args?.cursor) params.set('cursor', args.cursor);
     const qs = params.toString();
     const suffix = qs.length > 0 ? `?${qs}` : '';
     return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
@@ -2108,6 +2138,14 @@ export interface MyPendingWorkItemsResponse {
    * rollup instead (role is empty there).
    */
   assignees: PendingAssignee[];
+  // Decided view only — it comes a page at a time, newest decision first. The pending views
+  // return everything in one response and leave these out.
+  /** Decisions in the whole window (after the decider narrowing), not just this page. */
+  total?: number;
+  /** Whether rows exist after this page. */
+  hasMore?: boolean;
+  /** Pass back as `cursor` for the next page; null on the last one. */
+  nextCursor?: string | null;
 }
 
 export interface PromotionParticipant {

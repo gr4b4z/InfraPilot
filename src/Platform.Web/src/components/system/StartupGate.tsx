@@ -13,9 +13,10 @@ const SPINNER_DELAY_MS = 400;
 
 /**
  * Holds the app back until the API has said how sign-in works — nothing below can render
- * correctly without it. When the API can't be reached, says so and why, and keeps retrying; this
- * used to fall through to the built-in dev user against an API that wasn't there, which looked like
- * a broken app rather than an outage.
+ * correctly without it. When the API can't be reached (after `loadAuthConfig`'s own quick retries),
+ * says so and why, and keeps retrying with a visible countdown instead of a bare "try again".
+ * Dev never gets here: there `loadAuthConfig` falls back to no auth so the shell loads without a
+ * backend.
  */
 export function StartupGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -51,9 +52,6 @@ export function StartupGate({ children }: { children: ReactNode }) {
       attempt={attempt}
       checking={checking}
       onRetry={retry}
-      // Dev only: the shell is still worth driving with no API running (empty pages, theme and
-      // keyboard work), so keep the old fall-through one click away.
-      onContinue={import.meta.env.DEV ? () => setReady(true) : undefined}
     />
   );
 }
@@ -80,13 +78,11 @@ function Unreachable({
   attempt,
   checking,
   onRetry,
-  onContinue,
 }: {
   problem: ConnectionProblem;
   attempt: number;
   checking: boolean;
   onRetry: () => void;
-  onContinue?: () => void;
 }) {
   const [secondsLeft, setSecondsLeft] = useState(
     RETRY_DELAYS_S[Math.min(attempt, RETRY_DELAYS_S.length - 1)],
@@ -132,7 +128,6 @@ function Unreachable({
         <>
           <ActionButton primary onClick={onRetry} disabled={checking}>Retry now</ActionButton>
           <ActionButton onClick={() => reloadApp()}>Reload page</ActionButton>
-          {onContinue && <ActionButton onClick={onContinue}>Continue without the API (dev)</ActionButton>}
         </>
       }
       footer="If this persists, copy the details and send them along with your report — they say which request failed and how."

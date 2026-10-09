@@ -438,7 +438,7 @@ export function PromotionSettings() {
     // endpoint for a product that doesn't exist yet.
     const timer = setTimeout(() => {
       api
-        .getDeploymentState({ product: formProduct })
+        .getDeploymentStateSummary({ product: formProduct })
         .then((rows) => {
           if (cancelled) return;
           setKnownServices({

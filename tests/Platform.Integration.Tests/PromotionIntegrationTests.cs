@@ -227,6 +227,8 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
                 services.AddSingleton<DbConnection>(_connection);
                 services.AddDbContext<PlatformDbContext>((sp, options) =>
                     options.UseSqlite(sp.GetRequiredService<DbConnection>()));
+
+                TestHostIsolation.Apply(services);
             });
         }
 

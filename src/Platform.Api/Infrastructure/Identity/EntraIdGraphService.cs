@@ -1,33 +1,154 @@
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
 
 namespace Platform.Api.Infrastructure.Identity;
 
+/// <summary>
+/// Entra ID directory reads through Microsoft Graph. Registered as a singleton: group member lists
+/// are cached process-wide (see <see cref="GetGroupMembers"/>), so one Graph read answers every
+/// user and request that checks the same group.
+/// </summary>
 public class EntraIdGraphService : IIdentityService
 {
-    private readonly GraphServiceClient _graphClient;
+    // How long a group's member list is trusted. The token `groups` claims the authorizer checks
+    // first are already as old as the token (up to an hour or so), so this adds little staleness.
+    public static readonly TimeSpan MembershipTtl = TimeSpan.FromMinutes(5);
 
-    public EntraIdGraphService(GraphServiceClient graphClient)
+    // A failed read is remembered briefly, so a Graph outage or a dead group reference costs one
+    // round trip per group per minute instead of one per approval check.
+    public static readonly TimeSpan FailureTtl = TimeSpan.FromMinutes(1);
+
+    // Only what UserInfo carries — Graph returns ~30 properties per user otherwise. 999 is the
+    // largest page /transitiveMembers serves, so even big groups take a handful of round trips.
+    private static readonly string[] MemberFields = ["id", "displayName", "mail", "userPrincipalName"];
+    private const int MemberPageSize = 999;
+
+    private readonly GraphServiceClient _graphClient;
+    private readonly IMemoryCache _cache;
+    private readonly ILogger<EntraIdGraphService> _logger;
+
+    // Concurrent misses for one group share a single Graph read.
+    private readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<UserInfo>>>> _inFlight = new();
+
+    public EntraIdGraphService(
+        GraphServiceClient graphClient, IMemoryCache cache, ILogger<EntraIdGraphService> logger)
     {
         _graphClient = graphClient;
+        _cache = cache;
+        _logger = logger;
     }
 
+    /// <summary>
+    /// The users that are members of the group with object id <paramref name="groupId"/>, directly
+    /// or through a nested group (the same transitive membership the token's <c>groups</c> claim
+    /// carries), across every result page. Cached for <see cref="MembershipTtl"/> per group and
+    /// shared by all callers.
+    ///
+    /// <para>Only directory object ids (GUIDs) are sent to Graph. A policy can also name a group by
+    /// display name or app-role name — legacy bare strings, or text typed into the group picker —
+    /// and <c>groups/{name}</c> can only fail with "Invalid object identifier", so such a reference
+    /// answers with no members without a round trip. It still matches through role claims. Names are
+    /// deliberately not resolved to ids here: display names are neither unique nor fixed, which is
+    /// not something an approval decision should key off.</para>
+    ///
+    /// <para>A failed read is logged (Warning, at most once per group per
+    /// <see cref="MembershipTtl"/>), remembered for <see cref="FailureTtl"/>, and answered with no
+    /// members — the same "not a member" the approval check reached before by catching the
+    /// error.</para>
+    /// </summary>
     public async Task<IReadOnlyList<UserInfo>> GetGroupMembers(string groupId, CancellationToken ct = default)
     {
-        var members = await _graphClient.Groups[groupId].Members.GetAsync(cancellationToken: ct);
-        var users = new List<UserInfo>();
-
-        if (members?.Value is null) return users.AsReadOnly();
-
-        foreach (var member in members.Value.OfType<User>())
+        if (!Guid.TryParse(groupId, out var objectId))
         {
-            if (member.Id is not null)
-            {
-                users.Add(new UserInfo(member.Id, member.DisplayName ?? "", member.Mail ?? member.UserPrincipalName ?? ""));
-            }
+            if (FirstInWindow($"graph-members-skipped:{groupId.ToLowerInvariant()}"))
+                _logger.LogInformation(
+                    "Group {Group} is not a directory object id; skipping the Graph membership lookup " +
+                    "(it can still match through role claims)", groupId);
+            return [];
         }
 
+        var key = $"graph-members:{objectId:D}";
+        if (_cache.TryGetValue(key, out IReadOnlyList<UserInfo>? cached) && cached is not null)
+            return cached;
+
+        var read = _inFlight.GetOrAdd(key,
+            _ => new Lazy<Task<IReadOnlyList<UserInfo>>>(() => ReadAndCacheMembersAsync(objectId, key)));
+        // The shared read runs uncancelled so one caller giving up doesn't fail the others waiting
+        // on it; each caller only stops waiting on its own token.
+        return await read.Value.WaitAsync(ct);
+    }
+
+    private async Task<IReadOnlyList<UserInfo>> ReadAndCacheMembersAsync(Guid objectId, string key)
+    {
+        try
+        {
+            var members = await ReadAllMembersAsync(objectId.ToString("D"));
+            _cache.Set(key, members, MembershipTtl);
+            return members;
+        }
+        catch (Exception ex)
+        {
+            if (FirstInWindow($"graph-members-failed:{objectId:D}"))
+                _logger.LogWarning(ex,
+                    "Group membership lookup failed for {Group}; treating it as having no members for {RetryAfter}",
+                    objectId, FailureTtl);
+            else
+                _logger.LogDebug(ex, "Group membership lookup failed again for {Group}", objectId);
+
+            IReadOnlyList<UserInfo> none = [];
+            _cache.Set(key, none, FailureTtl);
+            return none;
+        }
+        finally
+        {
+            _inFlight.TryRemove(key, out _);
+        }
+    }
+
+    // Transitive, so someone in a group nested inside this one counts — as they already do through
+    // the token's `groups` claim, which Entra fills with transitive memberships. The
+    // microsoft.graph.user cast leaves out the nested groups themselves, devices and service
+    // principals: only users can approve. Graph documents the cast as an advanced directory query,
+    // hence ConsistencyLevel + $count; that index can trail a membership change briefly, which the
+    // 5-minute cache already tolerates.
+    private async Task<IReadOnlyList<UserInfo>> ReadAllMembersAsync(string groupId)
+    {
+        var users = new List<UserInfo>();
+        var firstPage = await _graphClient.Groups[groupId].TransitiveMembers.GraphUser.GetAsync(r =>
+        {
+            r.QueryParameters.Select = MemberFields;
+            r.QueryParameters.Top = MemberPageSize;
+            r.QueryParameters.Count = true;
+            r.Headers.Add("ConsistencyLevel", "eventual");
+        });
+        if (firstPage is null) return users.AsReadOnly();
+
+        var pages = PageIterator<User, UserCollectionResponse>.CreatePageIterator(
+            _graphClient, firstPage, user =>
+            {
+                // The cast already filters server-side; this keeps a stray non-user from ever counting.
+                if (user is { Id: { } id, OdataType: null or "#microsoft.graph.user" })
+                    users.Add(new UserInfo(id, user.DisplayName ?? "", user.Mail ?? user.UserPrincipalName ?? ""));
+                return true;
+            },
+            // Next-page requests are built from @odata.nextLink alone and don't carry the header.
+            next =>
+            {
+                next.Headers.Add("ConsistencyLevel", "eventual");
+                return next;
+            });
+        await pages.IterateAsync();
         return users.AsReadOnly();
+    }
+
+    // True the first time per MembershipTtl for this key — keeps a recurring condition to one log line.
+    private bool FirstInWindow(string key)
+    {
+        if (_cache.TryGetValue(key, out _)) return false;
+        _cache.Set(key, true, MembershipTtl);
+        return true;
     }
 
     public async Task<UserInfo?> GetUser(string userId, CancellationToken ct = default)
