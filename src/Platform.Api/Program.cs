@@ -33,6 +33,7 @@ using Platform.Api.Agent;
 using Platform.Api.BackgroundServices;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.AzureDevOps;
+using Platform.Api.Infrastructure.GitHub;
 using Platform.Api.Infrastructure.Jira;
 using Platform.Api.Features.Webhooks;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
@@ -204,11 +205,16 @@ builder.Services.AddHttpClient<AzureDevOpsClient>();
 builder.Services.Configure<JiraOptions>(builder.Configuration.GetSection(JiraOptions.SectionName));
 builder.Services.AddHttpClient<JiraClient>();
 
+// GitHub
+builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection(GitHubOptions.SectionName));
+builder.Services.AddHttpClient<GitHubClient>();
+
 // Executors (keyed DI)
 builder.Services.AddKeyedScoped<IExecutor, AzureDevOpsRepoExecutor>("azure-devops-repo");
 builder.Services.AddKeyedScoped<IExecutor, AzureDevOpsPipelineExecutor>("azure-devops-pipeline");
 builder.Services.AddKeyedScoped<IExecutor, GitHubRepoExecutor>("github-repo");
 builder.Services.AddKeyedScoped<IExecutor, GitHubActionsExecutor>("github-actions");
+builder.Services.AddKeyedScoped<IExecutor, GitHubIssueExecutor>("github-issue");
 builder.Services.AddKeyedScoped<IExecutor, JiraTicketExecutor>("jira-ticket");
 builder.Services.AddScoped<ExecutorDispatcher>();
 

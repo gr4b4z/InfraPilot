@@ -448,6 +448,7 @@ executor:
     bullets: [
       'Azure DevOps: configure organization URL, project, and PAT',
       'Jira: configure base URL, email, and API token',
+      'GitHub issues: configure a token with Issues read/write; `github-issue` files the request as an issue-form submission and tracks it until the issue closes',
       'Webhook executors: provide stable downstream endpoints and request contracts',
       'Keep catalog `parameters_map` aligned with the target pipeline or API input names',
     ],
@@ -558,7 +559,7 @@ executor:
       'Validate naming rules before execution',
       'Reduce one-off bootstrap work for the platform team',
     ],
-    note: 'Relevant catalog examples: `create-repo.yaml` and `run-pipeline.yaml`.',
+    note: 'Relevant catalog examples: `create-repo.yaml` and `run-pipeline.yaml`. `request-repository.yaml` shows the issue-driven variant: the request becomes a GitHub issue shaped like the organisation\'s issue form, so the existing issue-triggered onboarding workflow fulfils it.',
   },
   {
     slug: 'deployment-visibility-and-rollbacks',
