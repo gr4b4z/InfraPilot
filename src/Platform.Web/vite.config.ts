@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -10,10 +10,44 @@ import path from 'path'
  */
 const apiTarget = process.env.VITE_API_TARGET ?? 'http://localhost:5259'
 
+const appVersion = process.env.APP_VERSION ?? 'dev'
+
+/**
+ * Tells the two things that can't read the bundle which build this is:
+ *
+ * - `version.json`, which a running page polls to notice that a newer release has been deployed
+ *   (see `src/lib/appUpdate.ts`). `entry` is the content-hashed entry script, so it changes exactly
+ *   when the code does — the version tag alone is `dev` outside a release build.
+ * - `%APP_VERSION%` in index.html, which the boot watchdog puts in its diagnostics.
+ */
+function buildInfo(): Plugin {
+  let base = '/'
+  return {
+    name: 'infrapilot-build-info',
+    configResolved(config) {
+      base = config.base
+    },
+    // `pre` so it runs ahead of Vite's own `%ENV%` substitution, which would warn about a name it
+    // doesn't know.
+    transformIndexHtml: {
+      order: 'pre',
+      handler: (html) => html.replaceAll('%APP_VERSION%', appVersion),
+    },
+    generateBundle(_options, bundle) {
+      const entry = Object.values(bundle).find((file) => file.type === 'chunk' && file.isEntry)
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({ version: appVersion, entry: entry ? `${base}${entry.fileName}` : null }),
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), buildInfo()],
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.APP_VERSION ?? 'dev'),
+    __APP_VERSION__: JSON.stringify(appVersion),
   },
   resolve: {
     alias: {

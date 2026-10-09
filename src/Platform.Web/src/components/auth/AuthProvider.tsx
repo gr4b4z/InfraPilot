@@ -9,6 +9,9 @@ import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { getStoredToken, fetchCurrentUser } from '@/lib/localAuth';
 import { LoginPage } from '@/app/login/LoginPage';
+import { ActionButton, ProblemScreen } from '@/components/system/ProblemScreen';
+import { reloadApp } from '@/lib/appUpdate';
+import { diagnosticsReport, errorLines, RESET_FOOTNOTE } from '@/lib/diagnostics';
 import { Loader2 } from 'lucide-react';
 
 const DEV_USER = createAuthUser(
@@ -23,6 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const localAuth = isLocalAuthEnabled();
   const msalInstance = getMsalInstance();
   const [msalReady, setMsalReady] = useState(!msalEnabled);
+  const [msalError, setMsalError] = useState<unknown>(null);
   const [localAuthChecked, setLocalAuthChecked] = useState(!localAuth);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
 
@@ -43,9 +47,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .then(() => msalInstance.handleRedirectPromise())
         .then(() => setMsalReady(true))
         .catch((err) => {
+          // Not a reason to carry on as the dev user: that renders an admin's UI over an API that
+          // rejects every call. Say what failed instead.
           console.error('MSAL initialization failed:', err);
-          useAuthStore.getState().setUser(DEV_USER);
-          setMsalReady(true);
+          setMsalError(err);
         });
       return;
     }
@@ -74,6 +79,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Neither MSAL nor local auth — legacy dev mode with hardcoded user
     useAuthStore.getState().setUser(DEV_USER);
   }, [msalEnabled, localAuth, msalInstance]);
+
+  if (msalError) return <SignInProblem error={msalError} />;
 
   // MSAL loading
   if (msalEnabled && !msalReady) {
@@ -152,6 +159,38 @@ function MsalAuthGuard({ children }: { children: ReactNode }) {
   }
 
   return <>{children}</>;
+}
+
+function SignInProblem({ error }: { error: unknown }) {
+  // Reload without the redirect response in the URL, or MSAL would trip over the same one again.
+  const retry = (reset: boolean) => {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    reloadApp(reset);
+  };
+  return (
+    <ProblemScreen
+      title="Sign-in couldn’t complete"
+      message={
+        <>
+          <p className="text-[12px] break-words" style={{ fontFamily: 'var(--font-mono)', color: 'var(--danger)' }}>
+            {error instanceof Error ? error.message : String(error)}
+          </p>
+          <p>
+            Reload to sign in again. If this keeps happening, reset saved data — a sign-in left
+            half-finished in this browser is a common cause.
+          </p>
+        </>
+      }
+      details={() => diagnosticsReport('sign-in failed', errorLines(error))}
+      actions={
+        <>
+          <ActionButton primary onClick={() => retry(false)}>Reload</ActionButton>
+          <ActionButton onClick={() => retry(true)}>Reset saved data and reload</ActionButton>
+        </>
+      }
+      footer={RESET_FOOTNOTE}
+    />
+  );
 }
 
 function LoadingScreen({ message = 'Loading...' }: { message?: string }) {

@@ -5,6 +5,179 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>platform-web</title>
+    <script>
+      /*
+       * Boot watchdog. Runs before the app bundle, so it can still explain a page that never starts:
+       * a bundle that fails to download (typically an old copy of this page naming files the server
+       * no longer has), a script error before React mounts, or a start that just hangs. Each of those
+       * used to be a blank white page with nothing to report but "it doesn't load".
+       *
+       * The app calls window.__ipBoot.done() once it has rendered; from then on React reports its own
+       * problems and this stands down. window.__ipBoot.reload() is shared with the app's own error
+       * screens so "reload" and "reset" mean the same thing everywhere (see src/global.d.ts).
+       */
+      (function () {
+        var version = '%APP_VERSION%';
+        var openedAt = new Date().toISOString();
+        var problems = [];
+        var finished = false;
+        var panel = null;
+        var graceTimer = 0;
+        var slowTimer = setTimeout(function () { show('slow'); }, 20000);
+
+        var TEXT = {
+          asset: ['The app couldn’t load', 'Part of the app failed to download. This usually means the browser kept an old copy of the page from before an update.'],
+          script: ['The app failed to start', 'A script error stopped the app before it could start.'],
+          slow: ['The app is taking too long to start', 'The page has been loading for over 20 seconds. The connection may be slow, or the server isn’t responding.']
+        };
+
+        function note(text) {
+          if (problems.length < 10) problems.push(new Date().toISOString().slice(11, 19) + ' ' + text);
+        }
+
+        function onError(event) {
+          var target = event.target;
+          // Failed downloads don't bubble; they reach this capture listener with the element as target.
+          if (target && target.tagName) {
+            note('Failed to load ' + (target.src || target.href || target.tagName));
+            if (target.tagName === 'SCRIPT') show('asset');
+            return;
+          }
+          note('Error: ' + ((event.error && event.error.stack) || event.message));
+          // nginx answers a request for a bundle it doesn't have with a script that reloads once and
+          // throws this the second time (see @missing_bundle in infra/nginx-single.conf).
+          if (event.error && event.error.name === 'MissingBundleError') show('asset');
+          else showSoon('script');
+        }
+
+        function onRejection(event) {
+          var reason = event.reason;
+          note('Unhandled rejection: ' + ((reason && (reason.stack || reason.message)) || String(reason)));
+          showSoon('script');
+        }
+
+        // An error during start-up isn't always fatal; give the app a moment to render before
+        // covering it.
+        function showSoon(kind) {
+          if (!graceTimer) graceTimer = setTimeout(function () { show(kind); }, 3000);
+        }
+
+        addEventListener('error', onError, true);
+        addEventListener('unhandledrejection', onRejection);
+
+        function reload(reset) {
+          var jobs = [];
+          try {
+            if (reset) {
+              try { localStorage.clear(); sessionStorage.clear(); } catch (e) { /* storage blocked */ }
+              document.cookie.split(';').forEach(function (part) {
+                var name = part.split('=')[0].trim();
+                if (name.indexOf('ip.') === 0) document.cookie = name + '=; path=/; max-age=0';
+              });
+              if (window.caches) {
+                jobs.push(caches.keys().then(function (keys) {
+                  return Promise.all(keys.map(function (key) { return caches.delete(key); }));
+                }));
+              }
+              if (navigator.serviceWorker) {
+                jobs.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+                  return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
+                }));
+              }
+            }
+            // Re-fetch the page past every cache on the way (browser and proxy), so the reload
+            // can't land on the same stale copy.
+            jobs.push(fetch(location.href, { cache: 'reload', credentials: 'same-origin' }));
+          } catch (e) { /* fall through to the plain reload */ }
+          function go() { location.reload(); }
+          Promise.all(jobs).then(go, go);
+        }
+
+        function report(kind) {
+          var bundle = document.querySelector('script[type="module"][src]');
+          var lines = [
+            'Start-up problem: ' + kind,
+            'Time: ' + new Date().toISOString() + ' (page opened ' + openedAt + ')',
+            'Page: ' + location.href,
+            'Build: ' + version + ' ' + (bundle ? bundle.getAttribute('src') : '(no bundle script)'),
+            'Online: ' + (navigator.onLine ? 'yes' : 'no'),
+            'Browser: ' + navigator.userAgent
+          ];
+          if (problems.length) lines = lines.concat(['', 'Problems:'], problems);
+          return lines.join('\n');
+        }
+
+        function el(tag, style, text, parent) {
+          var node = document.createElement(tag);
+          if (style) node.style.cssText = style;
+          if (text) node.textContent = text;
+          if (parent) parent.appendChild(node);
+          return node;
+        }
+
+        // Plain DOM with inline styles: the stylesheet may be the thing that failed to load.
+        function show(kind) {
+          if (finished || panel) return;
+          clearTimeout(slowTimer);
+          clearTimeout(graceTimer);
+          if (!document.body) {
+            document.addEventListener('DOMContentLoaded', function () { show(kind); });
+            return;
+          }
+          var dark = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+          var c = dark
+            ? { page: '#1B1B1C', card: '#252526', text: '#E9E9E9', muted: '#B4B4B4', border: '#3F3F41', accent: '#7C6CF0' }
+            : { page: '#F7F8FA', card: '#FFFFFF', text: '#111827', muted: '#4B5563', border: '#E5E7EB', accent: '#5B49DE' };
+          var details = report(kind);
+
+          panel = el('div', 'position:fixed;inset:0;z-index:2147483647;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;'
+            + 'background:' + c.page + ';color:' + c.text + ';font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif');
+          panel.setAttribute('role', 'alert');
+          var card = el('div', 'max-width:560px;width:100%;padding:28px;box-sizing:border-box;border-radius:12px;border:1px solid ' + c.border + ';background:' + c.card, '', panel);
+          el('h1', 'margin:0 0 8px;font-size:18px', TEXT[kind][0], card);
+          el('p', 'margin:0 0 8px;color:' + c.muted, TEXT[kind][1], card);
+          el('p', 'margin:0 0 20px;color:' + c.muted, 'Try reloading. If it keeps happening, use “Copy details” and include them in your report.', card);
+
+          var row = el('div', 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px', '', card);
+          function button(label, primary, onClick) {
+            var b = el('button', 'padding:8px 14px;border-radius:8px;font:inherit;font-weight:500;cursor:pointer;'
+              + (primary ? 'border:1px solid ' + c.accent + ';background:' + c.accent + ';color:#fff' : 'border:1px solid ' + c.border + ';background:transparent;color:' + c.text), label, row);
+            b.type = 'button';
+            b.onclick = onClick;
+            return b;
+          }
+          button('Reload', true, function () { reload(false); });
+          button('Reset saved data and reload', false, function () { reload(true); });
+          var more = el('details', '', '', card);
+          var copy = button('Copy details', false, function () {
+            var copied = navigator.clipboard && navigator.clipboard.writeText
+              ? navigator.clipboard.writeText(details)
+              : Promise.reject(new Error('no clipboard'));
+            copied.then(
+              function () { copy.textContent = 'Copied'; },
+              function () { more.open = true; copy.textContent = 'Copy the text below'; }
+            );
+          });
+          el('summary', 'cursor:pointer;color:' + c.muted, 'Technical details', more);
+          el('pre', 'margin:8px 0 0;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-word;user-select:all;'
+            + 'font:12px/1.5 ui-monospace,Consolas,monospace;background:' + c.page, details, more);
+          el('p', 'margin:12px 0 0;font-size:12px;color:' + c.muted, '“Reset saved data” signs you out and clears saved filters and the assistant conversation in this browser.', card);
+          document.body.appendChild(panel);
+        }
+
+        window.__ipBoot = {
+          done: function () {
+            finished = true;
+            clearTimeout(slowTimer);
+            clearTimeout(graceTimer);
+            removeEventListener('error', onError, true);
+            removeEventListener('unhandledrejection', onRejection);
+            if (panel) { panel.remove(); panel = null; }
+          },
+          reload: reload
+        };
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

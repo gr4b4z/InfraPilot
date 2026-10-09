@@ -5,6 +5,9 @@ import { ChatSidebar } from './ChatSidebar';
 import { GuideSpotlight } from '@/components/guide/GuideSpotlight';
 import { HighlightLayer } from '@/components/guide/HighlightLayer';
 import { KeyboardLayer } from './KeyboardLayer';
+import { StatusBanners } from './StatusBanners';
+import { PageErrorBoundary } from '@/components/system/ErrorBoundary';
+import { useReloadIntoUpdateOnNavigate } from '@/lib/appUpdate';
 import { useRealtimeEvents } from '@/hooks/useRealtimeEvents';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { useConversationStore } from '@/stores/conversationStore';
@@ -14,6 +17,8 @@ export function Layout() {
   useRealtimeEvents();
   // Feeds the sidebar counters, the topbar bell badge and the My Tasks page from one fetch.
   useMyTasksPolling();
+  // A newer release went out while this tab was open: load it on the next page change.
+  useReloadIntoUpdateOnNavigate();
   const { sidebarOpen, sidebarExpanded } = useConversationStore();
   const isDesktop = useIsDesktop();
   // Below `lg` there isn't room for a conversation and a table side by side, so an open chat always
@@ -39,6 +44,7 @@ export function Layout() {
       <KeyboardLayer />
       <Sidebar />
       <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+        <StatusBanners />
         <Topbar />
         <div className="flex flex-1 overflow-hidden">
           {!chatTakesOver && (
@@ -52,7 +58,9 @@ export function Layout() {
               {/* No width cap here: these are dense operational tables that should use the
                   whole viewport. Long-form pages set their own reading width instead. */}
               <div className="p-4 sm:p-6 lg:p-8">
-                <Outlet />
+                <PageErrorBoundary>
+                  <Outlet />
+                </PageErrorBoundary>
               </div>
             </main>
           )}
