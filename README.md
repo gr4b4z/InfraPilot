@@ -242,6 +242,8 @@ You only need these if you want to enable the related features.
 | `Jira__Connections__default__BaseUrl` | Only if using Jira executors or lookups | Points to the Jira instance. |
 | `Jira__Connections__default__Email` | Only if using Jira executors or lookups | Jira account email used for API authentication. |
 | `Jira__Connections__default__ApiToken` | Only if using Jira executors or lookups | Jira API token used for authentication. |
+| `GitHub__Connections__default__Token` | Only if using the `github-issue` executor | Fine-grained PAT or GitHub App installation token with Issues read/write on the target repositories. |
+| `GitHub__Connections__default__ApiUrl` | Only for GitHub Enterprise Server | REST API root; defaults to `https://api.github.com`. |
 | `AzureBlob__ConnectionString` | Only if using file attachments | Connects the app to Azure Blob Storage. |
 | `AzureBlob__ContainerName` | Only if using file attachments | Selects the blob container for uploaded files. |
 | `ServiceBus__ConnectionString` | Only if using Service Bus execution flow | Connects the app to Azure Service Bus. |
@@ -574,6 +576,7 @@ Keep these out of source control:
 - `AzureOpenAI__ApiKey`
 - `AzureDevOps__Connections__*__Pat`
 - `Jira__Connections__*__ApiToken`
+- `GitHub__Connections__*__Token`
 - `Deployments__ApiKeys__*__Key`
 
 For real deployments:

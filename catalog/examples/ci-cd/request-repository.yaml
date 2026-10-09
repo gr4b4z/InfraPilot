@@ -1,0 +1,134 @@
+id: request-repository
+name: Request Repository
+description: Request a new GitHub repository, created and governed via Terraform through the platform onboarding pipeline
+category: ci-cd
+icon: git-branch
+
+# Files the request as a GitHub issue shaped exactly like the "Repository Request" issue form in the
+# organisation's .github repository. The issue-driven workflow there validates it, opens the Terraform
+# PR, and a maintainer merges it — the portal only adds the form, pre-validation, and tracking.
+
+inputs:
+  - id: name
+    component: TextInput
+    label: Repository name
+    placeholder: "mpt-billing-service"
+    validation: "^(ops-[a-z0-9]+(-[a-z0-9]+)*|shared-[a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)*)$"
+    required: true
+
+  - id: product
+    component: ResourcePicker
+    label: Product (if applicable)
+    placeholder: "mpt"
+    source: deployments/products
+
+  - id: visibility
+    component: Select
+    label: Visibility
+    required: true
+    default: Internal
+    options:
+      - { id: Internal, label: Internal }
+      - { id: Private, label: Private }
+
+  - id: tier
+    component: Select
+    label: Tier
+    required: true
+    options:
+      - { id: High, label: High }
+      - { id: Standard, label: Standard }
+      - { id: Low, label: Low }
+
+  - id: stack
+    component: Select
+    label: Application stack
+    required: true
+    options:
+      - { id: dotnet, label: ".NET" }
+      - { id: other, label: "Other / none" }
+
+  - id: template
+    component: Select
+    label: Starter template
+    required: true
+    default: none
+    options:
+      - { id: none, label: "no template (CI wiring only)" }
+      - { id: ops-template-dotnet, label: ops-template-dotnet }
+
+  - id: owning_team
+    component: TextInput
+    label: Owning team
+    placeholder: "mpt-billing-owners"
+    required: true
+
+  - id: contributor_teams
+    component: TextInput
+    label: Contributor teams
+    placeholder: "mpt-devs, mpt-qa"
+
+  - id: infraportal
+    component: Select
+    label: Register builds in InfraPortal?
+    required: true
+    default: "no"
+    options:
+      - { id: "yes", label: "yes — publish registers the build in InfraPortal" }
+      - { id: "no", label: "no — built, never deployed" }
+
+  - id: package_feed
+    component: Select
+    label: Publishes a package to a feed?
+    required: true
+    default: "no"
+    options:
+      - { id: "no", label: "no — container images or nothing published" }
+      - { id: "yes", label: "yes — publishes a library to a package feed" }
+
+  - id: justification
+    component: TextArea
+    label: Business justification
+    placeholder: One or two sentences on why this repository is needed
+    required: true
+
+  - id: jira_key
+    component: TextInput
+    label: Jira key
+    placeholder: "PROJ-123"
+    validation: "^[A-Z][A-Z0-9_]+-[0-9]+$"
+
+validations: []
+
+# Governance already happens on the Terraform PR the issue produces; a second gate here would only
+# slow the request down. Turn it on if the owning team lead should sign off before anything leaves the portal.
+approval:
+  required: false
+
+executor:
+  type: github-issue
+  connection: default
+  repository: softwareone-platform/.github
+  title: "[Repo Request] {{name}}"
+  labels: [repository-request]
+  # Order and labels mirror .github/ISSUE_TEMPLATE/repository-request.yml exactly; the parser matches on them.
+  fields:
+    - { label: "Repository name",                 value: "{{name}}" }
+    - { label: "Product (if applicable)",         value: "{{product}}" }
+    - { label: "Visibility",                      value: "{{visibility}}" }
+    - { label: "Tier",                            value: "{{tier}}" }
+    - { label: "Application stack",               value: "{{stack}}" }
+    - { label: "Starter template",                value: "{{template}}" }
+    - { label: "Owning team",                     value: "{{owning_team}}" }
+    - { label: "Contributor teams",               value: "{{contributor_teams}}" }
+    - { label: "Register builds in InfraPortal?", value: "{{infraportal}}" }
+    - { label: "Publishes a package to a feed?",  value: "{{package_feed}}" }
+    - { label: "Business justification",          value: "{{justification}}" }
+    - { label: "Jira key",                        value: "{{jira_key}}" }
+  # The issue author is the portal's token; this records who actually asked.
+  comment: "Requested via InfraPortal by {{requester_name}} ({{requester_email}}). Portal request `{{request_id}}`."
+  completion:
+    closed_completed: Completed
+    closed_not_planned: Failed
+    failure_comment_marker: "validation failed"
+    timeout_hours: 168
