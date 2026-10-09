@@ -1,4 +1,5 @@
 import { buildApiUrl } from './runtimeConfig';
+import { fetchJson, type ConnectionProblem } from './connection';
 
 interface AuthConfig {
   mode: string; // "msal", "local", or future types
@@ -12,36 +13,34 @@ let cached: AuthConfig = { mode: 'none', clientId: '', tenantId: '' };
 const CONFIG_ATTEMPTS = import.meta.env.DEV ? 1 : 5;
 
 /**
- * Fetch auth config from the backend. Call once at startup (before React mounts).
- * The backend decides the auth mode based on its own configuration.
+ * Fetch auth config from the backend. Call before rendering anything that reads it (see
+ * `StartupGate`). The backend decides the auth mode based on its own configuration.
  *
- * Network errors and 5xx (the API restarting behind the proxy) are retried with backoff. Returns
- * false if the config still couldn't be loaded: outside dev the caller shows an error screen, since
- * guessing mode 'none' would hand every visitor the fake dev admin.
+ * Network errors, non-JSON answers and 5xx (the API restarting behind the proxy) are retried with
+ * a short backoff, so a restart blip doesn't flash an error screen. A timeout isn't — it has already
+ * waited long enough. Returns why it still failed, or null. Outside dev the caller then shows the
+ * problem, since guessing mode 'none' would hand every visitor the fake dev admin.
  */
-export async function loadAuthConfig(): Promise<boolean> {
+export async function loadAuthConfig(): Promise<ConnectionProblem | null> {
   for (let attempt = 1; ; attempt++) {
-    let retryable = true;
-    try {
-      const response = await fetch(buildApiUrl('/auth/config'), { cache: 'no-store' });
-      if (response.ok) {
-        cached = await response.json();
-        return true;
-      }
-      retryable = response.status >= 500;
-    } catch {
-      // Backend unreachable (or not JSON) — retry
+    const result = await fetchJson<AuthConfig>(buildApiUrl('/auth/config'), { cache: 'no-store' });
+    if (result.ok) {
+      cached = result.data;
+      return null;
     }
-    if (!retryable || attempt >= CONFIG_ATTEMPTS) break;
+    const { problem } = result;
+    const retryable =
+      problem.kind !== 'timeout' && !(problem.kind === 'http-error' && (problem.status ?? 0) < 500);
+    if (!retryable || attempt >= CONFIG_ATTEMPTS) {
+      if (import.meta.env.DEV) {
+        // No backend in dev — fall back to no auth
+        cached = { mode: 'none', clientId: '', tenantId: '' };
+        return null;
+      }
+      return problem;
+    }
     await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
   }
-
-  if (import.meta.env.DEV) {
-    // No backend in dev — fall back to no auth
-    cached = { mode: 'none', clientId: '', tenantId: '' };
-    return true;
-  }
-  return false;
 }
 
 export function getAuthMode(): string {

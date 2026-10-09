@@ -1,28 +1,33 @@
-/** Full-screen notice for when sign-in can't proceed. Retrying reloads the page unless told otherwise. */
+import { ActionButton, ProblemScreen } from '@/components/system/ProblemScreen';
+import { reloadApp } from '@/lib/appUpdate';
+import { diagnosticsReport, RESET_FOOTNOTE } from '@/lib/diagnostics';
+
+/**
+ * Full-screen notice for when sign-in can't proceed. Retrying reloads the page unless told otherwise.
+ * "Reset saved data" is offered too: a sign-in left half-finished in this browser's storage is a
+ * common cause that a plain reload can't clear.
+ */
 export function AuthErrorScreen({
   title,
   message,
-  onRetry = () => window.location.reload(),
+  onRetry = () => reloadApp(),
 }: {
   title: string;
   message: string;
   onRetry?: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center h-screen gap-4" style={{ backgroundColor: 'var(--bg-primary)' }}>
-      <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
-        {title}
-      </p>
-      <p className="text-[13px] max-w-md text-center" style={{ color: 'var(--text-muted)' }}>
-        {message}
-      </p>
-      <button
-        onClick={onRetry}
-        className="px-4 py-2 text-[13px] font-medium rounded-lg text-white"
-        style={{ backgroundColor: 'var(--accent)' }}
-      >
-        Try Again
-      </button>
-    </div>
+    <ProblemScreen
+      title={title}
+      message={<p>{message}</p>}
+      details={() => diagnosticsReport(`sign-in: ${title}`, [`Message: ${message}`])}
+      actions={
+        <>
+          <ActionButton primary onClick={onRetry}>Try again</ActionButton>
+          <ActionButton onClick={() => reloadApp(true)}>Reset saved data and reload</ActionButton>
+        </>
+      }
+      footer={RESET_FOOTNOTE}
+    />
   );
 }

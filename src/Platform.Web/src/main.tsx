@@ -4,9 +4,10 @@ import { BrowserUtils } from '@azure/msal-browser'
 import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from '@/components/auth/AuthProvider'
-import { AuthErrorScreen } from '@/components/auth/AuthErrorScreen'
+import { AppErrorBoundary } from '@/components/system/ErrorBoundary'
+import { StartupGate } from '@/components/system/StartupGate'
 import { getPageTitle, loadRuntimeConfig } from '@/lib/runtimeConfig'
-import { loadAuthConfig } from '@/lib/authConfig'
+import { startUpdateChecks } from '@/lib/appUpdate'
 
 async function bootstrap() {
   // MSAL silent token renewal loads this app (the redirectUri) inside a hidden iframe; a popup
@@ -18,29 +19,32 @@ async function bootstrap() {
     /[?#].*(code=|error=)/.test(window.location.href) &&
     (window.parent !== window || BrowserUtils.isInPopup())
   ) {
+    // Nothing renders here by design; don't let the boot watchdog report it as a failed start.
+    window.__ipBoot?.done()
     const { broadcastResponseToMainFrame } = await import('@azure/msal-browser/redirect-bridge')
     await broadcastResponseToMainFrame().catch((err) => console.error('MSAL redirect bridge failed:', err))
     return
   }
 
   await loadRuntimeConfig()
-  const authConfigLoaded = await loadAuthConfig()
   document.title = getPageTitle()
 
+  // StartupGate loads the auth config before AuthProvider reads it, and explains (and retries) when
+  // the API can't be reached; the boundary turns anything thrown while rendering into an
+  // explanation instead of an empty page.
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      {authConfigLoaded ? (
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      ) : (
-        <AuthErrorScreen
-          title="Can't reach the server"
-          message="Sign-in settings couldn't be loaded. The service may be restarting — try again in a moment."
-        />
-      )}
+      <AppErrorBoundary>
+        <StartupGate>
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </StartupGate>
+      </AppErrorBoundary>
     </StrictMode>,
   )
+
+  startUpdateChecks()
 }
 
 void bootstrap()
