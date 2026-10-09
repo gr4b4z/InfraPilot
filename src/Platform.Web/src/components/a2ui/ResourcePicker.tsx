@@ -28,6 +28,8 @@ interface ResourceOption {
  * - `deployments/versions` — calls `GET /api/deployments/versions` with the
  *   product, environment, and optionally service fields read from sibling form
  *   values.
+ * - `deployments/products` — every product the platform has seen deployments
+ *   for, so a request files under a product that exists rather than a typo.
  *
  * Unknown sources fall through to the static mock list.
  */
@@ -35,6 +37,14 @@ async function fetchSourceOptions(
   source: string,
   allValues: Record<string, unknown>,
 ): Promise<ResourceOption[]> {
+  if (source === 'deployments/products') {
+    const products = await api.getDeploymentProducts();
+    return products
+      .map((p) => p.product)
+      .sort((a, b) => a.localeCompare(b))
+      .map((product) => ({ id: product, label: product }));
+  }
+
   if (source === 'deployments/versions') {
     const product = (allValues['product'] as string) || '';
     const environment = (allValues['environment'] as string) || '';
