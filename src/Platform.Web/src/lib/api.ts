@@ -627,6 +627,11 @@ class ApiClient {
        * the matching event has since been pruned from deploy history.
        */
       deploymentEventId: string | null;
+      /**
+       * Failed attempts to deploy this version to the target environment, newest first (capped at 20).
+       * A failed deploy never completes a promotion, so this is the only sign that one was tried.
+       */
+      failedDeployments: { id: string; deployedAt: string; source: string }[];
     }>(`/promotions/${id}`);
   }
 
@@ -1104,9 +1109,20 @@ class ApiClient {
     });
   }
 
-  cancelRollback(id: string) {
+  // A Pending request: its creator or an admin, reason optional. An Approved or RollingBack one: admin
+  // only, and the reason is mandatory — it is shown on the request card and written to the audit log.
+  cancelRollback(id: string, reason?: string) {
     return this.request<RollbackRequest>(`/rollbacks/${id}/cancel`, {
       method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  // Admin-only: close one open item of an approved rollback so the release stops carrying it.
+  skipRollbackItem(id: string, itemId: string, reason: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/items/${itemId}/skip`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
     });
   }
 
@@ -2584,7 +2600,9 @@ export type RollbackItemStatus =
   | 'RollingBack'
   | 'RolledBack'
   | 'Failed'
-  | 'Skipped';
+  | 'Skipped'
+  /** A different version was deployed after approval, so this revert is no longer going out. */
+  | 'Superseded';
 
 export interface RollbackItem {
   id: string;
@@ -2592,9 +2610,14 @@ export interface RollbackItem {
   fromVersion: string;
   toVersion: string;
   status: RollbackItemStatus;
+  /** The deploy that closed the item: its landing, the deploy already running it, or what superseded it. */
   completedDeployEventId: string | null;
   externalRunUrl: string | null;
   completedAt: string | null;
+  /** Why the item closed when the status alone doesn't say (superseded, already running, skip reason). */
+  note: string | null;
+  /** Open items only: the newest failed deploy of the target version since the request was approved. */
+  lastFailedAttempt: { deployEventId: string; deployedAt: string } | null;
 }
 
 export interface RollbackRequest {
@@ -2611,6 +2634,10 @@ export interface RollbackRequest {
   createdAt: string;
   approvedAt: string | null;
   completedAt: string | null;
+  cancelledByName: string | null;
+  cancelledAt: string | null;
+  /** Mandatory when an admin cancelled an already-approved request; optional while Pending. */
+  cancelReason: string | null;
   canApprove: boolean;
   /** Admin, still pending, and gated — i.e. the override action would succeed. */
   canOverride: boolean;
@@ -2697,6 +2724,11 @@ export interface ResolvedItem {
   toVersion: string;
   eligible: boolean;
   skipReason: string | null;
+  /**
+   * Set when the service's newest deploy failed: says which version failed and what is still running.
+   * The preview's `fromVersion` is always the last succeeded deploy.
+   */
+  note?: string | null;
 }
 
 export interface RollbackPreview {

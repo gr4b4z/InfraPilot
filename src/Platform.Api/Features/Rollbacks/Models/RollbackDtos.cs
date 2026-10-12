@@ -12,13 +12,18 @@ public record CreateRollbackRequestDto(
 
 public record RollbackItemInput(string Service, string ToVersion);
 
-/// <summary>One resolved item in a create/preview result, with why it was included or skipped.</summary>
+/// <summary>
+/// One resolved item in a create/preview result, with why it was included or skipped.
+/// <c>Note</c> reports a failed deploy newer than the running version. The failed version is not the
+/// current one, but whoever saw it in deploy history needs to know why the preview disagrees.
+/// </summary>
 public record ResolvedRollbackItem(
     string Service,
     string FromVersion,
     string ToVersion,
     bool Eligible,
-    string? SkipReason);
+    string? SkipReason,
+    string? Note = null);
 
 /// <summary>Dry-run result so the UI can show "will roll back N, skip M" before submitting.</summary>
 public record RollbackPreview(
@@ -27,6 +32,9 @@ public record RollbackPreview(
     string Mode,
     string? ReferenceEnv,
     List<ResolvedRollbackItem> Items);
+
+/// <summary>A failed deploy of an open rollback item's target version, since the request was approved.</summary>
+public record FailedDeployAttempt(Guid DeployEventId, DateTimeOffset DeployedAt);
 
 public record RollbackQuery(
     RollbackStatus? Status = null,
