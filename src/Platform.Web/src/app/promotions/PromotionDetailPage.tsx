@@ -15,6 +15,7 @@ import type {
   WorkItemContext,
 } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
@@ -160,6 +161,11 @@ export function PromotionDetailPage() {
   // The deploy event that put this version live in the target env — set only once the
   // promotion is Deployed, and the link the "Deployed" timestamp points at.
   const [deploymentEventId, setDeploymentEventId] = useState<string | null>(null);
+  // Failed attempts to deploy this version to the target env, newest first. A failed deploy never
+  // completes the promotion, so this is the only trace on the page that one was tried.
+  const [failedDeployments, setFailedDeployments] = useState<
+    { id: string; deployedAt: string; source: string }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -187,6 +193,7 @@ export function PromotionDetailPage() {
         setBypass(data.bypass ?? null);
         setCanCancelApproval(data.canCancelApproval ?? false);
         setDeploymentEventId(data.deploymentEventId ?? null);
+        setFailedDeployments(data.failedDeployments ?? []);
         return data;
       })
       .catch((err) => {
@@ -550,6 +557,15 @@ export function PromotionDetailPage() {
         </div>
       )}
 
+      {failedDeployments.length > 0 && (
+        <FailedDeploymentsBanner
+          attempts={failedDeployments}
+          version={candidate.version}
+          targetEnv={candidate.targetEnv}
+          open={!isReadOnly}
+        />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
@@ -761,6 +777,70 @@ export function PromotionDetailPage() {
       </div>
     </div>
     </PromoReadOnlyCtx.Provider>
+  );
+}
+
+/**
+ * Failed attempts to deploy the promoted version to the target environment. On an open promotion it
+ * is a warning: the deploy was tried and failed, and the promotion stays open until one succeeds.
+ * On a closed one it is history, kept because "it took three tries" is worth knowing when debugging.
+ * Each attempt links to its deploy event, which carries the pipeline run.
+ */
+function FailedDeploymentsBanner({
+  attempts,
+  version,
+  targetEnv,
+  open,
+}: {
+  attempts: { id: string; deployedAt: string; source: string }[];
+  version: string;
+  targetEnv: string;
+  open: boolean;
+}) {
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  const latest = attempts[0];
+  const count = attempts.length >= 20 ? '20+' : String(attempts.length);
+  const tone = open ? 'var(--danger)' : 'var(--text-muted)';
+  return (
+    <div
+      className="rounded-xl border p-4 flex items-start gap-3"
+      style={{
+        borderColor: open ? 'var(--danger)' : 'var(--border-color)',
+        backgroundColor: open ? 'var(--danger-bg)' : 'var(--bg-secondary)',
+      }}
+    >
+      <AlertTriangle size={18} style={{ color: tone, flexShrink: 0, marginTop: 1 }} />
+      <div className="text-[13px] min-w-0">
+        <p style={{ color: 'var(--text-primary)' }}>
+          {open ? (
+            <>
+              Deploying <b>v{version}</b> to <b>{getDisplayName(targetEnv)}</b> failed
+              {attempts.length > 1 ? <> {count} times</> : null}, most recently{' '}
+              {formatDistanceToNow(new Date(latest.deployedAt), { addSuffix: true })}. A failed deploy
+              does not complete the promotion, so it stays open until a deploy succeeds.
+            </>
+          ) : (
+            <>
+              {count} failed {attempts.length === 1 ? 'attempt' : 'attempts'} to deploy <b>v{version}</b> to{' '}
+              <b>{getDisplayName(targetEnv)}</b>.
+            </>
+          )}
+        </p>
+        <ul className="mt-1.5 space-y-0.5 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {attempts.slice(0, 5).map((a) => (
+            <li key={a.id}>
+              <Link to={`/deployments/events/${a.id}`} className="hover:underline" style={{ color: tone }}>
+                {format(new Date(a.deployedAt), 'MMM d, yyyy HH:mm')}
+              </Link>
+              <span style={{ color: 'var(--text-muted)' }}> · {a.source}</span>
+            </li>
+          ))}
+          {attempts.length > 5 && (
+            <li style={{ color: 'var(--text-muted)' }}>and {attempts.length - 5} earlier</li>
+          )}
+        </ul>
+      </div>
+    </div>
   );
 }
 

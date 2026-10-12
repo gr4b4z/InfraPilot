@@ -93,9 +93,14 @@ public class PromotionIngestHook : IPromotionIngestHook
             }
 
             // 4) Match any in-flight rollback this event completes — even when the operator forgot
-            //    to set IsRollback on the deploy.
+            //    to set IsRollback on the deploy — then supersede the ones it overtook: a succeeded
+            //    deploy of another version after approval means that rollback no longer describes the
+            //    environment. Both ignore failed deploys.
             if (await _flags.IsEnabled(FeatureFlagKeys.Rollbacks, ct))
+            {
                 await _rollbacks.MatchCompletionAsync(deployEvent, ct);
+                await _rollbacks.SupersedeOvertakenAsync(deployEvent, ct);
+            }
 
             // Candidate generation removed (D19): promotions are created externally via the
             // create-promotion API, not derived from deploy events.

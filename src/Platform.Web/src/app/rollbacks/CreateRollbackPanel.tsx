@@ -433,7 +433,7 @@ export function CreateRollbackPanel({
                 {preview.items.map((item) => (
                   <div
                     key={item.service}
-                    className="flex items-center gap-2 text-[12px] px-2.5 py-1.5 rounded-lg border"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] px-2.5 py-1.5 rounded-lg border"
                     style={{
                       borderColor: 'var(--border-color)',
                       backgroundColor: item.eligible ? 'var(--bg-primary)' : 'var(--bg-secondary)',
@@ -468,6 +468,13 @@ export function CreateRollbackPanel({
                     ) : (
                       <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                         skipped{item.skipReason ? ` — ${item.skipReason}` : ''}
+                      </span>
+                    )}
+                    {/* The newest deploy failed. Deploy history shows that version, so say why the
+                        preview reports the last succeeded one as current. */}
+                    {item.note && (
+                      <span className="basis-full text-[11px]" style={{ color: 'var(--warning)' }}>
+                        {item.note}
                       </span>
                     )}
                   </div>
