@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
   RollbackRequest,
@@ -8,7 +8,8 @@ import type {
   RollbackItemStatus,
 } from '@/lib/api';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { formatDistanceToNow } from 'date-fns';
+import { useAuthStore } from '@/stores/authStore';
+import { format, formatDistanceToNow } from 'date-fns';
 import {
   Clock,
   CheckCircle,
@@ -19,7 +20,10 @@ import {
   Plus,
   Ban,
   ShieldAlert,
+  SkipForward,
+  AlertTriangle,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { CreateRollbackPanel } from './CreateRollbackPanel';
 import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
@@ -46,7 +50,11 @@ const ITEM_STATUS_COLOR: Record<RollbackItemStatus, string> = {
   RolledBack: 'var(--success)',
   Failed: 'var(--danger)',
   Skipped: 'var(--text-muted)',
+  Superseded: 'var(--text-muted)',
 };
+
+// Items an executor may still act on. Everything else is terminal, however it closed.
+const isOpenItem = (item: RollbackItem) => item.status === 'Pending' || item.status === 'RollingBack';
 
 const STATUS_OPTIONS: Array<{ label: string; value: string }> = [
   { label: 'All', value: '' },
@@ -196,6 +204,28 @@ export function RollbacksPage() {
       setOverridingId(null);
     } catch (e) {
       setOverrideError(e instanceof Error ? e.message : 'Failed to override the approval gate');
+    } finally {
+      setActioningId(null);
+      fetchData({ silent: true });
+    }
+  };
+
+  // Admin-only actions on a request that is already approved. Both need a reason, and both let a
+  // failure propagate so the card's prompt can show it — the same reasoning as the override.
+  const handleAdminCancel = async (id: string, reason: string) => {
+    setActioningId(id);
+    try {
+      await api.cancelRollback(id, reason);
+    } finally {
+      setActioningId(null);
+      fetchData({ silent: true });
+    }
+  };
+
+  const handleSkipItem = async (id: string, itemId: string, reason: string) => {
+    setActioningId(id);
+    try {
+      await api.skipRollbackItem(id, itemId, reason);
     } finally {
       setActioningId(null);
       fetchData({ silent: true });
@@ -372,6 +402,8 @@ export function RollbacksPage() {
                       setOverrideError(null);
                     }}
                     onOverride={(reason) => handleOverride(r.id, reason)}
+                    onAdminCancel={(reason) => handleAdminCancel(r.id, reason)}
+                    onSkipItem={(itemId, reason) => handleSkipItem(r.id, itemId, reason)}
                   />
                 ))}
               </div>
@@ -420,6 +452,8 @@ function RollbackCard({
   onStartOverride,
   onCancelOverride,
   onOverride,
+  onAdminCancel,
+  onSkipItem,
 }: {
   request: RollbackRequest;
   busy?: boolean;
@@ -431,17 +465,38 @@ function RollbackCard({
   onStartOverride?: () => void;
   onCancelOverride?: () => void;
   onOverride?: (reason: string) => void;
+  onAdminCancel?: (reason: string) => Promise<void>;
+  onSkipItem?: (itemId: string, reason: string) => Promise<void>;
 }) {
   const { getDisplayName } = useSettingsStore();
-  const [reason, setReason] = useState('');
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  // The admin cancel prompt is local to the card: unlike the override, which page-level state keeps
+  // to one card at a time, it only ever concerns this request.
+  const [adminCancelling, setAdminCancelling] = useState(false);
+  const [adminCancelError, setAdminCancelError] = useState<string | null>(null);
   const cfg = STATUS_CONFIG[request.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
   const canApprove = request.canApprove && request.status === 'Pending';
   // Admin-only, and only where the server says the call would succeed.
   const canOverride = request.canOverride && request.status === 'Pending';
-  // Only Pending requests can be cancelled — once Approved, the webhook has fired and the
-  // executor is acting, so there's nothing we can meaningfully recall.
+  // A Pending request can be cancelled by its creator or an admin (the server decides which).
   const cancellable = request.status === 'Pending';
+  // Once approved, only an admin can cancel the request or skip one of its items, and only with a
+  // reason. Neither recalls a deploy already under way; both stop the release pipeline from carrying
+  // the remaining items, which is how a stuck request gets closed without a database edit.
+  const inFlight = request.status === 'Approved' || request.status === 'RollingBack';
+  const canAdminCancel = isAdmin && inFlight && !!onAdminCancel;
+  const canSkipItems = isAdmin && inFlight && !!onSkipItem;
+
+  const confirmAdminCancel = async (reason: string) => {
+    setAdminCancelError(null);
+    try {
+      await onAdminCancel?.(reason);
+      setAdminCancelling(false);
+    } catch (e) {
+      setAdminCancelError(e instanceof Error ? e.message : 'Failed to cancel the rollback');
+    }
+  };
 
   return (
     <div
@@ -496,13 +551,32 @@ function RollbackCard({
           {/* Items */}
           <div className="space-y-1 mt-2">
             {request.items.map((item) => (
-              <ItemRow key={item.id} item={item} />
+              <ItemRow
+                key={item.id}
+                item={item}
+                busy={busy}
+                onSkip={canSkipItems && isOpenItem(item) ? (reason) => onSkipItem!(item.id, reason) : undefined}
+              />
             ))}
           </div>
 
           {request.reason && (
             <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>
               {request.reason}
+            </p>
+          )}
+
+          {/* Who cancelled it and why. The reason is mandatory for an approved request, so a
+              cancelled in-flight rollback always explains itself here. */}
+          {request.status === 'Cancelled' && (request.cancelledByName || request.cancelReason) && (
+            <p className="text-[12px] mt-2 flex items-start gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+              <Ban size={12} className="shrink-0 mt-0.5" style={{ color: 'var(--text-muted)' }} />
+              <span>
+                Cancelled
+                {request.cancelledByName && <> by <b>{request.cancelledByName}</b></>}
+                {request.cancelledAt && <> on {format(new Date(request.cancelledAt), 'MMM d, yyyy HH:mm')}</>}
+                {request.cancelReason && <>: {request.cancelReason}</>}
+              </span>
             </p>
           )}
 
@@ -519,7 +593,7 @@ function RollbackCard({
         </div>
 
         {/* Actions */}
-        {(canApprove || cancellable || canOverride) && (
+        {(canApprove || cancellable || canOverride || canAdminCancel) && (
           <div className="flex flex-col gap-1.5 shrink-0">
             {canApprove && onApprove && (
               <button
@@ -578,6 +652,25 @@ function RollbackCard({
                 Cancel
               </button>
             )}
+            {canAdminCancel && !adminCancelling && (
+              <button
+                onClick={() => {
+                  setAdminCancelling(true);
+                  setAdminCancelError(null);
+                }}
+                disabled={busy}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{
+                  border: '1px solid var(--danger)',
+                  color: 'var(--danger)',
+                  opacity: busy ? 0.6 : 1,
+                }}
+                title="Stop the release carrying the remaining items (admin only, reason required)"
+              >
+                <Ban size={12} />
+                Cancel
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -585,89 +678,248 @@ function RollbackCard({
       {/* Override reason prompt. Inline rather than a modal so the request it applies to stays on
           screen, and the reason is recorded verbatim on the approval row. */}
       {overriding && (
-        <div
-          className="mt-3 pt-3 border-t space-y-2"
-          style={{ borderColor: 'var(--border-color)' }}
-        >
-          <label className="block text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
-            Why is this rollback bypassing its approval gate? (required)
-          </label>
-          <input
-            type="text"
-            value={reason}
-            autoFocus
-            onChange={(e) => setReason(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && reason.trim()) onOverride?.(reason.trim());
-              if (e.key === 'Escape') onCancelOverride?.();
-            }}
-            placeholder="e.g. SEV1 INC-4213, approvers unreachable"
-            className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
-            style={{
-              borderColor: 'var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-            }}
-          />
-          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            Recorded against your name in the audit log and shown on this request as
-            &ldquo;gate overridden&rdquo;.
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onOverride?.(reason.trim())}
-              disabled={busy || reason.trim().length === 0}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity disabled:opacity-50"
-              style={{ backgroundColor: 'var(--warning-solid)', color: '#fff' }}
-            >
-              <ShieldAlert size={12} />
-              {busy ? 'Overriding…' : 'Confirm override'}
-            </button>
-            <button
-              onClick={onCancelOverride}
-              className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              Cancel
-            </button>
-          </div>
-          {overrideError && (
-            <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
-              {overrideError}
-            </p>
-          )}
-        </div>
+        <ReasonPrompt
+          label="Why is this rollback bypassing its approval gate? (required)"
+          placeholder="e.g. SEV1 INC-4213, approvers unreachable"
+          hint={<>Recorded against your name in the audit log and shown on this request as &ldquo;gate overridden&rdquo;.</>}
+          confirmLabel="Confirm override"
+          busyLabel="Overriding…"
+          icon={ShieldAlert}
+          solid="var(--warning-solid)"
+          busy={busy}
+          error={overrideError}
+          onConfirm={(reason) => onOverride?.(reason)}
+          onDismiss={() => onCancelOverride?.()}
+        />
+      )}
+
+      {adminCancelling && (
+        <ReasonPrompt
+          label="Why is this approved rollback being cancelled? (required)"
+          placeholder="e.g. environment already moved on, see INC-4213"
+          hint={
+            <>
+              Open items are marked Skipped and the release stops carrying them. A deploy that is
+              already running is not recalled. Recorded in the audit log and shown on this request.
+            </>
+          }
+          confirmLabel="Cancel rollback"
+          busyLabel="Cancelling…"
+          icon={Ban}
+          solid="var(--danger-solid)"
+          busy={busy}
+          error={adminCancelError}
+          onConfirm={confirmAdminCancel}
+          onDismiss={() => {
+            setAdminCancelling(false);
+            setAdminCancelError(null);
+          }}
+        />
       )}
     </div>
   );
 }
 
-function ItemRow({ item }: { item: RollbackItem }) {
+function ItemRow({
+  item,
+  busy,
+  onSkip,
+}: {
+  item: RollbackItem;
+  busy?: boolean;
+  /** Present only when the current user (an admin) may skip this open item of an approved request. */
+  onSkip?: (reason: string) => Promise<void>;
+}) {
   const color = ITEM_STATUS_COLOR[item.status] ?? 'var(--text-muted)';
+  const [skipping, setSkipping] = useState(false);
+  const [skipError, setSkipError] = useState<string | null>(null);
+
+  const confirmSkip = async (reason: string) => {
+    setSkipError(null);
+    try {
+      await onSkip?.(reason);
+      setSkipping(false);
+    } catch (e) {
+      setSkipError(e instanceof Error ? e.message : 'Failed to skip this item');
+    }
+  };
+
   return (
-    <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-      <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
-        {item.service}
-      </span>
-      <span className="font-mono text-[11px]">v{item.fromVersion}</span>
-      <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-      <span className="font-mono text-[11px]">v{item.toVersion}</span>
-      <span
-        className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
-        style={{ backgroundColor: 'var(--bg-secondary)', color }}
-      >
-        {item.status}
-      </span>
-      {item.externalRunUrl && (
-        <a
-          href={item.externalRunUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[11px] hover:underline"
-          style={{ color: 'var(--accent)' }}
+    <div>
+      <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+        <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+          {item.service}
+        </span>
+        <span className="font-mono text-[11px]">v{item.fromVersion}</span>
+        <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
+        <span className="font-mono text-[11px]">v{item.toVersion}</span>
+        {/* Links to the deploy that closed the item, when there is one: the landing, the deploy
+            already running it at approval, or the deploy that superseded it. */}
+        {item.completedDeployEventId ? (
+          <Link
+            to={`/deployments/events/${item.completedDeployEventId}`}
+            className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium hover:underline"
+            style={{ backgroundColor: 'var(--bg-secondary)', color }}
+            title="View the deploy that closed this item"
+          >
+            {item.status}
+          </Link>
+        ) : (
+          <span
+            className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+            style={{ backgroundColor: 'var(--bg-secondary)', color }}
+          >
+            {item.status}
+          </span>
+        )}
+        {item.externalRunUrl && (
+          <a
+            href={item.externalRunUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] hover:underline"
+            style={{ color: 'var(--accent)' }}
+          >
+            run
+          </a>
+        )}
+        {onSkip && !skipping && (
+          <button
+            onClick={() => {
+              setSkipping(true);
+              setSkipError(null);
+            }}
+            disabled={busy}
+            className="inline-flex items-center gap-1 text-[11px] font-medium hover:underline disabled:opacity-50"
+            style={{ color: 'var(--text-muted)' }}
+            title="Stop the release carrying this item (admin only, reason required)"
+          >
+            <SkipForward size={11} />
+            Skip
+          </button>
+        )}
+      </div>
+
+      {/* A failed deploy never completes an item, so this is the only sign the executor tried. */}
+      {item.lastFailedAttempt && (
+        <p className="text-[11px] mt-0.5" style={{ color: 'var(--danger)' }}>
+          <AlertTriangle size={11} className="inline mr-1 -mt-px" />
+          <Link to={`/deployments/events/${item.lastFailedAttempt.deployEventId}`} className="hover:underline">
+            The deploy of v{item.toVersion} failed{' '}
+            {formatDistanceToNow(new Date(item.lastFailedAttempt.deployedAt), { addSuffix: true })}
+          </Link>
+          ; the item stays open until one succeeds.
+        </p>
+      )}
+
+      {item.note && (
+        <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          {item.note}
+        </p>
+      )}
+
+      {skipping && (
+        <ReasonPrompt
+          label={`Why skip ${item.service}? (required)`}
+          placeholder="e.g. keeping the current version, see INC-4213"
+          hint={<>The release stops carrying this item. Recorded in the audit log and shown on the item.</>}
+          confirmLabel="Skip item"
+          busyLabel="Skipping…"
+          icon={SkipForward}
+          solid="var(--danger-solid)"
+          busy={busy}
+          error={skipError}
+          onConfirm={confirmSkip}
+          onDismiss={() => {
+            setSkipping(false);
+            setSkipError(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Inline reason prompt for the admin actions that must explain themselves (override, cancel, skip).
+ * Inline rather than a modal, so the request or item it applies to stays on screen.
+ */
+function ReasonPrompt({
+  label,
+  placeholder,
+  hint,
+  confirmLabel,
+  busyLabel,
+  icon: Icon,
+  solid,
+  busy,
+  error,
+  onConfirm,
+  onDismiss,
+}: {
+  label: string;
+  placeholder: string;
+  hint: React.ReactNode;
+  confirmLabel: string;
+  busyLabel: string;
+  icon: LucideIcon;
+  /** Background of the confirm button. */
+  solid: string;
+  busy?: boolean;
+  error?: string | null;
+  onConfirm: (reason: string) => void;
+  onDismiss: () => void;
+}) {
+  const [reason, setReason] = useState('');
+  const trimmed = reason.trim();
+  return (
+    <div className="mt-3 pt-3 border-t space-y-2" style={{ borderColor: 'var(--border-color)' }}>
+      <label className="block text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </label>
+      <input
+        type="text"
+        value={reason}
+        autoFocus
+        maxLength={500}
+        onChange={(e) => setReason(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && trimmed && !busy) onConfirm(trimmed);
+          if (e.key === 'Escape') onDismiss();
+        }}
+        placeholder={placeholder}
+        className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
+        style={{
+          borderColor: 'var(--border-color)',
+          backgroundColor: 'var(--bg-secondary)',
+          color: 'var(--text-primary)',
+        }}
+      />
+      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        {hint}
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onConfirm(trimmed)}
+          disabled={busy || trimmed.length === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity disabled:opacity-50"
+          style={{ backgroundColor: solid, color: '#fff' }}
         >
-          run
-        </a>
+          <Icon size={12} />
+          {busy ? busyLabel : confirmLabel}
+        </button>
+        <button
+          onClick={onDismiss}
+          className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Cancel
+        </button>
+      </div>
+      {error && (
+        <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+          {error}
+        </p>
       )}
     </div>
   );

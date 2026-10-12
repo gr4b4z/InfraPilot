@@ -14,7 +14,8 @@ namespace Platform.Api.Features.Rollbacks.Models;
 ///
 /// <para>Lifecycle: Pending → Approved → RollingBack → RolledBack, with Rejected / Cancelled as
 /// terminal off-ramps. Completion is detected per-item from the deploy event the operator (or
-/// Logic App executor) emits when the target version lands — there is no trusted callback.</para>
+/// Logic App executor) emits when the target version lands — there is no trusted callback. The
+/// request reaches RolledBack once every item is terminal, however each one closed.</para>
 /// </summary>
 public class RollbackRequest
 {
@@ -73,6 +74,13 @@ public class RollbackRequest
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ApprovedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
+
+    // Who cancelled the request, when, and why. The reason is mandatory when an admin cancels a
+    // request that was already approved, and optional for a Pending one.
+    public string? CancelledBy { get; set; }
+    public string? CancelledByName { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public string? CancelReason { get; set; }
 
     public List<RollbackItem> Items { get; set; } = new();
 
