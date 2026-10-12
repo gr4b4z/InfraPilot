@@ -971,6 +971,51 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
+    /// A failed deploy never completes a promotion, so the detail reports the attempt instead.
+    /// Otherwise a promotion whose deploy failed would sit open with no sign it was ever tried. The
+    /// attempt stays listed after a later deploy ships the version, as history.
+    /// </summary>
+    [Fact]
+    public async Task PromotionDetail_ListsFailedDeployAttempts_AndStaysOpenUntilOneSucceeds()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"faildep-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.1.0", service: service);
+        var candidate = FindCandidate(
+            (await Deserialize(await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending")))
+                .GetProperty("candidates"), "v8.1.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var untried = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Empty(untried.GetProperty("failedDeployments").EnumerateArray());
+
+        var failed = await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.1.0", status: "failed", service: service));
+        failed.EnsureSuccessStatusCode();
+        var failedId = (await Deserialize(failed)).GetProperty("id").GetString();
+        // A failed deploy of another version is not an attempt at this one.
+        (await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.0.9", status: "failed", service: service))).EnsureSuccessStatusCode();
+
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Pending", detail.GetProperty("candidate").GetProperty("status").GetString());
+        var attempt = Assert.Single(detail.GetProperty("failedDeployments").EnumerateArray());
+        Assert.Equal(failedId, attempt.GetProperty("id").GetString());
+
+        (await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.1.0", service: service))).EnsureSuccessStatusCode();
+        var shipped = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Deployed", shipped.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.Single(shipped.GetProperty("failedDeployments").EnumerateArray());
+    }
+
+    /// <summary>
     /// A rejection says the version should not ship. If it ships anyway, the candidate has to record
     /// that — it closes as Deployed, the rejection stays in the approval trail, and the thread
     /// explains the contradiction rather than leaving someone to puzzle it out.

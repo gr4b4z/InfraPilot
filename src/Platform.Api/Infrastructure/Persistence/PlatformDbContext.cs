@@ -694,6 +694,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
             e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
             e.Property(x => x.ApprovalOverridden).HasDefaultValue(false);
+            e.Property(x => x.CancelledBy).HasMaxLength(300);
+            e.Property(x => x.CancelledByName).HasMaxLength(300);
+            e.Property(x => x.CancelReason).HasMaxLength(1000);
             var exclusionsJson = e.Property(x => x.ExclusionsJson).HasDefaultValue("[]");
             var rbResolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
             if (jsonType != null)
@@ -719,6 +722,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.ToVersion).HasMaxLength(200).IsRequired();
             e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Property(x => x.ExternalRunUrl).HasMaxLength(2000);
+            e.Property(x => x.Note).HasMaxLength(1000);
             e.HasIndex(x => x.RequestId);
             // Lookup for completion matching: open items by service in a product/env.
             e.HasIndex(x => new { x.Service, x.Status });

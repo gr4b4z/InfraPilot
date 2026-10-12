@@ -252,6 +252,21 @@ public static class PromotionEndpoints
                     .FirstOrDefaultAsync();
             }
 
+            // Failed attempts to deploy this version to the target environment, newest first. A failed
+            // deploy never completes a promotion (PromotionIngestHook.MatchCompletionAsync), so without
+            // this a promotion whose deploy failed would sit Approved with no sign it was ever tried.
+            var failedDeployments = await db.DeployEvents
+                .AsNoTracking()
+                .Where(e => e.Product == c.Product
+                         && e.Service == c.Service
+                         && e.Environment == c.TargetEnv
+                         && e.Version == c.Version
+                         && e.Status == "failed")
+                .OrderByDescending(e => e.DeployedAt)
+                .Take(20)
+                .Select(e => new { e.Id, e.DeployedAt, e.Source })
+                .ToListAsync();
+
             // The candidate is self-contained (D14): no source deploy event. The change set lives
             // on the candidate's own References, surfaced as `sourceEvent` so the detail view keeps
             // rendering work items / PRs without a join.
@@ -299,6 +314,7 @@ public static class PromotionEndpoints
                 bypass,
                 canCancelApproval,
                 deploymentEventId,
+                failedDeployments,
             });
         });
 

@@ -33,12 +33,13 @@ public static class RollbackEndpoints
             var caps = new Dictionary<Guid, (bool Approve, bool Override)>();
             foreach (var r in requests)
                 caps[r.Id] = (await svc.CanUserApproveAsync(r), await svc.CanUserOverrideAsync(r));
+            var failedAttempts = await svc.GetFailedAttemptsAsync(requests, ct);
             return Results.Ok(new
             {
                 requests = requests.Select(r =>
                 {
                     var c = caps.GetValueOrDefault(r.Id);
-                    return ToDto(r, c.Approve, c.Override);
+                    return ToDto(r, c.Approve, c.Override, failedAttempts);
                 }),
             });
         });
@@ -74,7 +75,8 @@ public static class RollbackEndpoints
             var canApprove = await svc.CanUserApproveAsync(r);
             var canOverride = await svc.CanUserOverrideAsync(r);
             var (unconfigured, requirements) = await svc.GetGateAsync(r);
-            return Results.Ok(ToDetailDto(r, canApprove, canOverride, unconfigured, requirements, approvals));
+            var failedAttempts = await svc.GetFailedAttemptsAsync(new[] { r });
+            return Results.Ok(ToDetailDto(r, canApprove, canOverride, unconfigured, requirements, approvals, failedAttempts));
         });
 
         // Dry-run: resolve the items (with skip reasons) without persisting — powers the UI preview.
@@ -105,11 +107,19 @@ public static class RollbackEndpoints
         // Admin-only bypass of the approval gate. Not in RollbackAdminEndpoints because it acts on a
         // request in the operator's own queue rather than on configuration, and the 403 for a
         // non-admin caller is more useful here than a 404 from a group they cannot reach.
-        group.MapPost("/{id:guid}/override-approval", (RollbackService svc, Guid id, OverrideBody? body) =>
+        group.MapPost("/{id:guid}/override-approval", (RollbackService svc, Guid id, ReasonBody? body) =>
             Decide(() => svc.OverrideApprovalAsync(id, body?.Reason ?? "")));
 
-        group.MapPost("/{id:guid}/cancel", (RollbackService svc, Guid id) =>
-            Decide(() => svc.CancelAsync(id)));
+        // Pending: the creator or an admin, reason optional. Approved/RollingBack: admin only, reason
+        // required. Both rules are enforced in RollbackService.CancelAsync.
+        group.MapPost("/{id:guid}/cancel", (RollbackService svc, Guid id, ReasonBody? body) =>
+            Decide(() => svc.CancelAsync(id, body?.Reason)));
+
+        // Admin-only, reason required: closes one open item of an in-flight request so the release
+        // pipeline stops carrying it. Lives here rather than in RollbackAdminEndpoints for the same
+        // reason as override-approval.
+        group.MapPost("/{id:guid}/items/{itemId:guid}/skip", (RollbackService svc, Guid id, Guid itemId, ReasonBody? body) =>
+            Decide(() => svc.SkipItemAsync(id, itemId, body?.Reason)));
 
         return group;
     }
@@ -123,7 +133,9 @@ public static class RollbackEndpoints
         catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
     }
 
-    private static object ToDto(RollbackRequest r, bool canApprove, bool canOverride) => new
+    private static object ToDto(
+        RollbackRequest r, bool canApprove, bool canOverride,
+        IReadOnlyDictionary<Guid, FailedDeployAttempt>? failedAttempts = null) => new
     {
         id = r.Id,
         r.Product,
@@ -138,10 +150,13 @@ public static class RollbackEndpoints
         r.CreatedAt,
         r.ApprovedAt,
         r.CompletedAt,
+        r.CancelledByName,
+        r.CancelledAt,
+        r.CancelReason,
         canApprove,
         canOverride,
         r.ApprovalOverridden,
-        items = r.Items.Select(ToItemDto),
+        items = r.Items.Select(i => ToItemDto(i, failedAttempts)),
     };
 
     private static object ToDetailDto(
@@ -150,7 +165,8 @@ public static class RollbackEndpoints
         bool canOverride,
         bool unconfigured,
         IReadOnlyList<RequirementOutcome> requirements,
-        IEnumerable<RollbackApproval> approvals) => new
+        IEnumerable<RollbackApproval> approvals,
+        IReadOnlyDictionary<Guid, FailedDeployAttempt> failedAttempts) => new
     {
         id = r.Id,
         r.Product,
@@ -165,6 +181,9 @@ public static class RollbackEndpoints
         r.CreatedAt,
         r.ApprovedAt,
         r.CompletedAt,
+        r.CancelledByName,
+        r.CancelledAt,
+        r.CancelReason,
         canApprove,
         canOverride,
         r.ApprovalOverridden,
@@ -180,7 +199,7 @@ public static class RollbackEndpoints
             o.Required,
             o.Satisfied,
         }),
-        items = r.Items.Select(ToItemDto),
+        items = r.Items.Select(i => ToItemDto(i, failedAttempts)),
         approvals = approvals.Select(a => new
         {
             a.ApproverEmail, a.ApproverName, decision = a.Decision.ToString(), a.Comment, a.CreatedAt,
@@ -188,14 +207,19 @@ public static class RollbackEndpoints
         }),
     };
 
-    private static object ToItemDto(RollbackItem i) => new
+    private static object ToItemDto(RollbackItem i, IReadOnlyDictionary<Guid, FailedDeployAttempt>? failedAttempts) => new
     {
         i.Id, i.Service, i.FromVersion, i.ToVersion, status = i.Status.ToString(),
-        i.CompletedDeployEventId, i.ExternalRunUrl, i.CompletedAt,
+        i.CompletedDeployEventId, i.ExternalRunUrl, i.CompletedAt, i.Note,
+        // Open items only: the newest failed deploy of the target version since approval.
+        lastFailedAttempt = failedAttempts?.GetValueOrDefault(i.Id),
     };
 
     public record DecisionBody(string? Comment);
 
-    /// <summary>Body for the admin override. <c>Reason</c> is required (blank ⇒ 400).</summary>
-    public record OverrideBody(string? Reason);
+    /// <summary>
+    /// Body for the actions that take a reason: override-approval and skip always require one (blank ⇒
+    /// 400), and cancel requires one once the request is approved.
+    /// </summary>
+    public record ReasonBody(string? Reason);
 }
