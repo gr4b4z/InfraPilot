@@ -16,6 +16,10 @@ public class PromotionVersionOrderTests
     [InlineData("v2.0.0", "v1.9.9")]                   // "v" prefix is decoration
     [InlineData("2.0.0", "v1.9.9")]                    // mixed conventions still compare
     [InlineData("6.1", "6.0.9")]
+    [InlineData("6.0.0-52.9f6eae03", "6.0.0-9.1600d316")] // CI run-number shape: counter, numerically
+    [InlineData("0.1.0-27.e54d9e04", "0.1.0-26.e54d9e04")] // same commit, rebuilt
+    [InlineData("6.0.0-10", "6.0.0-9")]                    // counter with no sha
+    [InlineData("5.9.1-2.aaa", "5.9.0-17.bbb")]            // the release still outranks the counter
     public void IsNewerThan_True(string newer, string older)
     {
         Assert.True(PromotionVersionOrder.IsNewerThan(newer, older));
@@ -25,6 +29,10 @@ public class PromotionVersionOrderTests
     [Theory]
     [InlineData("6.0.0", "6.0")]        // missing components count as zero
     [InlineData("6.0.4-gaaa", "6.0.4-gbbb")] // suffix is build identity, not ordering
+    [InlineData("6.0.0-52.9f6eae03", "6.0.0")]       // a counter on one side only orders nothing
+    [InlineData("6.0.0-52.9f6eae03", "6.0.0-g9f6eae03")]
+    [InlineData("6.0.0-rc.1", "6.0.0-rc.2")]        // a non-numeric suffix stays build identity
+    [InlineData("6.0.0-52.aaa", "6.0.0-52.bbb")]    // same counter: same build number, equal
     public void IsNewerThan_EqualVersions_False(string left, string right)
     {
         Assert.False(PromotionVersionOrder.IsNewerThan(left, right));

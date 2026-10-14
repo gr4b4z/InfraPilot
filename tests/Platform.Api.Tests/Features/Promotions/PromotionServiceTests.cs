@@ -524,6 +524,25 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SupersedeOvertaken_CountedBuildsOfOneReleaseAreOrderedByTheirCounter()
+    {
+        // The GitHub-built extensions version every build of a release as <release>-<run>.<sha>, so the
+        // release prefix never moves between builds. Approved build -> dev promotions a later build
+        // overtook used to compare as equal to it and stay Approved forever.
+        var landedAt = DateTimeOffset.UtcNow;
+        var overtaken = SeedStrandedCandidate("api", "6.0.0-9.1600d316", createdAt: landedAt.AddDays(-1));
+        var newerIntent = SeedStrandedCandidate("api", "6.0.0-60.aaaaaaaa", createdAt: landedAt.AddDays(-1));
+        await _db.SaveChangesAsync();
+
+        var count = await _sut.SupersedeOvertakenByDeployAsync(
+            "acme", "api", "prod", "6.0.0-52.9f6eae03", landedAt);
+
+        Assert.Equal(1, count);
+        Assert.Equal(PromotionStatus.Superseded, (await _db.PromotionCandidates.FindAsync(overtaken.Id))!.Status);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(newerIntent.Id))!.Status);
+    }
+
+    [Fact]
     public async Task SupersedeOvertaken_PromotionThatDidShipIsDeployedNotSuperseded()
     {
         // Being replaced later is the normal end of a promotion's life, not a supersede: if its own
