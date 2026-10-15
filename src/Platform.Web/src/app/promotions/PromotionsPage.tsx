@@ -1,7 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
+import type { PromotionCandidate, PromotionFreeze, PromotionStatus } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { FreezeBanner, FrozenGroup } from './FreezeCues';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { roleDisplay } from '@/lib/roleLabel';
 import { formatDistanceToNow } from 'date-fns';
@@ -14,6 +16,7 @@ import {
   GitPullRequest,
   Ticket,
   ExternalLink,
+  Snowflake,
 } from 'lucide-react';
 
 /**
@@ -64,6 +67,9 @@ export function PromotionsPage() {
   const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
   const [resolvedShown, setResolvedShown] = useState(false);
   const [resolvedLoading, setResolvedLoading] = useState(false);
+  // Active Promotion Freezes (readable by any signed-in user) for the banner and the Frozen group.
+  const [freezes, setFreezes] = useState<PromotionFreeze[]>([]);
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
 
   // Secondary filters shared by both the pending fetch and the resolved fetch.
   const filterParams = () => {
@@ -82,6 +88,10 @@ export function PromotionsPage() {
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
+    api
+      .listPromotionFreezes()
+      .then((data) => setFreezes(data.freezes || []))
+      .catch(() => setFreezes([]));
   };
 
   useEffect(() => {
@@ -192,6 +202,12 @@ export function PromotionsPage() {
 
   const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
   const displayedPending = view === 'mine' ? approvablePending : pending;
+  // Candidates held by a freeze leave the main list for the Frozen group below it.
+  const openPending = displayedPending.filter((c) => !c.frozen);
+  const frozenPending = displayedPending.filter((c) => c.frozen);
+  const bannerFreezes = freezes.filter(
+    (f) => (!productFilter || f.product === productFilter) && (!targetEnvFilter || f.targetEnv === targetEnvFilter),
+  );
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
 
@@ -227,6 +243,20 @@ export function PromotionsPage() {
     }
   };
 
+  const renderCard = (c: PromotionCandidate) => (
+    <CandidateCard
+      key={c.id}
+      candidate={c}
+      urgent
+      selectable={view === 'mine' && c.canApprove}
+      selected={selected.has(c.id)}
+      onToggleSelect={() => toggleSelect(c.id)}
+      onFilterByReference={setReferenceFilter}
+      workItemProgress={workItemProgress[c.id]}
+      awaitingCue={view !== 'mine'}
+    />
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -238,6 +268,8 @@ export function PromotionsPage() {
           Review and approve version promotions across environments
         </p>
       </div>
+
+      {bannerFreezes.length > 0 && <FreezeBanner freezes={bannerFreezes} canManage={isAdmin} />}
 
       {/* Secondary filters */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -366,7 +398,7 @@ export function PromotionsPage() {
                     className="text-[11px] font-semibold uppercase tracking-wider"
                     style={{ color: 'var(--text-muted)' }}
                   >
-                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({displayedPending.length})
+                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({openPending.length})
                   </h2>
                 </div>
                 {view === 'mine' && selected.size > 0 && (
@@ -385,20 +417,11 @@ export function PromotionsPage() {
                   </button>
                 )}
               </div>
-              <div className="space-y-2">
-                {displayedPending.map((c) => (
-                  <CandidateCard
-                    key={c.id}
-                    candidate={c}
-                    urgent
-                    selectable={view === 'mine' && c.canApprove}
-                    selected={selected.has(c.id)}
-                    onToggleSelect={() => toggleSelect(c.id)}
-                    onFilterByReference={setReferenceFilter}
-                    workItemProgress={workItemProgress[c.id]}
-                    awaitingCue={view !== 'mine'}
-                  />
-                ))}
+              <div className="space-y-5">
+                <div className="space-y-2">{openPending.map(renderCard)}</div>
+                <FrozenGroup freezes={freezes} candidates={frozenPending}>
+                  {frozenPending.map(renderCard)}
+                </FrozenGroup>
               </div>
             </div>
           ) : view === 'mine' ? (
@@ -587,6 +610,12 @@ function CandidateCard({
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
           {!compact && <WorkItemsBadge candidate={candidate} progress={workItemProgress} />}
+          {candidate.frozen && (
+            <span className="flex items-center gap-1 font-medium" style={{ color: 'var(--info)' }}>
+              <Snowflake size={10} />
+              Frozen
+            </span>
+          )}
         </div>
         {/* Work items — key + optional title, click-to-filter + external link */}
         {!compact && (() => {
