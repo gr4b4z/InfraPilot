@@ -1059,6 +1059,9 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         public Task<UserInfo?> GetUser(string userId, CancellationToken ct = default)
             => Task.FromResult<UserInfo?>(null);
 
+        public Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
+            => Task.FromResult(AccountStatus.Unknown);
+
         public Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
 

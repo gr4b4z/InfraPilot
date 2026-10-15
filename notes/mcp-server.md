@@ -32,7 +32,8 @@ user menu), which also shows copy-paste setup for Claude Code, a project `.mcp.j
 | Header | `X-Api-Key` — same as configured keys, so every client set up for a key works unchanged |
 | Identity | Its owner: `oid`, `name`, `preferred_username` claims, so comments, triggered-by and audit name the person |
 | Roles | The owner's roles when it was created, **minus `InfraPortal.Admin`** (none ⇒ `InfraPortal.User`) |
-| Lifetime | 7, 30 or 90 days, always finite; revocable on the page; `lastUsedAt` refreshed at most every 5 min |
+| Lifetime | 7, 30 or 90 days, always finite; revocable by its owner on the page and by an admin in Settings → Agent Tokens; `lastUsedAt` refreshed at most every 5 min |
+| Owner check | Refused within 5 min once the directory reports the owner disabled or deleted (see below) |
 | Limit | 10 active tokens per person |
 
 What a token cannot do, and where that is enforced:
@@ -52,6 +53,46 @@ What a token cannot do, and where that is enforced:
 Endpoints (signed-in session): `GET /api/me/tokens`, `POST /api/me/tokens { name, expiresInDays }`
 → `201` with `token` (the secret, once), `DELETE /api/me/tokens/{id}` (revoke). Creation and
 revocation are audit-logged (`auth` module).
+
+#### Owner check (disabled or deleted accounts)
+
+A token carries a snapshot of its owner from creation time, so on its own it would outlive an
+offboarding by up to 90 days. `PersonalTokenOwnerCheck` closes that: on each use it asks
+`IIdentityService.GetAccountStatus` about the owner and caches the answer per owner for 5 minutes
+(`CheckInterval`), so an agent's burst of calls costs one directory read per owner per window on
+each replica.
+
+- **Msal mode (Graph app configured):** `GET users/{oid}?$select=id,accountEnabled`, within the
+  `User.Read.All` the Graph app already holds. `accountEnabled: false` → disabled, `404` → deleted.
+- **Local mode:** the local user's `IsActive` flag, the same one that stops them signing in.
+- **Fails closed only on a positive answer.** If the directory cannot answer (Graph throttled or
+  down, an id the stub does not know), the token keeps working and the owner is looked up again
+  after 1 minute (`RetryAfterUnknown`). A directory outage should not stop every agent at once.
+- **Not re-checked: role assignments.** Reading a user's app-role assignments needs Graph's
+  `Directory.Read.All`, which the Graph app does not have. A token cannot carry Admin or make
+  decisions, so its roles change little, and offboarding disables the account, which the check
+  does catch. When someone loses a role but keeps their account, an admin revokes their tokens.
+
+A refusal is a plain `401`, logged once per owner per window as a warning (`Refusing the personal
+access tokens of …`). Re-enabling the account restores the tokens within the same window; nothing
+is revoked by the check itself.
+
+#### Administration
+
+Settings → **Agent Tokens** (`/settings/agent-tokens`, admin only) lists everyone's tokens grouped
+by owner. Pasting a leaked token into its search finds it by prefix in the browser; the secret is
+not sent to the server. Each token, or all of one person's at once, can be revoked there with an
+optional reason. Endpoints (`CatalogAdmin` policy; a personal token never carries Admin):
+
+| | |
+|---|---|
+| `GET /api/tokens/admin?includeInactive=` | Active tokens with `ownerEmail` / `ownerName`; with `true`, also those that ended within the last 90 days |
+| `POST /api/tokens/admin/{id}/revoke { reason? }` | `204`, idempotent; `404` for an unknown id |
+| `POST /api/tokens/admin/revoke-owner { email, reason? }` | Revokes every active token of that owner → `{ revoked }` |
+
+Each revoked token gets its own `personal_token.revoked` audit entry, the same action the owner's
+revoke writes, with the admin as actor, `owner` in the after-state, and `{ byAdmin: true, reason }`
+as metadata.
 
 ## Tools
 
