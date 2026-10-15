@@ -50,6 +50,16 @@ export function buildApiUrl(path: string) {
   return buildBackendUrl('/api', path);
 }
 
+/**
+ * The backend's absolute origin, for text that leaves the browser — a URL pasted into an agent's
+ * config is resolved against nothing, so the relative paths {@link buildApiUrl} returns in the
+ * default same-origin setup won't do. An empty `backendBaseUrl` means the API sits behind this
+ * page's own origin.
+ */
+export function getBackendOrigin(): string {
+  return normalizeBaseUrl(runtimeConfig.backendBaseUrl) || window.location.origin;
+}
+
 export function buildAgentUrl(path: string) {
   return buildBackendUrl('/agent', path);
 }

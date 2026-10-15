@@ -19,6 +19,7 @@ import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
 import { MyQueuePage } from '@/app/me/MyQueuePage';
 import { MyTasksPage } from '@/app/me/MyTasksPage';
+import { AgentAccessPage } from '@/app/me/AgentAccessPage';
 import { WorkItemDetailPage, LegacyWorkItemRedirect } from '@/app/work-items/WorkItemDetailPage';
 import { SettingsPage } from '@/app/settings/SettingsPage';
 import { EnvironmentsSettings } from '@/app/settings/EnvironmentsSettings';
@@ -105,6 +106,10 @@ function App() {
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — work items awaiting the current user's signoff across products/envs. */}
           <Route path="/me/work-items" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
+          {/* "Agent access" — the signed-in user's personal access tokens for AI agents, and the MCP setup
+              snippets. Every signed-in user manages their own, so it is neither admin- nor
+              feature-gated; it is reached from the user menu. */}
+          <Route path="/me/agent-access" element={<AgentAccessPage />} />
           {/* Work-item detail. The sign-off grain is (key, product, service, targetEnv): the service
               is a path segment (it names which service's change this is), product and targetEnv ride
               along as query params. The single-segment form is what links looked like before the
