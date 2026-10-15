@@ -1,6 +1,6 @@
 # Implementation Plan: Build Registry & Feature-Branch Deployments
 
-**Status:** Draft / for review
+**Status:** Implemented. The cutover (Phase E) and the cleanup ran on 2026-10-14/15 — see [retire-main-stable-tracks.md](retire-main-stable-tracks.md) for what was done and in which order. Two deviations from this plan: the `dev → test` and `test → staging` edges were kept, and the `stable` environment was retired with an environment flag (hidden from current-state views, history kept) rather than deleted.
 **Author:** (planning session, 2026-08-14)
 **Repos affected:** InfraPortal (this repo), `ops-build-templates-aks-releases`, `mpt-release` — plus a one-line condition change in each consumer app pipeline (see §4.2.2).
 

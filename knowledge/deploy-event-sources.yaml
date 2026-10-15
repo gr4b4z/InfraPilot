@@ -20,13 +20,13 @@ tags:
   - mpt-manifest
   - manual
 source: mpt-release/docs/release-pipelines.md §5.1
-as_of: 2026-08-28
+as_of: 2026-10-15
 body: |
   | `source` | Meaning | Written by |
   |---|---|---|
   | `helm-deploy` | A real Helm deployment happened | Track A SDP **and** Track B/C reconcile — tell them apart via `run.workflowName` |
   | `web-deploy` | A real SPA / blob / SWA deployment happened | same |
-  | `release-track` | Synthetic "version landed in `stable`" marker — **nothing was deployed** | `push-stable-release.ps1` (marketplace), `Push-InfraPortal-Promotion.ps1` (mpt-release) |
+  | `release-track` | **Historical.** Synthetic "version landed in `stable`" marker — **nothing was deployed**. Not written since 2026-10-14 | formerly `push-stable-release.ps1` (marketplace) and `Push-InfraPortal-Promotion.ps1` (mpt-release) |
   | `mpt-manifest` | Backfill from the public `versions.json` manifests | `sync-mpt-versions.ps1` |
   | `manual` | Human-recorded ledger entry | `POST /api/deployments/manual` |
 
@@ -35,19 +35,20 @@ body: |
   Over a 30-day window for product `mpt`: dev 462, test 404, staging 110, prod 90, stable 125.
 
   Of those **90 prod events, only 63 are real deployments** (32 `helm-deploy` + 31 `web-deploy`).
-  The other 27 are `mpt-manifest` backfill. The `stable` figure is almost entirely `release-track`
-  markers — `stable` is a landing zone, not a running environment, so nothing is ever deployed
-  *to* it.
+  The other 27 are `mpt-manifest` backfill. The `stable` figure was almost entirely `release-track`
+  markers — `stable` was a landing zone, never a running environment (it is retired now and hidden
+  from current-state views, though its events stay in history).
 
   When someone asks "how many times did we deploy to production last month", filter to
   `helm-deploy` and `web-deploy` and say which filter was applied.
 
   ## Why the synthetic sources exist
 
-  `release-track` exists so that a version reaching `stable` is visible in the same timeline as a
-  real deployment. Without it, the production track would appear to begin at `staging` with no
-  record of what qualified the build. It is a marker of intent, deliberately given the same shape as
-  a deployment so one query can reconstruct the whole journey.
+  `release-track` existed so that a version reaching `stable` was visible in the same timeline as a
+  real deployment, and gave the `stable → staging` promotion a source deploy to stand on. Since the
+  build registry took over (2026-10-14), a release build is visible as a registered **build** and
+  its `build → staging` promotion needs no source deploy, so nothing writes the marker any more. Old
+  `release-track` events remain in `stable`'s history.
 
   `mpt-manifest` exists to backfill history from before the ingest path existed. It is why some old
   events have no run, no references and no participants — there was nothing to record.

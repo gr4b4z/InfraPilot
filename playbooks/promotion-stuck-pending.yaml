@@ -5,14 +5,14 @@ summary: >-
   A Pending candidate is waiting for people, not plumbing. Its policy says what has to happen before
   it can advance.
 source: mpt-release/docs/release-pipelines.md §5.2 + InfraPilot promotion policy engine
-as_of: 2026-08-28
+as_of: 2026-10-15
 causes:
   - id: work-items-outstanding
     title: Work items in the bundle are not signed off
     matches_when:
       - work_items_outstanding
     explanation: >-
-      Policies at `stable → staging` and `staging → prod` track work items, and at `staging → prod`
+      Policies at `build → staging` and `staging → prod` track work items, and at `staging → prod`
       every item must be approved before the gate clears. Sign-off is scoped to the target
       environment, so items approved for staging are asked about again for prod — deliberately.
     confirm: The promotion's work item list shows which are outstanding and who they are assigned to.
