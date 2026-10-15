@@ -290,6 +290,25 @@ export function PromotionDetailPage() {
     }
   };
 
+  // Admin override of reject: turns down a Pending candidate without the admin being one of its
+  // approvers. Same outcome as a normal rejection, so the same "done" latch; the reason is required
+  // (the dialog that calls this won't confirm without one).
+  const handleAdminReject = async (reason: string) => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      await api.adminRejectPromotion(id!, reason);
+      setActionDone('Rejected');
+      fetchData();
+      // It may have been sitting in somebody's — possibly this admin's — awaiting-me list.
+      refreshMyTasks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reject failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="max-w-6xl mx-auto space-y-4">
@@ -591,6 +610,7 @@ export function PromotionDetailPage() {
               actionLoading={actionLoading}
               onAction={handleAction}
               onBypass={handleBypass}
+              onAdminReject={handleAdminReject}
               onCancelApproval={handleCancelApproval}
               canCancelApproval={canCancelApproval}
               isAdmin={isAdmin}
@@ -1494,6 +1514,7 @@ function PromotionApprovalCard({
   actionLoading,
   onAction,
   onBypass,
+  onAdminReject,
   onCancelApproval,
   canCancelApproval,
   isAdmin,
@@ -1506,6 +1527,7 @@ function PromotionApprovalCard({
   actionLoading: boolean;
   onAction: (action: 'approve' | 'reject', comment: string, target?: EligibleRequirement) => void;
   onBypass: (reason: string) => void;
+  onAdminReject: (reason: string) => void;
   onCancelApproval: (comment: string) => void;
   canCancelApproval: boolean;
   isAdmin: boolean;
@@ -1522,6 +1544,11 @@ function PromotionApprovalCard({
   const showBypass = isAdmin && candidate.status === 'Pending' && !actionDone;
   const [showBypassBox, setShowBypassBox] = useState(false);
   const [bypassReason, setBypassReason] = useState('');
+  // Its counterpart, admin reject — offered only when the card has no ordinary Reject for this user
+  // (they aren't an approver here, or have nothing left to approve). An admin who is an approver
+  // rejects the normal way, so the page never shows two Reject buttons that do the same thing.
+  const showAdminReject = showBypass && !showActions;
+  const [confirmingAdminReject, setConfirmingAdminReject] = useState(false);
   // Undo, for the wrong row approved by mistake. The server decides who may do it and until when
   // (Approved, not yet dispatched) — this only asks whether it said yes.
   const showCancelApproval = canCancelApproval && !actionDone;
@@ -1768,24 +1795,43 @@ function PromotionApprovalCard({
         />
       )}
 
-      {/* Admin-only bypass. Shown on any Pending candidate to admins, even when they aren't an
-         eligible approver. Force-approves the candidate without satisfying the gate; the reason is
-         required and the existing promotion.approved webhook still fires. */}
+      {/* Admin-only overrides. Shown on any Pending candidate to admins, even when they aren't an
+         eligible approver. Bypass force-approves the candidate without satisfying the gate (the
+         existing promotion.approved webhook still fires); admin reject turns it down without the
+         approver check, and appears only when there is no ordinary Reject above. Both need a reason. */}
       {showBypass && (
         <div
           className={showActions || showProgress ? 'mt-4 pt-4 border-t' : ''}
           style={showActions || showProgress ? { borderColor: 'var(--border-color)' } : undefined}
         >
           {!showBypassBox ? (
-            <button
-              type="button"
-              onClick={() => setShowBypassBox(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
-              style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
-            >
-              <Rocket size={14} />
-              Bypass approval gate
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowBypassBox(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+                style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
+              >
+                <Rocket size={14} />
+                Bypass approval gate
+              </button>
+              {showAdminReject && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingAdminReject(true)}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+                  style={{
+                    borderColor: 'var(--danger)',
+                    color: 'var(--danger)',
+                    opacity: actionLoading ? 0.5 : 1,
+                  }}
+                >
+                  <XCircle size={14} />
+                  Reject as admin
+                </button>
+              )}
+            </div>
           ) : (
             <div className="space-y-2">
               <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -1836,6 +1882,33 @@ function PromotionApprovalCard({
             </div>
           )}
         </div>
+      )}
+
+      {confirmingAdminReject && (
+        <ConfirmDialog
+          title="Reject this promotion as admin?"
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong>. Rejecting as an
+              administrator skips the approver check: the promotion is turned down and will not
+              deploy. It is recorded under your name with this reason, audited as an admin override,
+              and announced with the usual <code>promotion.rejected</code> webhook.
+            </>
+          }
+          confirmLabel="Reject as admin"
+          confirmTone="danger"
+          commentLabel="Reason"
+          commentRequired
+          busy={actionLoading}
+          onConfirm={(reason) => {
+            onAdminReject(reason);
+            setConfirmingAdminReject(false);
+          }}
+          onCancel={() => setConfirmingAdminReject(false)}
+        />
       )}
     </div>
   );
