@@ -127,6 +127,19 @@ public sealed class McpContext
             return pool.Where(x => resolution.Matches.Contains(x.Service)).Distinct()
                 .OrderBy(x => x.Product).ThenBy(x => x.Service).ToList();
         }
+
+        // One service name deployed under several products (a service moving between products keeps
+        // its name) is several services — answer for each rather than refuse a read.
+        if (resolution.Single is { } single && product is null)
+        {
+            var owners = pool.Where(x => x.Service == single).Distinct().OrderBy(x => x.Product).ToList();
+            if (owners.Count > 1)
+            {
+                if (resolution.Note("service") is { } note) Notes.Add(note);
+                Notes.Add($"'{single}' is deployed under {owners.Count} products ({string.Join(", ", owners.Select(o => o.Product))}); answered for each — say which is which.");
+                return owners;
+            }
+        }
         return [await ServiceAsync(rawProduct, rawService, ct)];
     }
 
