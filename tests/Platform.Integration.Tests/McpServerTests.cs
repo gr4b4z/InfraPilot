@@ -62,6 +62,9 @@ public class McpServerTests : IClassFixture<McpServerTests.McpFactory>
         await Post(new { product = Product, service = Service, environment = "staging", version = "1.4.0", source = "test", deployedAt = DateTimeOffset.UtcNow.AddHours(-3) });
         await Post(new { product = Product, service = Service, environment = "production", version = "1.3.0", source = "test", deployedAt = DateTimeOffset.UtcNow.AddHours(-30) });
         await Post(new { product = Product, service = "checkout-worker", environment = "staging", version = "2.0.0", source = "test", deployedAt = DateTimeOffset.UtcNow.AddHours(-2) });
+        // One service name under two products — a service mid-move keeps its name.
+        await Post(new { product = Product, service = "shared-gateway", environment = "prod", version = "3.1.0", source = "test", deployedAt = DateTimeOffset.UtcNow.AddHours(-5) });
+        await Post(new { product = "mcp-shop-legacy", service = "shared-gateway", environment = "prod", version = "2.9.0", source = "test", deployedAt = DateTimeOffset.UtcNow.AddDays(-20) });
         await Post(new
         {
             product = Product, service = Service, environment = "test", version = "1.5.0", source = "test",
@@ -155,6 +158,24 @@ public class McpServerTests : IClassFixture<McpServerTests.McpFactory>
         var services = state.GetProperty("services").EnumerateArray().Select(s => s.GetProperty("service").GetString()).ToList();
         Assert.Equal(["checkout-api", "checkout-worker"], services);
         Assert.Contains("2 services", state.GetProperty("nameResolution")[0].GetString());
+    }
+
+    [Fact]
+    public async Task A_service_under_two_products_is_answered_for_both_by_reads_and_refused_by_single_item_tools()
+    {
+        await using var client = await ConnectAsync(McpFactory.PipelineKey);
+
+        var state = await CallJsonAsync(client, "get_deployment_state", new() { ["service"] = "shared-gateway" });
+        var rows = state.GetProperty("services").EnumerateArray()
+            .Select(s => (s.GetProperty("product").GetString(), s.GetProperty("environments").GetProperty("prod").GetProperty("version").GetString()))
+            .ToList();
+        Assert.Equal([("mcp-shop", "3.1.0"), ("mcp-shop-legacy", "2.9.0")], rows);
+        Assert.Contains(state.GetProperty("nameResolution").EnumerateArray(), n => n.GetString()!.Contains("2 products"));
+
+        // A detail tool needs one service, so it asks which.
+        var (isError, text) = await CallAsync(client, "get_service", new() { ["service"] = "shared-gateway" });
+        Assert.True(isError);
+        Assert.Contains("mcp-shop-legacy", text);
     }
 
     [Fact]
