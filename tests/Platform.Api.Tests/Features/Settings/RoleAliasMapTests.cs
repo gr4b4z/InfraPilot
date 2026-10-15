@@ -104,8 +104,9 @@ public class RoleAliasMapTests
     [Fact]
     public void Validate_AnAliasOnTwoRoles_IsAmbiguous()
     {
+        // Spelled differently on each role — the collision is between the canonical forms.
         var errors = RoleConfigValidator.Validate(
-            [Role("qa-owner", aliases: ["tester"]), Role("reviewer", aliases: ["tester"])]);
+            [Role("qa-owner", aliases: ["tester"]), Role("reviewer", aliases: ["Tester"])]);
 
         Assert.Contains("both 'qa-owner' and 'reviewer'", Assert.Single(errors));
     }

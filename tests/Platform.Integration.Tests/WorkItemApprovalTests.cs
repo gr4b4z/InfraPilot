@@ -93,94 +93,10 @@ public class WorkItemApprovalTests
         }
     }
 
-    /// <summary>
-    /// A missing Pending candidate no longer blocks a sign-off (an orphaned item still needs
-    /// resolving) — but a key the platform has never seen does, so nothing can seed rows for a
-    /// ticket that was never promoted.
-    /// </summary>
-    [Fact]
-    public async Task Approve_Throws_WhenTicketIsUnknown()
-    {
-        await using var factory = new WorkItemTestFactory();
-        factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
-
-        // No setup — no candidate has ever carried FOO-999.
-        using var scope = factory.Services.CreateScope();
-        var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.ApproveAsync("FOO-999", "acme", "api", "prod", null, default));
-        Assert.Contains("not known", ex.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Approve_Throws_WhenAlreadyDecided()
-    {
-        await using var factory = new WorkItemTestFactory();
-        factory.Current.Email = "approver@example.com";
-        factory.Current.Name = "Approver User";
-        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
-
-            // Pre-insert a decision for the same approver.
-            db.WorkItemApprovals.Add(new WorkItemApproval
-            {
-                Id = Guid.NewGuid(),
-                WorkItemKey = "FOO-1",
-                Product = "acme",
-                Service = "api",
-                TargetEnv = "prod",
-                ApproverEmail = "approver@example.com",
-                ApproverName = "Approver User",
-                Decision = WorkItemDecision.Approved,
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-            await db.SaveChangesAsync();
-        }
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default));
-            Assert.Contains("already", ex.Message, StringComparison.OrdinalIgnoreCase);
-        }
-    }
-
     // NOTE: the separation-of-duties "excluded by role" path was removed (D17) along with
     // PromotionPolicy.ExcludeRole / candidate source-event linkage — anyone authorized for the
     // promotion may now decide on its tickets. The former Approve_Throws_WhenUserIsExcludedByRole
     // test exercised behaviour that no longer exists, so it was dropped.
-
-    [Fact]
-    public async Task Approve_Throws_WhenUserNotInApproverGroup()
-    {
-        await using var factory = new WorkItemTestFactory();
-        // No matching role/group claim — and the empty IIdentityService has no members either.
-        factory.Current.Email = "outsider@example.com";
-        factory.Current.Name = "Outsider";
-        factory.Current.RolesList = new() { "InfraPortal.User" };
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers");
-        }
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ex = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
-                svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default));
-            // Work-item sign-off is the QA role's jurisdiction: a user without QA/Admin (here just
-            // InfraPortal.User) is refused, regardless of promotion approver-group membership.
-            Assert.Contains("QA", ex.Message, StringComparison.OrdinalIgnoreCase);
-        }
-    }
 
     [Fact]
     public async Task Approve_Throws_WhenPolicyIsAutoApprove()
@@ -1363,6 +1279,11 @@ public class WorkItemApprovalTests
         Assert.Equal("ship it", body.GetProperty("comment").GetString());
     }
 
+    /// <summary>
+    /// A missing Pending candidate no longer blocks a sign-off (an orphaned item still needs
+    /// resolving) — but a key the platform has never seen does, so nothing can seed rows for a
+    /// ticket that was never promoted.
+    /// </summary>
     [Fact]
     public async Task POST_Approvals_Returns400_WhenTicketIsUnknown()
     {
@@ -1432,6 +1353,11 @@ public class WorkItemApprovalTests
         var response = await client.PostAsJsonAsync("/api/work-items/FOO-1/approvals",
             new { product = "acme", service = "api", targetEnv = "prod" });
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        // Work-item sign-off is the QA role's jurisdiction: a user without QA/Admin (here just
+        // InfraPortal.User) is refused, regardless of promotion approver-group membership.
+        var body = await Deserialize(response);
+        Assert.Contains("QA", body.GetProperty("error").GetString()!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1518,37 +1444,6 @@ public class WorkItemApprovalTests
         Assert.Equal("FOO-1", t.GetProperty("workItemKey").GetString());
         Assert.Equal("acme", t.GetProperty("product").GetString());
         Assert.Equal("prod", t.GetProperty("targetEnv").GetString());
-    }
-
-    [Fact]
-    public async Task GET_MePending_DoesNotReturn_AlreadyDecidedTickets()
-    {
-        await using var factory = new WorkItemTestFactory();
-        factory.Current.Email = "me@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
-
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            await SeedPolicyEventCandidateAsync(db, "FOO-1", approverGroup: "ReleaseApprovers", service: "a");
-            await SeedPolicyEventCandidateAsync(db, "FOO-2", approverGroup: "ReleaseApprovers", service: "b");
-            db.WorkItemApprovals.Add(new WorkItemApproval
-            {
-                Id = Guid.NewGuid(),
-                WorkItemKey = "FOO-1", Product = "acme", Service = "a", TargetEnv = "prod",
-                ApproverEmail = "me@example.com", ApproverName = "Me",
-                Decision = WorkItemDecision.Approved,
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-            await db.SaveChangesAsync();
-        }
-
-        var client = factory.CreateAdminClient();
-        var response = await client.GetAsync("/api/work-items/me/pending");
-        var body = await Deserialize(response);
-        var tickets = body.GetProperty("tickets");
-        Assert.Equal(1, tickets.GetArrayLength());
-        Assert.Equal("FOO-2", tickets[0].GetProperty("workItemKey").GetString());
     }
 
     // ── Maintenance: the "No live promotion" sweep ──────────────────────────

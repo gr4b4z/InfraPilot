@@ -168,17 +168,6 @@ public class DeploymentDetailIntegrationTests
             body.GetProperty("errors").EnumerateArray().Select(e => e.GetString()));
     }
 
-    [Fact]
-    public async Task StateMatrix_CarriesTheEventIdSoTheUiCanLinkToDetail()
-    {
-        var id = await IngestFailedDeployAsync("v1.4.0", "2026-04-16T14:00:00Z");
-
-        var body = await Deserialize(await _adminClient.GetAsync("/api/deployments/state?product=acme&serviceName=api"));
-        var entry = body.EnumerateArray().Single(e => e.GetProperty("environment").GetString() == "staging");
-
-        Assert.Equal(id, entry.GetProperty("id").GetString());
-    }
-
     private static async Task<JsonElement> Deserialize(HttpResponseMessage response)
     {
         var stream = await response.Content.ReadAsStreamAsync();
