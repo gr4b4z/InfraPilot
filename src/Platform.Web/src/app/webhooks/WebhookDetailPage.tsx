@@ -28,6 +28,8 @@ const AVAILABLE_EVENTS = [
   'promotion.rejected',
   'promotion.deployed',
   'promotion.updated',
+  'promotion.frozen',
+  'promotion.unfrozen',
   'rollback.approved',
   'rollback.rejected',
   'rollback.deployed',
