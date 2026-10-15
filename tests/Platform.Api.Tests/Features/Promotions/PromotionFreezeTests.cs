@@ -337,9 +337,20 @@ public class PromotionFreezeTests : IDisposable
         var acme = await CreateAsync(product: "acme");
         var other = await CreateAsync(product: "other");
         await _sut.FreezeAsync("acme", "prod", "acme window");
-        await _sut.FreezeAsync("other", "prod", "other window");
         await _promotions.ApproveAsync(acme.Id, comment: null);
-        await _promotions.ApproveAsync(other.Id, comment: null);
+        // "other" (same env, NOT frozen) is gate-satisfiable but was never re-evaluated: its approval
+        // row is seeded directly, bypassing ApproveAsync. Re-evaluating it would flip it to Approved,
+        // so it stays Pending only if the lift sweep is scoped to the lifted pair.
+        _db.PromotionApprovals.Add(new PromotionApproval
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = other.Id,
+            ApproverEmail = "admin@example.com",
+            ApproverName = "Admin User",
+            Decision = PromotionDecision.Approved,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        _db.SaveChanges();
         Assert.Equal(PromotionStatus.Pending, StatusOf(acme.Id));
         Assert.Equal(PromotionStatus.Pending, StatusOf(other.Id));
         _webhooks.ClearReceivedCalls();
@@ -349,6 +360,8 @@ public class PromotionFreezeTests : IDisposable
         Assert.True(lifted);
         Assert.Equal(PromotionStatus.Approved, StatusOf(acme.Id));
         Assert.Equal(PromotionStatus.Pending, StatusOf(other.Id));
+        await _webhooks.Received(1).DispatchAsync(
+            "promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
         await _webhooks.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Is<object>(o => JsonContains(o, acme.Id.ToString())),
