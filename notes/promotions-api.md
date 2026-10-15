@@ -265,9 +265,22 @@ whose gate is already satisfied — approvals collected during the freeze, auto-
 items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
 burst of webhooks when a freeze holding several candidates is lifted.
 
+### `GET /freezes/history?limit=N` — freeze journal
+Freeze and lift events, **newest first**, derived from the audit log (`promotion.frozen` /
+`promotion.unfrozen`). `limit` defaults to 10 and is clamped to 1–50.
+
+```json
+{ "entries": [ { "action": "unfrozen", "product": "checkout", "targetEnv": "prod",
+                 "reason": "Release window", "actor": "Ada Admin", "at": "2026-01-01T10:00:00Z" } ] }
+```
+
+`action` is `"frozen"` or `"unfrozen"`; for `unfrozen`, `reason` is the lifted freeze's original
+reason and `actor` is who lifted it. `reason` is `null` when the audit payload has none.
+
 ### UI
 Admins manage freezes at **Settings → Freeze**: active freezes (with the held count) and a form to
-freeze a product → environment pair that has an approval policy and is not already frozen.
+freeze a product → environment pair that has an approval policy and is not already frozen, plus a
+**Journal** (latest 10 events from the history endpoint; refreshed after every freeze or lift).
 
 ### Gate behaviour while frozen
 - **Only the transition to `Approved` is held.** Approvals and work-item sign-offs are still

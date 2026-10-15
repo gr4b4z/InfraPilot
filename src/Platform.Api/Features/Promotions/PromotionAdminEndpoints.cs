@@ -43,6 +43,13 @@ public static class PromotionAdminEndpoints
         group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
             Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
 
+        group.MapGet("/freezes/history", async (
+            PromotionFreezeService freezes, int? limit, CancellationToken ct) =>
+            Results.Ok(new
+            {
+                entries = await freezes.GetHistoryAsync(limit ?? PromotionFreezeService.DefaultHistoryLimit, ct),
+            }));
+
         group.MapPost("/freezes", async (
             PromotionFreezeService freezes, FreezePromotionsRequest? request, CancellationToken ct) =>
         {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { Snowflake } from 'lucide-react';
-import { api, type PromotionFreeze } from '@/lib/api';
+import { api, type PromotionFreeze, type PromotionFreezeHistoryEntry } from '@/lib/api';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 const inputClass =
@@ -16,6 +16,8 @@ const errorStyle = {
   color: 'var(--danger, #dc2626)',
   backgroundColor: 'var(--danger-muted, #fee2e2)',
 };
+
+const JOURNAL_LIMIT = 10;
 
 interface Pair {
   product: string;
@@ -80,10 +82,64 @@ function ActiveFreezeCard({
   );
 }
 
+function FreezeJournal({
+  entries,
+  envLabel,
+}: {
+  entries: PromotionFreezeHistoryEntry[];
+  envLabel: (env: string) => string;
+}) {
+  if (entries.length === 0) {
+    return (
+      <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+        No freeze activity yet.
+      </p>
+    );
+  }
+
+  return (
+    <ol>
+      {entries.map((entry, idx) => {
+        const frozen = entry.action === 'frozen';
+        const last = idx === entries.length - 1;
+        return (
+          <li key={`${entry.at}:${entry.action}:${entry.product}:${entry.targetEnv}:${idx}`} className="flex gap-3">
+            <div className="flex flex-col items-center w-3 shrink-0">
+              <span
+                className="w-2 h-2 rounded-full mt-1.5 shrink-0"
+                style={{ backgroundColor: frozen ? 'var(--warning)' : 'var(--success)' }}
+              />
+              {!last && (
+                <span className="flex-1 w-px" style={{ backgroundColor: 'var(--border-color)' }} />
+              )}
+            </div>
+            <div className={`flex-1 flex items-start justify-between gap-3 ${last ? '' : 'pb-3'}`}>
+              <p className="text-[13px] break-words min-w-0" style={{ color: 'var(--text-primary)' }}>
+                <span className="font-medium">{entry.actor}</span> {frozen ? 'froze' : 'lifted'}{' '}
+                {entry.product} → {envLabel(entry.targetEnv)}
+                {entry.reason && (
+                  <span style={{ color: 'var(--text-secondary)' }}> — “{entry.reason}”</span>
+                )}
+              </p>
+              <span
+                className="text-[11px] whitespace-nowrap mt-0.5"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {formatDistanceToNow(new Date(entry.at), { addSuffix: true })}
+              </span>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export function FreezeSettings() {
   const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
 
   const [freezes, setFreezes] = useState<PromotionFreeze[]>([]);
+  const [history, setHistory] = useState<PromotionFreezeHistoryEntry[]>([]);
   const [pairs, setPairs] = useState<Pair[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,9 +154,15 @@ export function FreezeSettings() {
     setFreezes(res.freezes);
   }, []);
 
+  // Ask for one more than we show: getting it back is how we know the journal is truncated.
+  const loadHistory = useCallback(async () => {
+    const res = await api.listPromotionFreezeHistory(JOURNAL_LIMIT + 1);
+    setHistory(res.entries);
+  }, []);
+
   useEffect(() => {
-    Promise.all([loadFreezes(), api.listPromotionPolicies()])
-      .then(([, res]) => {
+    Promise.all([loadFreezes(), loadHistory(), api.listPromotionPolicies()])
+      .then(([, , res]) => {
         const seen = new Set<string>();
         const distinct: Pair[] = [];
         for (const p of res.policies) {
@@ -113,7 +175,7 @@ export function FreezeSettings() {
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load freezes'))
       .finally(() => setLoading(false));
-  }, [loadFreezes]);
+  }, [loadFreezes, loadHistory]);
 
   const products = useMemo(
     () => Array.from(new Set(pairs.map((p) => p.product))).sort(),
@@ -136,7 +198,7 @@ export function FreezeSettings() {
     setError(null);
     try {
       await api.createPromotionFreeze({ product, targetEnv: env, reason: reason.trim() });
-      await loadFreezes();
+      await Promise.all([loadFreezes(), loadHistory()]);
       setProduct('');
       setEnv('');
       setReason('');
@@ -151,7 +213,7 @@ export function FreezeSettings() {
     setError(null);
     try {
       await api.liftPromotionFreeze(f.product, f.targetEnv);
-      await loadFreezes();
+      await Promise.all([loadFreezes(), loadHistory()]);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to lift freeze');
     }
@@ -266,6 +328,18 @@ export function FreezeSettings() {
             <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
               Approvals keep being recorded while frozen; nothing is promoted until you lift it.
             </p>
+          </section>
+
+          <section className="space-y-2">
+            <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Journal
+            </h3>
+            <FreezeJournal entries={history.slice(0, JOURNAL_LIMIT)} envLabel={getDisplayName} />
+            {history.length > JOURNAL_LIMIT && (
+              <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Showing latest {JOURNAL_LIMIT}
+              </p>
+            )}
           </section>
         </>
       )}
