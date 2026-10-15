@@ -6,6 +6,7 @@ import {
   GitPullRequest,
   History,
   Inbox,
+  KeyRound,
   Rocket,
   ScrollText,
   Settings,
@@ -50,4 +51,5 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: 'n', label: 'Release notes', to: '/release-notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
   { key: 'h', label: 'Webhooks', to: '/webhooks', icon: Webhook, adminOnly: true },
   { key: 's', label: 'Settings', to: '/settings', icon: Settings, adminOnly: true },
+  { key: 'k', label: 'Agent access', to: '/me/agent-access', icon: KeyRound },
 ];

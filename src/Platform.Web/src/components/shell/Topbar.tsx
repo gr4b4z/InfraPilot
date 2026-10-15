@@ -1,4 +1,4 @@
-import { Bell, EyeOff, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
+import { Bell, EyeOff, KeyRound, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useConversationStore } from '@/stores/conversationStore';
@@ -305,6 +305,17 @@ export function Topbar() {
                   {user?.email}
                 </p>
               </div>
+              {/* Per-user, so it lives here rather than under the admin-only Settings: every
+                  signed-in user manages their own agent tokens. */}
+              <NavLink
+                to="/me/agent-access"
+                onClick={() => setUserMenuOpen(false)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-[var(--bg-primary)]"
+                style={({ isActive }) => ({ color: isActive ? 'var(--accent)' : 'var(--text-secondary)' })}
+              >
+                <KeyRound size={14} />
+                Agent access
+              </NavLink>
               {(isLocalAuthEnabled() || isMsalEnabled()) && (
                 <button
                   onClick={() => {
