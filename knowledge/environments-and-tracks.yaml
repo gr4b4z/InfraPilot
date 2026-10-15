@@ -1,62 +1,82 @@
 id: environments-and-tracks
-title: The environments, and the two independent promotion tracks
+title: The environments, and how a build reaches each one
 group: Topology
 summary: >-
-  What each environment is for, the two parallel promotion chains, and why there is no path from test
-  to stable.
+  What each environment is for, how a registered build enters dev and staging, the stage-to-stage
+  edges after that, and what happened to the retired `stable` ("Staging Candidate") environment.
 aliases:
   - what environments are there
   - what is stable
+  - what is staging candidate
+  - where did staging candidate go
   - difference between test and staging
   - how do I get to production
-  - why can't I promote test to stable
+  - why can't I promote test to staging
   - promotion map
 tags:
   - environment
   - dev
   - test
-  - stable
   - staging
   - prod
-  - main
+  - build
+  - stable
   - promotion map
-source: mpt-release/README.md + promotion-map.yaml
-as_of: 2026-08-28
+source: mpt-release/README.md + promotion-map.yaml + InfraPortal promotion policies
+as_of: 2026-10-15
 body: |
-  ## The two chains
+  ## How a build reaches each environment
 
-      main ──► dev ──► test          (from master/main — feature releases, CI builds)
-      stable ──► staging ──► prod    (from release/5 — release candidates)
+      registered build (main/master) ──► dev ──► test
+      registered build (release/*)   ──► staging ──► prod
 
-  That is `promotion-map.yaml` in full. The two tracks are **independent**.
+  - **Into dev and staging** a version only ever arrives as a promotion from the synthetic `build`
+    environment: every published build registers itself, and the `build → dev` (main/master,
+    auto-approved) or `build → staging` (release/*, QA and release approval) policy creates the
+    promotion from that registration.
+  - **After that** the stage-to-stage edges take over: `dev → test` (auto), `staging → prod`
+    (gated, every work item signed off). `mpt-support-tools` also has `test → staging`, because
+    most of its services have no release branch.
 
-  | Directory | Role |
+  `promotion-map.yaml` in mpt-release lists only the stage-to-stage edges — `dev: test`,
+  `test: staging`, `staging: prod` — because the `build` edges never copy between directories:
+  Deploy Registered Build pulls the manifest from ACR and commits it straight into `dev/` or
+  `staging/`.
+
+  | mpt-release directory | Role |
   |---|---|
-  | `main/` | Landing zone. CI builds from `master`/`main` land here before dev. |
-  | `stable/` | Landing zone. CI builds from `release/5` land here before staging. |
-  | `dev/`, `test/`, `staging/`, `prod/` | Desired state for that environment. |
+  | `dev/`, `test/`, `staging/`, `prod/` | Desired state for that environment, reconciled by `Reconcile <env>`. |
 
-  `main` and `stable` are **landing zones, not environments** — nothing is deployed to them. A
-  version arriving in `stable` produces a `release-track` deploy event, which is a marker that the
-  version qualified for the production track, not a record of a deployment.
+  Track A (`marketplace`) works the same way at staging — an approved `build → staging` promotion
+  of an `mpt` service is deployed by its staging pipeline — while its dev and test still deploy
+  from `manifest.json` on every master bump.
 
-  ## Why there is no test → stable edge
+  ## Why a test-verified build does not go to staging
 
-  A build enters the production track **only by being built from `release/5`**. Verifying something
-  in `test` does not graduate it; it has to be rebuilt from the release branch.
+  Staging and prod carry release content; dev and test carry master. A build reaches staging by
+  being **built from a release branch**, which registers it and opens its `build → staging`
+  promotion. Verifying something in `test` does not graduate it — promoting a master build would
+  drag unreleased work into the release with it. The exception is `mpt-support-tools`'
+  `test → staging` edge, for services that have no release branch at all.
 
-  The reason is that the two tracks carry different content. `main` builds contain whatever has
-  merged, which is deliberately ahead of the release. Promoting a `test`-verified build into
-  `stable` would drag unreleased work into the production track with it. Cross-track promotion is a
-  planned future phase, and would need a way to express "this change, not everything behind it".
-
-  So "I tested it in test, why isn't it in staging?" has one answer: it will reach staging when a
-  `release/5` build containing it is produced.
+  So "I tested it in test, why isn't it in staging?" usually has one answer: it will reach staging
+  when a release build containing it is produced and its `build → staging` promotion is approved.
 
   ## The synthetic `build` environment
 
-  Track C adds a source environment called `build`, which never receives deploy events — it is the
-  registry, not a place. Its policies set `sourceRequiresDeploy = false` for exactly that reason.
+  `build` never receives deploy events — it is the registry, not a place. Its policies set
+  `sourceRequiresDeploy = false` for exactly that reason, and `autoCreateFromBranches` decides which
+  branches open a promotion automatically. A build from any other branch (a feature branch) registers
+  and stops until someone promotes it from the UI or `POST /api/promotions/from-build`.
+
+  ## What happened to `stable` ("Staging Candidate")
+
+  Until 2026-10-14 there were two landing zones, `main/` and `stable/`, fed by the
+  `mpt-release.import-build` pipeline (ADO 5617), and the "Staging Candidate" environment showed
+  `release-track` markers for versions waiting for staging. Both landing zones and the import are
+  gone; `stable` is marked **retired** in Settings → Environments, so it no longer appears in any
+  current-state view. Its history (and old promotions "from Staging Candidate") still reads as it
+  did.
 related:
   - delivery-tracks
   - promotion-policies

@@ -2,7 +2,7 @@ id: promotion-policies
 title: Why the promotion policies are the way they are
 group: Policies
 summary: >-
-  The 13 promotion policies in force, the reasoning behind each shape, and what "no approval steps"
+  The 16 promotion policies in force, the reasoning behind each shape, and what "no approval steps"
   actually means.
 aliases:
   - promotion policy
@@ -23,23 +23,32 @@ tags:
   - test
   - staging
   - prod
-source: mpt-release/docs/release-pipelines.md §5.2
-as_of: 2026-08-28
+source: InfraPortal /api/promotions/admin/policies (live), mpt-release/docs/release-pipelines.md
+as_of: 2026-10-15
 body: |
   ## The policies in force
 
-  | Product | Service | Edge | Approval | Work items |
-  |---|---|---|---|---|
-  | `mpt` | all | dev → test | none (auto) | no |
-  | `mpt` | all | stable → staging | QA Manager ×1 | tracked |
-  | `mpt` | all | staging → prod | QA Manager ×1 | tracked, **all must be approved** |
-  | `mpt-extensions` | all | build → dev | none (auto) | no |
-  | `mpt-extensions` | all | dev → test | none (auto) | no |
-  | `mpt-extensions` | `swo-extension-mscsp` | dev → test | Guardians ×1 (5 members) | no |
-  | `mpt-extensions` | all | stable → staging | QA Manager ×1 | tracked |
-  | `mpt-extensions` | `swo-extension-mscsp` | stable → staging, staging → prod | Guardians ×1 | tracked |
-  | `mpt-extensions` | all | staging → prod | QA Manager ×1 | tracked, **all must be approved** |
-  | `mpt-jenkins-tools` | all | build → staging, staging → prod | QA Manager / named approver | tracked |
+  | Product | Service | Edge | Approval | Work items | Auto-created from |
+  |---|---|---|---|---|---|
+  | `mpt` | all | build → staging | QA Manager ×1, then Release Manager ×1 | tracked | `refs/heads/release/*` |
+  | `mpt` | all | dev → test | none (auto) | no | — |
+  | `mpt` | all | staging → prod | QA Manager ×1, then Release Manager ×1 | tracked, **all must be approved** | — |
+  | `mpt-extensions` | all | build → dev | none (auto) | no | `refs/heads/main`, `refs/heads/master` |
+  | `mpt-extensions` | `mpt-extension-delivery` | build → dev | none (auto), no approval delay | no | `refs/heads/main`, `refs/heads/master` |
+  | `mpt-extensions` | all | build → staging | QA Manager ×1, then Release Manager ×1 | tracked | `refs/heads/release/*` |
+  | `mpt-extensions` | all | dev → test | none (auto) | no | — |
+  | `mpt-extensions` | `swo-extension-mscsp` | dev → test | Guardians ×1 | no | — |
+  | `mpt-extensions` | `swo-extension-mscsp` | build → staging, staging → prod | Guardians ×1 | tracked (prod: all must be approved) | build: `refs/heads/release/*` |
+  | `mpt-extensions` | all | staging → prod | QA Manager ×1, then Release Manager ×1 | tracked, **all must be approved** | — |
+  | `mpt-support-tools` | all | build → dev | none (auto) | no | `refs/heads/main`, `refs/heads/master` |
+  | `mpt-support-tools` | all | build → staging | QA Manager ×1 | tracked | `refs/heads/release/*` |
+  | `mpt-support-tools` | all | dev → test | none (auto) | no | — |
+  | `mpt-support-tools` | all | test → staging | QA Manager ×1, then Release Manager ×1 | tracked | — |
+  | `mpt-support-tools` | all | staging → prod | QA Manager ×1, then Release Manager ×1 | tracked, **all must be approved** | — |
+
+  There is **no `stable → staging` policy any more**: the "Staging Candidate" edge was retired on
+  2026-10-14 and its approvers moved, unchanged, onto `build → staging`. `mpt` has no `build → dev`
+  policy yet — its dev and test still deploy straight from the marketplace manifest (Track A).
 
   ## Why they are shaped like this
 
@@ -66,6 +75,14 @@ body: |
   be running this version" check cannot apply. Without that flag every build-registry promotion
   would be rejected for a missing source deploy.
 
+  **`autoCreateFromBranches` is what makes a build edge automatic.** A registered build whose branch
+  matches opens the promotion on its own (main/master → dev, release/* → staging); any other branch
+  — a feature build — registers and waits until someone promotes it. The approval steps are a
+  separate question: `build → dev` auto-approves, `build → staging` waits for QA and release.
+
+  **`test → staging` exists only for `mpt-support-tools`.** Most of its services never build from a
+  release branch, so `build → staging` alone would leave them no way into staging.
+
   ## Work item tracking
 
   Where a policy tracks work items, the promotion carries the bundle of Jira/ADO items in the
@@ -80,9 +97,10 @@ body: |
 
   ## What policies do not do
 
-  Gating lives entirely here. `mpt-release/README.md` describes per-component gate contracts in
-  `_contracts/{component}.yaml` — **that directory does not exist**. Treat that README section as
-  aspirational and this table as the truth.
+  Gating lives entirely here — there are no per-component gate contracts in mpt-release. An admin
+  can still step outside the gate in two ways, both audited and both requiring a reason:
+  **bypass** (approve without the gate) and **admin reject** (reject without being an approver,
+  e.g. to clear stale promotions; also `POST /api/promotions/admin/candidates/{id}/reject`).
 related:
   - webhook-catalogue
   - delivery-tracks

@@ -20,15 +20,15 @@ tags:
   - ops
   - topology
 source: mpt-release/docs/release-pipelines.md §2.4–2.5, §3.4–3.5, §4.4; marketplace/modules.yaml
-as_of: 2026-08-28
+as_of: 2026-10-15
 body: |
   ## Products and environments in InfraPortal
 
   | Product | Environments | Delivered by |
   |---|---|---|
-  | `mpt` | dev, test, stable, staging, prod | Track A (SDP) mostly; a few components via Track B |
-  | `mpt-extensions` | dev, test, stable, staging, prod | Tracks B and C |
-  | `ops`, `mpt-jenkins-tools` | varies | Track B |
+  | `mpt` | dev, test, staging, prod | Track A (SDP) for dev/test; staging via `build → staging`; components move to mpt-release over time |
+  | `mpt-extensions` | dev, test, staging, prod | Tracks B and C |
+  | `mpt-support-tools`, `ops` | varies | Tracks B and C |
   | `marketplace` | staging, prod | **Historical** — not written to since 2026-08-07 |
 
   ## How to tell which track a service is on
@@ -37,11 +37,13 @@ body: |
   2. Is it listed in `marketplace/manifest.json` / `modules.yaml`? → Track A.
   3. Does it have builds in the registry *and* a `build → *` policy for its product? → Track C.
 
-  A service can be registered as a build without being on Track C. Builds are registered for `mpt`
-  services too (`mpt-notifications`, `swo-platform`, `mpt-public-catalog`, `mpt-billing`,
-  `mpt-export`, `mpt-procurement`, `mpt-scheduler`, `mpt-spotlight`), but **no `build → *` policy
-  exists for product `mpt`**, so those registrations are observability only — Track A still deploys
-  them.
+  Every published build is registered, `mpt` services included. For `mpt` the registration opens a
+  `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
+  approved); there is **no `build → dev` policy for `mpt`**, so master builds of Track A services
+  still reach dev and test through the marketplace manifest.
+
+  The retired `stable` ("Staging Candidate") environment still exists in history for `mpt`,
+  `mpt-extensions` and `mpt-support-tools`, but is hidden from every current-state view.
 
   ## Track A services (the monorepo)
 
