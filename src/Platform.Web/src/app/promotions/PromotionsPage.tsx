@@ -1,7 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PromotionCandidate, PromotionStatus } from '@/lib/api';
+import type { PromotionCandidate, PromotionFreeze, PromotionStatus } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { roleDisplay } from '@/lib/roleLabel';
 import { formatDistanceToNow } from 'date-fns';
@@ -14,6 +16,8 @@ import {
   GitPullRequest,
   Ticket,
   ExternalLink,
+  Snowflake,
+  Settings,
 } from 'lucide-react';
 
 /**
@@ -64,6 +68,9 @@ export function PromotionsPage() {
   const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
   const [resolvedShown, setResolvedShown] = useState(false);
   const [resolvedLoading, setResolvedLoading] = useState(false);
+  // Active Promotion Freezes (readable by any signed-in user) for the banner and the Frozen group.
+  const [freezes, setFreezes] = useState<PromotionFreeze[]>([]);
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
 
   // Secondary filters shared by both the pending fetch and the resolved fetch.
   const filterParams = () => {
@@ -82,6 +89,10 @@ export function PromotionsPage() {
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
+    api
+      .listPromotionFreezes()
+      .then((data) => setFreezes(data.freezes || []))
+      .catch(() => setFreezes([]));
   };
 
   useEffect(() => {
@@ -192,6 +203,12 @@ export function PromotionsPage() {
 
   const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
   const displayedPending = view === 'mine' ? approvablePending : pending;
+  // Candidates held by a freeze leave the main list for the Frozen group below it.
+  const openPending = displayedPending.filter((c) => !c.frozen);
+  const frozenPending = displayedPending.filter((c) => c.frozen);
+  const bannerFreezes = freezes.filter(
+    (f) => (!productFilter || f.product === productFilter) && (!targetEnvFilter || f.targetEnv === targetEnvFilter),
+  );
   const allApprovableSelected =
     approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
 
@@ -238,6 +255,8 @@ export function PromotionsPage() {
           Review and approve version promotions across environments
         </p>
       </div>
+
+      {bannerFreezes.length > 0 && <FreezeBanner freezes={bannerFreezes} canManage={isAdmin} />}
 
       {/* Secondary filters */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -366,7 +385,7 @@ export function PromotionsPage() {
                     className="text-[11px] font-semibold uppercase tracking-wider"
                     style={{ color: 'var(--text-muted)' }}
                   >
-                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({displayedPending.length})
+                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({openPending.length})
                   </h2>
                 </div>
                 {view === 'mine' && selected.size > 0 && (
@@ -385,8 +404,8 @@ export function PromotionsPage() {
                   </button>
                 )}
               </div>
-              <div className="space-y-2">
-                {displayedPending.map((c) => (
+              {(() => {
+                const renderCard = (c: PromotionCandidate) => (
                   <CandidateCard
                     key={c.id}
                     candidate={c}
@@ -398,8 +417,23 @@ export function PromotionsPage() {
                     workItemProgress={workItemProgress[c.id]}
                     awaitingCue={view !== 'mine'}
                   />
-                ))}
-              </div>
+                );
+                return (
+                  <div className="space-y-5">
+                    <div className="space-y-2">{openPending.map(renderCard)}</div>
+                    {frozenPending.length > 0 && (
+                      <FrozenGroup
+                        count={frozenPending.length}
+                        freezes={freezes.filter((f) =>
+                          frozenPending.some((c) => c.product === f.product && c.targetEnv === f.targetEnv),
+                        )}
+                      >
+                        {frozenPending.map(renderCard)}
+                      </FrozenGroup>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ) : view === 'mine' ? (
             <div
@@ -491,6 +525,99 @@ export function PromotionsPage() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+const frozenSince = (iso: string) => formatDistanceToNow(new Date(iso), { addSuffix: true });
+
+/** Active freezes matching the current product / target-env filters, shown above the filters. */
+function FreezeBanner({ freezes, canManage }: { freezes: PromotionFreeze[]; canManage: boolean }) {
+  return (
+    <div
+      className="rounded-xl border p-3 flex items-start gap-3"
+      style={{ borderColor: 'var(--info)', backgroundColor: 'var(--info-bg)', borderLeft: '3px solid var(--info)' }}
+    >
+      <Snowflake size={16} style={{ color: 'var(--info)', marginTop: 2, flexShrink: 0 }} />
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {freezes.length === 1 ? '1 active freeze' : `${freezes.length} active freezes`} affecting this list
+          </p>
+          {canManage && (
+            <Link
+              to="/settings/freeze"
+              className="inline-flex items-center gap-1 text-[12px] font-medium hover:opacity-80"
+              style={{ color: 'var(--info)' }}
+            >
+              <Settings size={12} />
+              Manage freezes
+            </Link>
+          )}
+        </div>
+        <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {freezes.map((f) => (
+            <li key={`${f.product}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
+              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {f.product} → {f.targetEnv}
+              </span>
+              <span>{f.reason}</span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                · frozen by {f.frozenBy} {frozenSince(f.frozenAt)} · {f.heldCandidates}{' '}
+                {f.heldCandidates === 1 ? 'promotion' : 'promotions'} held
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/** Pending candidates held by a freeze, below the open ones; the header names each frozen pair once. */
+function FrozenGroup({
+  count,
+  freezes,
+  children,
+}: {
+  count: number;
+  /** Freezes of the pairs that have a candidate in this group. */
+  freezes: PromotionFreeze[];
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <h2
+          className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider"
+          style={{ color: 'var(--info)' }}
+        >
+          <Snowflake size={11} />
+          Frozen ({count})
+        </h2>
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          Approvals are still recorded; nothing is promoted until the freeze is lifted
+        </span>
+      </div>
+      <div
+        className="rounded-xl border p-3 space-y-2"
+        style={{ borderColor: 'var(--info)', backgroundColor: 'var(--info-bg)' }}
+      >
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {freezes.map((f) => (
+            <span key={`${f.product}|${f.targetEnv}`} className="flex items-center gap-1.5">
+              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {f.product} → {f.targetEnv}
+              </span>
+              <span>— {f.reason}</span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                · {f.frozenBy}, {frozenSince(f.frozenAt)}
+              </span>
+            </span>
+          ))}
+        </div>
+        <div className="space-y-2">{children}</div>
+      </div>
     </div>
   );
 }
@@ -587,6 +714,12 @@ function CandidateCard({
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
           {!compact && <WorkItemsBadge candidate={candidate} progress={workItemProgress} />}
+          {candidate.frozen && (
+            <span className="flex items-center gap-1 font-medium" style={{ color: 'var(--info)' }}>
+              <Snowflake size={10} />
+              Frozen
+            </span>
+          )}
         </div>
         {/* Work items — key + optional title, click-to-filter + external link */}
         {!compact && (() => {

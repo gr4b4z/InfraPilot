@@ -107,6 +107,26 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         Assert.Equal(HttpStatusCode.NotFound, liftAgain.StatusCode);
     }
 
+    [Fact]
+    public async Task List_MarksPendingCandidatesOfAFrozenPairAsFrozen_ForNonAdmin()
+    {
+        SeedPolicy("frz-list");
+        SeedPolicy("frz-list-open");
+        SeedPendingCandidate("frz-list");
+        SeedPendingCandidate("frz-list-open");
+        var admin = _factory.CreateAdminClient();
+        var created = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-list", targetEnv = "prod", reason = "Release window" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var user = CreateUserClient();
+
+        bool FrozenOf(JsonElement body) =>
+            body.GetProperty("candidates").EnumerateArray().Single().GetProperty("frozen").GetBoolean();
+
+        Assert.True(FrozenOf(await Json(await user.GetAsync("/api/promotions?product=frz-list"))));
+        Assert.False(FrozenOf(await Json(await user.GetAsync("/api/promotions?product=frz-list-open"))));
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private void SeedPolicy(string product)
