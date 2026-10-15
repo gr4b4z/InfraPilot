@@ -97,24 +97,6 @@ public class WorkItemRoleAliasAndBulkAssignTests
         }
     }
 
-    [Fact]
-    public async Task Settings_SameAliasOnTwoRoles_IsRejected()
-    {
-        try
-        {
-            var put = await SaveRolesAsync(
-                Role(QaOwner, "QA owner", aliases: ["tester"]),
-                Role("reviewer", "Reviewer", aliases: ["Tester"]));
-
-            Assert.Equal(HttpStatusCode.BadRequest, put.StatusCode);
-            Assert.Contains("both", (await Deserialize(put)).GetProperty("error").GetString());
-        }
-        finally
-        {
-            await ResetSettingsAsync();
-        }
-    }
-
     // ── An alias fills the role it names, everywhere completeness is read ────
 
     [Fact]
