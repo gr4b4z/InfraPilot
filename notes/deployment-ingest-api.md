@@ -230,6 +230,10 @@ Aliases are **forward-only** — they fix what arrives next and leave rows that 
 
 `recordAliases` defaults to `true`. Without it the merge is a one-off tidy-up that the next run of a pipeline still posting the old name undoes.
 
+### Retired environments
+
+An environment nothing deploys to any more can be marked **Retired** in **Settings → Environments** (`"retired": true` on its entry in `PUT /api/settings`; absent means `false`). Its last events would otherwise keep showing as the version "currently" there, so every current-state read leaves it out: `GET /api/deployments/state` (both views, even with `?environment=` naming it), `/api/deployments/products`, `/services/search` (a service seen only there is not a hit), `/services/{product}/{service}` (state and each version's environments; a version seen only there is not listed), the per-environment analytics (frequency `groupBy=environment`, lead time, the work-item matrix's columns and cells) and work items' deployed-to ("testable in") environments. Rows stored under one of its aliases count as the retired environment too. History is untouched — `/history`, event detail, the recent-activity feeds, `/versions`, promotions and rollbacks still return its rows, and the UI still labels them with its display name. Ingest is unaffected as well: a deploy to it, or to one of its aliases, is still stored under its key. Un-retiring restores everything, since nothing was deleted.
+
 ## Response
 
 ### 201 Created
@@ -468,7 +472,7 @@ Returns an array with one row per (product, service, environment): the newest ev
 `deployedAt`, **whatever its `status`** — a `failed` or `in_progress` deploy on top is what that cell
 shows, and a rollback is an event like any other. Two events sharing the newest `deployedAt` are not
 ordered further, so send distinct timestamps when it matters which one is current. Retired services
-are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
+and retired environments (see "Retired environments" above) are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
 `product`, `service`, `environment`, `version`, `previousVersion`, `isRollback`, `status`, `source`,
 `deployedAt`, plus `references` (with operator overrides merged in — see below), `participants`,
 `enrichment` and `run`.

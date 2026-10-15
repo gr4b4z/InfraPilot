@@ -104,6 +104,40 @@ public class AppSettingsService
         }
     }
 
+    /// <summary>
+    /// The environment names the current-state read paths leave out — see
+    /// <see cref="EnvironmentConfigDto.Retired"/>. Read paths that already hold the request's
+    /// <see cref="EnvironmentAliasResolver"/> should ask it instead, which answers from the snapshot
+    /// alias resolution already loaded.
+    /// </summary>
+    public async Task<IReadOnlySet<string>> GetRetiredEnvironmentKeysAsync(CancellationToken ct = default)
+        => RetiredEnvironmentKeys((await GetSettings(ct)).Environments);
+
+    /// <summary>
+    /// Every name a retired environment's rows can be stored under: its key, plus its aliases. An
+    /// alias row that has not been merged yet is the same environment — the web client already
+    /// renders it under the retired label — so leaving it in would put the retired column straight
+    /// back on the matrix under another spelling. Case-insensitive, like every other environment
+    /// lookup. Empty when nothing is retired, which is what lets the query filter skip itself.
+    /// </summary>
+    public static IReadOnlySet<string> RetiredEnvironmentKeys(IEnumerable<EnvironmentConfigDto>? environments)
+    {
+        var retired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var env in environments ?? [])
+        {
+            if (!env.Retired) continue;
+            var key = (env.Key ?? "").Trim();
+            if (key.Length == 0) continue;
+            retired.Add(key);
+            foreach (var alias in env.Aliases ?? [])
+            {
+                var name = (alias ?? "").Trim();
+                if (name.Length > 0) retired.Add(name);
+            }
+        }
+        return retired;
+    }
+
     public async Task SaveSettings(AppSettingsDto settings, CancellationToken ct = default)
     {
         var json = JsonSerializer.Serialize(settings, JsonOptions);

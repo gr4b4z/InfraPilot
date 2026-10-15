@@ -731,7 +731,9 @@ public static class WebhookEndpoints
     /// The vocabulary behind the filter pickers: every product, service and environment the platform
     /// has actually seen, plus the configured environments (which exist before anything deploys to
     /// them). Suggestions only — a filter may name a value that has not arrived yet, which is exactly
-    /// what you want when wiring a subscription ahead of the first deployment.
+    /// what you want when wiring a subscription ahead of the first deployment. Retired environments
+    /// are not suggested — nothing will deploy there for a new subscription to hear about — though a
+    /// filter that already names one keeps it.
     /// </summary>
     private static async Task<IResult> GetFilterOptions(
         PlatformDbContext db, EnvironmentAliasResolver environments, CancellationToken ct)
@@ -744,9 +746,10 @@ public static class WebhookEndpoints
             .Select(d => d.Environment).Distinct().ToListAsync(ct);
 
         var configured = (await environments.MapAsync(ct)).Keys;
+        var retired = await environments.RetiredKeysAsync(ct);
         var allEnvironments = configured
             .Concat(seenEnvironments)
-            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Where(e => !string.IsNullOrWhiteSpace(e) && !retired.Contains(e))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(e => e, StringComparer.OrdinalIgnoreCase)
             .ToList();

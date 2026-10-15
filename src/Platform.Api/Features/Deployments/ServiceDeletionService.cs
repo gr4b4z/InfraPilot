@@ -174,3 +174,23 @@ public static class DeletedServiceQueryExtensions
         this IQueryable<PromotionCandidate> query, PlatformDbContext db) =>
         query.Where(c => !db.DeletedServices.Any(d => d.Product == c.Product && d.Service == c.Service));
 }
+
+/// <summary>
+/// The one filter that keeps retired environments out of the current-state views (see
+/// <see cref="Settings.Models.EnvironmentConfigDto.Retired"/>). Unlike a retired service, the
+/// identity is the environment name alone and the set comes from settings rather than a table, so
+/// it goes as a materialised name list. Pass
+/// <see cref="Settings.EnvironmentAliasResolver.RetiredKeysAsync"/>. An empty set returns the
+/// query untouched — with nothing retired, the SQL is exactly what it was before the flag existed.
+/// </summary>
+public static class RetiredEnvironmentQueryExtensions
+{
+    public static IQueryable<DeployEvent> ExcludingRetiredEnvironments(
+        this IQueryable<DeployEvent> query, IReadOnlyCollection<string> retired)
+    {
+        if (retired.Count == 0) return query;
+        // One array parameter, so the number of retired names never mints a new query plan.
+        var names = retired.ToList();
+        return query.Where(e => !EF.Parameter(names).Contains(e.Environment));
+    }
+}
