@@ -279,6 +279,8 @@ Lifting **re-evaluates every Pending candidate of that pair** (and only that pai
 whose gate is already satisfied — approvals collected during the freeze, auto-approve, all work
 items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
 burst of webhooks when a freeze holding several candidates is lifted.
+A candidate whose re-evaluation fails is logged and skipped; the others are still re-evaluated and
+the lift still returns `204`.
 Also dispatches the [`promotion.unfrozen` webhook](#webhooks-promotionfrozen--promotionunfrozen),
 just before that sweep.
 

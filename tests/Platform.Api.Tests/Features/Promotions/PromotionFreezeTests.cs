@@ -25,6 +25,7 @@ public class PromotionFreezeTests : IDisposable
     private readonly IIdentityService _identity = Substitute.For<IIdentityService>();
     private readonly IAuditLogger _audit = Substitute.For<IAuditLogger>();
     private readonly IWebhookDispatcher _webhooks = Substitute.For<IWebhookDispatcher>();
+    private readonly ILogger<PromotionFreezeService> _freezeLogger = Substitute.For<ILogger<PromotionFreezeService>>();
     private readonly PromotionService _promotions;
     private readonly PromotionFreezeService _sut;
 
@@ -51,7 +52,7 @@ public class PromotionFreezeTests : IDisposable
             _db, new PromotionPolicyResolver(_db), auth, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(), _webhooks, TestOptions.Normalization());
         _sut = new PromotionFreezeService(
-            _db, _promotions, _currentUser, _audit, _webhooks, Substitute.For<ILogger<PromotionFreezeService>>());
+            _db, _promotions, _currentUser, _audit, _webhooks, _freezeLogger);
     }
 
     public void Dispose() => _db.Dispose();
@@ -482,6 +483,33 @@ public class PromotionFreezeTests : IDisposable
         await _sut.LiftAsync("acme", "prod");
 
         Assert.Equal(PromotionStatus.Approved, StatusOf(candidate.Id));
+    }
+
+    [Fact]
+    public async Task Lift_OneCandidateReevaluationThrows_OthersStillReleased_LiftSucceeds()
+    {
+        SeedPolicy(autoApproveWhenNoWorkItems: true);
+        await _sut.FreezeAsync("acme", "prod", "window");
+        var broken = await CreateAsync();
+        var healthy = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "worker", SourceEnv = "staging", TargetEnv = "prod",
+            Version = "v1", Status = PromotionStatus.Pending, ResolvedPolicyJson = broken.ResolvedPolicyJson,
+        };
+        _db.PromotionCandidates.Add(healthy);
+        // A corrupt snapshot makes ReadSnapshot throw during this candidate's re-evaluation.
+        broken.ResolvedPolicyJson = "";
+        _db.SaveChanges();
+
+        var lifted = await _sut.LiftAsync("acme", "prod");
+
+        Assert.True(lifted);
+        Assert.Empty(_db.PromotionFreezes);
+        Assert.Equal(PromotionStatus.Pending, StatusOf(broken.Id));
+        Assert.Equal(PromotionStatus.Approved, StatusOf(healthy.Id));
+        Assert.Contains(_freezeLogger.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(ILogger.Log)
+            && (LogLevel)c.GetArguments()[0]! == LogLevel.Warning
+            && c.GetArguments()[3] is InvalidOperationException);
     }
 
     [Fact]
