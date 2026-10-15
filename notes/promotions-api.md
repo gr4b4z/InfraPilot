@@ -254,6 +254,7 @@ Body: `{ "product": "checkout", "targetEnv": "production", "reason": "Black Frid
 | `403 Forbidden` | Caller is not an admin | — |
 
 Audited as `promotion.frozen` (actor, product, targetEnv, reason).
+Also dispatches the [`promotion.frozen` webhook](#webhooks-promotionfrozen--promotionunfrozen).
 
 ### `DELETE /freezes/{product}/{targetEnv}` — lift a freeze
 `204 No Content` when lifted, `404` when the pair is not frozen, `403` for non-admins. Whoever may
@@ -264,6 +265,31 @@ Lifting **re-evaluates every Pending candidate of that pair** (and only that pai
 whose gate is already satisfied — approvals collected during the freeze, auto-approve, all work
 items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
 burst of webhooks when a freeze holding several candidates is lifted.
+Also dispatches the [`promotion.unfrozen` webhook](#webhooks-promotionfrozen--promotionunfrozen),
+just before that sweep.
+
+### Webhooks: `promotion.frozen` / `promotion.unfrozen`
+Dispatched when a freeze is created (`promotion.frozen`) or lifted (`promotion.unfrozen`). Subscribe to
+them like any other event type (they are in the event list on the Webhooks page). Both are filtered
+by the pair — a subscription with `product` and/or `environment` filters only receives events for a
+matching `(product, targetEnv)`, exactly like the other promotion events. Dispatch is non-fatal: a
+failure is logged and never fails the freeze/unfreeze request.
+
+```jsonc
+{
+  "eventType": "promotion.frozen",        // or "promotion.unfrozen"
+  "product": "checkout",
+  "targetEnv": "production",
+  "reason": "Black Friday — no releases until Monday",   // the freeze's reason (also on unfrozen)
+  "frozenBy": "Dana Lee",                 // who created the freeze
+  "frozenAt": "2026-10-15T09:12:00+00:00",
+  "actor": { "name": "Dana Lee", "email": "dana@example.com" },  // who performed THIS action
+  "at": "2026-10-15T09:12:00+00:00",      // when this action happened
+  "heldCandidates": 3   // frozen: Pending candidates held at freeze time; unfrozen: candidates re-evaluated
+}
+```
+
+`promotion.unfrozen` is sent before the `promotion.approved` events the lift triggers.
 
 ### Gate behaviour while frozen
 - **Only the transition to `Approved` is held.** Approvals and work-item sign-offs are still
