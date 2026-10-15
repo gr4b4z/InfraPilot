@@ -140,6 +140,7 @@ export function FreezeSettings() {
 
   const [freezes, setFreezes] = useState<PromotionFreeze[]>([]);
   const [history, setHistory] = useState<PromotionFreezeHistoryEntry[]>([]);
+  const [historyError, setHistoryError] = useState(false);
   const [pairs, setPairs] = useState<Pair[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -155,9 +156,15 @@ export function FreezeSettings() {
   }, []);
 
   // Ask for one more than we show: getting it back is how we know the journal is truncated.
+  // Never rejects: a journal problem must not break the active list, the form or a mutation.
   const loadHistory = useCallback(async () => {
-    const res = await api.listPromotionFreezeHistory(JOURNAL_LIMIT + 1);
-    setHistory(res.entries);
+    try {
+      const res = await api.listPromotionFreezeHistory(JOURNAL_LIMIT + 1);
+      setHistory(res.entries);
+      setHistoryError(false);
+    } catch {
+      setHistoryError(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -198,10 +205,11 @@ export function FreezeSettings() {
     setError(null);
     try {
       await api.createPromotionFreeze({ product, targetEnv: env, reason: reason.trim() });
-      await Promise.all([loadFreezes(), loadHistory()]);
+      await loadFreezes();
       setProduct('');
       setEnv('');
       setReason('');
+      await loadHistory();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to freeze');
     } finally {
@@ -213,7 +221,8 @@ export function FreezeSettings() {
     setError(null);
     try {
       await api.liftPromotionFreeze(f.product, f.targetEnv);
-      await Promise.all([loadFreezes(), loadHistory()]);
+      await loadFreezes();
+      await loadHistory();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to lift freeze');
     }
@@ -334,8 +343,15 @@ export function FreezeSettings() {
             <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
               Journal
             </h3>
-            <FreezeJournal entries={history.slice(0, JOURNAL_LIMIT)} envLabel={getDisplayName} />
-            {history.length > JOURNAL_LIMIT && (
+            {historyError && (
+              <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                Journal unavailable.
+              </p>
+            )}
+            {!historyError && (
+              <FreezeJournal entries={history.slice(0, JOURNAL_LIMIT)} envLabel={getDisplayName} />
+            )}
+            {!historyError && history.length > JOURNAL_LIMIT && (
               <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                 Showing latest {JOURNAL_LIMIT}
               </p>
