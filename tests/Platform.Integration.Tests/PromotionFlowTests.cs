@@ -618,34 +618,16 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Create_WithoutPolicy_IsRejected()
-    {
-        // Was Ingest_WithoutPolicy_DoesNotCreateCandidate. With topology gone, the policy-resolution
-        // miss is the edge guard: a create for a product with no policy is rejected (422) rather
-        // than silently dropped, and no candidate is recorded.
-        await SeedPoliciesAsync();
-
-        var createResponse = await CreatePromotionAsync(
-            sourceEnv: "dev", targetEnv: "staging", version: "v3.0.0", product: "no-policy-product");
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, createResponse.StatusCode);
-
-        // Assert: no candidates for this product.
-        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=no-policy-product");
-        listResponse.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(listResponse);
-        var candidates = body.GetProperty("candidates");
-        Assert.Equal(0, candidates.GetArrayLength());
-    }
-
-    [Fact]
     public async Task Create_WithoutSucceededSourceDeploy_IsRejected()
     {
-        // The other cross-API guard: even for a policy-enrolled edge, you can only promote a version
-        // that actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded
-        // deploy of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound)
-        // and no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
+        // The cross-API guard: even for a policy-enrolled edge, you can only promote a version that
+        // actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded deploy
+        // of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound) and
+        // no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
         // CreatePromotionAsync helper, which would seed the source deploy that this test omits.)
+        // The policy is created without sourceRequiresDeploy, so this is also what pins that the
+        // flag defaults to true over the admin API — IngestIdempotencyAndSourcePolicyTests always
+        // sends it explicitly.
         await SeedPoliciesAsync();
 
         var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", new

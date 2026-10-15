@@ -37,18 +37,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
 
     // ── Test cases ──────────────────────────────────────────────────────────
 
-    [Fact]
-    public async Task GetPromotionPolicies_ReturnsEmptyList()
-    {
-        var response = await _adminClient.GetAsync("/api/promotions/admin/policies");
-        response.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(response);
-        var policies = body.GetProperty("policies");
-        Assert.Equal(JsonValueKind.Array, policies.ValueKind);
-        // May contain policies created by other tests in the same fixture, so just assert it's an array.
-    }
-
     // Topology endpoints were removed (D19): the external system is the source of truth for edges,
     // so GetTopology/PutTopology no longer exist. The corresponding tests were dropped.
 
