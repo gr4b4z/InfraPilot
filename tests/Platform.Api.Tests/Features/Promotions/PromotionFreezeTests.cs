@@ -51,7 +51,7 @@ public class PromotionFreezeTests : IDisposable
             _db, new PromotionPolicyResolver(_db), auth, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(), _webhooks, TestOptions.Normalization());
         _sut = new PromotionFreezeService(
-            _db, _promotions, _currentUser, _audit, Substitute.For<ILogger<PromotionFreezeService>>());
+            _db, _promotions, _currentUser, _audit, _webhooks, Substitute.For<ILogger<PromotionFreezeService>>());
     }
 
     public void Dispose() => _db.Dispose();
@@ -406,5 +406,103 @@ public class PromotionFreezeTests : IDisposable
             Arg.Any<string>(), "promotion.unfrozen",
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid?>(),
             Arg.Any<object?>(), Arg.Any<object?>(), Arg.Any<object?>());
+    }
+
+    // ---------------------------------------------------------------------
+    // Webhooks: promotion.frozen / promotion.unfrozen
+    // ---------------------------------------------------------------------
+
+    private static JsonElement Payload(object o) => JsonDocument.Parse(JsonSerializer.Serialize(o)).RootElement;
+
+    [Fact]
+    public async Task Freeze_DispatchesFrozenWebhook_FilteredByPair_WithPayload()
+    {
+        SeedPolicy();
+        await CreateAsync();
+        _webhooks.ClearReceivedCalls();
+
+        await _sut.FreezeAsync("acme", "prod", "Release window");
+
+        var call = Assert.Single(_webhooks.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWebhookDispatcher.DispatchAsync));
+        var args = call.GetArguments();
+        Assert.Equal("promotion.frozen", args[0]);
+        Assert.Equal(new WebhookEventFilters(Product: "acme", Environment: "prod"), args[2]);
+        var p = Payload(args[1]!);
+        Assert.Equal("promotion.frozen", p.GetProperty("eventType").GetString());
+        Assert.Equal("acme", p.GetProperty("product").GetString());
+        Assert.Equal("prod", p.GetProperty("targetEnv").GetString());
+        Assert.Equal("Release window", p.GetProperty("reason").GetString());
+        Assert.Equal("Admin User", p.GetProperty("frozenBy").GetString());
+        Assert.Equal("Admin User", p.GetProperty("actor").GetProperty("name").GetString());
+        Assert.Equal("admin@example.com", p.GetProperty("actor").GetProperty("email").GetString());
+        Assert.Equal(1, p.GetProperty("heldCandidates").GetInt32());
+        Assert.True(p.TryGetProperty("frozenAt", out _));
+        Assert.True(p.TryGetProperty("at", out _));
+    }
+
+    [Fact]
+    public async Task Lift_DispatchesUnfrozenWebhook_FilteredByPair_WithPayload()
+    {
+        SeedPolicy();
+        await _sut.FreezeAsync("acme", "prod", "Release window");
+        await CreateAsync();
+        _webhooks.ClearReceivedCalls();
+
+        await _sut.LiftAsync("acme", "prod");
+
+        var call = Assert.Single(_webhooks.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWebhookDispatcher.DispatchAsync)
+            && (string)c.GetArguments()[0]! == "promotion.unfrozen");
+        var args = call.GetArguments();
+        Assert.Equal(new WebhookEventFilters(Product: "acme", Environment: "prod"), args[2]);
+        var p = Payload(args[1]!);
+        Assert.Equal("promotion.unfrozen", p.GetProperty("eventType").GetString());
+        Assert.Equal("acme", p.GetProperty("product").GetString());
+        Assert.Equal("prod", p.GetProperty("targetEnv").GetString());
+        Assert.Equal("Release window", p.GetProperty("reason").GetString());
+        Assert.Equal("Admin User", p.GetProperty("frozenBy").GetString());
+        Assert.Equal("Admin User", p.GetProperty("actor").GetProperty("name").GetString());
+        Assert.Equal(1, p.GetProperty("heldCandidates").GetInt32());
+        Assert.True(p.TryGetProperty("frozenAt", out _));
+        Assert.True(p.TryGetProperty("at", out _));
+    }
+
+    [Fact]
+    public async Task Lift_PairNotFrozen_DoesNotDispatchUnfrozen()
+    {
+        SeedPolicy();
+
+        await _sut.LiftAsync("acme", "prod");
+
+        await _webhooks.DidNotReceive().DispatchAsync("promotion.unfrozen", Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+    }
+
+    [Fact]
+    public async Task Freeze_WebhookDispatchFailure_DoesNotFailTheFreeze()
+    {
+        SeedPolicy();
+        _webhooks.DispatchAsync(Arg.Any<string>(), Arg.Any<object>(), Arg.Any<WebhookEventFilters?>())
+            .Returns(Task.FromException(new InvalidOperationException("webhook queue down")));
+
+        var freeze = await _sut.FreezeAsync("acme", "prod", "Release window");
+
+        Assert.Equal("acme", freeze.Product);
+        Assert.Single(_db.PromotionFreezes);
+    }
+
+    [Fact]
+    public async Task Lift_WebhookDispatchFailure_DoesNotFailTheLift_AndStillReevaluates()
+    {
+        SeedPolicy();
+        var candidate = await CreateAsync();
+        await _sut.FreezeAsync("acme", "prod", "Release window");
+        await _promotions.ApproveAsync(candidate.Id, comment: null);
+        _webhooks.DispatchAsync("promotion.unfrozen", Arg.Any<object>(), Arg.Any<WebhookEventFilters?>())
+            .Returns(Task.FromException(new InvalidOperationException("webhook queue down")));
+
+        var lifted = await _sut.LiftAsync("acme", "prod");
+
+        Assert.True(lifted);
+        Assert.Empty(_db.PromotionFreezes);
+        Assert.Equal(PromotionStatus.Approved, StatusOf(candidate.Id));
     }
 }

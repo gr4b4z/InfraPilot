@@ -3,6 +3,7 @@ using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Promotions;
@@ -22,6 +23,7 @@ public class PromotionFreezeService
     private readonly PromotionService _promotions;
     private readonly ICurrentUser _currentUser;
     private readonly IAuditLogger _audit;
+    private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly ILogger<PromotionFreezeService> _logger;
 
     public PromotionFreezeService(
@@ -29,12 +31,14 @@ public class PromotionFreezeService
         PromotionService promotions,
         ICurrentUser currentUser,
         IAuditLogger audit,
+        IWebhookDispatcher webhookDispatcher,
         ILogger<PromotionFreezeService> logger)
     {
         _db = db;
         _promotions = promotions;
         _currentUser = currentUser;
         _audit = audit;
+        _webhookDispatcher = webhookDispatcher;
         _logger = logger;
     }
 
@@ -106,7 +110,9 @@ public class PromotionFreezeService
             "Promotions of {Product} to {TargetEnv} frozen by {Email}",
             LogSanitizer.Clean(p), LogSanitizer.Clean(env), _currentUser.Email);
 
-        return ToActive(freeze, await CountHeldAsync(p, env, ct));
+        var active = ToActive(freeze, await CountHeldAsync(p, env, ct));
+        await DispatchWebhookAsync("promotion.frozen", active, active.HeldCandidates, freeze.FrozenAt);
+        return active;
     }
 
     /// <summary>
@@ -145,10 +151,49 @@ public class PromotionFreezeService
                      && c.Status == PromotionStatus.Pending)
             .Select(c => c.Id)
             .ToListAsync(ct);
+
+        // Announce the lift before the sweep so subscribers see promotion.unfrozen ahead of the
+        // promotion.approved burst it triggers.
+        await DispatchWebhookAsync("promotion.unfrozen", ToActive(freeze, held.Count), held.Count, DateTimeOffset.UtcNow);
+
         foreach (var id in held)
             await _promotions.ReevaluateAsync(id, ct);
 
         return true;
+    }
+
+    /// <summary>
+    /// Non-fatal, like the existing promotion webhooks: a failed dispatch is logged and never fails
+    /// the freeze/unfreeze. <paramref name="heldCandidates"/> is the Pending count at freeze time, or
+    /// the number of candidates re-evaluated when lifting.
+    /// </summary>
+    private async Task DispatchWebhookAsync(
+        string eventType, ActiveFreeze freeze, int heldCandidates, DateTimeOffset at)
+    {
+        try
+        {
+            var payload = new
+            {
+                eventType,
+                product = freeze.Product,
+                targetEnv = freeze.TargetEnv,
+                reason = freeze.Reason,
+                frozenBy = freeze.FrozenBy,
+                frozenAt = freeze.FrozenAt,
+                actor = new { name = _currentUser.Name, email = _currentUser.Email },
+                at,
+                heldCandidates,
+            };
+            var filters = new WebhookEventFilters(Product: freeze.Product, Environment: freeze.TargetEnv);
+
+            await _webhookDispatcher.DispatchAsync(eventType, payload, filters);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Webhook dispatch '{EventType}' failed for {Product} to {TargetEnv}",
+                eventType, LogSanitizer.Clean(freeze.Product), LogSanitizer.Clean(freeze.TargetEnv));
+        }
     }
 
     private Task<int> CountHeldAsync(string product, string targetEnv, CancellationToken ct)
