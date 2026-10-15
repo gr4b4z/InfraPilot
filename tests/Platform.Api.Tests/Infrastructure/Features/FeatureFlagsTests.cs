@@ -14,21 +14,14 @@ public class FeatureFlagsTests : IDisposable
 
     public FeatureFlagsTests()
     {
-        // Shared in-process cache — reset between tests so they don't pollute each other.
-        FeatureFlags.ClearCacheForTesting();
-
         var options = new DbContextOptionsBuilder<PlatformDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
             .Options;
         _db = new PlatformDbContext(options);
-        _flags = new FeatureFlags(_db, Substitute.For<ILogger<FeatureFlags>>());
+        _flags = new FeatureFlags(_db, new FeatureFlagCache(), Substitute.For<ILogger<FeatureFlags>>());
     }
 
-    public void Dispose()
-    {
-        _db.Dispose();
-        FeatureFlags.ClearCacheForTesting();
-    }
+    public void Dispose() => _db.Dispose();
 
     [Fact]
     public async Task IsEnabled_MissingKey_ReturnsFalse()

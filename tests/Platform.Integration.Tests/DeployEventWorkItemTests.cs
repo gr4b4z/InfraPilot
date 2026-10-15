@@ -1,4 +1,3 @@
-using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -634,16 +633,8 @@ public class DeployEventWorkItemTests
             scopeFactory,
             NullLogger<DeployEventWorkItemBackfillService>.Instance);
 
-        // Use a token that's already (well past) the 5-second delay so the Task.Delay inside
-        // ExecuteAsync returns immediately. We pass CancellationToken.None — the service
-        // catches OperationCanceledException specifically and would skip the work; we want
-        // it to run to completion so we accept the 5-second delay.
-        var method = typeof(DeployEventWorkItemBackfillService)
-            .GetMethod("ExecuteAsync", BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("ExecuteAsync not found");
-
-        var task = (Task)method.Invoke(svc, new object[] { CancellationToken.None })!;
-        await task;
+        // The pass itself, skipping the 5-second startup delay the hosted service waits out.
+        await svc.RunOnceAsync(CancellationToken.None);
     }
 
     /// <summary>
