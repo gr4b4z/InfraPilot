@@ -19,13 +19,13 @@ public static class LocalAuthEndpoints
         group.MapPost("/login", async (
             PlatformDbContext db,
             IConfiguration config,
+            IPasswordHasher<LocalUser> hasher,
             LoginRequest request) =>
         {
             var user = await db.LocalUsers.FirstOrDefaultAsync(u => u.Email == request.Email && u.IsActive);
             if (user is null)
                 return Results.Unauthorized();
 
-            var hasher = new PasswordHasher<LocalUser>();
             var result = hasher.VerifyHashedPassword(user, user.PasswordHash, request.Password);
             if (result == PasswordVerificationResult.Failed)
                 return Results.Unauthorized();

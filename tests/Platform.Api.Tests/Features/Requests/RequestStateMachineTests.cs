@@ -70,6 +70,7 @@ public class RequestStateMachineTests
     [InlineData(RequestStatus.Draft, RequestStatus.Completed)]
     [InlineData(RequestStatus.Draft, RequestStatus.Executing)]
     [InlineData(RequestStatus.Draft, RequestStatus.Rejected)]
+    [InlineData(RequestStatus.Draft, RequestStatus.AwaitingApproval)]
     [InlineData(RequestStatus.Validating, RequestStatus.Draft)]
     [InlineData(RequestStatus.Completed, RequestStatus.Draft)]
     [InlineData(RequestStatus.Completed, RequestStatus.Executing)]
