@@ -78,6 +78,70 @@ public static class PromotionAdminEndpoints
             return Results.Ok(new { results });
         });
 
+        // ── Candidate reject (admin override) ───────────────────────────────
+        // Reject a Pending candidate without being an eligible approver for it — the counterpart of
+        // bypass, and the call automation agents make with an admin API key (e.g. to clear stale
+        // promotions). A reason is required. Same effects as POST /api/promotions/{id}/reject
+        // (decision row, system comment, promotion.rejected webhook), marked
+        // trigger=administrator-reject on the audit row and the webhook. The approver route is
+        // unchanged: approvers keep rejecting through it.
+        group.MapPost("/candidates/{id:guid}/reject", async (
+            PromotionService service, Guid id, AdminRejectPromotionRequest? request, CancellationToken ct) =>
+        {
+            try
+            {
+                var candidate = await service.AdminRejectAsync(id, request?.Reason ?? "", ct);
+                return Results.Ok(new { candidate.Id, status = candidate.Status.ToString() });
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound();
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
+        // Reject in bulk, for automation (the UI deliberately has no bulk reject — see the bulk approve
+        // route). Same contract as bulk bypass: one reason for the batch, each candidate rejected and
+        // audited on its own, per-id outcome, and a row that can't be rejected never sinks the rest.
+        group.MapPost("/candidates/bulk/reject", async (
+            PromotionService service, PlatformDbContext db, BulkAdminRejectPromotionRequest? request, CancellationToken ct) =>
+        {
+            var reason = (request?.Reason ?? "").Trim();
+            if (reason.Length == 0)
+                return Results.BadRequest(new { error = "A reason is required to reject a promotion as an administrator." });
+
+            var results = new List<object>();
+            foreach (var id in request?.Ids ?? Array.Empty<Guid>())
+            {
+                try
+                {
+                    var candidate = await service.AdminRejectAsync(id, reason, ct);
+                    results.Add(new { id, ok = true, status = candidate.Status.ToString() });
+                }
+                catch (Exception ex) when (ex is KeyNotFoundException or ArgumentException or InvalidOperationException)
+                {
+                    results.Add(new { id, ok = false, error = ex.Message });
+                }
+                catch (DbUpdateException)
+                {
+                    // Lost a race with another decision on this row. Untrack the failed write so the
+                    // rows after it can still save.
+                    db.ChangeTracker.Clear();
+                    results.Add(new
+                    {
+                        id,
+                        ok = false,
+                        error = "Somebody else decided on this promotion at the same moment — refresh and try again.",
+                    });
+                }
+            }
+
+            return Results.Ok(new { results });
+        });
+
         // ── Completion reconciliation ───────────────────────────────────────
         // Settles open promotions that the target environment's deploy history has already decided:
         // closes the ones whose version shipped, supersedes the ones a newer version overtook.
@@ -600,6 +664,12 @@ public record BypassPromotionRequest(string? Reason);
 
 /// <summary>Body for the bulk bypass endpoint: the candidates, and the one reason that covers them all.</summary>
 public record BulkBypassPromotionRequest(Guid[]? Ids, string? Reason);
+
+/// <summary>Body for the admin reject endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
+public record AdminRejectPromotionRequest(string? Reason);
+
+/// <summary>Body for the bulk admin reject endpoint: the candidates, and the one reason that covers them all.</summary>
+public record BulkAdminRejectPromotionRequest(Guid[]? Ids, string? Reason);
 
 /// <summary>
 /// Body for the reconcile endpoint. All optional: omit <c>Product</c> / <c>TargetEnv</c> to sweep

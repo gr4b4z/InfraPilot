@@ -2394,36 +2394,108 @@ public class PromotionService
         if (mine.Any(d => d.StepName is null && d.RequirementName is null))
             throw new InvalidOperationException("You have already made a decision on this promotion");
 
-        var decision = new PromotionApproval
+        await RecordRejectionAsync(candidate, comment,
+            systemComment: string.IsNullOrWhiteSpace(comment)
+                ? $"{Actor} rejected this promotion."
+                : $"{Actor} rejected this promotion — {comment.Trim()}",
+            auditState: new { comment },
+            webhookChange: null, ct);
+
+        _logger.LogInformation(
+            "Candidate {Id} rejected by {Email}", candidate.Id, _currentUser.Email);
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// Administrator override of <see cref="RejectAsync"/>: rejects any Pending candidate without the
+    /// approver-eligibility check — including one whose gate names nobody the caller is (a users-only
+    /// requirement), and one whose snapshot is auto-approve, which no approver can reject at all. The
+    /// everyday case is clearing stale promotions in bulk, e.g. after a release-track migration, from
+    /// the UI or an admin API key.
+    ///
+    /// <para>The effects are a normal rejection's — <see cref="PromotionStatus.Rejected"/>, a Rejected
+    /// decision row attributed to the caller with the reason as its comment, a system comment, the
+    /// <c>promotion.rejected</c> webhook (and so the realtime broadcast) — marked
+    /// <c>trigger=administrator-reject</c> on the audit row and the webhook's <c>change</c>, so the
+    /// override stays distinguishable from an approver's veto. The audit action is still
+    /// <c>promotion.rejected</c>: it is a rejection, and everything that asks "what was rejected"
+    /// should find it.</para>
+    ///
+    /// <para>A <paramref name="reason"/> is required. Authorization is enforced at the endpoint, as
+    /// for <see cref="BypassAsync"/>: <c>/api/promotions/admin</c>, gated by
+    /// <see cref="AuthorizationPolicies.CatalogAdmin"/>.</para>
+    /// </summary>
+    public async Task<PromotionCandidate> AdminRejectAsync(
+        Guid candidateId, string reason, CancellationToken ct = default)
+    {
+        var trimmedReason = (reason ?? "").Trim();
+        if (trimmedReason.Length == 0)
+            throw new ArgumentException("A reason is required to reject a promotion as an administrator.", nameof(reason));
+        // The reason is the decision row's comment, whose column is bounded — refuse it here rather
+        // than fail the save.
+        if (trimmedReason.Length > MaxDecisionCommentLength)
+            throw new ArgumentException(
+                $"The reason must be {MaxDecisionCommentLength} characters or fewer.", nameof(reason));
+
+        // Same refusals as BypassAsync: KeyNotFoundException (missing) or InvalidOperationException
+        // (no longer Pending), surfaced as 404 / 400 by the endpoint.
+        var candidate = await LoadPendingAsync(candidateId, ct);
+
+        var marker = new { trigger = AdminRejectTrigger, reason = trimmedReason };
+        await RecordRejectionAsync(candidate, trimmedReason,
+            systemComment: $"{Actor} rejected this promotion as an administrator (admin override) — {trimmedReason}",
+            auditState: marker,
+            webhookChange: marker, ct);
+
+        _logger.LogWarning(
+            "Candidate {Id} rejected by administrator {UserId} ({Email}); reason: {Reason}",
+            candidate.Id, _currentUser.Id, _currentUser.Email, LogSanitizer.Clean(trimmedReason));
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// <c>change.trigger</c> / audit <c>trigger</c> on a rejection made through
+    /// <see cref="AdminRejectAsync"/>. A normal rejection carries none.
+    /// </summary>
+    public const string AdminRejectTrigger = "administrator-reject";
+
+    /// <summary>Length cap of <see cref="PromotionApproval.Comment"/> (see the DbContext mapping).</summary>
+    private const int MaxDecisionCommentLength = 2000;
+
+    /// <summary>
+    /// The one place a Pending candidate becomes Rejected, shared by the approver and administrator
+    /// paths so they cannot drift: the Rejected decision row, the status flip and the system comment
+    /// in one save, then the <c>promotion.rejected</c> audit row and webhook. Callers have already
+    /// loaded the candidate as Pending and authorized the caller.
+    /// </summary>
+    private async Task RecordRejectionAsync(
+        PromotionCandidate candidate, string? comment, string systemComment,
+        object auditState, object? webhookChange, CancellationToken ct)
+    {
+        _db.PromotionApprovals.Add(new PromotionApproval
         {
             Id = Guid.NewGuid(),
-            CandidateId = candidateId,
+            CandidateId = candidate.Id,
             ApproverEmail = NormalizeEmail(_currentUser.Email),
             ApproverName = _currentUser.Name,
             Comment = comment,
             Decision = PromotionDecision.Rejected,
             CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.PromotionApprovals.Add(decision);
+        });
 
         candidate.Status = PromotionStatus.Rejected;
-        StageSystemComment(candidateId, string.IsNullOrWhiteSpace(comment)
-            ? $"{Actor} rejected this promotion."
-            : $"{Actor} rejected this promotion — {comment.Trim()}");
+        StageSystemComment(candidate.Id, systemComment);
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
             "promotions", "promotion.rejected",
             _currentUser.Id, _currentUser.Name, "user",
             "PromotionCandidate", candidate.Id, null,
-            new { comment });
+            auditState);
 
-        _logger.LogInformation(
-            "Candidate {Id} rejected by {Email}", candidate.Id, _currentUser.Email);
-
-        await DispatchWebhookAsync(candidate, "promotion.rejected", ct);
-
-        return candidate;
+        await DispatchWebhookAsync(candidate, "promotion.rejected", ct, webhookChange);
     }
 
     // ---------------------------------------------------------------------

@@ -319,6 +319,8 @@ approved — so a client can offer one approve action per gate.
 
 ### `POST /api/promotions/{id}/reject`
 Body: `{ "comment"?: string }`. One rejection from an authorized approver terminates the candidate.
+`403` for anyone who is not an approver on the promotion's policy — an administrator who is not one
+uses the admin reject below.
 
 ### `POST /api/promotions/bulk/approve`
 Body: `{ "ids": ["<guid>", ...], "comment"?: string, "gate"?: string }`. Partial success, per-id
@@ -347,6 +349,27 @@ reason, and fires the same `promotion.approved` webhook a normal approval does, 
 Body: `{ "ids": ["<guid>", ...], "reason": string }`. The bypass above for a batch, one reason for
 all of them (empty ⇒ `400`, nothing bypassed). Each promotion is bypassed, audited and announced on
 its own. Per-id outcome like bulk approve: `{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }`.
+
+### `POST /api/promotions/admin/candidates/{id}/reject` — admin
+Body: `{ "reason": string }` (required, trimmed; empty ⇒ `400`). Rejects a Pending promotion
+without the approver-eligibility check — the reject counterpart of bypass. Effects are a normal
+reject's: status `Rejected`, a `Rejected` decision row under the caller with the reason as its
+comment (the promotion page's "Other decisions"), a system comment, and the `promotion.rejected`
+webhook. The override is marked `trigger: "administrator-reject"` on the `promotion.rejected`
+audit row (category `rejected`, `reason` lifted in the audit feed) and on the webhook's `change`.
+Returns `{ "id", "status" }`; `400` when it is no longer Pending, `404` for an unknown id.
+
+### `POST /api/promotions/admin/candidates/bulk/reject` — admin
+Body: `{ "ids": ["<guid>", ...], "reason": string }`. The reject above for a batch, one reason for
+all (empty ⇒ `400`, nothing rejected). Per-id outcome like bulk bypass:
+`{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }` — an unknown
+or no-longer-Pending id fails on its own row and the rest still go through. API only; the UI has
+no bulk reject.
+
+**Automation agents:** these two are the reject to use with an API key — e.g. clearing stale
+Pending promotions after a release-track change. The key needs the `InfraPortal.Admin` role (any
+`/admin` route does); a non-admin key gets `403`. Approving stays a human action — there is no
+admin approve beyond the audited bypass.
 
 ### Other
 - `GET /api/promotions/{id}/comments`, `POST /api/promotions/{id}/comments`,

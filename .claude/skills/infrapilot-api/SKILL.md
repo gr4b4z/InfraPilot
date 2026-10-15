@@ -55,7 +55,9 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
   them.
 - Approve/reject endpoints authenticate with the key, but approval *eligibility* is evaluated
   against human users/groups in the promotion policy — treat approvals as human actions, not
-  something to automate with the key.
+  something to automate with the key. The one exception: a key with the admin role may
+  **reject** with a reason through the admin reject endpoints (e.g. stale promotions) — see
+  Promotions. It still never approves.
 
 ## Reading deployment data
 
@@ -132,6 +134,11 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   "from" side of the change, frozen) and `targetCurrentVersion` (what it runs now). They differ
   once the promotion lands, so read history off `fromVersion`.
 - `POST /api/promotions/{id}/approve` / `/reject` — human actions (body `{ "comment"?: ... }`).
+- Admin reject (admin-role key): `POST /api/promotions/admin/candidates/{id}/reject`
+  `{ "reason" }` → `{ id, status }`, or `POST /api/promotions/admin/candidates/bulk/reject`
+  `{ "ids": [...], "reason" }` → `{ results: [{ id, ok, status | error }] }` (a bad id fails only
+  its own row). Pending only; reason required (`400`). Same effects as a normal reject, audited as
+  an admin override. Use it to clear promotions nobody will approve, and say why in the reason.
 - Work-item sign-off: `POST /api/work-items/{key}/approvals` | `/issues` | `/blocks` with body
   `{ product, targetEnv, comment? }`. Only `/blocks` holds the promotion gate — an issue flags a
   problem on a change that still ships and clears the item like an approval does.
