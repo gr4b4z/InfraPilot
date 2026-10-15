@@ -171,6 +171,11 @@ public static class PromotionEndpoints
             });
         });
 
+        // Active Promotion Freezes with their held counts — readable by any signed-in user so the
+        // promotions pages can show freeze cues. Creating / lifting stays under /admin/freezes.
+        group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
+            Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
+
         // Known participant roles (distinct, frequency-ordered) for the assign-participant picker.
         group.MapGet("/roles", async (PromotionService svc) =>
         {

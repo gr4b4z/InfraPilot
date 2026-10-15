@@ -1,0 +1,182 @@
+using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure;
+using Platform.Api.Infrastructure.Audit;
+using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Persistence;
+
+namespace Platform.Api.Features.Promotions;
+
+/// <summary>
+/// Creates, lists and lifts Promotion Freezes (GLOSSARY.md, ADR-0001, ADR-0002). The freeze itself
+/// is enforced by <see cref="PromotionService.EvaluateGateAsync"/>; this service only owns the
+/// freeze rows, their held counts, and the re-evaluation sweep when a freeze is lifted.
+/// <para>Authorization (administrators only) is enforced at the endpoint group.</para>
+/// </summary>
+public class PromotionFreezeService
+{
+    /// <summary>Matches the <c>promotion_freezes.Reason</c> column length.</summary>
+    private const int MaxReasonLength = 1000;
+
+    private readonly PlatformDbContext _db;
+    private readonly PromotionService _promotions;
+    private readonly ICurrentUser _currentUser;
+    private readonly IAuditLogger _audit;
+    private readonly ILogger<PromotionFreezeService> _logger;
+
+    public PromotionFreezeService(
+        PlatformDbContext db,
+        PromotionService promotions,
+        ICurrentUser currentUser,
+        IAuditLogger audit,
+        ILogger<PromotionFreezeService> logger)
+    {
+        _db = db;
+        _promotions = promotions;
+        _currentUser = currentUser;
+        _audit = audit;
+        _logger = logger;
+    }
+
+    /// <summary>Every active freeze, with the number of Pending candidates of its pair it currently holds.</summary>
+    public async Task<IReadOnlyList<ActiveFreeze>> GetActiveAsync(CancellationToken ct = default)
+    {
+        var freezes = await _db.PromotionFreezes.AsNoTracking()
+            .OrderBy(f => f.Product).ThenBy(f => f.TargetEnv)
+            .ToListAsync(ct);
+
+        var result = new List<ActiveFreeze>(freezes.Count);
+        foreach (var f in freezes)
+            result.Add(ToActive(f, await CountHeldAsync(f.Product, f.TargetEnv, ct)));
+        return result;
+    }
+
+    /// <summary>
+    /// Freezes <c>(product, targetEnv)</c>. Throws <see cref="ArgumentException"/> when the reason
+    /// (or the pair) is blank, <see cref="NoApprovalPolicyForPairException"/> when no approval policy
+    /// targets the pair, and <see cref="FreezeAlreadyActiveException"/> when it is already frozen.
+    /// </summary>
+    public async Task<ActiveFreeze> FreezeAsync(
+        string product, string targetEnv, string reason, CancellationToken ct = default)
+    {
+        var p = (product ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        var why = (reason ?? "").Trim();
+        if (p.Length == 0) throw new ArgumentException("Product is required.", nameof(product));
+        if (env.Length == 0) throw new ArgumentException("Target environment is required.", nameof(targetEnv));
+        if (why.Length == 0) throw new ArgumentException("A reason is required to freeze promotions.", nameof(reason));
+        if (why.Length > MaxReasonLength)
+            throw new ArgumentException($"The reason must be at most {MaxReasonLength} characters.", nameof(reason));
+
+        // Any policy row for the pair (any service, any source env) means the pair can receive promotions.
+        if (!await _db.PromotionPolicies.AsNoTracking().AnyAsync(x => x.Product == p && x.TargetEnv == env, ct))
+            throw new NoApprovalPolicyForPairException(p, env);
+
+        if (await _db.PromotionFreezes.AsNoTracking().AnyAsync(f => f.Product == p && f.TargetEnv == env, ct))
+            throw new FreezeAlreadyActiveException(p, env);
+
+        var freeze = new PromotionFreeze
+        {
+            Id = Guid.NewGuid(),
+            Product = p,
+            TargetEnv = env,
+            Reason = why,
+            FrozenBy = _currentUser.Name,
+            FrozenByEmail = _currentUser.Email,
+            FrozenAt = DateTimeOffset.UtcNow,
+        };
+        _db.PromotionFreezes.Add(freeze);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Lost a concurrent create on the unique (Product, TargetEnv) index.
+            throw new FreezeAlreadyActiveException(p, env);
+        }
+
+        await _audit.Log(
+            "promotions", "promotion.frozen",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionFreeze", freeze.Id, null,
+            new { product = p, targetEnv = env, reason = why });
+
+        _logger.LogInformation(
+            "Promotions of {Product} to {TargetEnv} frozen by {Email}",
+            LogSanitizer.Clean(p), LogSanitizer.Clean(env), _currentUser.Email);
+
+        return ToActive(freeze, await CountHeldAsync(p, env, ct));
+    }
+
+    /// <summary>
+    /// Lifts the freeze on <c>(product, targetEnv)</c> and re-evaluates every Pending candidate of
+    /// that pair, so whatever already satisfies its gate becomes Approved now. Returns <c>false</c>
+    /// when the pair is not frozen.
+    /// </summary>
+    public async Task<bool> LiftAsync(string product, string targetEnv, CancellationToken ct = default)
+    {
+        var freeze = await _db.PromotionFreezes
+            .FirstOrDefaultAsync(f => f.Product == product && f.TargetEnv == targetEnv, ct);
+        if (freeze is null) return false;
+
+        _db.PromotionFreezes.Remove(freeze);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.unfrozen",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionFreeze", freeze.Id, null,
+            new
+            {
+                product = freeze.Product,
+                targetEnv = freeze.TargetEnv,
+                reason = freeze.Reason,
+                frozenBy = freeze.FrozenBy,
+                frozenAt = freeze.FrozenAt,
+            });
+
+        _logger.LogInformation(
+            "Promotions of {Product} to {TargetEnv} unfrozen by {Email}",
+            LogSanitizer.Clean(freeze.Product), LogSanitizer.Clean(freeze.TargetEnv), _currentUser.Email);
+
+        var held = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Product == freeze.Product && c.TargetEnv == freeze.TargetEnv
+                     && c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        foreach (var id in held)
+            await _promotions.ReevaluateAsync(id, ct);
+
+        return true;
+    }
+
+    private Task<int> CountHeldAsync(string product, string targetEnv, CancellationToken ct)
+        => _db.PromotionCandidates.AsNoTracking()
+            .CountAsync(c => c.Product == product && c.TargetEnv == targetEnv
+                          && c.Status == PromotionStatus.Pending, ct);
+
+    private static ActiveFreeze ToActive(PromotionFreeze f, int held)
+        => new(f.Product, f.TargetEnv, f.Reason, f.FrozenBy, f.FrozenAt, held);
+}
+
+/// <summary>Read model of an active Promotion Freeze; <see cref="HeldCandidates"/> = Pending candidates of the pair.</summary>
+public record ActiveFreeze(
+    string Product, string TargetEnv, string Reason, string FrozenBy, DateTimeOffset FrozenAt, int HeldCandidates);
+
+/// <summary>Thrown by <see cref="PromotionFreezeService.FreezeAsync"/> when the pair is already frozen (409).</summary>
+public class FreezeAlreadyActiveException : InvalidOperationException
+{
+    public FreezeAlreadyActiveException(string product, string targetEnv)
+        : base($"Promotions of {product} to {targetEnv} are already frozen.") { }
+}
+
+/// <summary>
+/// Thrown by <see cref="PromotionFreezeService.FreezeAsync"/> when no approval policy targets the
+/// pair (422): such a pair cannot receive promotions, so freezing it would do nothing (ADR-0002).
+/// </summary>
+public class NoApprovalPolicyForPairException : InvalidOperationException
+{
+    public NoApprovalPolicyForPairException(string product, string targetEnv)
+        : base($"{product} has no approval policy targeting {targetEnv} — there is nothing to freeze.") { }
+}

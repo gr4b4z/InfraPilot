@@ -1,0 +1,161 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure.Persistence;
+
+namespace Platform.Integration.Tests;
+
+/// <summary>
+/// HTTP surface of the Promotion Freeze: admin create / list / lift under
+/// <c>/api/promotions/admin/freezes</c> and the non-admin read under <c>/api/promotions/freezes</c>.
+/// The gate behaviour itself is covered by the unit tests (PromotionFreezeTests). Each test uses its
+/// own product so tests sharing the fixture's database do not interfere.
+/// </summary>
+public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
+{
+    private readonly TestFactory _factory;
+
+    public PromotionFreezeEndpointTests(TestFactory factory) => _factory = factory;
+
+    [Fact]
+    public async Task Create_WithoutReason_Returns400()
+    {
+        SeedPolicy("frz-400");
+        var admin = _factory.CreateAdminClient();
+
+        var response = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-400", targetEnv = "prod", reason = " " });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_AlreadyFrozenPair_Returns409()
+    {
+        SeedPolicy("frz-409");
+        var admin = _factory.CreateAdminClient();
+        var first = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-409", targetEnv = "prod", reason = "first" });
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var second = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-409", targetEnv = "prod", reason = "second" });
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_PairWithoutApprovalPolicy_Returns422()
+    {
+        var admin = _factory.CreateAdminClient();
+
+        var response = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-no-policy", targetEnv = "prod", reason = "why" });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateAndLift_NonAdmin_Returns403()
+    {
+        SeedPolicy("frz-403");
+        var user = CreateUserClient();
+
+        var create = await user.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-403", targetEnv = "prod", reason = "why" });
+        var lift = await user.DeleteAsync("/api/promotions/admin/freezes/frz-403/prod");
+
+        Assert.Equal(HttpStatusCode.Forbidden, create.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, lift.StatusCode);
+    }
+
+    [Fact]
+    public async Task Freeze_IsListedWithHeldCount_ForAdminAndUser_ThenLifted()
+    {
+        SeedPolicy("frz-flow");
+        SeedPendingCandidate("frz-flow");
+        var admin = _factory.CreateAdminClient();
+        var user = CreateUserClient();
+
+        var created = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-flow", targetEnv = "prod", reason = "Release window" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        foreach (var (client, url) in new[] { (admin, "/api/promotions/admin/freezes"), (user, "/api/promotions/freezes") })
+        {
+            var list = await client.GetAsync(url);
+            Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+            var freeze = (await Json(list)).GetProperty("freezes").EnumerateArray()
+                .Single(f => f.GetProperty("product").GetString() == "frz-flow");
+            Assert.Equal("prod", freeze.GetProperty("targetEnv").GetString());
+            Assert.Equal("Release window", freeze.GetProperty("reason").GetString());
+            Assert.Equal("Admin User", freeze.GetProperty("frozenBy").GetString());
+            Assert.Equal(JsonValueKind.String, freeze.GetProperty("frozenAt").ValueKind);
+            Assert.Equal(1, freeze.GetProperty("heldCandidates").GetInt32());
+        }
+
+        var lift = await admin.DeleteAsync("/api/promotions/admin/freezes/frz-flow/prod");
+        Assert.Equal(HttpStatusCode.NoContent, lift.StatusCode);
+
+        var after = await Json(await user.GetAsync("/api/promotions/freezes"));
+        Assert.DoesNotContain(after.GetProperty("freezes").EnumerateArray(),
+            f => f.GetProperty("product").GetString() == "frz-flow");
+        var liftAgain = await admin.DeleteAsync("/api/promotions/admin/freezes/frz-flow/prod");
+        Assert.Equal(HttpStatusCode.NotFound, liftAgain.StatusCode);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private void SeedPolicy(string product)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        db.PromotionPolicies.Add(new PromotionPolicy
+        {
+            Id = Guid.NewGuid(),
+            Product = product,
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+        });
+        db.SaveChanges();
+    }
+
+    private void SeedPendingCandidate(string product)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        db.PromotionCandidates.Add(new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = product,
+            Service = "api",
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = "v1",
+            Status = PromotionStatus.Pending,
+            ResolvedPolicyJson = "{}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+    }
+
+    private HttpClient CreateUserClient()
+    {
+        var client = _factory.CreateClient();
+        var login = client.PostAsJsonAsync("/api/auth/login", new { email = "user@localhost", password = "user123" })
+            .GetAwaiter().GetResult();
+        login.EnsureSuccessStatusCode();
+        var token = Json(login).GetAwaiter().GetResult().GetProperty("token").GetString()!;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return client;
+    }
+
+    private static async Task<JsonElement> Json(HttpResponseMessage response)
+    {
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        return doc.RootElement.Clone();
+    }
+}
