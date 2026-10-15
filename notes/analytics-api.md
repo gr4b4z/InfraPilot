@@ -101,7 +101,10 @@ cells carry `candidateId`. A deployed cell always wins over any candidate state.
 
 `environments` is settings-ordered (the `Environments` list in app settings); keys the settings
 don't know are appended at the end, never dropped. `furthestEnv` is the furthest environment in
-that order with a successful deploy.
+that order with a successful deploy. An environment marked **retired** in settings is the one
+exception: it is dropped from the matrix (column, cells, and the deploys and open candidates that
+would select a story), from lead time, and from frequency `groupBy=environment` series — other
+groupings still count its deploys, since they genuinely happened in the window.
 
 **Which environments are "production"?** Resolution order (the tiles' ⓘ popovers state which
 rule fired):

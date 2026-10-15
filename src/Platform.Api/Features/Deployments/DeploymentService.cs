@@ -605,13 +605,16 @@ public class DeploymentService
     /// <summary>
     /// The service × environment matrix. Services an admin has retired are dropped here — this is the
     /// query the product page derives its service list from, so filtering it is what actually takes
-    /// an obsolete service off the page.
+    /// an obsolete service off the page. Retired environments are dropped too: their last events
+    /// stopped describing anything the day nothing deployed there any more.
     /// </summary>
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
+        var retired = await _environments.RetiredKeysAsync(ct);
+
         // Cell-key order, ordinal — what the grouped query this replaced returned wherever its
         // GROUP BY ran sorted (SQLite always), now fixed rather than left to the plan.
-        var latest = (await LatestStateEvents(product, environment, serviceName).ToListAsync(ct))
+        var latest = (await LatestStateEvents(product, environment, serviceName, retired).ToListAsync(ct))
             .OrderBy(e => e.Product, StringComparer.Ordinal)
             .ThenBy(e => e.Service, StringComparer.Ordinal)
             .ThenBy(e => e.Environment, StringComparer.Ordinal)
@@ -629,7 +632,7 @@ public class DeploymentService
     /// </summary>
     public async Task<List<DeploymentStateSummaryDto>> GetStateSummary(
         string? product, string? environment, string? serviceName, CancellationToken ct = default)
-        => (await LatestStateEvents(product, environment, serviceName)
+        => (await LatestStateEvents(product, environment, serviceName, await _environments.RetiredKeysAsync(ct))
                 .Select(e => new DeploymentStateSummaryDto(
                     e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
                     e.IsRollback, e.Status, e.Source, e.DeployedAt))
@@ -655,18 +658,26 @@ public class DeploymentService
     /// <para>A join on the looked-up id rather than <c>Id IN (...)</c>: Postgres plans the IN form as a
     /// hashed semi-join that evaluates the per-cell lookup twice. Unordered — the callers sort in
     /// memory rather than have the database sort rows carrying JSON columns.</para>
+    ///
+    /// <para>Cells in a <paramref name="retired"/> environment are left out, explicit
+    /// <paramref name="environment"/> filter or not: nothing is current in an environment nobody
+    /// deploys to. Their history is still on the history and event-detail paths.</para>
     /// </summary>
-    private IQueryable<DeployEvent> LatestStateEvents(string? product, string? environment, string? serviceName)
+    private IQueryable<DeployEvent> LatestStateEvents(
+        string? product, string? environment, string? serviceName, IReadOnlySet<string> retired)
     {
         // Read-only: the rows are mapped straight to DTOs, so tracking every matrix row (each carrying
         // its JSON columns) buys nothing.
-        var query = _db.DeployEvents.AsNoTracking().ExcludingDeletedServices(_db);
+        var query = _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(retired);
         if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
         if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
 
-        // The filters and the retired-service check are all on the cell's own key, so the per-cell
-        // lookup doesn't repeat them: every event of a cell that passed shares its key.
+        // The filters and the retired-service and retired-environment checks are all on the cell's
+        // own key, so the per-cell lookup doesn't repeat them: every event of a cell that passed
+        // shares its key.
         var latest = query
             .Select(e => new { e.Product, e.Service, e.Environment })
             .Distinct()
@@ -687,11 +698,13 @@ public class DeploymentService
     /// <summary>
     /// The product × environment matrix. Products the caller has hidden are dropped here rather
     /// than in the UI — this is the canonical product list, so filtering it also empties the
-    /// release-notes index and every product dropdown built from it.
+    /// release-notes index and every product dropdown built from it. Retired environments are
+    /// dropped from each card, and a product seen only in retired environments has no card at all.
     /// </summary>
     public async Task<List<ProductSummaryDto>> GetProductSummaries(CancellationToken ct = default)
     {
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var retired = await _environments.RetiredKeysAsync(ct);
 
         // One row per (product, service, environment). A summary only counts those and reads the
         // newest timestamp, which is the group's MAX — so the query aggregates over the narrow index
@@ -702,6 +715,9 @@ public class DeploymentService
             // Retired services stop counting towards the per-environment service totals too, or the
             // product card would keep advertising components the product page no longer lists.
             .ExcludingDeletedServices(_db)
+            // And a retired environment loses its column on the card, for the same reason the
+            // product page's matrix loses it.
+            .ExcludingRetiredEnvironments(retired)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
             .Select(g => new { g.Key.Product, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
@@ -731,8 +747,9 @@ public class DeploymentService
     /// the query behind "find a service without knowing its product", so unlike the other read
     /// paths it takes no product argument at all. Hidden products are dropped for the same reason
     /// they are in <see cref="GetProductSummaries"/> — hiding a product hides it everywhere — and
-    /// retired services stay out like on every other read path. Results are most-recently-deployed
-    /// first, capped by <paramref name="limit"/>.
+    /// retired services stay out like on every other read path. A hit lists only the environments
+    /// that are not retired; a service seen only in retired ones is not a hit. Results are
+    /// most-recently-deployed first, capped by <paramref name="limit"/>.
     /// </summary>
     public async Task<List<ServiceSearchResultDto>> SearchServices(
         string query, int limit = 20, CancellationToken ct = default)
@@ -741,11 +758,13 @@ public class DeploymentService
         if (needle.Length == 0) return new List<ServiceSearchResultDto>();
 
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var retired = await _environments.RetiredKeysAsync(ct);
 
         // One row per (product, service, environment) — grouped into per-service hits in memory,
         // which keeps the query translatable (a nested Distinct inside a GroupBy projection isn't).
         var rows = await _db.DeployEvents.AsNoTracking()
             .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(retired)
             .Where(e => !hidden.Contains(e.Product))
             .Where(e => e.Service.ToLower().Contains(needle))
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
@@ -777,6 +796,10 @@ public class DeploymentService
     /// environment, the most recent distinct versions with the environments each reached, and the
     /// service's promotions. Returns null when the pair has no visible deployments — unknown and
     /// retired look the same here, exactly as they do on every other read path.
+    ///
+    /// <para>Retired environments are left out of both the per-environment state and each version's
+    /// "reached" list, and a version seen only in retired environments is not listed. Promotions are
+    /// not filtered: they are history, and one that left from a retired environment still did.</para>
     /// </summary>
     public async Task<ServiceDetailDto?> GetServiceDetail(
         string product, string service, int versionsLimit = 10, CancellationToken ct = default)
@@ -786,9 +809,12 @@ public class DeploymentService
 
         // Recent deploys, newest first, folded into distinct versions in memory (same reasoning as
         // GetVersions: GroupBy + First doesn't translate cleanly). Oversampled so a version that was
-        // redeployed many times doesn't starve the list of older versions.
+        // redeployed many times doesn't starve the list of older versions. Retired environments are
+        // filtered before the cap, so their rows don't eat into the oversample either — and answered
+        // from the snapshot GetState already loaded.
         var recent = await _db.DeployEvents.AsNoTracking()
             .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(await _environments.RetiredKeysAsync(ct))
             .Where(e => e.Product == product && e.Service == service)
             .OrderByDescending(e => e.DeployedAt)
             .Select(e => new { e.Id, e.Environment, e.Version, e.Status, e.IsRollback, e.DeployedAt })

@@ -28,7 +28,8 @@ public static class AppSettingsEndpoints
                         (e.DisplayName ?? "").Trim(),
                         AppSettingsService.NormalizeHexColor(e.Color),
                         e.IsProduction,
-                        EnvironmentAliasValidator.CleanAliases(e.Key, e.Aliases)))
+                        EnvironmentAliasValidator.CleanAliases(e.Key, e.Aliases),
+                        e.Retired))
                     .ToList(),
                 Roles: (body.Roles ?? [])
                     .Where(r => !string.IsNullOrWhiteSpace(r.Key))
