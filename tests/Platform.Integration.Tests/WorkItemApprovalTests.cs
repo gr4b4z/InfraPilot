@@ -11,6 +11,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
+using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
@@ -1187,6 +1189,56 @@ public class WorkItemApprovalTests
             Assert.Equal("v1.0.0", byEnv["staging"]);
             Assert.Equal("v0.9.0", byEnv["dev"]);
             Assert.Equal(2, byEnv.Count);
+        }
+    }
+
+    [Fact]
+    public async Task DeployedEnvironments_LeaveOutARetiredEnvironment()
+    {
+        // A version that once reached an environment nobody deploys to any more is not testable
+        // there — "testable in" a retired environment is the stale answer retiring it exists to stop.
+        await using var factory = new WorkItemTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Candidate is acme/api v1.0.0 staging → prod; the seed also lands v1.0.0 in staging.
+            await SeedPolicyEventCandidateAsync(db, "RET-1", approverGroup: "ReleaseApprovers");
+            db.DeployEvents.AddRange(
+                NewDeployEventFor("acme", "api", "dev", "v1.0.0"),
+                NewDeployEventFor("acme", "api", "stable", "v1.0.0"));
+            await db.SaveChangesAsync();
+
+            var settings = scope.ServiceProvider.GetRequiredService<AppSettingsService>();
+            var current = await settings.GetSettings();
+            await settings.SaveSettings(current with
+            {
+                Environments =
+                [
+                    new EnvironmentConfigDto("dev", "Development"),
+                    new EnvironmentConfigDto("stable", "Staging Candidate", Retired: true),
+                    new EnvironmentConfigDto("staging", "Staging"),
+                    new EnvironmentConfigDto("prod", "Production", IsProduction: true),
+                ],
+            });
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+
+            var row = Assert.Single((await svc.GetPendingForCurrentUserAsync(default)).Tickets);
+            Assert.Equal(
+                new[] { "dev", "staging" },
+                row.Environments.Select(e => e.Environment).OrderBy(e => e).ToArray());
+
+            var detail = await svc.GetDetailAsync("RET-1", "acme", "api", "prod", default);
+            Assert.NotNull(detail);
+            Assert.Equal(
+                new[] { "dev", "staging" },
+                detail!.Environments.Select(e => e.Environment).OrderBy(e => e).ToArray());
         }
     }
 

@@ -55,6 +55,7 @@ public class WorkItemApprovalService
     private readonly ILogger<WorkItemApprovalService> _logger;
     private readonly IPlatformEventPublisher _events;
     private readonly ParticipantRoleCatalog _roles;
+    private readonly EnvironmentAliasResolver _environments;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -82,7 +83,8 @@ public class WorkItemApprovalService
         UserPreferencesService userPrefs,
         ILogger<WorkItemApprovalService> logger,
         IPlatformEventPublisher events,
-        ParticipantRoleCatalog roles)
+        ParticipantRoleCatalog roles,
+        EnvironmentAliasResolver environments)
     {
         _db = db;
         _auth = auth;
@@ -94,6 +96,7 @@ public class WorkItemApprovalService
         _logger = logger;
         _events = events;
         _roles = roles;
+        _environments = environments;
     }
 
     // ---------------------------------------------------------------------
@@ -1805,7 +1808,9 @@ public class WorkItemApprovalService
     /// is <i>asking</i> to go, not where the change is running.
     ///
     /// <para>Only succeeded deploys count, and each environment appears once with its most recent
-    /// deploy of that version (a version can be redeployed, or rolled back to).</para>
+    /// deploy of that version (a version can be redeployed, or rolled back to). Retired environments
+    /// don't count at all: nobody can test anything in an environment nothing runs in any more, and
+    /// "testable in" one is exactly the stale answer retiring it is meant to stop.</para>
     ///
     /// <para>One query for the whole batch: the <c>Contains</c> predicates span the cross product of
     /// the distinct products / services / versions asked for, and the exact triples are re-checked in
@@ -1827,6 +1832,7 @@ public class WorkItemApprovalService
         var versionStrings = wanted.Select(v => v.Version).Distinct().ToList();
 
         var events = await _db.DeployEvents.AsNoTracking()
+            .ExcludingRetiredEnvironments(await _environments.RetiredKeysAsync(ct))
             .Where(e => e.Status == "succeeded"
                      && EF.Parameter(products).Contains(e.Product)
                      && EF.Parameter(services).Contains(e.Service)

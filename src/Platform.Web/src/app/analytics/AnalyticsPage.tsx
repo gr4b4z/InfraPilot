@@ -80,7 +80,9 @@ function computeRange(key: string): { from: string; to?: string; days: number } 
 export function AnalyticsPage() {
   useDocumentTitle(['Analytics']);
   const [searchParams, setSearchParams] = useSearchParams();
-  const { getDisplayName, getOrderedEnvironments, environments: configuredEnvs } = useSettingsStore();
+  // Active only: a retired environment is neither a column the API returns nor a candidate for the
+  // production set — left in, the "last in order" convention could land on it.
+  const { getDisplayName, getOrderedEnvironments, activeEnvironments: configuredEnvs } = useSettingsStore();
   const refreshTick = useEntityRefresh(['deployment', 'promotion']);
 
   const [products, setProducts] = useState<string[]>([]);

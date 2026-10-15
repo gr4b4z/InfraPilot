@@ -75,6 +75,9 @@ export function MassApproveDialog({
 }) {
   const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
   const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  const isRetired = useSettingsStore((s) => s.isRetired);
+  // isRetired reads the configured list, which the helper's own reference doesn't change with.
+  const configuredEnvs = useSettingsStore((s) => s.environments);
 
   // null while loading. Refetched for "Approve another gate", so a second batch starts from what the
   // first one left.
@@ -118,10 +121,13 @@ export function MassApproveDialog({
     for (const c of pending ?? []) counts.set(c.targetEnv, (counts.get(c.targetEnv) ?? 0) + 1);
     return counts;
   }, [pending]);
-  // Deployment order (dev → staging → prod), the order the reader thinks in.
+  // Deployment order (dev → staging → prod), the order the reader thinks in. A retired environment
+  // is not offered: nothing deploys there any more, so approving promotions into it in bulk would
+  // only queue work that can never land. They stay visible, one by one, on the promotions list.
   const envOptions = useMemo(
-    () => getOrderedEnvironments(Array.from(envCounts.keys())),
-    [envCounts, getOrderedEnvironments],
+    () => getOrderedEnvironments(Array.from(envCounts.keys()).filter((e) => !isRetired(e))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [envCounts, getOrderedEnvironments, isRetired, configuredEnvs],
   );
   // The chosen environment while it still has pending promotions; the only one when there is one.
   const selectedEnv =

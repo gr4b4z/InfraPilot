@@ -401,6 +401,7 @@ export function PromotionSettings() {
     services: [],
   });
   const environments = useSettingsStore((s) => s.environments);
+  const activeEnvironments = useSettingsStore((s) => s.activeEnvironments);
   const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
 
   // ── Load data ──
@@ -513,7 +514,9 @@ export function PromotionSettings() {
       ? knownServices.services.map((s) => ({ value: s }))
       : [];
 
-  const envOptions: ComboOption[] = environments.map((e) => ({
+  // Retired environments are not offered for a new edge — nothing deploys there any more. They
+  // still rank the table above, so an old policy on one keeps its place in the pipeline.
+  const envOptions: ComboOption[] = activeEnvironments.map((e) => ({
     value: e.key,
     hint: e.displayName !== e.key ? e.displayName : undefined,
   }));

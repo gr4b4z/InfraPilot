@@ -23,6 +23,11 @@ export interface EnvironmentConfig {
    *  arrived under an old name still render as the environment they actually are — until an admin
    *  merges the history in Settings → Environments. */
   aliases?: string[] | null;
+  /** Nothing deploys here any more. The server leaves it out of every current-state view — the
+   *  deployments matrix, product cards, service search and detail, analytics, work items — and the
+   *  pickers built from settings skip it (`activeEnvironments`). History keeps it, so its label,
+   *  colour and order still resolve: an old promotion "from" it still reads as it did. */
+  retired?: boolean;
 }
 
 export interface RoleConfig {
@@ -47,6 +52,11 @@ export interface ActivityTemplateLine {
 interface SettingsState {
   /** Globally configured environments (shared across all products) */
   environments: EnvironmentConfig[];
+  /** `environments` without the retired ones, in the same order — what a picker or a "configured
+   *  environments" list should offer. Kept as state (derived on every write) rather than computed
+   *  in a selector, so subscribers get a stable reference. Lookups by key (labels, colours, order)
+   *  keep using the full list. */
+  activeEnvironments: EnvironmentConfig[];
   /** Admin-curated participant role display names. Canonical keys come from deploy-event
    * ingest or promotion-level assignment; this dictionary maps them to human-friendly
    * labels shown in the UI. Unknown keys fall back to the sender's `label` (if any),
@@ -67,6 +77,8 @@ interface SettingsState {
   getEnvironmentColor: (key: string) => string;
   getRoleDisplayName: (key: string) => string;
   getOrderedEnvironments: (keys: string[]) => string[];
+  /** Whether `key` (alias-resolved) is a retired environment — see `EnvironmentConfig.retired`. */
+  isRetired: (key: string) => boolean;
 }
 
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
@@ -110,6 +122,7 @@ export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
 // of truth and every setter writes through to it.
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   environments: DEFAULT_ENVIRONMENTS,
+  activeEnvironments: withoutRetired(DEFAULT_ENVIRONMENTS),
   roles: DEFAULT_ROLES,
   activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
   loaded: false,
@@ -119,6 +132,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const s = await api.getAppSettings();
       set({
         environments: s.environments,
+        activeEnvironments: withoutRetired(s.environments),
         roles: s.roles,
         activityTemplate: s.activityTemplate as ActivityTemplateLine[],
         loaded: true,
@@ -133,7 +147,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // so the in-memory store never drifts from what's saved.
   setEnvironments: async (envs) => {
     await api.saveAppSettings({ ...currentPayload(get), environments: envs });
-    set({ environments: envs });
+    set({ environments: envs, activeEnvironments: withoutRetired(envs) });
   },
 
   setRoles: async (roles) => {
@@ -192,7 +206,19 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     };
     return [...keys].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   },
+
+  // Alias-resolved like the lookups above: the server's retired set covers a retired environment's
+  // aliases too, so an un-merged alias row is retired here as well.
+  isRetired: (key) => {
+    const envs = get().environments;
+    const canonical = resolveEnvKey(key, envs);
+    return envs.find((e) => e.key === canonical)?.retired ?? false;
+  },
 }));
+
+function withoutRetired(envs: EnvironmentConfig[]): EnvironmentConfig[] {
+  return envs.filter((e) => !e.retired);
+}
 
 function currentPayload(get: () => SettingsState) {
   const { environments, roles, activityTemplate } = get();

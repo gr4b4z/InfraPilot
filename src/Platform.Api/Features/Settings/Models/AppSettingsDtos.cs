@@ -29,12 +29,22 @@ public record AppSettingsDto(
 // resolves through them (EnvironmentAliasResolver), so one physical environment stops arriving
 // as three. Null/empty means "no aliases" — the field is optional so settings rows written
 // before aliases existed deserialize unchanged.
+//
+// Retired marks an environment nothing deploys to any more. Its last events would otherwise keep
+// rendering as the "current" version there, long after they stopped being true, so every
+// current-state read path drops it (see RetiredEnvironmentQueryExtensions): the deployment matrix,
+// product cards, service search and detail, analytics' per-environment outputs and work items'
+// deployed-to lists. History keeps it — per-service history, event detail, activity feeds,
+// promotions and rollbacks still show its rows, under its label. Aliases still resolve to it, so a
+// straggling pipeline lands where an admin can see it rather than as a new environment. Optional,
+// so settings rows written before it existed deserialize as "not retired".
 public record EnvironmentConfigDto(
     string Key,
     string DisplayName,
     string? Color = null,
     bool IsProduction = false,
-    List<string>? Aliases = null);
+    List<string>? Aliases = null,
+    bool Retired = false);
 
 // Aliases are the other names producers use for this same role — Jira's "QA" field arriving as
 // `qa` on a ticket whose policy asks for a `qa-owner`. Every place that compares roles resolves
