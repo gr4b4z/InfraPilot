@@ -401,6 +401,37 @@ public class PromotionFreezeTests : IDisposable
     }
 
     [Fact]
+    public async Task GetHeldByFreeze_FlagsOnlyPendingCandidatesOfAFrozenPair()
+    {
+        SeedFreeze(product: "acme", targetEnv: "prod");
+        PromotionCandidate Candidate(string product, string targetEnv, PromotionStatus status) => new()
+        {
+            Id = Guid.NewGuid(), Product = product, Service = "api", SourceEnv = "staging",
+            TargetEnv = targetEnv, Version = "v1", Status = status,
+        };
+        var held = Candidate("acme", "prod", PromotionStatus.Pending);
+        var approved = Candidate("acme", "prod", PromotionStatus.Approved);
+        var otherProduct = Candidate("other", "prod", PromotionStatus.Pending);
+        var otherEnv = Candidate("acme", "staging", PromotionStatus.Pending);
+
+        var result = await _sut.GetHeldByFreezeAsync(new[] { held, approved, otherProduct, otherEnv });
+
+        Assert.Equal(new[] { held.Id }, result);
+    }
+
+    [Fact]
+    public async Task GetHeldByFreeze_NoActiveFreeze_FlagsNothing()
+    {
+        var pending = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "api", SourceEnv = "staging",
+            TargetEnv = "prod", Version = "v1", Status = PromotionStatus.Pending,
+        };
+
+        Assert.Empty(await _sut.GetHeldByFreezeAsync(new[] { pending }));
+    }
+
+    [Fact]
     public async Task Lift_ReevaluatesPendingCandidatesOfThePairOnly()
     {
         SeedPolicy(product: "acme");

@@ -22,6 +22,7 @@ public static class PromotionEndpoints
         // List candidates with filters + capability flags.
         group.MapGet("/", async (
             PromotionService svc,
+            PromotionFreezeService freezes,
             PlatformDbContext db,
             string? status,
             string? product,
@@ -69,6 +70,7 @@ public static class PromotionEndpoints
             }
 
             var capability = await svc.CanUserApproveManyAsync(candidates);
+            var heldByFreeze = await freezes.GetHeldByFreezeAsync(candidates);
             var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
 
             return Results.Ok(new
@@ -81,14 +83,15 @@ public static class PromotionEndpoints
                     return ToDto(c, capability.GetValueOrDefault(c.Id),
                         sourceEventParticipants: Array.Empty<ParticipantDto>(),
                         sourceEventReferences: c.References,
-                        targetCurrentVersion: targetCurrent);
+                        targetCurrentVersion: targetCurrent,
+                        frozen: heldByFreeze.Contains(c.Id));
                 }),
             });
         });
 
         // Single candidate — includes the full approval trail for the detail view.
         group.MapGet("/{id:guid}", async (
-            PromotionService svc, PlatformDbContext db, Guid id) =>
+            PromotionService svc, PromotionFreezeService freezes, PlatformDbContext db, Guid id) =>
         {
             var c = await svc.GetByIdAsync(id);
             if (c is null) return Results.NotFound();
@@ -153,7 +156,8 @@ public static class PromotionEndpoints
                 candidate = ToDto(c, canApprove,
                     sourceEventParticipants: Array.Empty<ParticipantDto>(),
                     sourceEventReferences: c.References,
-                    targetCurrentVersion: targetCurrent),
+                    targetCurrentVersion: targetCurrent,
+                    frozen: (await freezes.GetHeldByFreezeAsync(new[] { c })).Contains(c.Id)),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -538,7 +542,8 @@ public static class PromotionEndpoints
         bool canApprove,
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
         IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
-        string? targetCurrentVersion = null) => new
+        string? targetCurrentVersion = null,
+        bool frozen = false) => new
     {
         id = c.Id,
         product = c.Product,
@@ -562,6 +567,8 @@ public static class PromotionEndpoints
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
         sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
         canApprove,
+        // Pending and held by an active Promotion Freeze on (product, targetEnv).
+        frozen,
     };
 
     // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)

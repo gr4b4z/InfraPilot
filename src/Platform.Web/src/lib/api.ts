@@ -852,6 +852,8 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /** Pending and held by an active Promotion Freeze on (product, targetEnv). */
+  frozen: boolean;
 }
 
 export interface WorkItemApproval {

@@ -62,6 +62,27 @@ public class PromotionFreezeService
     }
 
     /// <summary>
+    /// Ids of the <paramref name="candidates"/> held by an active freeze: Pending candidates whose
+    /// (product, targetEnv) pair is frozen. Loads the active freezes once and matches in memory.
+    /// </summary>
+    public async Task<IReadOnlySet<Guid>> GetHeldByFreezeAsync(
+        IReadOnlyCollection<PromotionCandidate> candidates, CancellationToken ct = default)
+    {
+        if (!candidates.Any(c => c.Status == PromotionStatus.Pending)) return new HashSet<Guid>();
+
+        var frozen = (await _db.PromotionFreezes.AsNoTracking()
+                .Select(f => new { f.Product, f.TargetEnv })
+                .ToListAsync(ct))
+            .Select(f => (f.Product, f.TargetEnv))
+            .ToHashSet();
+
+        return candidates
+            .Where(c => c.Status == PromotionStatus.Pending && frozen.Contains((c.Product, c.TargetEnv)))
+            .Select(c => c.Id)
+            .ToHashSet();
+    }
+
+    /// <summary>
     /// Freezes <c>(product, targetEnv)</c>. Throws <see cref="ArgumentException"/> when the reason
     /// (or the pair) is blank, <see cref="NoApprovalPolicyForPairException"/> when no approval policy
     /// targets the pair, and <see cref="FreezeAlreadyActiveException"/> when it is already frozen.

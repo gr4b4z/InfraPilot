@@ -86,7 +86,11 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 ### `GET /api/promotions` — list
 Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
-current user (Pending + authorized for ≥1 open requirement + not already decided).
+current user (Pending + authorized for ≥1 open requirement + not already decided), and a
+**`frozen`** boolean: `true` when the candidate is `Pending` and its `(product, targetEnv)` is held by
+an active [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes). The Promotions
+page shows such candidates in a separate "Frozen" group under a banner of the active freezes
+(read from `GET /api/promotions/freezes`) matching the product / target-env filters.
 
 ### `GET /api/promotions/{id}` — detail
 Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress, freeze }`.
