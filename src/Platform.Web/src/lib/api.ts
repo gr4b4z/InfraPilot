@@ -804,6 +804,19 @@ class ApiClient {
   }
 
   /**
+   * Admin override of {@link rejectPromotion}: rejects a Pending promotion without the caller being
+   * one of its approvers. Requires a reason. Admin-only endpoint (CatalogAdmin); the effects are a
+   * normal rejection's (decision row, promotion.rejected webhook), marked as an administrator reject
+   * in the audit trail. No bulk counterpart here — the UI deliberately has no bulk reject.
+   */
+  adminRejectPromotion(id: string, reason: string) {
+    return this.request<{ id: string; status: string }>(
+      `/promotions/admin/candidates/${id}/reject`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    );
+  }
+
+  /**
    * Settles open promotions that deploy history has already decided: closes the ones whose version
    * shipped, supersedes the ones a newer version overtook, leaves everything ambiguous alone.
    * Admin-only. `dryRun` reports what would happen without writing — the UI always runs it first so
@@ -1819,13 +1832,16 @@ export interface PromotionAuditEntry {
 
   /** What the actor typed, on the actions that take a comment. */
   comment: string | null;
-  /** Required on a bypass — why the gate was skipped. */
+  /** Required on a bypass and an administrator reject — why the gate was overridden. */
   reason: string | null;
   /** The ticket a work-item action was about. */
   workItemKey: string | null;
   role: string | null;
   referenceKey: string | null;
-  /** How an approval came about, e.g. `gate-evaluator`, `administrator-bypass`. */
+  /**
+   * How an approval or rejection came about, e.g. `gate-evaluator`, `administrator-bypass`,
+   * `administrator-reject`.
+   */
   trigger: string | null;
   /**
    * On a gate-opening row: the people whose approvals opened it. The row's own actor is the evaluator

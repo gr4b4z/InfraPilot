@@ -247,6 +247,18 @@ function actionStyle(action: string) {
 }
 
 /**
+ * One row's style. An administrator's override reject is audited as an ordinary
+ * `promotion.rejected` (it is a rejection, and belongs in that tab) told apart by its trigger, so
+ * the row says which kind it was.
+ */
+function entryStyle(entry: PromotionAuditEntry) {
+  const style = actionStyle(entry.action);
+  return entry.trigger === 'administrator-reject'
+    ? { ...style, verb: 'rejected this promotion as an administrator, overriding its approvers' }
+    : style;
+}
+
+/**
  * The stat tiles across the top: the four counts that answer the common questions without anybody
  * having to pick a tab first. Each one is the tab it summarises, so reading the number and then
  * seeing what it's made of is one click.
@@ -894,7 +906,7 @@ function AuditEmptyState({
 function AuditRow({ index, entry }: { index: number; entry: PromotionAuditEntry }) {
   const navigate = useNavigate();
   const [showDetails, setShowDetails] = useState(false);
-  const style = actionStyle(entry.action);
+  const style = entryStyle(entry);
   const Icon = style.icon;
   const system = entry.actorType === 'system';
   const timestamp = new Date(entry.timestamp);

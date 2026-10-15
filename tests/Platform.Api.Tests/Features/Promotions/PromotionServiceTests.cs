@@ -19,6 +19,7 @@ public class PromotionServiceTests : IDisposable
     private readonly IIdentityService _identity = Substitute.For<IIdentityService>();
     private readonly ICurrentUser _currentUser = Substitute.For<ICurrentUser>();
     private readonly IAuditLogger _audit = Substitute.For<IAuditLogger>();
+    private readonly IWebhookDispatcher _webhooks = Substitute.For<IWebhookDispatcher>();
     private readonly PromotionService _sut;
 
     public PromotionServiceTests()
@@ -49,7 +50,7 @@ public class PromotionServiceTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, auth, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>(),
+            _webhooks,
             TestOptions.Normalization(),
             TestEnvironmentAliases.For(_db),
             TestUserPreferences.For(_db),
@@ -1050,6 +1051,133 @@ public class PromotionServiceTests : IDisposable
 
         var updated = await _sut.RejectAsync(c!.Id, "no thanks");
         Assert.Equal(PromotionStatus.Rejected, updated.Status);
+    }
+
+    // ---------------------------------------------------------------------
+    // AdminRejectAsync
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task AdminReject_RejectsAPendingPromotionTheCallerCannotApprove()
+    {
+        // Alice is in "ops", not "release-managers": the approver path refuses her outright.
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => _sut.RejectAsync(c!.Id, "no"));
+
+        var updated = await _sut.AdminRejectAsync(c!.Id, "  stale after the release-track migration  ");
+
+        Assert.Equal(PromotionStatus.Rejected, updated.Status);
+        Assert.Equal(PromotionStatus.Rejected, (await _db.PromotionCandidates.FindAsync(c.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task AdminReject_RecordsTheDecisionRowAndASystemComment()
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+
+        await _sut.AdminRejectAsync(c!.Id, "  stale after the release-track migration  ");
+
+        // Attributed to the caller, reason trimmed, so "Other decisions" shows who and why.
+        var decision = Assert.Single(await _sut.GetApprovalsAsync(c.Id));
+        Assert.Equal(PromotionDecision.Rejected, decision.Decision);
+        Assert.Equal("alice@example.com", decision.ApproverEmail);
+        Assert.Equal("Alice", decision.ApproverName);
+        Assert.Equal("stale after the release-track migration", decision.Comment);
+        Assert.Null(decision.StepName);
+        Assert.Null(decision.RequirementName);
+
+        var bodies = (await _sut.GetCommentsAsync(c.Id)).Select(x => x.Body).ToList();
+        Assert.Contains(bodies, b => b.Contains("Alice") && b.Contains("rejected this promotion as an administrator")
+                                     && b.Contains("stale after the release-track migration"));
+    }
+
+    [Fact]
+    public async Task AdminReject_FiresPromotionRejected_AndAuditsTheAdminMarker()
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+
+        await _sut.AdminRejectAsync(c!.Id, "stale");
+
+        // Same webhook a normal reject fires, with the override marked on `change`.
+        await _webhooks.Received(1).DispatchAsync(
+            "promotion.rejected",
+            Arg.Is<object>(o => JsonSerializer.Serialize(o, (JsonSerializerOptions?)null)
+                .Contains("\"change\":{\"trigger\":\"administrator-reject\",\"reason\":\"stale\"}")),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+        // Still a promotion.rejected audit row — it is a rejection — but told apart by its trigger.
+        await _audit.Received(1).Log(
+            "promotions", "promotion.rejected",
+            "alice-id", "Alice", "user",
+            "PromotionCandidate", c.Id, Arg.Is<object?>(before => before == null),
+            Arg.Is<object>(o => JsonSerializer.Serialize(o, (JsonSerializerOptions?)null)
+                == "{\"trigger\":\"administrator-reject\",\"reason\":\"stale\"}"),
+            Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task Reject_ByAnApprover_CarriesNoAdminMarker()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var c = await CreateAsync();
+
+        await _sut.RejectAsync(c!.Id, "not ready");
+
+        await _audit.Received(1).Log(
+            "promotions", "promotion.rejected",
+            "alice-id", "Alice", "user",
+            "PromotionCandidate", c.Id, Arg.Is<object?>(before => before == null),
+            Arg.Is<object>(o => !JsonSerializer.Serialize(o, (JsonSerializerOptions?)null).Contains("trigger")),
+            Arg.Any<object?>());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task AdminReject_RequiresAReason(string reason)
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _sut.AdminRejectAsync(c!.Id, reason));
+
+        Assert.Equal(PromotionStatus.Pending, (await _db.PromotionCandidates.FindAsync(c!.Id))!.Status);
+        Assert.Empty(await _sut.GetApprovalsAsync(c.Id));
+        await _webhooks.DidNotReceive().DispatchAsync(
+            "promotion.rejected", Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task AdminReject_RefusesANonPendingPromotion()
+    {
+        SeedPolicy(approverGroup: null); // auto-approve ⇒ born Approved
+        var c = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, c!.Status);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.AdminRejectAsync(c.Id, "too late"));
+
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(c.Id))!.Status);
+        Assert.DoesNotContain(await _sut.GetApprovalsAsync(c.Id), a => a.Decision == PromotionDecision.Rejected);
+    }
+
+    [Fact]
+    public async Task AdminReject_RefusesAnAlreadyRejectedPromotion()
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+        await _sut.AdminRejectAsync(c!.Id, "stale");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.AdminRejectAsync(c.Id, "again"));
+        Assert.Single(await _sut.GetApprovalsAsync(c.Id));
+    }
+
+    [Fact]
+    public async Task AdminReject_UnknownPromotion_Throws()
+    {
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => _sut.AdminRejectAsync(Guid.NewGuid(), "stale"));
     }
 
     // ---------------------------------------------------------------------
