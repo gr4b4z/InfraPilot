@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Infrastructure;
@@ -17,6 +18,11 @@ public class PromotionFreezeService
 {
     /// <summary>Matches the <c>promotion_freezes.Reason</c> column length.</summary>
     private const int MaxReasonLength = 1000;
+
+    public const int DefaultHistoryLimit = 10;
+    public const int MaxHistoryLimit = 50;
+    private const string FrozenAction = "promotion.frozen";
+    private const string UnfrozenAction = "promotion.unfrozen";
 
     private readonly PlatformDbContext _db;
     private readonly PromotionService _promotions;
@@ -151,6 +157,55 @@ public class PromotionFreezeService
         return true;
     }
 
+    /// <summary>
+    /// Freeze and lift events, newest first, derived from the audit log (<c>promotion.frozen</c> /
+    /// <c>promotion.unfrozen</c>). <paramref name="limit"/> is clamped to 1..<see cref="MaxHistoryLimit"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<FreezeHistoryEntry>> GetHistoryAsync(
+        int limit = DefaultHistoryLimit, CancellationToken ct = default)
+    {
+        var rows = await _db.AuditLog.AsNoTracking()
+            .Where(a => a.Action == FrozenAction || a.Action == UnfrozenAction)
+            .OrderByDescending(a => a.Timestamp)
+            .Take(ClampHistoryLimit(limit))
+            .ToListAsync(ct);
+
+        return rows.Select(ToHistoryEntry).ToList();
+    }
+
+    public static int ClampHistoryLimit(int limit) => Math.Clamp(limit, 1, MaxHistoryLimit);
+
+    // The audit payload (AfterState) is { product, targetEnv, reason, ... } for both actions.
+    private static FreezeHistoryEntry ToHistoryEntry(AuditEntry a)
+    {
+        string product = "", targetEnv = "";
+        string? reason = null;
+        if (!string.IsNullOrWhiteSpace(a.AfterState))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(a.AfterState);
+                var root = doc.RootElement;
+                product = ReadString(root, "product") ?? "";
+                targetEnv = ReadString(root, "targetEnv") ?? "";
+                reason = ReadString(root, "reason");
+            }
+            catch (JsonException)
+            {
+                // Malformed payload: keep the event with blank fields rather than hiding it.
+            }
+        }
+
+        var action = a.Action == FrozenAction ? "frozen" : "unfrozen";
+        return new FreezeHistoryEntry(action, product, targetEnv, reason, a.ActorName, a.Timestamp);
+    }
+
+    private static string? ReadString(JsonElement root, string name)
+        => root.ValueKind == JsonValueKind.Object
+           && root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+
     private Task<int> CountHeldAsync(string product, string targetEnv, CancellationToken ct)
         => _db.PromotionCandidates.AsNoTracking()
             .CountAsync(c => c.Product == product && c.TargetEnv == targetEnv
@@ -163,6 +218,10 @@ public class PromotionFreezeService
 /// <summary>Read model of an active Promotion Freeze; <see cref="HeldCandidates"/> = Pending candidates of the pair.</summary>
 public record ActiveFreeze(
     string Product, string TargetEnv, string Reason, string FrozenBy, DateTimeOffset FrozenAt, int HeldCandidates);
+
+/// <summary>One journal event: <see cref="Action"/> is "frozen" or "unfrozen".</summary>
+public record FreezeHistoryEntry(
+    string Action, string Product, string TargetEnv, string? Reason, string Actor, DateTimeOffset At);
 
 /// <summary>Thrown by <see cref="PromotionFreezeService.FreezeAsync"/> when the pair is already frozen (409).</summary>
 public class FreezeAlreadyActiveException : InvalidOperationException

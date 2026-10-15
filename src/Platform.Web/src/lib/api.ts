@@ -533,6 +533,13 @@ class ApiClient {
     );
   }
 
+  listPromotionFreezeHistory(limit?: number) {
+    const qs = limit ? `?limit=${limit}` : '';
+    return this.request<{ entries: PromotionFreezeHistoryEntry[] }>(
+      `/promotions/admin/freezes/history${qs}`,
+    );
+  }
+
   // ── Rollbacks ──────────────────────────────────────────────────────────
 
   listRollbacks(params?: {
@@ -1083,6 +1090,15 @@ export interface PromotionFreeze {
   frozenBy: string;
   frozenAt: string;
   heldCandidates: number;
+}
+
+export interface PromotionFreezeHistoryEntry {
+  action: 'frozen' | 'unfrozen';
+  product: string;
+  targetEnv: string;
+  reason: string | null;
+  actor: string;
+  at: string;
 }
 
 export interface UpsertPromotionPolicyPayload {
