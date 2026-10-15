@@ -15,7 +15,9 @@ ADR-0002 (key is product + target environment, administrators only, no whole-env
 
 - [ ] Admin can create a freeze for a (product, target environment) pair; the reason is required (400 without it)
 - [ ] Creating a freeze for a pair that is already frozen returns 409; for a pair with no approval policy returns 422
-- [ ] Admin can list active freezes and lift one; a non-admin gets 403 on all three operations
+- [ ] Admin can list active freezes and lift one; a non-admin gets 403 on create and lift
+- [ ] The active-freezes read includes, per freeze, the number of Pending candidates it currently holds
+- [ ] Any signed-in user (CanApprove) can read active freezes with their held counts through a non-admin endpoint; create and lift stay admin-only
 - [ ] A Pending candidate of a frozen pair stays Pending even when every approver requirement is satisfied, and the gate reports the freeze as the blocking reason
 - [ ] Approvals and work-item sign-offs on a frozen candidate are still recorded (no error, no state change)
 - [ ] An externally created candidate for a frozen pair under an auto-approve policy is created as Pending, and no `promotion.approved` webhook fires
