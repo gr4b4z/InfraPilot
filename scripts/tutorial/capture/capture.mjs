@@ -19,7 +19,7 @@ import {
 const sc = scenes.scenes;
 const hero = scenes.heroProduct;
 const prodEnv = scenes.prodEnv ?? 'prod';
-const heroEnvs = scenes.heroEnvs ?? ['dev', 'test', 'stable', 'staging', 'prod'];
+const heroEnvs = scenes.heroEnvs ?? ['dev', 'test', 'staging', 'prod'];
 // Scene ids come from the seed's tutorial-scenes.json; the pages they live on are the app's routes.
 const promoUrl = (d) => `/promotions/${d.id}`;
 const eventUrl = (d) => `/deployments/events/${d.id}`;
@@ -135,7 +135,7 @@ try {
     step({
       title: 'The Deployments overview, as a plain user', actor: 'user',
       images: [{ file: img }],
-      what: 'One row per product, one column per environment in pipeline order (Dev → Test → Stable → Staging → Prod). Each cell says how many services are deployed and how fresh the newest deploy is. A plain user lands here; QA and Admin land on "My tasks". The product chips are a personal preference the API applies everywhere, so a user hides the products they do not care about.',
+      what: 'One row per product, one column per environment in pipeline order (Dev → Test → Staging → Prod). Each cell says how many services are deployed and how fresh the newest deploy is. A plain user lands here; QA and Admin land on "My tasks". The product chips are a personal preference the API applies everywhere, so a user hides the products they do not care about.',
       say: 'This is the front door. Eight products, every environment we deploy to, and how recently each one moved. Ula only cares about mpt, so she can switch the other chips off — that filter follows her onto every page.',
     });
 
@@ -181,7 +181,7 @@ try {
       title: 'The service page', actor: 'user',
       images: [{ file: img }],
       what: 'One page per service: a card per environment with the current version and status, a release timeline (one dot per deploy, red for failures), the open promotions, and the recent distinct versions with the environments each one reached. "Full history" is the flat list of every deploy.',
-      say: `"How is ${sc.F.data.service} doing?" is answered on one screen: Test is red, Staging and Stable carry the version that is about to go to Prod, and there is an approved promotion waiting for its deploy. We will come back to that one.`,
+      say: `"How is ${sc.F.data.service} doing?" is answered on one screen: Test is red, Staging carries the version that is about to go to Prod, and there is an approved promotion waiting for its deploy. We will come back to that one.`,
     });
 
     await go(page, `/artifacts?product=${hero}`);
@@ -481,7 +481,7 @@ try {
         { file: artImg, caption: 'The registry, a second later' },
         { file: svcImg, caption: 'The service page, a second later' },
       ],
-      what: 'Three calls, all with the pipeline API key. Registering a build puts it in the Artifacts registry. The deploy event puts the version on the matrix and records the ticket it carries. The promotion call opens a candidate for the next environment; on the dev → test edge the policy has no human gate, so it is approved immediately and only waits for the deploy. Every screen updated without a reload — the API pushes changes to open pages.',
+      what: 'Three calls, all with the pipeline API key. Registering a build puts it in the Artifacts registry and, because it is a master build, opens its build → dev promotion on its own (no human gate, so it is approved at once). The deploy event puts the version on the matrix, records the ticket it carries and closes that promotion. The promotion call opens a candidate for the next environment; on the dev → test edge the policy has no human gate, so it is approved immediately and only waits for the deploy. Every screen updated without a reload — the API pushes changes to open pages.',
       say: 'Nothing in InfraPortal is typed in by people except decisions. Pipelines post three kinds of facts: a build exists, a version is running somewhere, a version should move to the next environment. Everything you saw today is derived from those three.',
     });
   }
