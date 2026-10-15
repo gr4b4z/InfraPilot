@@ -1,31 +1,81 @@
 ---
 name: infrapilot-api
-description: Connect to the InfraPilot (InfraPortal) REST API — read deployment state/history, ingest deploy events, create/query promotions, register builds, pull analytics and release notes. Use whenever a task mentions InfraPilot, InfraPortal, deployment tracking, deploy events, promotions, or the deployments API. Connection comes from the DEPLOYMENTS_URL and DEPLOYMENTS_API_KEY environment variables.
+description: Work with InfraPilot (InfraPortal) — read what is deployed where, deployment history, failed deploys and their logs, promotions and why they are stuck, work items, builds, analytics; diagnose promotion and deployment problems; ingest deploy events, register builds, create promotions, release notes. MCP tools first (native `infraportal` tools, or the bundled scripts/mcp_call.py over HTTP), REST for the rest. Use whenever a task mentions InfraPilot, InfraPortal, deployment state, deploy events, promotions, rollbacks of releases, or the deployments API. Connection comes from the DEPLOYMENTS_URL and DEPLOYMENTS_API_KEY environment variables.
 ---
 
 # InfraPilot API
 
 InfraPilot (also branded **InfraPortal**) is an infrastructure portal tracking deployments,
-promotions between environments, builds, and release notes. This skill covers calling its REST
-API directly.
+promotions between environments, builds, and release notes. Prod: `https://infraportal.s1.team`.
 
-## Prefer the MCP server when it is connected
+## How to call it — MCP first
 
-InfraPortal also serves an MCP server at `{DEPLOYMENTS_URL}/api/mcp` (same `X-Api-Key` header). When
-its tools are available in the session (`infraportal` server — `get_deployment_state`,
-`list_promotions`, `diagnose_promotion`, …), use them instead of curl: they resolve misspelt names,
-return compact results with portal links, and include `diagnose_promotion` / `diagnose_deployment` /
-`search_knowledge`, which the REST API does not expose. Fall back to REST below for what the tools do
-not cover: ingesting deploy events, registering builds, release notes, admin endpoints, and scripts.
+InfraPortal serves an MCP server at `{DEPLOYMENTS_URL}/api/mcp` (same `X-Api-Key` header as REST).
+Its tools resolve misspelt names (and say what they assumed in `nameResolution`), return compact JSON
+with portal `url`s, and include `diagnose_promotion`, `diagnose_deployment` and `search_knowledge`,
+which REST does not have. Use, in this order:
 
-Connect it once (user scope, works in every repo):
+1. **Native tools** — when the session has the `infraportal` MCP server (tools named
+   `mcp__infraportal__get_deployment_state` etc.), call them directly.
+2. **The bundled helper** — otherwise (scheduled runs, other repos, server not added), call the same
+   tools over HTTP. No setup beyond the two environment variables:
+
+   ```bash
+   python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py --list
+   python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py --describe get_promotion
+   python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py list_promotions '{"status":"Approved","limit":20}'
+   ```
+
+   It prints the tool's JSON result; exit code 1 means the tool returned an error (the message says
+   how to correct the call), 2 a transport or auth problem. Arguments are camelCase
+   (`promotionId`, `eventId`, `targetEnv`). In PowerShell, pass the JSON in single quotes.
+3. **REST** (sections below) — only for what no tool covers: ingesting deploy events, registering
+   builds, release notes, admin endpoints, rollbacks, bulk scripts.
+
+To get native tools in every repo, add the server once at user scope:
 
 ```bash
 claude mcp add --transport http --scope user infraportal "$DEPLOYMENTS_URL/api/mcp" --header "X-Api-Key: $DEPLOYMENTS_API_KEY"
 ```
 
-The InfraPilot repo's `.mcp.json` does the same from the two environment variables. Full tool list
-and design: `notes/mcp-server.md`.
+The InfraPilot repo's `.mcp.json` does the same from the environment. Design and full tool list:
+`notes/mcp-server.md`.
+
+### Which tool answers what
+
+| Question | Tool |
+|---|---|
+| What can this key do? | `whoami` |
+| What products / services exist? | `list_products`, `find_services` (service known, product not) |
+| What runs where now? | `get_deployment_state` (product, service or fragment, environment) |
+| One service end to end | `get_service`, `get_deployment_history` |
+| What deployed / failed recently? | `list_recent_deployments` (`status: "failed"`, `since`) |
+| Why did a deploy fail? | `diagnose_deployment`, then `get_deployment` → `get_deployment_log` (`match`) |
+| What is waiting / stuck? | `list_promotions` (`status`, `waitingOn`), `get_promotion_queue` |
+| Why is a promotion stuck? | `diagnose_promotion`, then `get_promotion` |
+| Which promotions carry ticket X? | `list_promotions` with `reference: "MPT-1234"`, then `get_work_item` |
+| Builds and where they went | `list_builds`, `get_build` (`promotableTo`) |
+| How do the pipelines behave? | `search_knowledge` — answer from it, with its as-of date |
+| Cadence, failure rate, lead time | `get_deployment_frequency`, `get_lead_time` (quote `definition` / `coverage`) |
+
+### Triage recipes
+
+- **Promotion stuck Approved / Pending:** `list_promotions` (`status: "Approved"`) → for each one
+  older than about an hour, `diagnose_promotion` → lead with the top cause that has
+  `supportedByEvidence: true` and cite its evidence line. Approved-but-not-deployed usually breaks in
+  mpt-release (webhook delivery → `promote-single-build-manifest` / `deploy-registered-build` →
+  reconcile); check those runs with `gh run list --repo softwareone-platform/mpt-release`.
+- **Failed deploy:** `list_recent_deployments` (`status: "failed"`) → `diagnose_deployment` → quote
+  the `logExcerpts` line verbatim; read more with `get_deployment_log` (`match: "error"`).
+- **"Is X in prod?":** `get_deployment_state` with the service (a fragment is fine) and
+  `environment: "prod"`; report the version and give the `url`.
+
+### Write tools — only when the user asked for that action
+
+`add_promotion_comment`, `add_work_item_comment`, `set/remove_promotion_participant`,
+`promote_build` and `create_promotion` change shared state that everyone in the portal sees. Never
+call them while investigating or reviewing. No tool approves, rejects or signs off; those stay
+human decisions in the portal (a personal token gets `403` on those routes over REST too).
 
 ## Connection
 
