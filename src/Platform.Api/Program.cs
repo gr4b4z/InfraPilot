@@ -167,6 +167,9 @@ builder.Services.AddDeploymentIngestionRateLimit(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<PersonalAccessTokenService>();
+// Scoped because the stub directory it reads is; its answers live in the shared memory cache.
+builder.Services.AddScoped<PersonalTokenOwnerCheck>();
+builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
 builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
@@ -194,8 +197,8 @@ if (!string.IsNullOrEmpty(graphTenantId) && !graphTenantId.StartsWith('<')
         return new Microsoft.Graph.GraphServiceClient(credential);
     });
     // Singleton so its group-membership cache is shared by every request (one Graph read per group
-    // per TTL instead of one per approval check); it holds nothing request-specific.
-    builder.Services.AddMemoryCache();
+    // per TTL instead of one per approval check); it holds nothing request-specific. The memory
+    // cache it keeps them in is registered above, for every mode.
     builder.Services.AddSingleton<IIdentityService, EntraIdGraphService>();
 }
 else
@@ -502,6 +505,8 @@ app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
 app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization();
 // Their personal access tokens — a signed-in session only, so a token cannot mint another.
 app.MapGroup("/api/me/tokens").MapPersonalAccessTokenEndpoints().RequireAuthorization(AuthorizationPolicies.SignedInSession);
+// Everyone's tokens, for administrators: find and revoke any of them (Settings → Agent Tokens).
+app.MapGroup("/api/tokens/admin").MapPersonalAccessTokenAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)

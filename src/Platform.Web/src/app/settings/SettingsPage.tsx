@@ -11,6 +11,7 @@ import {
   Wrench,
   ScrollText,
   Shuffle,
+  KeyRound,
 } from 'lucide-react';
 
 interface NavItem {
@@ -68,6 +69,12 @@ const NAV: NavItem[] = [
     label: 'Service Products',
     icon: Shuffle,
     description: 'Override which product a service’s deploys, builds and promotions belong to',
+  },
+  {
+    to: 'agent-tokens',
+    label: 'Agent Tokens',
+    icon: KeyRound,
+    description: 'Personal access tokens people created for their agents: find and revoke any of them',
   },
   {
     to: 'maintenance',

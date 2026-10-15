@@ -278,6 +278,58 @@ public class EntraIdGraphServiceTests
         return new PromotionApprovalAuthorizer(user, _sut, new ListLogger<PromotionApprovalAuthorizer>());
     }
 
+    // ── Account status (personal-token owner check) ─────────────────────────
+
+    private const string UserId = "0f3b6a2e-1c4d-4e5f-8a9b-7c6d5e4f3a2b";
+
+    [Theory]
+    [InlineData(true, AccountStatus.Active)]
+    [InlineData(false, AccountStatus.Disabled)]
+    public async Task Account_status_reads_account_enabled_and_nothing_else(bool enabled, AccountStatus expected)
+    {
+        _graph.Respond = _ => Json(new { id = UserId, accountEnabled = enabled });
+
+        Assert.Equal(expected, await _sut.GetAccountStatus(UserId));
+
+        var request = Assert.Single(_graph.Requests);
+        Assert.Contains($"/users/{UserId}", request);
+        Assert.Contains("$select=id,accountEnabled", request);
+    }
+
+    [Fact]
+    public async Task A_deleted_user_is_missing()
+    {
+        _graph.Respond = _ => GraphError(HttpStatusCode.NotFound, "Request_ResourceNotFound");
+
+        Assert.Equal(AccountStatus.Missing, await _sut.GetAccountStatus(UserId));
+    }
+
+    [Fact]
+    public async Task An_unanswered_lookup_is_unknown_and_warned_about_once_per_ttl()
+    {
+        _graph.Respond = _ => GraphError(HttpStatusCode.TooManyRequests, "TooManyRequests");
+
+        Assert.Equal(AccountStatus.Unknown, await _sut.GetAccountStatus(UserId));
+        Assert.Equal(AccountStatus.Unknown, await _sut.GetAccountStatus(UserId));
+        Assert.Equal(1, _log.Count(LogLevel.Warning));
+    }
+
+    [Fact]
+    public async Task A_missing_account_enabled_is_not_read_as_disabled()
+    {
+        // What a Graph app without User.Read.All would get back: the property left out.
+        _graph.Respond = _ => Json(new { id = UserId });
+
+        Assert.Equal(AccountStatus.Active, await _sut.GetAccountStatus(UserId));
+    }
+
+    [Fact]
+    public async Task A_non_object_id_is_unknown_without_a_round_trip()
+    {
+        Assert.Equal(AccountStatus.Unknown, await _sut.GetAccountStatus("apikey:pipeline"));
+        Assert.Equal(0, _graph.RequestCount);
+    }
+
     // ── Fakes ────────────────────────────────────────────────────────────────
 
     // A page of transitiveMembers/microsoft.graph.user: users only, and — like Graph's cast
