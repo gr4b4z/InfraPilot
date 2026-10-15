@@ -4,6 +4,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Generate the minimal-API request delegates at compile time instead of building them with
+         reflection and compiled expression trees when the app starts. With ~150 endpoints the
+         runtime path cost about half a second per start: a slower cold start in production, and
+         paid again by every integration-test host. -->
+    <EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
   </PropertyGroup>
 
   <ItemGroup>

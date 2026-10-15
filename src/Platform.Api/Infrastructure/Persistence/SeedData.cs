@@ -246,11 +246,9 @@ public static class SeedData
     /// <summary>
     /// Seed local dev users for DB-based authentication. Idempotent.
     /// </summary>
-    public static async Task SeedLocalUsers(PlatformDbContext db)
+    public static async Task SeedLocalUsers(PlatformDbContext db, IPasswordHasher<LocalUser> hasher)
     {
         if (db.LocalUsers.Any()) return;
-
-        var hasher = new PasswordHasher<LocalUser>();
 
         // user@localhost carries QA on purpose. Work-item management — queue, assignment, sign-off —
         // is the QA role's jurisdiction (WorkItemApprovalService.GetPendingForCurrentUserAsync bails

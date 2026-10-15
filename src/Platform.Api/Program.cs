@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
@@ -150,6 +151,10 @@ else
             };
             AcceptHubAccessToken(options);
         });
+
+    // Hashes the seeded local users' passwords and verifies them at login. From the container, so a
+    // test host can turn the PBKDF2 iteration count down (PasswordHasherOptions).
+    builder.Services.AddSingleton<IPasswordHasher<LocalUser>, PasswordHasher<LocalUser>>();
 }
 var isMsal = authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase);
 builder.Services.AddAuthentication()
@@ -163,6 +168,7 @@ builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
 builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
+builder.Services.AddSingleton<FeatureFlagCache>();
 // Scoped, and it memoises per request — the hidden-product set is read by most list queries.
 builder.Services.AddScoped<UserPreferencesService>();
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection(NotificationOptions.SectionName));
@@ -413,7 +419,7 @@ app.Services.GetRequiredService<PlaybookRegistry>();
 
     // Seed local users when MSAL is not configured (dev/test)
     if (!isMsal)
-        await SeedData.SeedLocalUsers(db);
+        await SeedData.SeedLocalUsers(db, scope.ServiceProvider.GetRequiredService<IPasswordHasher<LocalUser>>());
 
     // Seed demo data in development only. Each block can be switched off in configuration
     // (`Seed:DemoRequests`, `Seed:DemoDeployments`) so a local database can be filled from another

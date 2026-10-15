@@ -15,15 +15,13 @@ public class FeatureFlags : IFeatureFlags
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
 
     private readonly PlatformDbContext _db;
+    private readonly ConcurrentDictionary<string, (DateTimeOffset ExpiresAt, bool Enabled)> _cache;
     private readonly ILogger<FeatureFlags> _logger;
 
-    // Process-wide cache shared across all scoped FeatureFlags instances.
-    // Key = feature name. Value = (expiresAt, enabled).
-    private static readonly ConcurrentDictionary<string, (DateTimeOffset ExpiresAt, bool Enabled)> _cache = new();
-
-    public FeatureFlags(PlatformDbContext db, ILogger<FeatureFlags> logger)
+    public FeatureFlags(PlatformDbContext db, FeatureFlagCache cache, ILogger<FeatureFlags> logger)
     {
         _db = db;
+        _cache = cache.Entries;
         _logger = logger;
     }
 
@@ -72,9 +70,15 @@ public class FeatureFlags : IFeatureFlags
         _cache[feature] = (DateTimeOffset.UtcNow.Add(CacheTtl), enabled);
         _logger.LogInformation("Feature flag updated: enabled={Enabled}", enabled);
     }
+}
 
-    /// <summary>
-    /// Test hook — clears the process-wide cache. Never call from production code paths.
-    /// </summary>
-    public static void ClearCacheForTesting() => _cache.Clear();
+/// <summary>
+/// The cache behind <see cref="FeatureFlags"/>, shared by every scoped instance. Register it as a
+/// singleton. It belongs to the container rather than living in a static so that each host in a
+/// process — each integration-test host — reads its own database's flags, never another's.
+/// </summary>
+public sealed class FeatureFlagCache
+{
+    // Key = feature name. Value = (expiresAt, enabled).
+    internal ConcurrentDictionary<string, (DateTimeOffset ExpiresAt, bool Enabled)> Entries { get; } = new();
 }
