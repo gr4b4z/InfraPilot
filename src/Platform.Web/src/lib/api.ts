@@ -304,6 +304,8 @@ class ApiClient {
       approvalProgress: PromotionApprovalProgress;
       eligibleRequirements: EligibleRequirement[];
       bypass: { byName: string; at: string; reason: string | null } | null;
+      /** The Promotion Freeze holding this Pending candidate; null when not frozen (or not Pending). */
+      freeze: Omit<PromotionFreeze, 'heldCandidates'> | null;
     }>(`/promotions/${id}`);
   }
 
@@ -1016,6 +1018,10 @@ export interface PromotionApprovalProgress {
   steps: PromotionStepProgress[];
   /** The "all work items resolved" gate condition, when the policy gates on it; null otherwise. */
   workItems: PromotionWorkItemGate | null;
+  /** True when a Promotion Freeze holds this Pending candidate; allSatisfied is then false. */
+  frozen: boolean;
+  /** The freeze's reason when frozen; null otherwise. */
+  blockedReason: string | null;
 }
 
 export interface PromotionWorkItemGate {
@@ -1076,6 +1082,7 @@ export interface PromotionPolicy {
   updatedAt: string;
 }
 
+/** An active Promotion Freeze on (product, targetEnv); heldCandidates = Pending candidates of the pair. */
 export interface PromotionFreeze {
   product: string;
   targetEnv: string;
