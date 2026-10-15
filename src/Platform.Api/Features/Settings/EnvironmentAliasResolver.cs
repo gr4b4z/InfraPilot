@@ -1,3 +1,4 @@
+using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure;
 
 namespace Platform.Api.Features.Settings;
@@ -22,7 +23,9 @@ public class EnvironmentAliasResolver
 {
     private readonly AppSettingsService _settings;
     private readonly ILogger<EnvironmentAliasResolver> _logger;
+    private List<EnvironmentConfigDto>? _configured;
     private EnvironmentAliasMap? _memo;
+    private IReadOnlySet<string>? _retired;
 
     public EnvironmentAliasResolver(AppSettingsService settings, ILogger<EnvironmentAliasResolver> logger)
     {
@@ -30,9 +33,23 @@ public class EnvironmentAliasResolver
         _logger = logger;
     }
 
+    // One settings read per request, shared by the alias map and the retired set: a state request
+    // resolves its environment filter and then drops retired environments, and the two must agree.
+    private async Task<List<EnvironmentConfigDto>> ConfiguredAsync(CancellationToken ct)
+        => _configured ??= (await _settings.GetSettings(ct)).Environments ?? [];
+
     /// <summary>The configured map for this request.</summary>
     public async Task<EnvironmentAliasMap> MapAsync(CancellationToken ct = default)
-        => _memo ??= EnvironmentAliasMap.Build((await _settings.GetSettings(ct)).Environments);
+        => _memo ??= EnvironmentAliasMap.Build(await ConfiguredAsync(ct));
+
+    /// <summary>
+    /// The environments the current-state read paths leave out, for this request — see
+    /// <see cref="AppSettingsService.RetiredEnvironmentKeys"/>. Lives here rather than only on
+    /// <see cref="AppSettingsService"/> because the read paths that need it already hold this
+    /// resolver, and answering from its snapshot keeps them at one settings read.
+    /// </summary>
+    public async Task<IReadOnlySet<string>> RetiredKeysAsync(CancellationToken ct = default)
+        => _retired ??= AppSettingsService.RetiredEnvironmentKeys(await ConfiguredAsync(ct));
 
     /// <summary>
     /// The canonical key to store for an environment a caller supplied. Passes through unchanged

@@ -1449,13 +1449,15 @@ export interface UserPreferencesPayload {
 export interface AppSettingsPayload {
   /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values.
    *  `aliases` are the other names producers call this same environment; every write path resolves
-   *  through them, so one environment stops arriving under three names. */
+   *  through them, so one environment stops arriving under three names. `retired` takes the
+   *  environment out of every current-state view while keeping its history; absent means false. */
   environments: {
     key: string;
     displayName: string;
     color?: string | null;
     isProduction?: boolean;
     aliases?: string[] | null;
+    retired?: boolean;
   }[];
   /** `aliases` are other names producers send for the role; `assigneeGroups` narrow the person
    *  picker for it to members of those directory groups. */
