@@ -515,6 +515,24 @@ class ApiClient {
     return this.request<void>(`/promotions/admin/policies/${id}`, { method: 'DELETE' });
   }
 
+  listPromotionFreezes() {
+    return this.request<{ freezes: PromotionFreeze[] }>(`/promotions/freezes`);
+  }
+
+  createPromotionFreeze(freeze: { product: string; targetEnv: string; reason: string }) {
+    return this.request<PromotionFreeze>(`/promotions/admin/freezes`, {
+      method: 'POST',
+      body: JSON.stringify(freeze),
+    });
+  }
+
+  liftPromotionFreeze(product: string, targetEnv: string) {
+    return this.request<void>(
+      `/promotions/admin/freezes/${encodeURIComponent(product)}/${encodeURIComponent(targetEnv)}`,
+      { method: 'DELETE' },
+    );
+  }
+
   // ── Rollbacks ──────────────────────────────────────────────────────────
 
   listRollbacks(params?: {
@@ -825,6 +843,8 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /** Pending and held by an active Promotion Freeze on (product, targetEnv). */
+  frozen: boolean;
 }
 
 export interface WorkItemApproval {
@@ -1056,6 +1076,15 @@ export interface PromotionPolicy {
   autoApproveWhenNoWorkItems: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PromotionFreeze {
+  product: string;
+  targetEnv: string;
+  reason: string;
+  frozenBy: string;
+  frozenAt: string;
+  heldCandidates: number;
 }
 
 export interface UpsertPromotionPolicyPayload {
