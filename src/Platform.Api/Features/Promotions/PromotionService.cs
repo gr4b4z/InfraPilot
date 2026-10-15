@@ -87,7 +87,8 @@ public class PromotionService
     ///
     /// <para>If the resolved policy is auto-approve (or AutoApproveWhenNoWorkItems applies and the
     /// payload carries no work-item refs), the candidate is created directly in
-    /// <see cref="PromotionStatus.Approved"/>.</para>
+    /// <see cref="PromotionStatus.Approved"/> — unless a Promotion Freeze is active on
+    /// <c>(product, targetEnv)</c>, in which case it is created Pending and waits for the lift.</para>
     /// </summary>
     public async Task<PromotionCandidate?> CreateExternalCandidateAsync(
         CreatePromotionDto dto, CancellationToken ct = default)
@@ -152,7 +153,10 @@ public class PromotionService
         var autoApproveNoWorkItems = !snapshot.IsAutoApprove
             && snapshot.AutoApproveWhenNoWorkItems
             && payloadWorkItems.Count == 0;
-        var effectiveAutoApprove = snapshot.IsAutoApprove || autoApproveNoWorkItems;
+        // A Promotion Freeze on (product, targetEnv) holds auto-approve too: the candidate is born
+        // Pending and the gate releases it when the freeze is lifted (ADR-0001).
+        var heldByFreeze = await FindFreezeAsync(product, targetEnv, ct) is not null;
+        var effectiveAutoApprove = (snapshot.IsAutoApprove || autoApproveNoWorkItems) && !heldByFreeze;
 
         var now = DateTimeOffset.UtcNow;
         var candidate = new PromotionCandidate
@@ -231,6 +235,7 @@ public class PromotionService
                 candidate.Status,
                 AutoApprove = effectiveAutoApprove,
                 AutoApproveReason = snapshot.IsAutoApprove ? "policy" : autoApproveNoWorkItems ? "no-work-items" : null,
+                HeldByFreeze = heldByFreeze,
             });
 
         _logger.LogInformation(
@@ -840,6 +845,9 @@ public class PromotionService
         // in a terminal/in-flight state) — both surfaced as 404/400 by the endpoint.
         var candidate = await LoadPendingAsync(candidateId, ct);
 
+        // The bypass deliberately ignores a Promotion Freeze (ADR-0001); record that it happened under one.
+        var frozen = await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct) is not null;
+
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -848,7 +856,7 @@ public class PromotionService
             "promotions", "promotion.bypassed",
             _currentUser.Id, _currentUser.Name, "user",
             "PromotionCandidate", candidate.Id, null,
-            new { reason = trimmedReason });
+            new { reason = trimmedReason, frozen });
 
         _logger.LogWarning(
             "Candidate {Id} bypassed to Approved by {UserId} ({Email}); reason: {Reason}",
@@ -857,7 +865,7 @@ public class PromotionService
         // Keep the existing promotion.approved webhook so downstream automation fires as usual;
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
-            new { trigger = "administrator-bypass", reason = trimmedReason },
+            new { trigger = "administrator-bypass", reason = trimmedReason, frozen },
             bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason));
 
         return candidate;
@@ -873,11 +881,15 @@ public class PromotionService
     /// Evaluated in order, using two orthogonal signals — the human approver tree
     /// (<see cref="ResolvedPolicySnapshot.ApprovalSteps"/>) and the work-item flags:
     /// <list type="number">
+    ///   <item>If a <see cref="PromotionFreeze"/> is active on the candidate's (product, target env)
+    ///         → blocked (after the source-drift check, before any auto-approve path).</item>
     ///   <item>If <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> and the bundle has
     ///         work items that are not all approved → blocked.</item>
     ///   <item>If <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/> and every
     ///         work item is approved → satisfied, regardless of any manual approver requirements.</item>
     ///   <item>If there are no human approver requirements (empty requirement tree) → satisfied.</item>
+    ///   <item>If <see cref="ResolvedPolicySnapshot.AutoApproveWhenNoWorkItems"/> and the candidate
+    ///         has no work items → satisfied.</item>
     ///   <item>Otherwise, Approved <see cref="PromotionApproval"/> rows are matched against the
     ///         requirement tree; satisfied when every requirement has enough distinct eligible
     ///         approvers (see <see cref="ApprovalMatcher"/>).</item>
@@ -912,6 +924,16 @@ public class PromotionService
                 $"(now {sourceCurrent}) — promotion is stale until redeployed",
             });
 
+        // Promotion Freeze (ADR-0001/0002): an active freeze on (product, target env) holds the gate
+        // shut — checked before every auto-approve path below. Approvals keep being recorded; lifting
+        // the freeze re-evaluates the pair's Pending candidates.
+        var freeze = await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct);
+        if (freeze is not null)
+            return new GateResult(false, new[]
+            {
+                $"Promotions of {candidate.Product} to {candidate.TargetEnv} are frozen — {freeze.Reason}",
+            });
+
         // 1. Work items REQUIRED but not all approved → blocked.
         if (snapshot.RequireAllWorkItemsApproved
             && await CandidateHasWorkItemsAsync(candidate, ct)
@@ -930,6 +952,11 @@ public class PromotionService
 
         // 3. No human approver requirements → satisfied (any required work-item gate already passed above).
         if (snapshot.IsAutoApprove)
+            return new GateResult(true, Array.Empty<string>());
+
+        // 3b. AutoApproveWhenNoWorkItems with no work items → satisfied. Normally applied at create
+        //     time; evaluated here too so a candidate held Pending by a freeze is released on lift.
+        if (snapshot.AutoApproveWhenNoWorkItems && !await CandidateHasWorkItemsAsync(candidate, ct))
             return new GateResult(true, Array.Empty<string>());
 
         // 4. Human approver requirements must be satisfied.
@@ -1538,6 +1565,11 @@ public class PromotionService
                 $"Candidate {id} is {candidate.Status}, no longer accepting decisions");
         return candidate;
     }
+
+    /// <summary>The active Promotion Freeze on <c>(product, targetEnv)</c>, or <c>null</c> when the pair is not frozen.</summary>
+    private Task<PromotionFreeze?> FindFreezeAsync(string product, string targetEnv, CancellationToken ct)
+        => _db.PromotionFreezes.AsNoTracking()
+            .FirstOrDefaultAsync(f => f.Product == product && f.TargetEnv == targetEnv, ct);
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)
     {

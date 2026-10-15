@@ -36,6 +36,31 @@ public static class PromotionAdminEndpoints
             }
         });
 
+        // ── Promotion Freeze (ADR-0001 / ADR-0002) ──────────────────────────
+        // Freeze one product's promotions into one target env; lifting re-evaluates the pair's
+        // Pending candidates. Admin-only via the group's CatalogAdmin policy.
+
+        group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
+            Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
+
+        group.MapPost("/freezes", async (
+            PromotionFreezeService freezes, FreezePromotionsRequest? request, CancellationToken ct) =>
+        {
+            try
+            {
+                var freeze = await freezes.FreezeAsync(
+                    request?.Product ?? "", request?.TargetEnv ?? "", request?.Reason ?? "", ct);
+                return Results.Created("/api/promotions/admin/freezes", freeze);
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (FreezeAlreadyActiveException ex) { return Results.Conflict(new { error = ex.Message }); }
+            catch (NoApprovalPolicyForPairException ex) { return Results.UnprocessableEntity(new { error = ex.Message }); }
+        });
+
+        group.MapDelete("/freezes/{product}/{targetEnv}", async (
+            PromotionFreezeService freezes, string product, string targetEnv, CancellationToken ct) =>
+            await freezes.LiftAsync(product, targetEnv, ct) ? Results.NoContent() : Results.NotFound());
+
         // ── Policies ────────────────────────────────────────────────────────
 
         group.MapGet("/policies", async (PlatformDbContext db) =>
@@ -252,3 +277,6 @@ public record UpsertRequirementRequest(
 
 /// <summary>Body for the admin bypass endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
 public record BypassPromotionRequest(string? Reason);
+
+/// <summary>Body for creating a Promotion Freeze. All three fields are required (blank ⇒ 400).</summary>
+public record FreezePromotionsRequest(string? Product, string? TargetEnv, string? Reason);

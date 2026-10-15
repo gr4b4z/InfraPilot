@@ -42,6 +42,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionWorkItem> PromotionWorkItems => Set<PromotionWorkItem>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
+    public DbSet<PromotionFreeze> PromotionFreezes => Set<PromotionFreeze>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
     public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
     public DbSet<RollbackItem> RollbackItems => Set<RollbackItem>();
@@ -434,6 +435,19 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Promotion Freezes — one active row per (product, target env); lifting deletes the row.
+        modelBuilder.Entity<PromotionFreeze>(e =>
+        {
+            e.ToTable("promotion_freezes");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.FrozenBy).HasMaxLength(300).IsRequired();
+            e.Property(x => x.FrozenByEmail).HasMaxLength(300).IsRequired();
+            e.HasIndex(x => new { x.Product, x.TargetEnv }).IsUnique();
         });
 
         modelBuilder.Entity<WorkItemApproval>(e =>

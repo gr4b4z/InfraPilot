@@ -579,6 +579,48 @@ namespace Platform.Api.Migrations.Postgres
                     b.ToTable("promotion_comments", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionFreeze", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("FrozenAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FrozenBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("FrozenByEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "TargetEnv")
+                        .IsUnique();
+
+                    b.ToTable("promotion_freezes", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionPolicy", b =>
                 {
                     b.Property<Guid>("Id")
