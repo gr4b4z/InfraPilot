@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
-import type { ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionFreeze, PromotionStatus } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import { FreezeBanner, FrozenGroup } from './FreezeCues';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { roleDisplay } from '@/lib/roleLabel';
 import { formatDistanceToNow } from 'date-fns';
@@ -17,7 +17,6 @@ import {
   Ticket,
   ExternalLink,
   Snowflake,
-  Settings,
 } from 'lucide-react';
 
 /**
@@ -244,6 +243,20 @@ export function PromotionsPage() {
     }
   };
 
+  const renderCard = (c: PromotionCandidate) => (
+    <CandidateCard
+      key={c.id}
+      candidate={c}
+      urgent
+      selectable={view === 'mine' && c.canApprove}
+      selected={selected.has(c.id)}
+      onToggleSelect={() => toggleSelect(c.id)}
+      onFilterByReference={setReferenceFilter}
+      workItemProgress={workItemProgress[c.id]}
+      awaitingCue={view !== 'mine'}
+    />
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -404,36 +417,12 @@ export function PromotionsPage() {
                   </button>
                 )}
               </div>
-              {(() => {
-                const renderCard = (c: PromotionCandidate) => (
-                  <CandidateCard
-                    key={c.id}
-                    candidate={c}
-                    urgent
-                    selectable={view === 'mine' && c.canApprove}
-                    selected={selected.has(c.id)}
-                    onToggleSelect={() => toggleSelect(c.id)}
-                    onFilterByReference={setReferenceFilter}
-                    workItemProgress={workItemProgress[c.id]}
-                    awaitingCue={view !== 'mine'}
-                  />
-                );
-                return (
-                  <div className="space-y-5">
-                    <div className="space-y-2">{openPending.map(renderCard)}</div>
-                    {frozenPending.length > 0 && (
-                      <FrozenGroup
-                        count={frozenPending.length}
-                        freezes={freezes.filter((f) =>
-                          frozenPending.some((c) => c.product === f.product && c.targetEnv === f.targetEnv),
-                        )}
-                      >
-                        {frozenPending.map(renderCard)}
-                      </FrozenGroup>
-                    )}
-                  </div>
-                );
-              })()}
+              <div className="space-y-5">
+                <div className="space-y-2">{openPending.map(renderCard)}</div>
+                <FrozenGroup freezes={freezes} candidates={frozenPending}>
+                  {frozenPending.map(renderCard)}
+                </FrozenGroup>
+              </div>
             </div>
           ) : view === 'mine' ? (
             <div
@@ -525,99 +514,6 @@ export function PromotionsPage() {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-const frozenSince = (iso: string) => formatDistanceToNow(new Date(iso), { addSuffix: true });
-
-/** Active freezes matching the current product / target-env filters, shown above the filters. */
-function FreezeBanner({ freezes, canManage }: { freezes: PromotionFreeze[]; canManage: boolean }) {
-  return (
-    <div
-      className="rounded-xl border p-3 flex items-start gap-3"
-      style={{ borderColor: 'var(--info)', backgroundColor: 'var(--info-bg)', borderLeft: '3px solid var(--info)' }}
-    >
-      <Snowflake size={16} style={{ color: 'var(--info)', marginTop: 2, flexShrink: 0 }} />
-      <div className="flex-1 min-w-0 space-y-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {freezes.length === 1 ? '1 active freeze' : `${freezes.length} active freezes`} affecting this list
-          </p>
-          {canManage && (
-            <Link
-              to="/settings/freeze"
-              className="inline-flex items-center gap-1 text-[12px] font-medium hover:opacity-80"
-              style={{ color: 'var(--info)' }}
-            >
-              <Settings size={12} />
-              Manage freezes
-            </Link>
-          )}
-        </div>
-        <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          {freezes.map((f) => (
-            <li key={`${f.product}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
-              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {f.product} → {f.targetEnv}
-              </span>
-              <span>{f.reason}</span>
-              <span style={{ color: 'var(--text-muted)' }}>
-                · frozen by {f.frozenBy} {frozenSince(f.frozenAt)} · {f.heldCandidates}{' '}
-                {f.heldCandidates === 1 ? 'promotion' : 'promotions'} held
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-/** Pending candidates held by a freeze, below the open ones; the header names each frozen pair once. */
-function FrozenGroup({
-  count,
-  freezes,
-  children,
-}: {
-  count: number;
-  /** Freezes of the pairs that have a candidate in this group. */
-  freezes: PromotionFreeze[];
-  children: ReactNode;
-}) {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <h2
-          className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--info)' }}
-        >
-          <Snowflake size={11} />
-          Frozen ({count})
-        </h2>
-        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          Approvals are still recorded; nothing is promoted until the freeze is lifted
-        </span>
-      </div>
-      <div
-        className="rounded-xl border p-3 space-y-2"
-        style={{ borderColor: 'var(--info)', backgroundColor: 'var(--info-bg)' }}
-      >
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          {freezes.map((f) => (
-            <span key={`${f.product}|${f.targetEnv}`} className="flex items-center gap-1.5">
-              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {f.product} → {f.targetEnv}
-              </span>
-              <span>— {f.reason}</span>
-              <span style={{ color: 'var(--text-muted)' }}>
-                · {f.frozenBy}, {frozenSince(f.frozenAt)}
-              </span>
-            </span>
-          ))}
-        </div>
-        <div className="space-y-2">{children}</div>
-      </div>
     </div>
   );
 }
