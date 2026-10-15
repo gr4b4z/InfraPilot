@@ -176,6 +176,77 @@ public class PromotionFreezeTests : IDisposable
     }
 
     [Fact]
+    public async Task Frozen_ApprovalProgress_FullyApproved_NotSatisfied_CarriesFreeze_CountsUnchanged()
+    {
+        SeedPolicy();
+        var candidate = await CreateAsync();
+        SeedFreeze(reason: "Black Friday");
+        await _promotions.ApproveAsync(candidate.Id, comment: null); // satisfies the only requirement
+        _db.ChangeTracker.Clear();
+        candidate = _db.PromotionCandidates.AsNoTracking().Single(c => c.Id == candidate.Id);
+
+        var progress = await _promotions.GetApprovalProgressAsync(candidate);
+
+        Assert.False(progress.AllSatisfied);
+        Assert.True(progress.Frozen);
+        Assert.Equal("Black Friday", progress.BlockedReason);
+        Assert.Equal(1, progress.TotalRequired);
+        Assert.Equal(1, progress.TotalApproved);
+        var step = Assert.Single(progress.Steps);
+        Assert.True(step.Satisfied);
+        Assert.True(Assert.Single(step.Requirements).Satisfied);
+    }
+
+    [Fact]
+    public async Task Frozen_ApprovalProgress_AutoApproveHeldPending_NotSatisfied()
+    {
+        SeedPolicy(approverGroup: null);
+        SeedFreeze(reason: "Release window");
+        var candidate = await CreateAsync();
+
+        var progress = await _promotions.GetApprovalProgressAsync(candidate);
+
+        Assert.False(progress.AllSatisfied);
+        Assert.True(progress.Frozen);
+        Assert.Equal("Release window", progress.BlockedReason);
+    }
+
+    [Fact]
+    public async Task FreezeOnOtherProduct_ApprovalProgress_Unaffected()
+    {
+        SeedPolicy();
+        var candidate = await CreateAsync();
+        SeedFreeze(product: "other");
+        await _promotions.ApproveAsync(candidate.Id, comment: null);
+        _db.ChangeTracker.Clear();
+        candidate = _db.PromotionCandidates.AsNoTracking().Single(c => c.Id == candidate.Id);
+
+        var progress = await _promotions.GetApprovalProgressAsync(candidate);
+
+        Assert.True(progress.AllSatisfied);
+        Assert.False(progress.Frozen);
+        Assert.Null(progress.BlockedReason);
+    }
+
+    [Fact]
+    public async Task Frozen_ApprovalProgress_ApprovedCandidate_IsNotHeld()
+    {
+        // A freeze holds only Pending candidates; one approved before the freeze stays satisfied.
+        SeedPolicy();
+        var candidate = await CreateAsync();
+        await _promotions.ApproveAsync(candidate.Id, comment: null);
+        SeedFreeze();
+        _db.ChangeTracker.Clear();
+        candidate = _db.PromotionCandidates.AsNoTracking().Single(c => c.Id == candidate.Id);
+        Assert.Equal(PromotionStatus.Approved, candidate.Status);
+
+        var progress = await _promotions.GetApprovalProgressAsync(candidate);
+
+        Assert.True(progress.AllSatisfied);
+        Assert.False(progress.Frozen);
+    }
+
+    [Fact]
     public async Task Frozen_WorkItemSignoff_IsRecorded_AutoApproveOnAllWorkItemsWaits()
     {
         SeedPolicy(autoApproveOnAllWorkItemsApproved: true);
