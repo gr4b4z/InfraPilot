@@ -356,7 +356,7 @@ A separate app registration used by the backend to call Microsoft Graph with cli
 1. Go to **API permissions > Add a permission > Microsoft Graph > Application permissions**
 2. Add:
    - `GroupMember.Read.All` — read group memberships
-   - `User.Read.All` — read user profiles
+   - `User.Read.All` — read user profiles, and whether an account is enabled (personal access tokens stop working once their owner is disabled or deleted)
 3. Click **Grant admin consent**
 
 #### Create a client secret

@@ -8,7 +8,8 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Api.Infrastructure.Auth;
 
 /// <summary>
-/// Mints, lists, revokes and authenticates <see cref="PersonalAccessToken"/>s.
+/// Mints, lists, revokes and authenticates <see cref="PersonalAccessToken"/>s: the signed-in
+/// person's own, and for administrators everyone's (listing and revoking only).
 ///
 /// <para>What a token may do is decided here and in two places that read its claims:
 /// <list type="bullet">
@@ -130,17 +131,98 @@ public class PersonalAccessTokenService
         return true;
     }
 
+    // ── Administration: everyone's tokens (Settings → Agent Tokens, /api/tokens/admin) ──────────
+
+    /// <summary>How long a revoked or expired token stays in the admin list — as long as a token can live.</summary>
+    public static readonly TimeSpan InactiveHistory = TimeSpan.FromDays(90);
+
+    public const int MaxReasonLength = 500;
+
     /// <summary>
-    /// The principal a presented secret stands for, or null when it is unknown, revoked or expired.
+    /// Every person's tokens, newest first: the active ones, plus with <paramref name="includeInactive"/>
+    /// the revoked and expired ones that ended within <see cref="InactiveHistory"/>, so the list stays
+    /// bounded however long the portal runs.
+    /// </summary>
+    public async Task<List<PersonalAccessToken>> ListAllAsync(bool includeInactive, CancellationToken ct = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var cutoff = now - InactiveHistory;
+        var query = _db.PersonalAccessTokens.AsNoTracking();
+        query = includeInactive
+            ? query.Where(t => (t.RevokedAt ?? t.ExpiresAt) > cutoff)
+            : query.Where(t => t.RevokedAt == null && t.ExpiresAt > now);
+        return await query.OrderByDescending(t => t.CreatedAt).ToListAsync(ct);
+    }
+
+    /// <summary>Revokes anyone's token, as an administrator. False when there is no such token.</summary>
+    /// <exception cref="ArgumentException">The reason is too long.</exception>
+    public async Task<bool> RevokeAsAdminAsync(Guid id, string? reason, CancellationToken ct = default)
+    {
+        var why = CleanReason(reason);
+        var token = await _db.PersonalAccessTokens.FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (token is null) return false;
+        if (token.RevokedAt is null) await RevokeAndAuditAsync([token], why, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Revokes every active token <paramref name="ownerEmail"/> holds, as an administrator — the
+    /// response to a leak whose token is unknown, or to someone losing their access. Returns how many.
+    /// </summary>
+    /// <exception cref="ArgumentException">No owner given, or the reason is too long.</exception>
+    public async Task<int> RevokeAllForOwnerAsync(string? ownerEmail, string? reason, CancellationToken ct = default)
+    {
+        var owner = (ownerEmail ?? "").Trim().ToLowerInvariant();
+        if (owner.Length == 0) throw new ArgumentException("Say whose tokens to revoke (email).");
+        var why = CleanReason(reason);
+
+        var now = DateTimeOffset.UtcNow;
+        var tokens = await _db.PersonalAccessTokens
+            .Where(t => t.UserEmail == owner && t.RevokedAt == null && t.ExpiresAt > now)
+            .ToListAsync(ct);
+        await RevokeAndAuditAsync(tokens, why, ct);
+        return tokens.Count;
+    }
+
+    private static string? CleanReason(string? reason)
+    {
+        var why = reason?.Trim();
+        if (why?.Length > MaxReasonLength)
+            throw new ArgumentException($"The reason can be at most {MaxReasonLength} characters.");
+        return string.IsNullOrEmpty(why) ? null : why;
+    }
+
+    // One audit entry per token, in the shape the owner's own revoke writes plus whose token it was
+    // and why. The actor is the administrator, so the log tells the two kinds of revoke apart.
+    private async Task RevokeAndAuditAsync(List<PersonalAccessToken> tokens, string? reason, CancellationToken ct)
+    {
+        if (tokens.Count == 0) return;
+        var now = DateTimeOffset.UtcNow;
+        foreach (var token in tokens) token.RevokedAt = now;
+        await _db.SaveChangesAsync(ct);
+
+        foreach (var token in tokens)
+            await _audit.Log("auth", "personal_token.revoked", _user.Id, _user.Name, "user",
+                nameof(PersonalAccessToken), token.Id, null,
+                new { token.Name, token.Prefix, owner = token.UserEmail },
+                new { byAdmin = true, reason });
+    }
+
+    /// <summary>
+    /// The principal a presented secret stands for, or null when it is unknown, revoked or expired,
+    /// or when the directory reports its owner disabled or deleted (<see cref="PersonalTokenOwnerCheck"/>).
     /// Static over a context so the key handler can call it without the per-user service.
     /// </summary>
     public static async Task<ClaimsPrincipal?> AuthenticateAsync(
-        PlatformDbContext db, string secret, string authenticationType, CancellationToken ct = default)
+        PlatformDbContext db, PersonalTokenOwnerCheck owners, string secret, string authenticationType,
+        CancellationToken ct = default)
     {
         var hash = Hash(secret);
         var token = await db.PersonalAccessTokens.AsNoTracking().FirstOrDefaultAsync(t => t.TokenHash == hash, ct);
         var now = DateTimeOffset.UtcNow;
         if (token is null || token.RevokedAt is not null || token.ExpiresAt <= now) return null;
+        // Before the touch below, so a refused attempt is not recorded as a use.
+        if (!await owners.AllowsAsync(token, ct)) return null;
 
         if (token.LastUsedAt is null || now - token.LastUsedAt > TouchInterval)
         {

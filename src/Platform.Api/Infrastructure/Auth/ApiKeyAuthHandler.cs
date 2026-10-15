@@ -43,9 +43,11 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
         // in practice, and one that did would still be matched below.
         if (PersonalAccessTokenService.LooksLikeToken(providedKey))
         {
-            var db = Context.RequestServices.GetRequiredService<PlatformDbContext>();
+            var services = Context.RequestServices;
             var person = await PersonalAccessTokenService.AuthenticateAsync(
-                db, providedKey, PersonalTokenAuthenticationType, Context.RequestAborted);
+                services.GetRequiredService<PlatformDbContext>(),
+                services.GetRequiredService<PersonalTokenOwnerCheck>(),
+                providedKey, PersonalTokenAuthenticationType, Context.RequestAborted);
             if (person is not null)
                 return AuthenticateResult.Success(new AuthenticationTicket(person, SchemeName));
         }

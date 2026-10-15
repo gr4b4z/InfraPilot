@@ -1392,6 +1392,31 @@ class ApiClient {
     return this.request<void>(`/me/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
+  // ── Everyone's personal access tokens (admin: Settings → Agent Tokens) ───────
+
+  /** Active tokens, newest first; with `includeInactive` also those that ended in the last 90 days. */
+  listAllTokens(includeInactive = false) {
+    return this.request<{ tokens: AdminPersonalAccessToken[] }>(
+      `/tokens/admin?includeInactive=${includeInactive}`,
+    );
+  }
+
+  /** `reason` is recorded in the audit log. Revoking a revoked token succeeds and changes nothing. */
+  adminRevokeToken(id: string, reason?: string) {
+    return this.request<void>(`/tokens/admin/${encodeURIComponent(id)}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || null }),
+    });
+  }
+
+  /** Revokes every active token `email` holds; answers how many that was. */
+  adminRevokeOwnerTokens(email: string, reason?: string) {
+    return this.request<{ revoked: number }>(`/tokens/admin/revoke-owner`, {
+      method: 'POST',
+      body: JSON.stringify({ email, reason: reason || null }),
+    });
+  }
+
   // ── Analytics ──────────────────────────────────────────────────────────
 
   getDeploymentFrequency(params?: {
@@ -1500,6 +1525,14 @@ export interface PersonalAccessToken {
 export interface CreatedPersonalAccessToken extends PersonalAccessToken {
   /** The plaintext secret. Returned once, on creation; not retrievable afterwards. */
   token: string;
+}
+
+/** A token as an administrator sees it: anyone's, with its owner. */
+export interface AdminPersonalAccessToken extends PersonalAccessToken {
+  /** Lower-cased email: what tokens are owned by, and what "revoke all" takes. */
+  ownerEmail: string;
+  /** The owner's display name when the token was created. */
+  ownerName: string;
 }
 
 export interface AppSettingsPayload {
