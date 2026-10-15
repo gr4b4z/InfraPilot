@@ -3,19 +3,19 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
 
-// Integration tests share process-global state — notably the static feature-flag cache
-// (FeatureFlags._cache) and a real in-process server — so running test classes in parallel makes
-// flag-toggling tests race (e.g. one class disabling features.promotions while another needs it
-// enabled). Run them serially for determinism.
-[assembly: Xunit.CollectionBehavior(DisableTestParallelization = true)]
+// Test classes run in parallel (xUnit's default: one collection per class; the tests inside a class
+// still run one at a time). That is safe because a host shares nothing with the others: each owns
+// its in-memory database, and the feature-flag cache is a singleton in the host's container rather
+// than a static. Keep it that way — process-wide mutable state in the API (a static cache, a static
+// setting) makes tests in different classes interfere, and the failures look random.
 
 namespace Platform.Integration.Tests;
 
@@ -37,6 +37,43 @@ public class SqliteTestDbContext : PlatformDbContext
 }
 
 /// <summary>
+/// In-memory SQLite databases that already have the test schema, one per test host.
+///
+/// <para><c>EnsureCreated</c> costs 30–100 ms: EF turns the model into DDL and runs it one
+/// statement at a time. Most test classes build a host per test, so that cost was paid a few
+/// hundred times a run. Here it runs once per test process, on a template, and each database is a
+/// page-for-page copy of the template made with SQLite's backup API, which takes under a
+/// millisecond.</para>
+/// </summary>
+public static class TestDatabase
+{
+    private static readonly Lazy<SqliteConnection> Template = new(() =>
+    {
+        var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        var options = new DbContextOptionsBuilder<SqliteTestDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        using var db = new SqliteTestDbContext(options);
+        db.Database.EnsureCreated();
+        return connection;
+    });
+
+    /// <summary>
+    /// Opens a new private in-memory database with the schema in place. The database lives as long
+    /// as the returned connection stays open.
+    /// </summary>
+    public static SqliteConnection Open()
+    {
+        var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        // A connection isn't thread-safe, and test classes build their hosts in parallel.
+        lock (Template) Template.Value.BackupDatabase(connection);
+        return connection;
+    }
+}
+
+/// <summary>
 /// Isolation every test host needs, whichever factory builds it. Call
 /// <see cref="Apply"/> from the factory's <c>ConfigureServices</c>.
 /// <see cref="TestHostIsolationTests"/> checks that every factory in this assembly does.
@@ -44,8 +81,7 @@ public class SqliteTestDbContext : PlatformDbContext
 public static class TestHostIsolation
 {
     /// <summary>
-    /// Removes the API's own hosted background workers, and drops the process-wide feature-flag
-    /// cache so this host reads its flags from its own database.
+    /// Removes the API's own hosted background workers, and makes password hashing cheap.
     ///
     /// <para><b>Why the workers have to go.</b> A test host keeps its in-memory database alive
     /// on a single <see cref="SqliteConnection"/>, and every DbContext in the host shares it.
@@ -65,6 +101,11 @@ public static class TestHostIsolation
     /// <para>Framework hosted services (the web server itself, data protection's key-ring warm-up)
     /// are kept; only types declared in the API assembly are removed, so a worker added later is
     /// covered without touching this list.</para>
+    ///
+    /// <para><b>Why hashing is turned down.</b> The local users' passwords are PBKDF2 with 100,000
+    /// iterations. That is about 50 ms per hash. Every host seeds four users, and every login
+    /// verifies one. Together that came to a quarter of a second or more per host. One iteration
+    /// runs the same code.</para>
     /// </summary>
     public static void Apply(IServiceCollection services)
     {
@@ -75,9 +116,7 @@ public static class TestHostIsolation
             .ToList();
         foreach (var d in workers) services.Remove(d);
 
-        // FeatureFlags caches values process-wide for 30 s. Without this, a host could see the
-        // flags of the previous test class's database instead of its own.
-        FeatureFlags.ClearCacheForTesting();
+        services.Configure<PasswordHasherOptions>(o => o.IterationCount = 1);
     }
 }
 
@@ -91,14 +130,7 @@ public class TestFactory : WebApplicationFactory<Program>
 
     public TestFactory()
     {
-        _connection = new SqliteConnection("DataSource=:memory:");
-        _connection.Open();
-
-        var options = new DbContextOptionsBuilder<SqliteTestDbContext>()
-            .UseSqlite(_connection)
-            .Options;
-        using var db = new SqliteTestDbContext(options);
-        db.Database.EnsureCreated();
+        _connection = TestDatabase.Open();
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)

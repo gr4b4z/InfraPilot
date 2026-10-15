@@ -49,7 +49,25 @@ public class DeployEventWorkItemBackfillService : BackgroundService
         {
             // Small initial delay so backfill doesn't compete with first-request handling.
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("DeployEventWorkItem backfill cancelled during shutdown");
+            return;
+        }
 
+        await RunOnceAsync(stoppingToken);
+    }
+
+    /// <summary>
+    /// One backfill pass, without the startup delay — what <see cref="ExecuteAsync"/> runs once the
+    /// delay is up. Tests call it directly. Never throws: a failure is logged, the completion flag
+    /// is left unset, and the next start tries again.
+    /// </summary>
+    public async Task RunOnceAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
