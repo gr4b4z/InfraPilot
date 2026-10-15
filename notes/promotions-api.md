@@ -16,7 +16,7 @@ terminal off-ramps. The design rationale lives in
 |---|---|---|
 | `POST /api/promotions` (create) | **API key** (`X-Api-Key`) + per-key rate limit + product scope | CI / external systems |
 | Other `/api/promotions/*` (read, approve, reject, comments, participants) | **User** (`CanApprove` policy) | The web UI / approvers |
-| `/api/promotions/admin/*` (policies) | **User** (`CatalogAdmin` policy) | Admins |
+| `/api/promotions/admin/*` (policies, freezes, bypass) | **User** (`CatalogAdmin` policy) | Admins |
 
 > Note: `POST /api/promotions` overrides the group's user-auth with API-key auth, mirroring
 > `POST /api/deployments/events`. The product scope is enforced from the key's `allowed_product`
@@ -139,6 +139,12 @@ Body: `{ "comment"?: string }`. One rejection from an authorized approver termin
 Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
 `{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }`.
 
+### `GET /api/promotions/freezes` — active Promotion Freezes
+Same response as the admin `GET /api/promotions/admin/freezes` (see
+[Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes)), readable by any signed-in
+user so the promotions pages can show which product → environment pairs are frozen. Creating and
+lifting a freeze stays admin-only.
+
 ### Other
 - `GET /api/promotions/{id}/comments`, `POST /api/promotions/{id}/comments`,
   `PATCH /api/promotions/comments/{commentId}`, `DELETE /api/promotions/comments/{commentId}`.
@@ -204,3 +210,71 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
   all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
   promotes automatically once every work item is approved, regardless of the human approver tree.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).
+- **Promotion Freeze**: while the candidate's `(product, targetEnv)` is frozen the gate is never
+  satisfied — see [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes).
+
+---
+
+## Promotion Freeze (admin) — `/api/promotions/admin/freezes`
+
+A **Promotion Freeze** stops one product's promotions into one target environment from becoming
+`Approved` — e.g. a release freeze on `checkout → production` while other products keep shipping.
+The key is the pair `(product, targetEnv)`; there is no whole-environment freeze. Rationale:
+[`GLOSSARY.md`](../GLOSSARY.md), [ADR-0001](../docs/adr/0001-environment-freeze-holds-the-approval-gate.md),
+[ADR-0002](../docs/adr/0002-freeze-is-scoped-to-product-and-environment.md).
+
+### `GET /freezes` — active freezes
+
+```jsonc
+{
+  "freezes": [
+    {
+      "product": "checkout",
+      "targetEnv": "production",
+      "reason": "Black Friday — no releases until Monday",
+      "frozenBy": "Dana Lee",
+      "frozenAt": "2026-10-15T09:12:00+00:00",
+      "heldCandidates": 3          // Pending candidates of this (product, targetEnv) right now
+    }
+  ]
+}
+```
+
+Also available to non-admins as `GET /api/promotions/freezes`.
+
+### `POST /freezes` — freeze a pair
+Body: `{ "product": "checkout", "targetEnv": "production", "reason": "Black Friday" }`.
+
+| Status | Meaning | Body |
+|---|---|---|
+| `201 Created` | Pair frozen | the freeze, same shape as a `freezes[]` entry |
+| `400 Bad Request` | `product`, `targetEnv` or `reason` missing/blank, or `reason` over 1000 chars | `{ "error": "..." }` |
+| `409 Conflict` | The pair is already frozen | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | No approval policy targets the pair (any service, any source env) — it cannot receive promotions, so there is nothing to freeze | `{ "error": "..." }` |
+| `403 Forbidden` | Caller is not an admin | — |
+
+Audited as `promotion.frozen` (actor, product, targetEnv, reason).
+
+### `DELETE /freezes/{product}/{targetEnv}` — lift a freeze
+`204 No Content` when lifted, `404` when the pair is not frozen, `403` for non-admins. Whoever may
+freeze may lift, regardless of who froze it. Audited as `promotion.unfrozen` (actor, plus the
+lifted freeze's product, targetEnv, reason, frozenBy, frozenAt).
+
+Lifting **re-evaluates every Pending candidate of that pair** (and only that pair): any candidate
+whose gate is already satisfied — approvals collected during the freeze, auto-approve, all work
+items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
+burst of webhooks when a freeze holding several candidates is lifted.
+
+### Gate behaviour while frozen
+- **Only the transition to `Approved` is held.** Approvals and work-item sign-offs are still
+  recorded (no error); the candidate simply stays `Pending`. The gate reports the freeze as the
+  blocking reason (`Promotions of {product} to {targetEnv} are frozen — {reason}`).
+- **Auto-approve waits.** All three paths — empty step tree, `autoApproveWhenNoWorkItems`,
+  `autoApproveOnAllWorkItemsApproved` — are held. A candidate created via `POST /api/promotions`
+  under an auto-approve policy is created `Pending` (`201` with `"status": "Pending"`) and no
+  `promotion.approved` webhook fires until the freeze is lifted.
+- **Administrator Bypass ignores the freeze.** `POST /api/promotions/admin/candidates/{id}/bypass`
+  still forces the candidate to `Approved`; its `promotion.bypassed` audit entry and the webhook's
+  `change` carry `"frozen": true` when the pair was frozen (`false` otherwise).
+- Candidates already `Approved` before the freeze are not affected. Rollbacks, service-request
+  approvals and candidate creation are not blocked.
