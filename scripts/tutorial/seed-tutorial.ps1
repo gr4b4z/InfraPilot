@@ -201,8 +201,15 @@ function Test-ProdLike {
 <# Pre-production rings a QA signs off into: staging and the release-candidate style environments. #>
 function Test-StagingLike {
     param([Parameter(Mandatory)][string]$Environment)
-    return $Environment -in @('staging', 'uat', 'rc', 'stable', 'preprod', 'pre-prod')
+    return $Environment -in @('staging', 'uat', 'rc', 'preprod', 'pre-prod')
 }
+
+# Environments InfraPortal has retired. Their history is still in the snapshot (the recent-deploy feed
+# keeps it), so they are configured — under their label, flagged retired — and then left out of
+# everything the storyline builds: no policy, no promotion, no column. `stable` ("Staging Candidate")
+# was the release/5 landing zone until release builds started reaching staging as build → staging
+# promotions (2026-10-14).
+$RetiredEnvironments = @('stable')
 
 # ── 1. Snapshot ──────────────────────────────────────────────────────────────────────────────
 Write-Step 'Snapshot'
@@ -357,16 +364,26 @@ Write-Step 'Environment settings'
 $envRank = @{ dev = 0; development = 0; test = 1; testing = 1; qa = 1; stable = 2; rc = 2; staging = 3; uat = 3; sandbox = 4; demo = 4; prod = 6; production = 6; live = 6 }
 $envPalette = @{ dev = '#2563eb'; test = '#0891b2'; stable = '#7c3aed'; rc = '#7c3aed'; staging = '#d97706'; sandbox = '#65a30d'; demo = '#0d9488'; prod = '#dc2626'; production = '#dc2626' }
 $envAliases = @{ prod = @('production', 'prd', 'live'); dev = @('development', 'develop'); test = @('testing'); staging = @('stage', 'stg') }
-$environmentKeys = @($stateCells | ForEach-Object { $_.environment } | Sort-Object -Unique |
-    Sort-Object { if ($envRank.ContainsKey($_)) { $envRank[$_] } else { 5 } }, { $_ })
-$environments = foreach ($key in $environmentKeys) {
+$envDisplayNames = @{ stable = 'Staging Candidate' }
+$rankOf = { param($Key) if ($envRank.ContainsKey($Key)) { $envRank[$Key] } else { 5 } }
+# The live rings come from the current cells; a retired environment can still turn up in the replayed
+# history, so it is configured whenever either mentions it — otherwise its old events would arrive as an
+# unconfigured environment and get a column of their own.
+$environmentKeys = @($stateCells | ForEach-Object { $_.environment } | Where-Object { $RetiredEnvironments -notcontains $_ } |
+    Sort-Object -Unique | Sort-Object { & $rankOf $_ }, { $_ })
+$retiredKeys = @(@($stateCells) + @($recentEvents) | ForEach-Object { $_.environment } |
+    Where-Object { $RetiredEnvironments -contains $_ } | Sort-Object -Unique)
+$environments = foreach ($key in (@($environmentKeys) + @($retiredKeys) | Sort-Object { & $rankOf $_ }, { $_ })) {
     [ordered]@{
         key          = $key
-        displayName  = if ($key -in @('rc', 'qa', 'uat')) { $key.ToUpperInvariant() } else { (Get-Culture).TextInfo.ToTitleCase($key) }
+        displayName  = if ($envDisplayNames.ContainsKey($key)) { $envDisplayNames[$key] }
+                       elseif ($key -in @('rc', 'qa', 'uat')) { $key.ToUpperInvariant() }
+                       else { (Get-Culture).TextInfo.ToTitleCase($key) }
         color        = if ($envPalette.ContainsKey($key)) { $envPalette[$key] } else { $null }
         isProduction = ($key -in @('prod', 'production', 'live'))
         # @() around the whole expression: a one-element result would otherwise unroll to a scalar.
         aliases      = @(if ($envAliases.ContainsKey($key)) { $envAliases[$key] } else { @() })
+        retired      = ($RetiredEnvironments -contains $key)
     }
 }
 $current = Invoke-LocalOrThrow -Path '/api/settings' -Token $adminToken -What 'read settings'
@@ -375,7 +392,7 @@ Invoke-LocalOrThrow -Method PUT -Path '/api/settings' -Token $adminToken -What '
     roles            = @($current.roles)
     activityTemplate = @($current.activityTemplate)
 } | Out-Null
-Write-Ok "environments: $($environmentKeys -join ' → ')"
+Write-Ok "environments: $($environmentKeys -join ' → ')$(if ($retiredKeys.Count -gt 0) { " (retired: $($retiredKeys -join ', '))" })"
 
 # ── 7a. Deploy events ────────────────────────────────────────────────────────────────────────
 Write-Step 'Replaying deploy events'
@@ -507,15 +524,16 @@ foreach ($b in ($builds | Sort-Object { ConvertTo-Instant $_.createdAt })) {
 Write-Ok "$buildCount builds registered ($buildFailed failed)"
 
 # ── 7c. Promotion policies ───────────────────────────────────────────────────────────────────
-# One policy per edge the open promotions use, plus a full ladder for the hero product so a build can
-# be promoted from the registry. Production-like targets get the human gate (release manager = the
-# admin account, every work item signed off by a QA); staging gets a QA approval; dev/test are automatic
-# and track no work items.
+# One policy per edge the open promotions use, plus the hero product's full ladder as InfraPortal runs
+# it: registered builds enter at the first ring (main/master builds) and at staging (release/* builds),
+# and stage-to-stage edges connect the rest — build → dev → test, build → staging → prod.
+# Production-like targets get the human gate (release manager = the admin account, every work item
+# signed off by a QA); staging gets a QA approval; dev/test are automatic and track no work items.
 Write-Step 'Promotion policies'
 function New-PolicyBody {
     param([string]$Product, [string]$SourceEnv, [string]$TargetEnv)
-    if (Test-ProdLike $TargetEnv) {
-        return [ordered]@{
+    $body = if (Test-ProdLike $TargetEnv) {
+        [ordered]@{
             product = $Product; service = $null; sourceEnv = $SourceEnv; targetEnv = $TargetEnv
             steps = @(@{ name = 'Release approval'; requirements = @(@{ name = 'Release manager'; groups = @(); users = @($Admin.Email); minApprovers = 1 }) })
             tracksWorkItems = $true
@@ -526,23 +544,37 @@ function New-PolicyBody {
             # gate; everything else deploys the moment the gate opens. Shows both wordings of the notice.
             deploysOnApproval = ($Product -ne 'marketplace')
         }
-    }
-    if (Test-StagingLike $TargetEnv) {
-        return [ordered]@{
+    } elseif (Test-StagingLike $TargetEnv) {
+        [ordered]@{
             product = $Product; service = $null; sourceEnv = $SourceEnv; targetEnv = $TargetEnv
             steps = @(@{ name = 'QA approval'; requirements = @(@{ name = 'QA lead'; groups = @(); users = @($Qa.Email); minApprovers = 1 }) })
             tracksWorkItems = $true
             requireAllWorkItemsApproved = $false
             deploysOnApproval = $true
         }
+    } else {
+        [ordered]@{
+            product = $Product; service = $null; sourceEnv = $SourceEnv; targetEnv = $TargetEnv
+            steps = @(); tracksWorkItems = $false; autoApproveWhenNoWorkItems = $true; deploysOnApproval = $true
+        }
     }
-    return [ordered]@{
-        product = $Product; service = $null; sourceEnv = $SourceEnv; targetEnv = $TargetEnv
-        steps = @(); tracksWorkItems = $false; autoApproveWhenNoWorkItems = $true; deploysOnApproval = $true
+    if ($SourceEnv -eq 'build') {
+        # The registry never receives deploy events, so a build edge cannot ask for one — left on, every
+        # Artifacts → Promote would be refused for a missing source deploy. The branches are the ones the
+        # real policies open promotions for on their own: release builds for staging, trunk for the rest.
+        $body.sourceRequiresDeploy = $false
+        # @() around the whole expression: the one-element release list would otherwise unroll to a string.
+        $body.autoCreateFromBranches = @(if (Test-StagingLike $TargetEnv) { 'refs/heads/release/*' } else { 'refs/heads/main', 'refs/heads/master' })
     }
+    return $body
 }
+function Test-RetiredEdge { param($Source, $Target) return ($RetiredEnvironments -contains $Source) -or ($RetiredEnvironments -contains $Target) }
 $edges = [ordered]@{}
-foreach ($c in $pendingPromotions) { $edges["$($c.product)|$($c.sourceEnv)|$($c.targetEnv)"] = $true }
+# A promotion from an older snapshot can still sit on a retired edge (stable → staging); it no longer
+# exists in the real portal, so it gets neither a policy nor a replay.
+foreach ($c in $pendingPromotions) {
+    if (-not (Test-RetiredEdge $c.sourceEnv $c.targetEnv)) { $edges["$($c.product)|$($c.sourceEnv)|$($c.targetEnv)"] = $true }
+}
 # Every product that has both rings gets a staging → prod gate, so Settings → Promotions shows more than
 # the hero product and the marketplace edge exists to carry its different "after approval" wording.
 foreach ($product in $selectedProducts) {
@@ -551,9 +583,14 @@ foreach ($product in $selectedProducts) {
 }
 $heroEnvSet = [System.Collections.Generic.HashSet[string]]::new([string[]]@($stateCells | Where-Object { $_.product -eq $HeroProduct } | ForEach-Object { $_.environment }))
 $heroEnvs = @($environmentKeys | Where-Object { $heroEnvSet.Contains($_) })
-for ($i = 1; $i -lt $heroEnvs.Count; $i++) { $edges["$HeroProduct|$($heroEnvs[$i-1])|$($heroEnvs[$i])"] = $true }
-# "build" is the registry's pseudo-source: a policy from it is what lets Artifacts → Promote target an env.
-foreach ($target in @($heroEnvs | Where-Object { $_ -notin @('prod', 'production', 'live') } | Select-Object -First 2)) { $edges["$HeroProduct|build|$target"] = $true }
+# "build" is the registry's pseudo-source: a policy from it is what lets Artifacts → Promote target an
+# env. Builds enter at the first ring and at every staging-like ring; the edge into a staging-like ring
+# comes from the registry, not from the ring below it (a test-verified trunk build does not graduate).
+if ($heroEnvs.Count -gt 0) { $edges["$HeroProduct|build|$($heroEnvs[0])"] = $true }
+for ($i = 1; $i -lt $heroEnvs.Count; $i++) {
+    $source = if (Test-StagingLike $heroEnvs[$i]) { 'build' } else { $heroEnvs[$i - 1] }
+    $edges["$HeroProduct|$source|$($heroEnvs[$i])"] = $true
+}
 $policyCount = 0
 foreach ($edge in $edges.Keys) {
     $product, $source, $target = $edge.Split('|')
@@ -563,13 +600,15 @@ foreach ($edge in $edges.Keys) {
 Write-Ok "$policyCount policies ($($edges.Keys -join ', '))"
 
 # ── 7d. Open promotions ──────────────────────────────────────────────────────────────────────
-# Posted the way mpt-release posts them. A promotion needs a succeeded deploy of its version in the
-# source environment; when the source has moved on since the snapshot's candidate was opened, that
-# deploy is synthesised just behind the source's current one so it never displaces it.
+# Posted the way mpt-release posts them. A stage-to-stage promotion needs a succeeded deploy of its
+# version in the source environment; when the source has moved on since the snapshot's candidate was
+# opened, that deploy is synthesised just behind the source's current one so it never displaces it.
+# A promotion from the registry (`build`) needs none — and must never get one: `build` is not a place.
 Write-Step 'Open promotions'
 $promotionIds = @{}
-$promoCreated = 0; $promoSkipped = 0
+$promoCreated = 0; $promoSkipped = 0; $promoRetired = 0
 foreach ($c in ($pendingPromotions | Sort-Object { ConvertTo-Instant $_.createdAt })) {
+    if (Test-RetiredEdge $c.sourceEnv $c.targetEnv) { $promoRetired++; continue }
     $references = @(@(Get-Prop $c 'sourceEventReferences') | Where-Object { $_ } | ForEach-Object { ConvertTo-ReferenceBody $_ })
     $participants = @(@(Get-Prop $c 'participants') | Where-Object { $_ } | ForEach-Object { ConvertTo-ParticipantBody $_ })
     $body = [ordered]@{
@@ -578,7 +617,7 @@ foreach ($c in ($pendingPromotions | Sort-Object { ConvertTo-Instant $_.createdA
         references = $references; participants = $participants
     }
     $r = Invoke-Local -Method POST -Path '/api/promotions' -ApiKey $TutorialApiKey -Body $body
-    if ($r.Status -eq 422 -and (Get-Prop $r.Body 'code') -eq 'source_deploy_missing') {
+    if ($r.Status -eq 422 -and (Get-Prop $r.Body 'code') -eq 'source_deploy_missing' -and $c.sourceEnv -ne 'build') {
         $sourceCell = $cellByKey["$($c.product)|$($c.service)|$($c.sourceEnv)"]
         $created = ConvertTo-Instant $c.createdAt
         $at = ($created + $script:DateShift).AddMinutes(-15)
@@ -602,6 +641,9 @@ foreach ($c in ($pendingPromotions | Sort-Object { ConvertTo-Instant $_.createdA
     }
 }
 Write-Ok "$promoCreated promotions opened ($promoSkipped skipped)"
+if ($promoRetired -gt 0) {
+    Write-Note "$promoRetired snapshot promotion(s) on a retired edge left out — re-run with -RefreshSnapshot for the current queue"
+}
 
 # ── 8. Storyline ─────────────────────────────────────────────────────────────────────────────
 Write-Step "Storyline on '$HeroProduct'"

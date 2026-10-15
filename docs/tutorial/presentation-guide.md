@@ -43,8 +43,10 @@ session; say so, and do not record the screen for wider distribution.
 1. Sign in as **User**. Point out the role-aware landing: a plain user lands on **Deployments**;
    QA and Admin land on **My tasks**.
 2. **Deployments** index: one card per product, environments ordered as the pipeline flows
-   (dev → test → stable → staging → prod), freshness per environment. Products are ordered by
-   latest activity.
+   (dev → test → staging → prod), freshness per environment. Products are ordered by
+   latest activity. There is no "Staging Candidate" column: that environment is retired (Settings →
+   Environments → Retired), so it is hidden from every current-state view while its old deploys
+   stay in each service's history.
 3. Open **mpt**. The matrix: services × environments, each cell the current version. Point at:
    - a service whose staging and prod versions differ (that difference is what a promotion moves);
    - the **red cell** — scene F, the failed deploy the seed planted on a test/staging environment;
@@ -64,7 +66,9 @@ session; say so, and do not record the screen for wider distribution.
 8. **Artifacts**: the build registry — every published build from any branch, newest first, with
    the environments each version reached. Filter by product/service/branch, or free-text.
    Explain the separation: a build is a fact about CI, a deployment is a fact about an environment;
-   the registry joins them on `(product, service, version)`.
+   the registry joins them on `(product, service, version)`. It is also the only way into dev and
+   staging: a master build opens its `build → dev` promotion and a release build its
+   `build → staging` promotion as soon as it registers.
 
 **Use case: "Is the team shipping, and is it hurting?"** (Analytics)
 
@@ -126,8 +130,11 @@ succeeded deploy of V on the target closes the candidate whatever state it is in
     version, press **Mass approve**: pick `prod`, pick the gate, and the checklist shows every
     promotion waiting on it. The ones held by work items are greyed out with the reason, and as
     Admin you can tick them to **bypass** with one reason.
-11. **Who approves what is per edge**: the `stable → staging` promotions are gated by the QA lead,
-    not the release manager — as Admin, the Approve button on one of them says so.
+11. **Who approves what is per edge**: the `build → staging` promotions (release builds) are gated
+    by the QA lead, not the release manager — as Admin, the Approve button on one of them says so.
+    What Admin *can* do there is **Reject as admin**, with a reason: the escape hatch for a
+    promotion nobody will approve (it is audited as an admin override, and the same call exists in
+    the API for automation).
 
 **Use case: saying no** (scene D)
 
@@ -143,14 +150,19 @@ succeeded deploy of V on the target closes the candidate whatever state it is in
 
 **Use case: a promotion straight from a build** (from the Artifacts page)
 
-14. As Admin, on **Artifacts** pick a recent mpt build and promote it to dev/test. This uses the
-    `build → env` policies the seed created; the target list comes from those policies.
+14. As Admin, on **Artifacts** pick a recent mpt build and promote it to dev or staging. This uses
+    the `build → env` policies the seed created (the same shape as production: builds enter at dev and
+    at staging, the stage-to-stage edges do the rest); the target list comes from those policies.
+    Promoting a feature-branch build is the reason this button exists — trunk and release builds
+    open their promotions by themselves.
 
 **Use case: the pipeline opens a promotion** (live, optional)
 
 15. Run the "Register a build", "deploy it to dev" and "open a promotion" curls from the cheat
     sheet in sequence. Each shows up within seconds (SignalR pushes changes; no reload needed):
-    the artifact in the registry, the deploy on the matrix, the candidate on the Promotions list.
+    the artifact in the registry — together with the `build → dev` promotion its registration opened
+    — the deploy on the matrix, which closes that promotion, and the `dev → test` candidate on the
+    Promotions list.
 
 ---
 
