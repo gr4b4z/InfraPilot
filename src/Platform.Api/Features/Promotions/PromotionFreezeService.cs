@@ -173,20 +173,41 @@ public class PromotionFreezeService
             "Promotions of {Product} to {TargetEnv} unfrozen by {Email}",
             LogSanitizer.Clean(freeze.Product), LogSanitizer.Clean(freeze.TargetEnv), _currentUser.Email);
 
+        // The lift is committed: the sweep must not be aborted by a cancelled request, or the
+        // remaining held candidates would stay Pending with nothing to re-evaluate them later.
         var held = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Product == freeze.Product && c.TargetEnv == freeze.TargetEnv
                      && c.Status == PromotionStatus.Pending)
             .Select(c => c.Id)
-            .ToListAsync(ct);
+            .ToListAsync(CancellationToken.None);
 
         // Announce the lift before the sweep so subscribers see promotion.unfrozen ahead of the
         // promotion.approved burst it triggers.
         await DispatchWebhookAsync("promotion.unfrozen", ToActive(freeze, held.Count), held.Count, DateTimeOffset.UtcNow);
 
         foreach (var id in held)
-            await _promotions.ReevaluateAsync(id, ct);
+            await TryReevaluateAsync(id);
 
         return true;
+    }
+
+    /// <summary>
+    /// Non-fatal per candidate, like <c>WorkItemApprovalService.TryReevaluateCandidateAsync</c>: a
+    /// failure is logged and the sweep moves on. The change tracker is cleared so a candidate whose
+    /// save failed is not saved as Approved by the next candidate's <c>SaveChangesAsync</c>.
+    /// </summary>
+    private async Task TryReevaluateAsync(Guid candidateId)
+    {
+        try
+        {
+            await _promotions.ReevaluateAsync(candidateId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _db.ChangeTracker.Clear();
+            _logger.LogWarning(ex,
+                "Gate re-evaluation failed for candidate {CandidateId} after freeze lift", candidateId);
+        }
     }
 
     /// <summary>

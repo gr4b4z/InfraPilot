@@ -91,7 +91,7 @@ public static class PromotionEndpoints
 
         // Single candidate — includes the full approval trail for the detail view.
         group.MapGet("/{id:guid}", async (
-            PromotionService svc, PromotionFreezeService freezes, PlatformDbContext db, Guid id) =>
+            PromotionService svc, PlatformDbContext db, Guid id) =>
         {
             var c = await svc.GetByIdAsync(id);
             if (c is null) return Results.NotFound();
@@ -157,7 +157,7 @@ public static class PromotionEndpoints
                     sourceEventParticipants: Array.Empty<ParticipantDto>(),
                     sourceEventReferences: c.References,
                     targetCurrentVersion: targetCurrent,
-                    frozen: (await freezes.GetHeldByFreezeAsync(new[] { c })).Contains(c.Id)),
+                    frozen: activeFreeze is not null),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
