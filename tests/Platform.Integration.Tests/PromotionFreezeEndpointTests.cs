@@ -107,6 +107,42 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         Assert.Equal(HttpStatusCode.NotFound, liftAgain.StatusCode);
     }
 
+    [Fact]
+    public async Task Detail_FrozenPendingCandidate_ReturnsFreeze_UnfrozenReturnsNull()
+    {
+        SeedPolicy("frz-detail");
+        var frozenId = SeedPendingCandidate("frz-detail");
+        var unfrozenId = SeedPendingCandidate("frz-detail-free");
+        var admin = _factory.CreateAdminClient();
+        var user = CreateUserClient();
+        var created = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-detail", targetEnv = "prod", reason = "Release window" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var frozen = await user.GetAsync($"/api/promotions/{frozenId}");
+        Assert.Equal(HttpStatusCode.OK, frozen.StatusCode);
+        var body = await Json(frozen);
+        var freeze = body.GetProperty("freeze");
+        Assert.Equal("frz-detail", freeze.GetProperty("product").GetString());
+        Assert.Equal("prod", freeze.GetProperty("targetEnv").GetString());
+        Assert.Equal("Release window", freeze.GetProperty("reason").GetString());
+        Assert.Equal("Admin User", freeze.GetProperty("frozenBy").GetString());
+        Assert.Equal(JsonValueKind.String, freeze.GetProperty("frozenAt").ValueKind);
+        var progress = body.GetProperty("approvalProgress");
+        Assert.False(progress.GetProperty("allSatisfied").GetBoolean());
+        Assert.True(progress.GetProperty("frozen").GetBoolean());
+        Assert.Equal("Release window", progress.GetProperty("blockedReason").GetString());
+
+        var free = await Json(await user.GetAsync($"/api/promotions/{unfrozenId}"));
+        Assert.Equal(JsonValueKind.Null, free.GetProperty("freeze").ValueKind);
+        Assert.False(free.GetProperty("approvalProgress").GetProperty("frozen").GetBoolean());
+
+        var lift = await admin.DeleteAsync("/api/promotions/admin/freezes/frz-detail/prod");
+        Assert.Equal(HttpStatusCode.NoContent, lift.StatusCode);
+        var afterLift = await Json(await user.GetAsync($"/api/promotions/{frozenId}"));
+        Assert.Equal(JsonValueKind.Null, afterLift.GetProperty("freeze").ValueKind);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private void SeedPolicy(string product)
@@ -123,13 +159,14 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         db.SaveChanges();
     }
 
-    private void SeedPendingCandidate(string product)
+    private Guid SeedPendingCandidate(string product)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var id = Guid.NewGuid();
         db.PromotionCandidates.Add(new PromotionCandidate
         {
-            Id = Guid.NewGuid(),
+            Id = id,
             Product = product,
             Service = "api",
             SourceEnv = "staging",
@@ -140,6 +177,7 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
             CreatedAt = DateTimeOffset.UtcNow,
         });
         db.SaveChanges();
+        return id;
     }
 
     private HttpClient CreateUserClient()

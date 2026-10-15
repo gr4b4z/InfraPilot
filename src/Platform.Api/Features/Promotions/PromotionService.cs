@@ -1112,15 +1112,23 @@ public class PromotionService
         // The work item-resolution gate (policy's "all work items must be resolved" condition), if any.
         var workItems = await GetWorkItemGateAsync(candidate, snapshot, ct);
 
+        // A Promotion Freeze holds only Pending candidates (ADR-0001): it blocks the gate without
+        // changing any count, so the panel still shows what is (or is not) signed off.
+        var freeze = candidate.Status == PromotionStatus.Pending
+            ? await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct)
+            : null;
+
         if (snapshot.IsAutoApprove || snapshot.AllRequirements.Count == 0)
             // No manual approver requirements — but the candidate may still gate on work items, in which
             // case we surface the panel so the work item condition (and its fulfilment) stays visible.
             return new ApprovalProgress(
                 RequiresApproval: workItems != null,
-                AllSatisfied: workItems?.Satisfied ?? true,
+                AllSatisfied: (workItems?.Satisfied ?? true) && freeze is null,
                 TotalRequired: 0, TotalApproved: 0,
                 Steps: Array.Empty<StepProgress>(),
-                WorkItems: workItems);
+                WorkItems: workItems,
+                Frozen: freeze is not null,
+                BlockedReason: freeze?.Reason);
 
         var match = await EvaluateRequirementMatchAsync(candidate, snapshot.AllRequirements, ct);
 
@@ -1158,11 +1166,13 @@ public class PromotionService
         return new ApprovalProgress(
             RequiresApproval: true,
             // Overall is met only when the human sign-offs AND the work item gate (if any) are satisfied.
-            AllSatisfied: match.AllSatisfied && (workItems?.Satisfied ?? true),
+            AllSatisfied: match.AllSatisfied && (workItems?.Satisfied ?? true) && freeze is null,
             TotalRequired: totalRequired,
             TotalApproved: totalApproved,
             Steps: steps,
-            WorkItems: workItems);
+            WorkItems: workItems,
+            Frozen: freeze is not null,
+            BlockedReason: freeze?.Reason);
     }
 
     /// <summary>
@@ -1567,7 +1577,7 @@ public class PromotionService
     }
 
     /// <summary>The active Promotion Freeze on <c>(product, targetEnv)</c>, or <c>null</c> when the pair is not frozen.</summary>
-    private Task<PromotionFreeze?> FindFreezeAsync(string product, string targetEnv, CancellationToken ct)
+    public Task<PromotionFreeze?> FindFreezeAsync(string product, string targetEnv, CancellationToken ct)
         => _db.PromotionFreezes.AsNoTracking()
             .FirstOrDefaultAsync(f => f.Product == product && f.TargetEnv == targetEnv, ct);
 
@@ -1649,7 +1659,11 @@ public record ApprovalProgress(
     // The work item-resolution gate (policy's "all work items must be resolved" condition), when the
     // policy gates on it and the candidate has work items. Null otherwise. Surfaced so the approver can
     // see whether that condition is fulfilled, not just the human sign-offs.
-    WorkItemGateProgress? WorkItems = null);
+    WorkItemGateProgress? WorkItems = null,
+    // A Promotion Freeze on the candidate's (product, target env) holds this Pending candidate:
+    // AllSatisfied is then false regardless of the counts, and BlockedReason is the freeze's reason.
+    bool Frozen = false,
+    string? BlockedReason = null);
 
 /// <summary>
 /// Progress of the "all work items resolved/approved" gate condition for a candidate:

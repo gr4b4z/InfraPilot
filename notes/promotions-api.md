@@ -89,7 +89,7 @@ Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** 
 current user (Pending + authorized for ≥1 open requirement + not already decided).
 
 ### `GET /api/promotions/{id}` — detail
-Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress }`.
+Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress, freeze }`.
 
 - **`eligibleRequirements`** — `[{ stepName, requirementName }]`: the open requirements the
   current user may approve (drives the "Approve as…" selector).
@@ -111,9 +111,19 @@ Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, ap
   "workItems": {                 // null unless the policy gates on work items
     "required": true, "total": 3, "approved": 2, "satisfied": false,
     "autoApprove": false          // true ⇒ resolving all work items auto-approves the promotion
-  }
+  },
+  "frozen": false,               // true ⇒ a Promotion Freeze holds this Pending candidate
+  "blockedReason": null          // the freeze's reason when frozen, else null
 }
 ```
+
+  While the candidate's `(product, targetEnv)` is frozen and the candidate is `Pending`,
+  `allSatisfied` is `false` and `frozen`/`blockedReason` name the freeze — even when every
+  requirement is met. Step / requirement / work-item counts are unchanged.
+- **`freeze`** — the active [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes)
+  holding this candidate, `{ product, targetEnv, reason, frozenBy, frozenAt }`; `null` when the pair
+  is not frozen or the candidate is no longer `Pending`. Once the freeze is lifted, a candidate whose
+  gate was already satisfied reloads as `Approved`.
 
 ---
 
