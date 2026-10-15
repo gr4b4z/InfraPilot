@@ -9,6 +9,7 @@ import {
   Undo2,
   Wrench,
   ScrollText,
+  Snowflake,
 } from 'lucide-react';
 
 interface NavItem {
@@ -54,6 +55,12 @@ const NAV: NavItem[] = [
     label: 'Promotions',
     icon: GitPullRequest,
     description: 'Approval policies and gating',
+  },
+  {
+    to: 'freeze',
+    label: 'Freeze',
+    icon: Snowflake,
+    description: 'Hold promotions for a product into an environment',
   },
   {
     to: 'rollbacks',

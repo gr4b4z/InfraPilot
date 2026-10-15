@@ -265,6 +265,10 @@ whose gate is already satisfied — approvals collected during the freeze, auto-
 items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
 burst of webhooks when a freeze holding several candidates is lifted.
 
+### UI
+Admins manage freezes at **Settings → Freeze**: active freezes (with the held count) and a form to
+freeze a product → environment pair that has an approval policy and is not already frozen.
+
 ### Gate behaviour while frozen
 - **Only the transition to `Approved` is held.** Approvals and work-item sign-offs are still
   recorded (no error); the candidate simply stays `Pending`. The gate reports the freeze as the
