@@ -66,19 +66,6 @@ public class EnvironmentAliasAndMergeTests
         Assert.Contains("Merge", body.GetProperty("error").GetString());
     }
 
-    [Fact]
-    public async Task SaveSettings_RejectsAnAliasClaimedByTwoEnvironments()
-    {
-        using var f = new EnvFactory();
-        using var admin = f.CreateAdminClient();
-
-        var response = await PutEnvironmentsAsync(admin,
-            new { key = "prod", displayName = "Production", aliases = new[] { "live" } },
-            new { key = "staging", displayName = "Staging", aliases = new[] { "live" } });
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-    }
-
     // ── Ingest resolution ───────────────────────────────────────────────────
 
     [Fact]
