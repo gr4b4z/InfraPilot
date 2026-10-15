@@ -175,6 +175,10 @@ public class IngestIdempotencyAndSourcePolicyTests
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         var body = await Deserialize(response);
         Assert.Equal("policy_missing", body.GetProperty("code").GetString());
+
+        // Rejected, not silently dropped: no candidate is recorded for the product.
+        var list = await _adminClient.GetFromJsonAsync<JsonElement>("/api/promotions/?product=unenrolled-acme");
+        Assert.Empty(list.GetProperty("candidates").EnumerateArray());
     }
 
     [Fact]

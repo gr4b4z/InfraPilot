@@ -69,22 +69,6 @@ public class PromotionCanApproveTests
     }
 
     [Fact]
-    public async Task CanApprove_True_WhenNobodyHasApprovedYet()
-    {
-        await using var factory = new GateFixture();
-        factory.AsUser("first@example.com");
-
-        Guid candidateId;
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            candidateId = (await SeedAsync(db, minApprovers: 1)).Id;
-        }
-
-        Assert.True(await CanApproveAsync(factory, candidateId));
-    }
-
-    [Fact]
     public async Task CanApprove_False_ForAUserInNoApproverGroup()
     {
         await using var factory = new GateFixture();
@@ -101,28 +85,6 @@ public class PromotionCanApproveTests
     }
 
     // ── A work-item gate still holding the promotion ─────────────────────────
-
-    [Fact]
-    public async Task CanApprove_False_WhileTheWorkItemGateIsBlocking()
-    {
-        // The case that prompted this: an approver is authorised and the requirement is open, but the
-        // policy holds approval until every work item is signed off. ApproveAsync refuses, so the list
-        // must not claim the promotion is awaiting this user.
-        await using var factory = new GateFixture();
-        factory.AsUser("first@example.com");
-
-        Guid candidateId;
-        using (var scope = factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            candidateId = (await SeedAsync(
-                db, minApprovers: 1,
-                requireAllWorkItemsApproved: true,
-                workItemKeys: new[] { "FOO-1", "FOO-2" })).Id;
-        }
-
-        Assert.False(await CanApproveAsync(factory, candidateId));
-    }
 
     [Fact]
     public async Task CanApprove_False_WhenOnlySomeWorkItemsAreSignedOff()
@@ -242,6 +204,8 @@ public class PromotionCanApproveTests
     {
         // The point of the whole fix: wherever canApprove says false for a candidate the user is
         // authorised on, ApproveAsync must refuse — and where it says true, ApproveAsync must accept.
+        // The blocked candidate is the case that prompted it: the requirement is open and nobody has
+        // approved, but the policy holds approval until every work item is signed off.
         await using var factory = new GateFixture();
         factory.AsUser("first@example.com");
 
