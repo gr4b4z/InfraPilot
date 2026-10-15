@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "infraportal": {
+      "type": "http",
+      "url": "${DEPLOYMENTS_URL}/api/mcp",
+      "headers": {
+        "X-Api-Key": "${DEPLOYMENTS_API_KEY}"
+      }
+    }
+  }
+}

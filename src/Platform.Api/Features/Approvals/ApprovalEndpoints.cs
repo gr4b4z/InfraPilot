@@ -23,7 +23,7 @@ public static class ApprovalEndpoints
         {
             await service.RecordDecision(id, "Approved", dto?.Comment);
             return Results.Ok(new { message = "Approved" });
-        });
+        }).DenyPersonalTokens();
 
         group.MapPost("/{id:guid}/reject", async (ApprovalService service, Guid id, ApprovalActionDto dto) =>
         {
@@ -31,7 +31,7 @@ public static class ApprovalEndpoints
                 return Results.BadRequest(new { error = "Comment is required for rejection" });
             await service.RecordDecision(id, "Rejected", dto.Comment);
             return Results.Ok(new { message = "Rejected" });
-        });
+        }).DenyPersonalTokens();
 
         group.MapPost("/{id:guid}/request-changes", async (ApprovalService service, Guid id, ApprovalActionDto dto) =>
         {
@@ -39,7 +39,7 @@ public static class ApprovalEndpoints
                 return Results.BadRequest(new { error = "Comment is required for change requests" });
             await service.RecordDecision(id, "ChangesRequested", dto.Comment);
             return Results.Ok(new { message = "Changes requested" });
-        });
+        }).DenyPersonalTokens();
 
         return group;
     }

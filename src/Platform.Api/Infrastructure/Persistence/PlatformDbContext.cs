@@ -44,6 +44,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
     public DbSet<UserPreference> UserPreferences => Set<UserPreference>();
+    public DbSet<PersonalAccessToken> PersonalAccessTokens => Set<PersonalAccessToken>();
     public DbSet<PromotionPolicy> PromotionPolicies => Set<PromotionPolicy>();
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
@@ -480,6 +481,24 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Value).HasMaxLength(4000).IsRequired();
             // One row per (user, key) — the upsert relies on it, and it is also the read path.
             e.HasIndex(x => new { x.UserEmail, x.Key }).IsUnique();
+        });
+
+        // Personal access tokens — self-service credentials for agents (see PersonalAccessToken).
+        modelBuilder.Entity<PersonalAccessToken>(e =>
+        {
+            e.ToTable("personal_access_tokens");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.UserEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UserName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UserId).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+            e.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            e.Property(x => x.Prefix).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Roles).HasMaxLength(1000).IsRequired();
+            e.Ignore(x => x.RoleList);
+            // Every authenticated request with a token looks it up by hash.
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.UserEmail);
         });
 
         // Promotion Policies

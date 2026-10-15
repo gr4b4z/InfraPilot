@@ -31,6 +31,7 @@ using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Middleware;
 using Platform.Api.Infrastructure.Notifications;
 using Platform.Api.Agent;
+using Platform.Api.Mcp;
 using Platform.Api.BackgroundServices;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.AzureDevOps;
@@ -165,6 +166,7 @@ builder.Services.AddDeploymentIngestionRateLimit(builder.Configuration);
 // Infrastructure
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+builder.Services.AddScoped<PersonalAccessTokenService>();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
 builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
@@ -277,6 +279,9 @@ builder.Services.AddScoped<ValidationRunner>();
 builder.Services.AddScoped<PlatformQueryService>();
 builder.Services.AddHttpClient<CatalogAgent>();
 builder.Services.AddScoped<CatalogAgent>();
+
+// MCP server for coding agents — the same services, as tools (see Mcp/McpServerSetup).
+builder.Services.AddInfraPortalMcp(builder.Configuration);
 
 // Webhooks
 builder.Services.AddDataProtection()
@@ -495,6 +500,8 @@ app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorizatio
 app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
 // The signed-in user's own preferences. Any authenticated user, no role gate — these are personal.
 app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization();
+// Their personal access tokens — a signed-in session only, so a token cannot mint another.
+app.MapGroup("/api/me/tokens").MapPersonalAccessTokenEndpoints().RequireAuthorization(AuthorizationPolicies.SignedInSession);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)
@@ -505,6 +512,10 @@ app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(Authori
 // carries the same gate they do — an unauthenticated caller must not reach through the agent what
 // it cannot reach directly. Role-aware guidance also depends on there being a user to ask about.
 app.MapGroup("/agent").MapAgentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+
+// The MCP server: the same reads and writes for external agents, under the same gate as the groups
+// above — a configured API key, a personal token or a bearer token.
+app.MapInfraPortalMcp();
 
 // Realtime hub — WebSocket (with SignalR's fallbacks) for entity-changed signals. Its request log
 // line has no query string: that is where the SignalR client puts ?access_token=….

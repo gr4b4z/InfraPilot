@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
+using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Infrastructure.Auth;
 
@@ -13,6 +14,8 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
     public const string PolicyName = "DeploymentIngestion";
     public const string AllowedProductClaim = "allowed_product";
     public const string ScopeClaim = "api_scope";
+    /// <summary>When a personal token stops working (ISO-8601); absent for configured keys, which do not expire.</summary>
+    public const string ExpiresAtClaim = "token_expires_at";
     private const string HeaderName = "X-Api-Key";
 
     private readonly IConfiguration _config;
@@ -26,15 +29,35 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
         _config = config;
     }
 
-    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         if (!Request.Headers.TryGetValue(HeaderName, out var apiKeyHeader))
-            return Task.FromResult(AuthenticateResult.NoResult());
+            return AuthenticateResult.NoResult();
 
         var providedKey = apiKeyHeader.ToString();
         if (string.IsNullOrEmpty(providedKey))
-            return Task.FromResult(AuthenticateResult.Fail("API key is empty"));
+            return AuthenticateResult.Fail("API key is empty");
 
+        // A person's own token (minted in the portal) rides the same header, so a client configured
+        // for a key works with one unchanged. Recognised by its prefix; configured keys never have it
+        // in practice, and one that did would still be matched below.
+        if (PersonalAccessTokenService.LooksLikeToken(providedKey))
+        {
+            var db = Context.RequestServices.GetRequiredService<PlatformDbContext>();
+            var person = await PersonalAccessTokenService.AuthenticateAsync(
+                db, providedKey, PersonalTokenAuthenticationType, Context.RequestAborted);
+            if (person is not null)
+                return AuthenticateResult.Success(new AuthenticationTicket(person, SchemeName));
+        }
+
+        return MatchConfiguredKey(providedKey);
+    }
+
+    /// <summary>The identity type a personal token's principal carries — deliberately not <see cref="SchemeName"/>.</summary>
+    public const string PersonalTokenAuthenticationType = "PersonalToken";
+
+    private AuthenticateResult MatchConfiguredKey(string providedKey)
+    {
         var apiKeys = _config.GetSection("Deployments:ApiKeys").Get<List<ApiKeyEntry>>() ?? [];
         var providedKeyBytes = Encoding.UTF8.GetBytes(providedKey);
         var providedKeyHash = SHA256.HashData(providedKeyBytes);
@@ -51,7 +74,7 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
         }
 
         if (match is null)
-            return Task.FromResult(AuthenticateResult.Fail("Invalid API key"));
+            return AuthenticateResult.Fail("Invalid API key");
 
         // Resolve effective roles: explicit list, or default to User so existing
         // keys that only pushed deploy events keep working without config changes.
@@ -82,7 +105,7 @@ public class ApiKeyAuthHandler : AuthenticationHandler<AuthenticationSchemeOptio
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, SchemeName);
 
-        return Task.FromResult(AuthenticateResult.Success(ticket));
+        return AuthenticateResult.Success(ticket);
     }
 
     /// <summary>
