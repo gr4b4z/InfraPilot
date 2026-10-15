@@ -8,6 +8,7 @@ public static class AuthorizationPolicies
     public const string CanApprove = "CanApprove";
     public const string AuditViewer = "AuditViewer";
     public const string DeploymentIngestion = "DeploymentIngestion";
+    public const string SignedInSession = "SignedInSession";
 
     /// <summary>Both Entra (human) and ApiKey (machine) schemes are accepted.</summary>
     private static readonly string[] AllSchemes = ["Bearer", ApiKeyAuthHandler.SchemeName];
@@ -31,9 +32,16 @@ public static class AuthorizationPolicies
                 p.AddAuthenticationSchemes(AllSchemes)
                  .RequireAuthenticatedUser()
                  .RequireAssertion(ctx => HasRole(ctx.User, AdminRole)))
-            // Deployment ingestion — any authenticated API key (backward compat).
+            // Deployment ingestion — any authenticated configured API key (backward compat). Pipeline
+            // work only: a personal token rides the same scheme but is a person, not a producer.
             .AddPolicy(DeploymentIngestion, p =>
                 p.AddAuthenticationSchemes(ApiKeyAuthHandler.SchemeName)
+                 .RequireAuthenticatedUser()
+                 .RequireClaim("auth_method", "api_key"))
+            // A person signed in to the portal — never a key or a token. For managing the tokens
+            // themselves: a token must not be able to mint or revoke tokens.
+            .AddPolicy(SignedInSession, p =>
+                p.AddAuthenticationSchemes("Bearer")
                  .RequireAuthenticatedUser());
 
         return services;

@@ -1360,6 +1360,25 @@ class ApiClient {
     });
   }
 
+  // ── The signed-in user's personal access tokens (agent access) ─────────────
+
+  /** Newest first. Revoked and expired tokens are included, so the list doubles as history. */
+  listMyTokens() {
+    return this.request<{ tokens: PersonalAccessToken[] }>(`/me/tokens`);
+  }
+
+  /** The response carries the plaintext secret — the only time the server will ever return it. */
+  createMyToken(body: { name: string; expiresInDays: TokenLifetimeDays }) {
+    return this.request<CreatedPersonalAccessToken>(`/me/tokens`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  revokeMyToken(id: string) {
+    return this.request<void>(`/me/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
   // ── Analytics ──────────────────────────────────────────────────────────
 
   getDeploymentFrequency(params?: {
@@ -1444,6 +1463,30 @@ class ApiClient {
 
 export interface UserPreferencesPayload {
   hiddenProducts: string[];
+}
+
+/** The lifetimes the token endpoint accepts. */
+export type TokenLifetimeDays = 7 | 30 | 90;
+
+/**
+ * A personal access token as listed — never the secret itself. `prefix` (`ipt_ab12cd34`) is the
+ * public part, safe to show so a user can tell which token an agent is holding.
+ */
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  /** The creator's roles at creation time, minus Admin. */
+  roles: string[];
+}
+
+export interface CreatedPersonalAccessToken extends PersonalAccessToken {
+  /** The plaintext secret. Returned once, on creation; not retrievable afterwards. */
+  token: string;
 }
 
 export interface AppSettingsPayload {

@@ -9,6 +9,24 @@ InfraPilot (also branded **InfraPortal**) is an infrastructure portal tracking d
 promotions between environments, builds, and release notes. This skill covers calling its REST
 API directly.
 
+## Prefer the MCP server when it is connected
+
+InfraPortal also serves an MCP server at `{DEPLOYMENTS_URL}/api/mcp` (same `X-Api-Key` header). When
+its tools are available in the session (`infraportal` server — `get_deployment_state`,
+`list_promotions`, `diagnose_promotion`, …), use them instead of curl: they resolve misspelt names,
+return compact results with portal links, and include `diagnose_promotion` / `diagnose_deployment` /
+`search_knowledge`, which the REST API does not expose. Fall back to REST below for what the tools do
+not cover: ingesting deploy events, registering builds, release notes, admin endpoints, and scripts.
+
+Connect it once (user scope, works in every repo):
+
+```bash
+claude mcp add --transport http --scope user infraportal "$DEPLOYMENTS_URL/api/mcp" --header "X-Api-Key: $DEPLOYMENTS_API_KEY"
+```
+
+The InfraPilot repo's `.mcp.json` does the same from the two environment variables. Full tool list
+and design: `notes/mcp-server.md`.
+
 ## Connection
 
 Two environment variables define the connection — always use them, never hardcode a host or key:
@@ -43,6 +61,13 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
 
 - The API key authenticates **both writes and all standard reads** (deployments, promotions,
   builds, work-items, analytics, release notes). No bearer token needed.
+- Two kinds of key go in `X-Api-Key`: **configured keys** (pipeline keys in `Deployments:ApiKeys`,
+  added by a deployment) and **personal access tokens** (`ipt_…`), which any user mints for
+  themselves on the portal's **Agent access** page (`/me/agent-access`, user menu). A personal token
+  acts as the person who made it, with their roles minus Admin, expires (7/30/90 days) and can be
+  revoked there. It cannot ingest deploy events, register builds, create promotions via
+  `POST /api/promotions`, or approve / reject / sign off anything (`403`). If you lack a key, ask the
+  user to create a personal token there rather than requesting a pipeline key.
 - Keys may be **product-scoped**: posting or creating for a product outside the key's allowed
   list returns `403 Forbidden`.
 - Keys may carry **scopes**: a key with a `Scopes` list needs `build:register` for
