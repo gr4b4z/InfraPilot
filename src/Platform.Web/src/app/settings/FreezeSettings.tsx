@@ -31,9 +31,26 @@ function ActiveFreezeCard({
 }: {
   freeze: PromotionFreeze;
   envLabel: string;
-  onLift: () => void;
+  onLift: () => Promise<void>;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [lifting, setLifting] = useState(false);
+
+  // In flight from the confirming click until the refresh completes, so a further click cannot
+  // send a second DELETE. On failure the parent shows the error and the button is re-enabled.
+  const handleClick = async () => {
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    setConfirming(false);
+    setLifting(true);
+    try {
+      await onLift();
+    } finally {
+      setLifting(false);
+    }
+  };
 
   return (
     <div
@@ -67,16 +84,17 @@ function ActiveFreezeCard({
       </div>
       <button
         type="button"
-        onClick={() => (confirming ? onLift() : setConfirming(true))}
+        onClick={handleClick}
         onBlur={() => setConfirming(false)}
-        className="px-3 py-1.5 rounded-lg text-[13px] font-medium border shrink-0 transition-opacity hover:opacity-80"
+        disabled={lifting}
+        className="px-3 py-1.5 rounded-lg text-[13px] font-medium border shrink-0 transition-opacity hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
         style={{
           borderColor: confirming ? 'var(--border-strong)' : 'var(--border-color)',
           backgroundColor: 'transparent',
           color: 'var(--text-primary)',
         }}
       >
-        {confirming ? 'Click again to confirm' : 'Lift freeze'}
+        {lifting ? 'Lifting…' : confirming ? 'Click again to confirm' : 'Lift freeze'}
       </button>
     </div>
   );
@@ -144,6 +162,8 @@ export function FreezeSettings() {
   const [pairs, setPairs] = useState<Pair[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The initial load failed: the list and the form would be built from missing data.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const [product, setProduct] = useState('');
   const [env, setEnv] = useState('');
@@ -180,7 +200,10 @@ export function FreezeSettings() {
         }
         setPairs(distinct);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load freezes'))
+      .catch((e) => {
+        setLoadFailed(true);
+        setError(e instanceof Error ? e.message : 'Failed to load freezes');
+      })
       .finally(() => setLoading(false));
   }, [loadFreezes, loadHistory]);
 
@@ -243,6 +266,12 @@ export function FreezeSettings() {
         </p>
       </div>
 
+      {error && (
+        <div className="text-[13px] rounded-lg px-3 py-2" style={errorStyle}>
+          {error}
+        </div>
+      )}
+
       {loading ? (
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
           Loading…
@@ -257,9 +286,11 @@ export function FreezeSettings() {
               )}
             </h3>
             {freezes.length === 0 ? (
-              <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-                No active freezes. Promotions flow normally.
-              </p>
+              !loadFailed && (
+                <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                  No active freezes. Promotions flow normally.
+                </p>
+              )
             ) : (
               freezes.map((f) => (
                 <ActiveFreezeCard
@@ -272,72 +303,74 @@ export function FreezeSettings() {
             )}
           </section>
 
-          <section className="space-y-2">
-            <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-              Freeze a product
-            </h3>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={product}
-                onChange={(e) => {
-                  setProduct(e.target.value);
-                  setEnv('');
-                }}
-                className={inputClass}
-                style={inputStyle}
-                aria-label="Product"
-              >
-                <option value="">Product…</option>
-                {products.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
+          {!loadFailed && (
+            <section className="space-y-2">
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                Freeze a product
+              </h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={product}
+                  onChange={(e) => {
+                    setProduct(e.target.value);
+                    setEnv('');
+                  }}
+                  className={inputClass}
+                  style={inputStyle}
+                  aria-label="Product"
+                >
+                  <option value="">Product…</option>
+                  {products.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={env}
+                  onChange={(e) => setEnv(e.target.value)}
+                  disabled={product === ''}
+                  className={`${inputClass} disabled:opacity-50`}
+                  style={inputStyle}
+                  aria-label="Environment"
+                >
+                  <option value="">
+                    {product !== '' && envOptions.length === 0 ? 'All frozen' : 'Environment…'}
                   </option>
-                ))}
-              </select>
-              <select
-                value={env}
-                onChange={(e) => setEnv(e.target.value)}
-                disabled={product === ''}
-                className={`${inputClass} disabled:opacity-50`}
-                style={inputStyle}
-                aria-label="Environment"
-              >
-                <option value="">
-                  {product !== '' && envOptions.length === 0 ? 'All frozen' : 'Environment…'}
-                </option>
-                {envOptions.map((k) => (
-                  <option key={k} value={k}>
-                    {getDisplayName(k)}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleFreeze();
-                }}
-                maxLength={1000}
-                placeholder="Reason (required)"
-                aria-label="Reason"
-                className={`${inputClass} flex-1 min-w-[200px]`}
-                style={inputStyle}
-              />
-              <button
-                type="button"
-                onClick={handleFreeze}
-                disabled={!canFreeze}
-                className="px-3 py-1.5 rounded-lg text-[13px] font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-                style={{ backgroundColor: 'var(--accent)' }}
-              >
-                {saving ? 'Freezing…' : 'Freeze'}
-              </button>
-            </div>
-            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              Approvals keep being recorded while frozen; nothing is promoted until you lift it.
-            </p>
-          </section>
+                  {envOptions.map((k) => (
+                    <option key={k} value={k}>
+                      {getDisplayName(k)}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleFreeze();
+                  }}
+                  maxLength={1000}
+                  placeholder="Reason (required)"
+                  aria-label="Reason"
+                  className={`${inputClass} flex-1 min-w-[200px]`}
+                  style={inputStyle}
+                />
+                <button
+                  type="button"
+                  onClick={handleFreeze}
+                  disabled={!canFreeze}
+                  className="px-3 py-1.5 rounded-lg text-[13px] font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                  style={{ backgroundColor: 'var(--accent)' }}
+                >
+                  {saving ? 'Freezing…' : 'Freeze'}
+                </button>
+              </div>
+              <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Approvals keep being recorded while frozen; nothing is promoted until you lift it.
+              </p>
+            </section>
+          )}
 
           <section className="space-y-2">
             <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -358,12 +391,6 @@ export function FreezeSettings() {
             )}
           </section>
         </>
-      )}
-
-      {error && (
-        <div className="text-[13px] rounded-lg px-3 py-2" style={errorStyle}>
-          {error}
-        </div>
       )}
     </div>
   );

@@ -201,6 +201,9 @@ export function PromotionsPage() {
   }, [candidates, productFilter]);
 
   const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
+  // Frozen rows stay individually selectable (approvals are still recorded) but are left out of
+  // select-all and the tab badge, matching the open list's count (ruling R10).
+  const openApprovable = approvablePending.filter((c) => !c.frozen);
   const displayedPending = view === 'mine' ? approvablePending : pending;
   // Candidates held by a freeze leave the main list for the Frozen group below it.
   const openPending = displayedPending.filter((c) => !c.frozen);
@@ -209,7 +212,7 @@ export function PromotionsPage() {
     (f) => (!productFilter || f.product === productFilter) && (!targetEnvFilter || f.targetEnv === targetEnvFilter),
   );
   const allApprovableSelected =
-    approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
+    openApprovable.length > 0 && openApprovable.every((c) => selected.has(c.id));
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -224,7 +227,7 @@ export function PromotionsPage() {
     if (allApprovableSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(approvablePending.map((c) => c.id)));
+      setSelected(new Set(openApprovable.map((c) => c.id)));
     }
   };
 
@@ -337,7 +340,7 @@ export function PromotionsPage() {
       <div className="flex items-center gap-2">
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
-          { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
+          { key: 'mine', label: 'Awaiting my approval', count: openApprovable.length, showBadge: true },
         ] as const).map((tab) => {
           const active = view === tab.key;
           return (
@@ -386,7 +389,7 @@ export function PromotionsPage() {
                   {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
                      where every row is something you can act on. The default list stays
                      action-per-row (Review →) without checkbox clutter. */}
-                  {view === 'mine' && approvablePending.length > 0 && (
+                  {view === 'mine' && openApprovable.length > 0 && (
                     <input
                       type="checkbox"
                       checked={allApprovableSelected}
