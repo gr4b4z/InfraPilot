@@ -37,6 +37,24 @@ public class StubIdentityService : IIdentityService
         return new UserInfo(userId, "Dev User", "dev@localhost");
     }
 
+    /// <summary>
+    /// A local user's <see cref="Platform.Api.Infrastructure.Auth.LocalUser.IsActive"/> — the flag
+    /// that already stops them signing in. Any other id is <see cref="AccountStatus.Unknown"/>, not
+    /// Missing: this stub also stands in for Graph when Msal mode runs without a Graph app, and an
+    /// Entra object id is a GUID that no local row will ever match.
+    /// </summary>
+    public async Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(userId, out var guid)) return AccountStatus.Unknown;
+        var active = await _db.LocalUsers.Where(u => u.Id == guid).Select(u => (bool?)u.IsActive).FirstOrDefaultAsync(ct);
+        return active switch
+        {
+            true => AccountStatus.Active,
+            false => AccountStatus.Disabled,
+            null => AccountStatus.Unknown,
+        };
+    }
+
     public async Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
     {
         var users = await _db.LocalUsers

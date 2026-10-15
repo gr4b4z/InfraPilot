@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
+using Microsoft.Graph.Models.ODataErrors;
 
 namespace Platform.Api.Infrastructure.Identity;
 
@@ -156,6 +157,38 @@ public class EntraIdGraphService : IIdentityService
         var user = await _graphClient.Users[userId].GetAsync(cancellationToken: ct);
         if (user?.Id is null) return null;
         return new UserInfo(user.Id, user.DisplayName ?? "", user.Mail ?? user.UserPrincipalName ?? "");
+    }
+
+    /// <summary>
+    /// <c>users/{id}?$select=id,accountEnabled</c> — one small read, within the <c>User.Read.All</c>
+    /// the Graph app already holds. A 404 means the user was deleted; <c>accountEnabled</c> false
+    /// means disabled. Anything else that goes wrong (throttling, an outage, a missing permission
+    /// that leaves <c>accountEnabled</c> out) is <see cref="AccountStatus.Unknown"/>, logged, never
+    /// thrown. Not cached here: the caller decides how long an answer holds.
+    /// </summary>
+    public async Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
+    {
+        // An Entra object id is a GUID. Anything else (an API key's "apikey:name", a local id from
+        // another mode) is not this directory's to judge, and users/{name} would only 404 on it.
+        if (!Guid.TryParse(userId, out var objectId)) return AccountStatus.Unknown;
+
+        try
+        {
+            var user = await _graphClient.Users[objectId.ToString("D")].GetAsync(r =>
+                r.QueryParameters.Select = ["id", "accountEnabled"], cancellationToken: ct);
+            if (user?.Id is null) return AccountStatus.Unknown;
+            return user.AccountEnabled == false ? AccountStatus.Disabled : AccountStatus.Active;
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        {
+            return AccountStatus.Missing;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            if (FirstInWindow($"graph-account-failed:{objectId:D}"))
+                _logger.LogWarning(ex, "Account status lookup failed for {User}; treating it as unknown", objectId);
+            return AccountStatus.Unknown;
+        }
     }
 
     public async Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)

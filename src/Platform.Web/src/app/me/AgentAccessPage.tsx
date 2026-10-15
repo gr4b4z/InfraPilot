@@ -20,6 +20,7 @@ import {
   type TokenLifetimeDays,
 } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { TOKEN_STATUS_STYLE, tokenRoleName, tokenStatus, type TokenStatus } from '@/lib/personalTokens';
 import { getBackendOrigin } from '@/lib/runtimeConfig';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { ENV_API_KEY, ENV_URL, TOKEN_PLACEHOLDER, buildAgentSnippets } from './agentSnippets';
@@ -29,26 +30,6 @@ const MAX_ACTIVE_TOKENS = 10;
 
 const LIFETIMES: TokenLifetimeDays[] = [7, 30, 90];
 const DEFAULT_LIFETIME: TokenLifetimeDays = 30;
-
-type TokenStatus = 'active' | 'expired' | 'revoked';
-
-const STATUS_STYLE: Record<TokenStatus, { label: string; color: string; bg: string }> = {
-  active: { label: 'Active', color: 'var(--success)', bg: 'var(--success-bg)' },
-  expired: { label: 'Expired', color: 'var(--text-muted)', bg: 'var(--bg-secondary)' },
-  revoked: { label: 'Revoked', color: 'var(--danger)', bg: 'var(--danger-bg)' },
-};
-
-/** Revoked wins over expired: it is the decision someone made, not the clock running out. */
-function tokenStatus(token: PersonalAccessToken, now: number): TokenStatus {
-  if (token.revokedAt) return 'revoked';
-  if (new Date(token.expiresAt).getTime() < now) return 'expired';
-  return 'active';
-}
-
-/** `InfraPortal.QA` → `QA`. The app-role prefix is the same on every role and says nothing. */
-function roleName(role: string): string {
-  return role.replace(/^InfraPortal\./i, '');
-}
 
 const inputClass =
   'px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]';
@@ -289,7 +270,8 @@ export function AgentAccessPage() {
           </li>
           <li>
             <strong style={{ color: 'var(--text-primary)' }}>It expires</strong> after 7, 30 or 90 days, and
-            you can revoke it here at any time. Treat it like a password.
+            you can revoke it here at any time. An administrator can revoke it too, and it stops working
+            within minutes if your account is disabled. Treat it like a password.
           </li>
           <li>
             <strong style={{ color: 'var(--text-primary)' }}>One token, MCP and REST.</strong> It's sent as the{' '}
@@ -459,7 +441,7 @@ function TokenRow({
   first: boolean;
   onRevoke: () => void;
 }) {
-  const s = STATUS_STYLE[status];
+  const s = TOKEN_STATUS_STYLE[status];
   const inactive = status !== 'active';
   const ended =
     status === 'revoked' && token.revokedAt
@@ -509,7 +491,7 @@ function TokenRow({
                 style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
                 title={role}
               >
-                {roleName(role)}
+                {tokenRoleName(role)}
               </span>
             ))}
           </div>
