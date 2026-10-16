@@ -151,6 +151,84 @@ public class PromotionFreezeHistoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Windows_list_an_active_freeze_with_an_open_end()
+    {
+        SeedPolicy("acme");
+        var freeze = await _sut.FreezeAsync("acme", "prod", "Release window");
+
+        var only = Assert.Single(await _sut.GetWindowsAsync(null));
+
+        Assert.Equal("acme", only.Product);
+        Assert.Equal("prod", only.TargetEnv);
+        Assert.Equal("Release window", only.Reason);
+        Assert.Equal("Admin User", only.FrozenBy);
+        Assert.Equal(freeze.FrozenAt, only.From);
+        Assert.Null(only.Until);
+        Assert.Null(only.LiftedBy);
+    }
+
+    [Fact]
+    public async Task Windows_rebuild_a_lifted_freeze_from_the_audit_log()
+    {
+        SeedPolicy("acme");
+        var freeze = await _sut.FreezeAsync("acme", "prod", "Release window");
+        await TickAsync();
+        _currentUser.Name.Returns("Other Admin");
+        await _sut.LiftAsync("acme", "prod");
+
+        var only = Assert.Single(await _sut.GetWindowsAsync("acme"));
+
+        Assert.Equal(freeze.FrozenAt, only.From);
+        Assert.NotNull(only.Until);
+        Assert.True(only.Until > only.From);
+        Assert.Equal("Admin User", only.FrozenBy);
+        Assert.Equal("Other Admin", only.LiftedBy);
+        Assert.Equal("Release window", only.Reason);
+    }
+
+    [Fact]
+    public async Task Windows_filter_by_product_and_list_newest_first()
+    {
+        SeedPolicy("acme");
+        SeedPolicy("other");
+        await _sut.FreezeAsync("acme", "prod", "First");
+        await TickAsync();
+        await _sut.LiftAsync("acme", "prod");
+        await TickAsync();
+        await _sut.FreezeAsync("other", "prod", "Other product");
+        await TickAsync();
+        await _sut.FreezeAsync("acme", "prod", "Second");
+
+        var acme = await _sut.GetWindowsAsync("acme");
+
+        Assert.Equal(2, acme.Count);
+        Assert.Equal("Second", acme[0].Reason);
+        Assert.Null(acme[0].Until);
+        Assert.Equal("First", acme[1].Reason);
+        Assert.NotNull(acme[1].Until);
+        Assert.Equal(3, (await _sut.GetWindowsAsync(null)).Count);
+    }
+
+    [Fact]
+    public async Task Windows_skip_unfrozen_entries_without_a_pair_or_start()
+    {
+        _db.AuditLog.AddRange(
+            new AuditEntry
+            {
+                Id = Guid.NewGuid(), Module = "promotions", Action = "promotion.unfrozen",
+                ActorName = "Admin User", AfterState = "{\"product\":\"acme\",\"targetEnv\":\"prod\"}",
+            },
+            new AuditEntry
+            {
+                Id = Guid.NewGuid(), Module = "promotions", Action = "promotion.unfrozen",
+                ActorName = "Admin User", AfterState = "not json",
+            });
+        _db.SaveChanges();
+
+        Assert.Empty(await _sut.GetWindowsAsync(null));
+    }
+
+    [Fact]
     public void History_reason_is_null_when_payload_has_none()
     {
         _db.AuditLog.Add(new AuditEntry
