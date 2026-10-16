@@ -262,6 +262,64 @@ public class PromotionFreezeService
 
     public static int ClampHistoryLimit(int limit) => Math.Clamp(limit, 1, MaxHistoryLimit);
 
+    /// <summary>How many lifted freezes <see cref="GetWindowsAsync"/> reads back from the audit log.</summary>
+    public const int MaxLiftedWindows = 500;
+
+    /// <summary>
+    /// The periods each (product, targetEnv) pair was frozen, newest first: every active freeze
+    /// (<c>Until</c> null) plus the last <see cref="MaxLiftedWindows"/> lifted ones, rebuilt from
+    /// their <c>promotion.unfrozen</c> audit entries (which carry <c>frozenAt</c>). The deployments
+    /// pages use them to mark a deploy that landed while its environment was frozen for its product,
+    /// which has to keep working after the freeze row is gone.
+    /// </summary>
+    public async Task<IReadOnlyList<FreezeWindow>> GetWindowsAsync(string? product, CancellationToken ct = default)
+    {
+        var p = string.IsNullOrWhiteSpace(product) ? null : product.Trim();
+
+        var active = await _db.PromotionFreezes.AsNoTracking()
+            .Where(f => p == null || f.Product == p)
+            .ToListAsync(ct);
+
+        var lifted = await _db.AuditLog.AsNoTracking()
+            .Where(a => a.Action == UnfrozenAction)
+            .OrderByDescending(a => a.Timestamp)
+            .Take(MaxLiftedWindows)
+            .ToListAsync(ct);
+
+        return active
+            .Select(f => new FreezeWindow(f.Product, f.TargetEnv, f.Reason, f.FrozenBy, f.FrozenAt, null, null))
+            .Concat(lifted.Select(ToLiftedWindow).OfType<FreezeWindow>())
+            .Where(w => p == null || w.Product == p)
+            .OrderByDescending(w => w.From)
+            .ToList();
+    }
+
+    // The unfrozen payload is { product, targetEnv, reason, frozenBy, frozenAt }; an entry without a
+    // pair or a start time cannot be placed on a timeline and is skipped.
+    private static FreezeWindow? ToLiftedWindow(AuditEntry a)
+    {
+        if (string.IsNullOrWhiteSpace(a.AfterState)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(a.AfterState);
+            var root = doc.RootElement;
+            var product = ReadString(root, "product");
+            var targetEnv = ReadString(root, "targetEnv");
+            if (string.IsNullOrEmpty(product) || string.IsNullOrEmpty(targetEnv)) return null;
+            if (!root.TryGetProperty("frozenAt", out var at) || at.ValueKind != JsonValueKind.String
+                || !at.TryGetDateTimeOffset(out var frozenAt))
+                return null;
+
+            return new FreezeWindow(
+                product, targetEnv, ReadString(root, "reason") ?? "", ReadString(root, "frozenBy") ?? "",
+                frozenAt, a.Timestamp, a.ActorName);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     // The audit payload (AfterState) is { product, targetEnv, reason, ... } for both actions.
     private static FreezeHistoryEntry ToHistoryEntry(AuditEntry a)
     {
@@ -309,6 +367,14 @@ public record ActiveFreeze(
 /// <summary>One journal event: <see cref="Action"/> is "frozen" or "unfrozen".</summary>
 public record FreezeHistoryEntry(
     string Action, string Product, string TargetEnv, string? Reason, string Actor, DateTimeOffset At);
+
+/// <summary>
+/// One period a (product, targetEnv) pair was frozen. <see cref="Until"/> and <see cref="LiftedBy"/>
+/// are null while the freeze is still active.
+/// </summary>
+public record FreezeWindow(
+    string Product, string TargetEnv, string Reason, string FrozenBy,
+    DateTimeOffset From, DateTimeOffset? Until, string? LiftedBy);
 
 /// <summary>Thrown by <see cref="PromotionFreezeService.FreezeAsync"/> when the pair is already frozen (409).</summary>
 public class FreezeAlreadyActiveException : InvalidOperationException

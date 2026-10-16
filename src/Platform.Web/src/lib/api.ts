@@ -1079,6 +1079,11 @@ class ApiClient {
     return this.request<{ freezes: PromotionFreeze[] }>(`/promotions/freezes`);
   }
 
+  listPromotionFreezeWindows(product?: string) {
+    const qs = product ? `?product=${encodeURIComponent(product)}` : '';
+    return this.request<{ windows: PromotionFreezeWindow[] }>(`/promotions/freezes/windows${qs}`);
+  }
+
   createPromotionFreeze(freeze: { product: string; targetEnv: string; reason: string }) {
     return this.request<PromotionFreeze>(`/promotions/admin/freezes`, {
       method: 'POST',
@@ -2681,6 +2686,17 @@ export interface PromotionFreeze {
   frozenBy: string;
   frozenAt: string;
   heldCandidates: number;
+}
+
+/** One period a (product, targetEnv) pair was frozen; `until` / `liftedBy` are null while it is active. */
+export interface PromotionFreezeWindow {
+  product: string;
+  targetEnv: string;
+  reason: string;
+  frozenBy: string;
+  from: string;
+  until: string | null;
+  liftedBy: string | null;
 }
 
 export interface PromotionFreezeHistoryEntry {

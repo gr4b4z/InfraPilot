@@ -21,11 +21,14 @@ import {
   ChevronDown,
   ChevronsUpDown,
   Trash2,
+  Snowflake,
 } from 'lucide-react';
 import type { DeploymentStateSummary, DeployEvent } from '@/lib/types';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { api } from '@/lib/api';
-import type { PromotionCandidate } from '@/lib/api';
+import type { PromotionCandidate, PromotionFreezeWindow } from '@/lib/api';
+import { DeploymentFreezeBanner, DuringFreezeMark, FrozenEnvMark } from './FreezeCues';
+import { activeFreezeFor, activeFreezes, freezeWindowAt, useFreezeWindows } from './freezeWindows';
 import { useAuthStore } from '@/stores/authStore';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { useFeatureFlag, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -311,6 +314,19 @@ export function ProductDeploymentsPage() {
       cancelled = true;
     };
   }, [product, promotionsEnabled, promotionsTick]);
+
+  // Promotion Freezes of this product: the active ones drive the banner and the column snowflakes,
+  // and every window (lifted ones too) marks the deploys that landed while it was on. Freeze and
+  // lift broadcast as promotion events, hence the promotions tick.
+  const freezeWindows = useFreezeWindows(product, promotionsEnabled, promotionsTick);
+  const productFreezes = useMemo(() => activeFreezes(freezeWindows), [freezeWindows]);
+  const heldIn = useCallback(
+    (env: string) =>
+      promotions.product === product
+        ? promotions.candidates.filter((c) => c.frozen && c.targetEnv === env).length
+        : 0,
+    [promotions, product],
+  );
 
   // Fetch recent activity when state tab has a time filter
   useEffect(() => {
@@ -670,6 +686,13 @@ export function ProductDeploymentsPage() {
         </div>
       </div>
 
+      <DeploymentFreezeBanner
+        freezes={productFreezes}
+        heldIn={heldIn}
+        canManage={isAdmin}
+        getDisplayName={getDisplayName}
+      />
+
       {/* Tab switcher + filters */}
       <div className="flex items-center gap-4 flex-wrap">
         {/* State / Activity / Compare tabs — Compare only when 2+ environments */}
@@ -842,23 +865,40 @@ export function ProductDeploymentsPage() {
                 </th>
                 {/* Header label carries the environment colour so a column is findable at a
                     glance in a wide matrix. */}
-                {environments.map((env) => (
-                  <th
-                    key={env}
-                    // Addressable so "what's on staging?" can ring the whole column.
-                    data-guide-anchor={`env-column:${env}`}
-                    className="text-center px-4 py-3 font-medium"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    <SortHeader
-                      label={<EnvLabel env={env} />}
-                      active={sortBy === env}
-                      dir={sortDir}
-                      onClick={() => toggleSort(env)}
-                      align="center"
-                    />
-                  </th>
-                ))}
+                {environments.map((env) => {
+                  // A frozen environment's column carries a snowflake and the freeze tint, so the
+                  // column reads as "nothing is promoted here right now" before any cell does.
+                  const freeze = product ? activeFreezeFor(freezeWindows, product, env) : undefined;
+                  return (
+                    <th
+                      key={env}
+                      // Addressable so "what's on staging?" can ring the whole column.
+                      data-guide-anchor={`env-column:${env}`}
+                      className="text-center px-4 py-3 font-medium"
+                      style={{
+                        color: 'var(--text-muted)',
+                        backgroundColor: freeze ? 'var(--info-bg)' : undefined,
+                      }}
+                    >
+                      <SortHeader
+                        label={
+                          freeze ? (
+                            <span className="inline-flex items-center gap-1">
+                              <EnvLabel env={env} />
+                              <FrozenEnvMark freeze={freeze} envLabel={getDisplayName(env)} />
+                            </span>
+                          ) : (
+                            <EnvLabel env={env} />
+                          )
+                        }
+                        active={sortBy === env}
+                        dir={sortDir}
+                        onClick={() => toggleSort(env)}
+                        align="center"
+                      />
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             {/* The matrix is a 2D grid: Up/Down move service, Left/Right move environment. Every
@@ -918,6 +958,7 @@ export function ProductDeploymentsPage() {
                       env={env}
                       envLabel={getDisplayName(env)}
                       cell={getCell(service, env)}
+                      freezeWindows={freezeWindows}
                       pending={pendingPromotions.get(`${service}::${env}`)}
                       highlighted={
                         timeFilter !== 'all' && recentKeys.has(`${service}::${env}`)
@@ -962,6 +1003,7 @@ export function ProductDeploymentsPage() {
                 <ActivityCard
                   key={evt.id}
                   event={evt}
+                  duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt)}
                   showEnv={envFilter !== 'all'}
                   onClick={() => openDeployment(evt)}
                 />
@@ -1015,6 +1057,7 @@ function MatrixCell({
   env,
   envLabel,
   cell,
+  freezeWindows,
   pending,
   highlighted,
   onOpen,
@@ -1025,20 +1068,25 @@ function MatrixCell({
   env: string;
   envLabel: string;
   cell: DeploymentStateSummary | undefined;
+  /** This product's freeze periods, to mark a deploy that landed while the environment was frozen. */
+  freezeWindows: PromotionFreezeWindow[];
   /** A Pending promotion targeting this (service, environment), if there is one. */
   pending?: PromotionCandidate;
   highlighted: boolean;
   onOpen: (entry: { id: string }) => void;
 }) {
+  const duringFreeze = cell ? freezeWindowAt(freezeWindows, cell.product, env, cell.deployedAt) : undefined;
+  const pendingLabel = pending
+    ? `, promotion to ${pending.version} ${pending.frozen ? 'held by a freeze' : 'awaiting approval'}`
+    : '';
   // `role: null` keeps the implicit cell role — see useKeyboardListRow.
   const rowProps = useKeyboardListRow(index, () => cell && onOpen(cell), {
     role: null,
     disabled: !cell,
     label: cell
       ? `${service} in ${envLabel}, version ${cell.version}` +
-        `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}. Open deployment.`
-      : `${service} in ${envLabel}, not deployed` +
-        `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}`,
+        `${duringFreeze ? ', deployed during a promotion freeze' : ''}${pendingLabel}. Open deployment.`
+      : `${service} in ${envLabel}, not deployed${pendingLabel}`,
   });
 
   // Nothing deployed here yet. A pending promotion still belongs on the cell — a first deploy into
@@ -1082,6 +1130,7 @@ function MatrixCell({
             isRollback={cell.isRollback}
             previousVersion={cell.previousVersion}
           />
+          {duringFreeze && <DuringFreezeMark freeze={duringFreeze} envLabel={envLabel} />}
         </span>
         {cell.status && cell.status !== 'succeeded' && <StatusBadge status={cell.status} />}
         {pending && <PendingPromotionChip candidate={pending} />}
@@ -1101,24 +1150,31 @@ function MatrixCell({
  * whole reason to surface it here is that it needs a decision, and making someone find it in the
  * promotions queue afterwards defeats the point. Hence the click-stop: the cell's own handler goes
  * to deployment history, which is not where this chip is pointing.</p>
+ *
+ * <p>A candidate held by a Promotion Freeze keeps the chip, in the freeze's blue with a snowflake:
+ * approvals are still recorded, it just won't move until the freeze is lifted.</p>
  */
 function PendingPromotionChip({ candidate }: { candidate: PromotionCandidate }) {
+  const tone = candidate.frozen ? 'var(--info)' : 'var(--accent)';
   return (
     <Link
       to={`/promotions/${candidate.id}`}
       onClick={(e) => e.stopPropagation()}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-opacity hover:opacity-80"
       style={{
-        backgroundColor: 'var(--accent-bg)',
-        color: 'var(--accent)',
-        border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+        backgroundColor: candidate.frozen ? 'var(--info-bg)' : 'var(--accent-bg)',
+        color: tone,
+        border: `1px solid color-mix(in srgb, ${tone} 30%, transparent)`,
       }}
       title={
-        `Promotion awaiting approval: ${candidate.service} ${candidate.version} ` +
-        `from ${candidate.sourceEnv} → ${candidate.targetEnv}`
+        candidate.frozen
+          ? `Promotion held by a freeze: ${candidate.service} ${candidate.version} ` +
+            `from ${candidate.sourceEnv} → ${candidate.targetEnv} waits until the freeze is lifted`
+          : `Promotion awaiting approval: ${candidate.service} ${candidate.version} ` +
+            `from ${candidate.sourceEnv} → ${candidate.targetEnv}`
       }
     >
-      <ArrowUp size={10} />
+      {candidate.frozen ? <Snowflake size={10} /> : <ArrowUp size={10} />}
       v{candidate.version}
     </Link>
   );
@@ -1529,14 +1585,17 @@ const STYLE_COLORS: Record<string, string> = {
 
 function ActivityCard({
   event: evt,
+  duringFreeze,
   showEnv,
   onClick,
 }: {
   event: DeployEvent;
+  /** The freeze this deploy landed in, if any. */
+  duringFreeze?: PromotionFreezeWindow;
   showEnv: boolean;
   onClick: () => void;
 }) {
-  const { activityTemplate } = useSettingsStore();
+  const { activityTemplate, getDisplayName } = useSettingsStore();
 
   const resolvedLines = activityTemplate
     .map((line) => ({ text: resolveTemplate(line.template, evt), style: line.style }))
@@ -1582,6 +1641,9 @@ function ActivityCard({
             isRollback={evt.isRollback}
             previousVersion={evt.previousVersion}
           />
+          {duringFreeze && (
+            <DuringFreezeMark freeze={duringFreeze} envLabel={getDisplayName(evt.environment)} />
+          )}
           {evt.status && evt.status !== 'succeeded' && (
             <StatusBadge status={evt.status} />
           )}
