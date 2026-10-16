@@ -100,16 +100,16 @@ public static class RollbackEndpoints
         });
 
         group.MapPost("/{id:guid}/approve", (RollbackService svc, Guid id, DecisionBody? body) =>
-            Decide(() => svc.ApproveAsync(id, body?.Comment))).DenyPersonalTokens();
+            Decide(() => svc.ApproveAsync(id, body?.Comment))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         group.MapPost("/{id:guid}/reject", (RollbackService svc, Guid id, DecisionBody? body) =>
-            Decide(() => svc.RejectAsync(id, body?.Comment))).DenyPersonalTokens();
+            Decide(() => svc.RejectAsync(id, body?.Comment))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Admin-only bypass of the approval gate. Not in RollbackAdminEndpoints because it acts on a
         // request in the operator's own queue rather than on configuration, and the 403 for a
         // non-admin caller is more useful here than a 404 from a group they cannot reach.
         group.MapPost("/{id:guid}/override-approval", (RollbackService svc, Guid id, ReasonBody? body) =>
-            Decide(() => svc.OverrideApprovalAsync(id, body?.Reason ?? ""))).DenyPersonalTokens();
+            Decide(() => svc.OverrideApprovalAsync(id, body?.Reason ?? ""))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Pending: the creator or an admin, reason optional. Approved/RollingBack: admin only, reason
         // required. Both rules are enforced in RollbackService.CancelAsync.

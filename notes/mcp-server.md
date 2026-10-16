@@ -31,23 +31,45 @@ user menu), which also shows copy-paste setup for Claude Code, a project `.mcp.j
 | Format | `ipt_` + 43 url-safe characters; only its SHA-256 is stored, the secret is shown once |
 | Header | `X-Api-Key` — same as configured keys, so every client set up for a key works unchanged |
 | Identity | Its owner: `oid`, `name`, `preferred_username` claims, so comments, triggered-by and audit name the person |
-| Roles | The owner's roles when it was created, **minus `InfraPortal.Admin`** (none ⇒ `InfraPortal.User`) |
+| Access | `Standard` (default), `QA` or `Admin`, chosen at creation, never above the owner's own role (see below) |
+| Roles | The owner's roles when it was created, **minus `InfraPortal.Admin`** unless it is an Admin token; a QA token adds `InfraPortal.QA` (none ⇒ `InfraPortal.User`) |
 | Lifetime | 7, 30 or 90 days, always finite; revocable by its owner on the page and by an admin in Settings → Agent Tokens; `lastUsedAt` refreshed at most every 5 min |
 | Owner check | Refused within 5 min once the directory reports the owner disabled or deleted (see below) |
 | Limit | 10 active tokens per person |
 
-What a token cannot do, and where that is enforced:
+#### Access levels
+
+A token's access (`PersonalTokenAccess`, the `token_access` claim) decides whether it may make the
+decisions a person makes: approving, rejecting, signing off. A token is how an agent acts for
+someone, and an agent can be talked into a decision by text it reads, so the default makes none.
+The owner opts in per token, and only up to their own role:
+
+| Access | Who may create it | Roles on the token | Decisions it may make |
+|---|---|---|---|
+| `Standard` | anyone | owner's roles minus Admin | none |
+| `QA` | `InfraPortal.QA` or `InfraPortal.Admin` | owner's roles minus Admin, plus `InfraPortal.QA` (an admin without QA gets it here) | work-item sign-off: approvals, issues, blocks |
+| `Admin` | `InfraPortal.Admin` | owner's roles, Admin included | every one the owner can make: promotion approve / reject / cancel-approval / bulk approve, admin bypass / reject / orphan sweep, rollback approve / reject / override, request approvals, work-item sign-off |
+
+`POST /api/me/tokens { name, expiresInDays, access? }` returns `403` for a level above the caller's
+role, `400` for an unknown one; `GET /api/me/tokens` lists `allowedAccess` so the page offers only
+those. Each decision route carries `.RequirePersonalTokenAccess(QA | Admin)`, which returns `403` to a
+token below that level. A decision a token gets through still passes the route's own checks (approver
+eligibility, the QA-or-Admin jurisdiction) as its owner, and adds a `personal_token.decision` audit
+entry (`auth` module, entity = the token, metadata `{ method, path, status, access }`): the decision's
+own record names the owner, and this entry is what says an agent made it.
+
+Roles are a snapshot (see the owner check below): an Admin token stays Admin until it expires or is
+revoked, even if the owner loses the role sooner. Revoke a person's tokens when their role changes.
+
+What no token can do, and where that is enforced:
 
 - **Pipeline-only endpoints** — deploy-event ingest, build registration, `POST /api/promotions`: the
   `DeploymentIngestion` policy requires `auth_method=api_key`, which only configured keys carry.
-- **Decisions** — approve / reject / cancel-approval / bulk approve on promotions, work-item sign-off
-  (approvals, issues, blocks), rollback approve / reject / override, request approvals:
-  `.DenyPersonalTokens()` on each route returns `403`. A token is how an agent acts for someone; an
-  approval is that person's judgement, and an agent can be talked into one by text it reads.
-- **Admin groups** — no Admin role on a token.
+- **Decisions, below its access** — see the table above.
+- **Admin groups, below Admin** — only an Admin token carries the Admin role.
 - **Managing tokens** — `/api/me/tokens` takes a signed-in session only (`SignedInSession` policy),
-  so a token cannot mint or revoke tokens.
-- **Manual deploys** — a token's identity type is `PersonalToken`, not `ApiKey`, so
+  so a token cannot mint or revoke tokens, whatever its access.
+- **Manual deploys, below Admin** — a token's identity type is `PersonalToken`, not `ApiKey`, so
   `POST /api/deployments/manual` treats it as a person, which must be admin.
 
 Endpoints (signed-in session): `GET /api/me/tokens`, `POST /api/me/tokens { name, expiresInDays }`
@@ -69,9 +91,10 @@ each replica.
   down, an id the stub does not know), the token keeps working and the owner is looked up again
   after 1 minute (`RetryAfterUnknown`). A directory outage should not stop every agent at once.
 - **Not re-checked: role assignments.** Reading a user's app-role assignments needs Graph's
-  `Directory.Read.All`, which the Graph app does not have. A token cannot carry Admin or make
-  decisions, so its roles change little, and offboarding disables the account, which the check
-  does catch. When someone loses a role but keeps their account, an admin revokes their tokens.
+  `Directory.Read.All`, which the Graph app does not have. Offboarding disables the account, which
+  the check does catch. When someone loses a role but keeps their account, an admin revokes their
+  tokens — QA and Admin ones first: those carry the role and make decisions with it until they
+  expire. The admin list badges them.
 
 A refusal is a plain `401`, logged once per owner per window as a warning (`Refusing the personal
 access tokens of …`). Re-enabling the account restores the tokens within the same window; nothing
@@ -82,7 +105,8 @@ is revoked by the check itself.
 Settings → **Agent Tokens** (`/settings/agent-tokens`, admin only) lists everyone's tokens grouped
 by owner. Pasting a leaked token into its search finds it by prefix in the browser; the secret is
 not sent to the server. Each token, or all of one person's at once, can be revoked there with an
-optional reason. Endpoints (`CatalogAdmin` policy; a personal token never carries Admin):
+optional reason. Each token shows its access level (a `QA access` / `Admin access` badge). Endpoints
+(`CatalogAdmin` policy; of personal tokens only an Admin one reaches them, and still cannot mint):
 
 | | |
 |---|---|
@@ -124,7 +148,8 @@ finds the right one.
 | `add_promotion_comment` / `add_work_item_comment` | Comment as the caller |
 | `set_promotion_participant` / `remove_promotion_participant` | Assign or clear a configured role |
 
-No tool approves, rejects or signs off — those stay human actions in the portal.
+No tool approves, rejects or signs off. With a standard token those stay human actions in the
+portal; a QA or Admin token can make them over REST (see [Access levels](#access-levels)).
 
 ## Connecting
 

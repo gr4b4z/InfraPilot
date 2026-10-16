@@ -12,8 +12,9 @@ namespace Platform.Integration.Tests;
 /// <list type="bullet">
 ///   <item>The secret is returned once; lists show only its prefix, and only the owner's tokens.</item>
 ///   <item>It works wherever an <c>X-Api-Key</c> does for reads, as its owner.</item>
-///   <item>It cannot do what only a pipeline or an administrator does, cannot make approval
-///         decisions, and cannot manage tokens.</item>
+///   <item>A standard one (the default) cannot do what only a pipeline or an administrator does,
+///         cannot make approval decisions, and cannot manage tokens. QA and Admin tokens are in
+///         <see cref="PersonalAccessTokenAccessTests"/>.</item>
 ///   <item>Revoked and expired tokens stop working.</item>
 /// </list>
 /// </summary>
@@ -60,7 +61,7 @@ public class PersonalAccessTokenTests : IClassFixture<TestFactory>
     }
 
     [Fact]
-    public async Task Token_reads_as_its_owner_but_never_carries_admin()
+    public async Task Standard_token_reads_as_its_owner_but_never_carries_admin()
     {
         using var admin = _factory.CreateAdminClient();
         var (_, secret) = await CreateTokenAsync(admin);
@@ -73,7 +74,7 @@ public class PersonalAccessTokenTests : IClassFixture<TestFactory>
     }
 
     [Fact]
-    public async Task Token_cannot_do_pipeline_work_make_decisions_or_manage_tokens()
+    public async Task Standard_token_cannot_do_pipeline_work_make_decisions_or_manage_tokens()
     {
         using var qa = _factory.CreateAuthenticatedClient("qa@localhost", "qa123");
         var (_, secret) = await CreateTokenAsync(qa);

@@ -8,7 +8,7 @@ namespace Platform.Api.Features.Users;
 /// when a token leaks, and clean-up when someone loses their access: find any token, revoke it, or
 /// revoke all of one person's at once. Nobody can read a secret here; there is none to read.
 ///
-/// <para>A personal token never carries Admin, so it cannot reach these routes.</para>
+/// <para>Of personal tokens, only an Admin one carries the role these routes need.</para>
 /// </summary>
 public static class PersonalAccessTokenAdminEndpoints
 {
@@ -66,5 +66,6 @@ public static class PersonalAccessTokenAdminEndpoints
         t.LastUsedAt,
         t.RevokedAt,
         roles = t.RoleList,
+        access = t.Access.ToString(),
     };
 }

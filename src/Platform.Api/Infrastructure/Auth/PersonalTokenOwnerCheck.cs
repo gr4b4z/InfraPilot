@@ -21,10 +21,10 @@ namespace Platform.Api.Infrastructure.Auth;
 /// the token stays bounded by its expiry and by revocation.</para>
 ///
 /// <para>The owner's role assignments are not re-checked. Reading a user's app-role assignments
-/// needs Graph's <c>Directory.Read.All</c>, which the portal's Graph app does not hold. A token
-/// cannot carry Admin or make decisions anyway, so the roles it holds change little. Offboarding
+/// needs Graph's <c>Directory.Read.All</c>, which the portal's Graph app does not hold. Offboarding
 /// disables the account, which this catches. An administrator revokes the tokens of someone whose
-/// roles were taken away (Settings → Agent Tokens).</para>
+/// roles were taken away (Settings → Agent Tokens) — QA and Admin tokens above all, which keep
+/// making decisions with the role until they expire.</para>
 /// </summary>
 public class PersonalTokenOwnerCheck
 {
