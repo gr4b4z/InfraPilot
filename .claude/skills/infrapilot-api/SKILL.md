@@ -74,8 +74,9 @@ The InfraPilot repo's `.mcp.json` does the same from the environment. Design and
 
 `add_promotion_comment`, `add_work_item_comment`, `set/remove_promotion_participant`,
 `promote_build` and `create_promotion` change shared state that everyone in the portal sees. Never
-call them while investigating or reviewing. No tool approves, rejects or signs off; those stay
-human decisions in the portal (a personal token gets `403` on those routes over REST too).
+call them while investigating or reviewing. No tool approves, rejects or signs off. A standard
+personal token gets `403` on those routes over REST too; a QA token may sign off work items and an
+Admin token may approve and reject over REST — do that only when the user asked for that decision.
 
 ## Connection
 
@@ -114,10 +115,13 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
 - Two kinds of key go in `X-Api-Key`: **configured keys** (pipeline keys in `Deployments:ApiKeys`,
   added by a deployment) and **personal access tokens** (`ipt_…`), which any user mints for
   themselves on the portal's **Agent access** page (`/me/agent-access`, user menu). A personal token
-  acts as the person who made it, with their roles minus Admin, expires (7/30/90 days) and can be
-  revoked there. It cannot ingest deploy events, register builds, create promotions via
-  `POST /api/promotions`, or approve / reject / sign off anything (`403`). If you lack a key, ask the
-  user to create a personal token there rather than requesting a pipeline key.
+  acts as the person who made it, expires (7/30/90 days) and can be revoked there. No token can
+  ingest deploy events, register builds or create promotions via `POST /api/promotions`. What else
+  it may do depends on its access (`whoami` → `tokenAccess`): **Standard** carries the owner's roles
+  minus Admin and approves / rejects / signs off nothing (`403`); **QA** (QA members and admins)
+  adds the QA role and work-item sign-off; **Admin** (admins only) keeps Admin and makes every
+  decision its owner can. If you lack a key, ask the user to create a personal token there rather
+  than requesting a pipeline key, at the lowest access the task needs.
 - Keys may be **product-scoped**: posting or creating for a product outside the key's allowed
   list returns `403 Forbidden`.
 - Keys may carry **scopes**: a key with a `Scopes` list needs `build:register` for
@@ -127,12 +131,14 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
   and retry; don't hammer.
 - **Admin endpoints** (`/api/deployments/admin/*`, `/api/promotions/admin/*`, `/api/audit`,
   catalog admin) require the `InfraPortal.Admin` role — a plain API key normally cannot call
-  them.
+  them; an Admin personal token can.
 - Approve/reject endpoints authenticate with the key, but approval *eligibility* is evaluated
   against human users/groups in the promotion policy — treat approvals as human actions, not
   something to automate with the key. The one exception: a key with the admin role may
   **reject** with a reason through the admin reject endpoints (e.g. stale promotions) — see
-  Promotions. It still never approves.
+  Promotions. It still never approves. An Admin personal token is its owner delegating their own
+  decisions to the agent: it may approve or reject wherever its owner could, but only on the user's
+  explicit request for that decision. Each one is audited as an agent's (`personal_token.decision`).
 
 ## Reading deployment data
 
@@ -209,7 +215,7 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   "from" side of the change, frozen) and `targetCurrentVersion` (what it runs now). They differ
   once the promotion lands, so read history off `fromVersion`.
 - `POST /api/promotions/{id}/approve` / `/reject` — human actions (body `{ "comment"?: ... }`).
-- Admin reject (admin-role key): `POST /api/promotions/admin/candidates/{id}/reject`
+- Admin reject (admin-role key or Admin personal token): `POST /api/promotions/admin/candidates/{id}/reject`
   `{ "reason" }` → `{ id, status }`, or `POST /api/promotions/admin/candidates/bulk/reject`
   `{ "ids": [...], "reason" }` → `{ results: [{ id, ok, status | error }] }` (a bad id fails only
   its own row). Pending only; reason required (`400`). Same effects as a normal reject, audited as

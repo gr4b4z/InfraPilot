@@ -1409,11 +1409,11 @@ class ApiClient {
 
   /** Newest first. Revoked and expired tokens are included, so the list doubles as history. */
   listMyTokens() {
-    return this.request<{ tokens: PersonalAccessToken[] }>(`/me/tokens`);
+    return this.request<{ tokens: PersonalAccessToken[]; allowedAccess: TokenAccess[] }>(`/me/tokens`);
   }
 
   /** The response carries the plaintext secret — the only time the server will ever return it. */
-  createMyToken(body: { name: string; expiresInDays: TokenLifetimeDays }) {
+  createMyToken(body: { name: string; expiresInDays: TokenLifetimeDays; access: TokenAccess }) {
     return this.request<CreatedPersonalAccessToken>(`/me/tokens`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -1539,6 +1539,13 @@ export interface UserPreferencesPayload {
 export type TokenLifetimeDays = 7 | 30 | 90;
 
 /**
+ * What a token may decide. `Standard`: the owner's roles minus Admin, no decisions. `QA`: adds the
+ * QA role and work-item sign-off. `Admin`: keeps Admin and makes every decision the owner can.
+ * Nobody may create one above their own role; the list response says which they may.
+ */
+export type TokenAccess = 'Standard' | 'QA' | 'Admin';
+
+/**
  * A personal access token as listed — never the secret itself. `prefix` (`ipt_ab12cd34`) is the
  * public part, safe to show so a user can tell which token an agent is holding.
  */
@@ -1550,8 +1557,9 @@ export interface PersonalAccessToken {
   expiresAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
-  /** The creator's roles at creation time, minus Admin. */
+  /** The creator's roles at creation time, shaped by `access`: Admin only on an Admin token. */
   roles: string[];
+  access: TokenAccess;
 }
 
 export interface CreatedPersonalAccessToken extends PersonalAccessToken {

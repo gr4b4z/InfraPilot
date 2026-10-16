@@ -496,6 +496,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
             e.Property(x => x.Prefix).HasMaxLength(20).IsRequired();
             e.Property(x => x.Roles).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.Access).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Ignore(x => x.RoleList);
             // Every authenticated request with a token looks it up by hash.
             e.HasIndex(x => x.TokenHash).IsUnique();
