@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -97,7 +98,8 @@ public class DiagnosticsService
         }
 
         // ── Approved: follow the announcement out of the building. ──
-        var cancelKey = $"promotion-approved:{candidate.Id}";
+        // The key the dispatcher actually queued the rows under — never a re-typed copy of it.
+        var cancelKey = PromotionService.ApprovedWebhookCancelKey(candidate.Id);
         var deliveries = await _db.WebhookDeliveries.AsNoTracking()
             .Where(d => d.EventType == ApprovedEventType && d.CancelKey == cancelKey)
             .OrderByDescending(d => d.CreatedAt)
