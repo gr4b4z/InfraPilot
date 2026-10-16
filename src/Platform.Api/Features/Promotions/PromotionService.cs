@@ -1787,18 +1787,28 @@ public class PromotionService
             // Rejecting is NOT the alternative to offer: RejectAsync only accepts Pending candidates,
             // so pointing an Approved one at it names an action that cannot be taken. Name the thing
             // that is actually holding the gate open instead — with the re-resolution above, undoing
-            // that makes this call succeed. The two ways to be satisfied with zero sign-offs read very
-            // differently to whoever has to act: an empty requirement tree, or the work-item
-            // auto-approve rule firing over a tree that does have approvers in it.
+            // that makes this call succeed. Which rule that is comes from the gate itself: an empty
+            // requirement tree, every work item signed off under the work-item auto-approve rule, or
+            // no work items under AutoApproveWhenNoWorkItems — each needs a different fix.
+            var edge = $"{candidate.SourceEnv} → {candidate.TargetEnv}";
+            var (reason, fix) = wouldReapprove.SatisfiedBy switch
+            {
+                GateSatisfiedBy.AllWorkItemsApproved => (
+                    "all work items approved",
+                    "Block a work item to reopen the gate, then cancel. (An issue does not — it flags "
+                    + "a problem without holding the release.)"),
+                GateSatisfiedBy.NoWorkItems => (
+                    "no work items",
+                    "Turn off \"Auto-approve promotion when no work items are assigned\" on the "
+                    + $"{edge} policy first, then cancel."),
+                _ => (
+                    "auto-approve: the policy has no approval requirements",
+                    "It was approved without human sign-off, so there is no approval to take back. "
+                    + $"Add an approval requirement to the {edge} policy first, then cancel."),
+            };
             throw new InvalidOperationException(
-                "This promotion's policy approves it without human sign-off, so there is no approval "
-                + "to take back — it would be approved again immediately. "
-                + (policy.Current.IsAutoApprove
-                    ? $"Add an approval requirement to the {candidate.SourceEnv} → {candidate.TargetEnv} "
-                      + "policy first, then cancel."
-                    : "Its policy auto-approves once every work item is signed off; block a work "
-                      + "item to reopen the gate, then cancel. (An issue does not — it flags a "
-                      + "problem without holding the release.)"));
+                $"The policy would approve this promotion again immediately ({reason}), so the "
+                + $"approval cannot be cancelled. {fix}");
         }
 
         // Cancelling under a newer policy has to carry that policy onto the candidate. Sending it
@@ -2001,17 +2011,17 @@ public class PromotionService
             && await CandidateHasWorkItemsAsync(candidate, ct)
             && await AreAllWorkItemsClearedAsync(candidate, ct))
         {
-            return new GateResult(true, Array.Empty<string>());
+            return new GateResult(true, Array.Empty<string>(), GateSatisfiedBy.AllWorkItemsApproved);
         }
 
         // 3. No human approver requirements → satisfied (any required work-item gate already passed above).
         if (snapshot.IsAutoApprove)
-            return new GateResult(true, Array.Empty<string>());
+            return new GateResult(true, Array.Empty<string>(), GateSatisfiedBy.NoApprovalRequirements);
 
         // 3b. AutoApproveWhenNoWorkItems with no work items → satisfied. Normally applied at create
         //     time; evaluated here too so a candidate held Pending by a freeze is released on lift.
         if (snapshot.AutoApproveWhenNoWorkItems && !await CandidateHasWorkItemsAsync(candidate, ct))
-            return new GateResult(true, Array.Empty<string>());
+            return new GateResult(true, Array.Empty<string>(), GateSatisfiedBy.NoWorkItems);
 
         // 4. Human approver requirements must be satisfied. Steps 1-3 above are approval-independent,
         // so this is the only one a hypothetical "with no approvals recorded" run has to short-circuit.
@@ -2029,11 +2039,11 @@ public class PromotionService
         // only legacy unattributed rows are placed by the matcher, at most one requirement each.
         var requirements = snapshot.AllRequirements;
         if (requirements.Count == 0)
-            return new GateResult(true, Array.Empty<string>()); // no human gate
+            return new GateResult(true, Array.Empty<string>(), GateSatisfiedBy.NoApprovalRequirements); // no human gate
 
         var match = await EvaluateRequirementMatchAsync(candidate, requirements, ct);
         if (match.AllSatisfied)
-            return new GateResult(true, Array.Empty<string>());
+            return new GateResult(true, Array.Empty<string>(), GateSatisfiedBy.Approvals);
 
         var blockers = match.Requirements
             .Where(o => !o.Satisfied)
@@ -3879,9 +3889,24 @@ public record PromotionQuery(
 /// Outcome of <see cref="PromotionService.EvaluateGateAsync"/>: whether the gate is currently
 /// satisfied for a Pending candidate, plus a list of human-readable blockers when it isn't.
 /// Blockers are intended for surfacing in error responses or the UI's "what's missing" panel —
-/// not a structured machine-consumable shape.
+/// not a structured machine-consumable shape. <see cref="SatisfiedBy"/> names the gate step that
+/// satisfied it (null while blocked).
 /// </summary>
-public record GateResult(bool Satisfied, IReadOnlyList<string> Blockers);
+public record GateResult(
+    bool Satisfied, IReadOnlyList<string> Blockers, GateSatisfiedBy? SatisfiedBy = null);
+
+/// <summary>The <see cref="PromotionService.EvaluateGateAsync"/> step that satisfied the gate.</summary>
+public enum GateSatisfiedBy
+{
+    /// <summary>AutoApproveOnAllWorkItemsApproved, and every work item is cleared.</summary>
+    AllWorkItemsApproved,
+    /// <summary>The policy has no human approver requirements (auto-approve).</summary>
+    NoApprovalRequirements,
+    /// <summary>AutoApproveWhenNoWorkItems, and the candidate has no work items.</summary>
+    NoWorkItems,
+    /// <summary>The recorded approvals meet every approver requirement.</summary>
+    Approvals,
+}
 
 /// <summary>
 /// Outcome of <see cref="PromotionService.CancelApprovalAsync"/>. The two counters exist for the
