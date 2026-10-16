@@ -288,6 +288,50 @@ public static class PromotionAdminEndpoints
             return Results.Ok(new { groups, rows });
         });
 
+        // ── Promotion Freeze (ADR-0001 / ADR-0002) ──────────────────────────
+        // Freeze one product's promotions into one target env; lifting re-evaluates the pair's
+        // Pending candidates. Admin-only via the group's CatalogAdmin policy.
+
+        group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
+            Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
+
+        group.MapGet("/freezes/history", async (
+            PromotionFreezeService freezes, int? limit, CancellationToken ct) =>
+            Results.Ok(new
+            {
+                entries = await freezes.GetHistoryAsync(limit ?? PromotionFreezeService.DefaultHistoryLimit, ct),
+            }));
+
+        // The target env is resolved to its canonical key, like the policy editors, so freezing
+        // "prod" freezes the "production" pair the policies and candidates are stored under.
+        group.MapPost("/freezes", async (
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            FreezePromotionsRequest? request, CancellationToken ct) =>
+        {
+            try
+            {
+                var freeze = await freezes.FreezeAsync(
+                    request?.Product ?? "", await environments.ResolveAsync(request?.TargetEnv, ct),
+                    request?.Reason ?? "", ct);
+                return Results.Created("/api/promotions/admin/freezes", freeze);
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (FreezeAlreadyActiveException ex) { return Results.Conflict(new { error = ex.Message }); }
+            catch (NoApprovalPolicyForPairException ex) { return Results.UnprocessableEntity(new { error = ex.Message }); }
+        });
+
+        // Falls back to the key exactly as sent, so a freeze stored before that name became an alias
+        // can still be lifted.
+        group.MapDelete("/freezes/{product}/{targetEnv}", async (
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            string product, string targetEnv, CancellationToken ct) =>
+        {
+            var canonical = await environments.ResolveAsync(targetEnv, ct);
+            var lifted = await freezes.LiftAsync(product, canonical, ct)
+                || (canonical != targetEnv && await freezes.LiftAsync(product, targetEnv, ct));
+            return lifted ? Results.NoContent() : Results.NotFound();
+        });
+
         // ── Policies ────────────────────────────────────────────────────────
 
         group.MapGet("/policies", async (PlatformDbContext db) =>
@@ -662,6 +706,8 @@ public record UpsertRequirementRequest(
 /// <summary>Body for the admin bypass endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
 public record BypassPromotionRequest(string? Reason);
 
+/// <summary>Body for creating a Promotion Freeze. All three fields are required (blank ⇒ 400).</summary>
+public record FreezePromotionsRequest(string? Product, string? TargetEnv, string? Reason);
 /// <summary>Body for the bulk bypass endpoint: the candidates, and the one reason that covers them all.</summary>
 public record BulkBypassPromotionRequest(Guid[]? Ids, string? Reason);
 

@@ -619,6 +619,8 @@ class ApiClient {
       approvalProgress: PromotionApprovalProgress;
       eligibleRequirements: EligibleRequirement[];
       bypass: { byName: string; at: string; reason: string | null } | null;
+      /** The Promotion Freeze holding this Pending candidate; null when not frozen (or not Pending). */
+      freeze: Omit<PromotionFreeze, 'heldCandidates'> | null;
       /** Whether the current user may undo this promotion's approval right now. */
       canCancelApproval: boolean;
       /**
@@ -1071,6 +1073,31 @@ class ApiClient {
 
   deletePromotionPolicy(id: string) {
     return this.request<void>(`/promotions/admin/policies/${id}`, { method: 'DELETE' });
+  }
+
+  listPromotionFreezes() {
+    return this.request<{ freezes: PromotionFreeze[] }>(`/promotions/freezes`);
+  }
+
+  createPromotionFreeze(freeze: { product: string; targetEnv: string; reason: string }) {
+    return this.request<PromotionFreeze>(`/promotions/admin/freezes`, {
+      method: 'POST',
+      body: JSON.stringify(freeze),
+    });
+  }
+
+  liftPromotionFreeze(product: string, targetEnv: string) {
+    return this.request<void>(
+      `/promotions/admin/freezes/${encodeURIComponent(product)}/${encodeURIComponent(targetEnv)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  listPromotionFreezeHistory(limit?: number) {
+    const qs = limit ? `?limit=${limit}` : '';
+    return this.request<{ entries: PromotionFreezeHistoryEntry[] }>(
+      `/promotions/admin/freezes/history${qs}`,
+    );
   }
 
   // ── Rollbacks ──────────────────────────────────────────────────────────
@@ -1780,6 +1807,8 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /** Pending and held by an active Promotion Freeze on (product, targetEnv). */
+  frozen: boolean;
   /**
    * Whether approving this promotion is the **last** gate before the version is live.
    *
@@ -2369,6 +2398,10 @@ export interface PromotionApprovalProgress {
   steps: PromotionStepProgress[];
   /** The "all work items resolved" gate condition, when the policy gates on it; null otherwise. */
   workItems: PromotionWorkItemGate | null;
+  /** True when a Promotion Freeze holds this Pending candidate; allSatisfied is then false. */
+  frozen: boolean;
+  /** The freeze's reason when frozen; null otherwise. */
+  blockedReason: string | null;
 }
 
 export interface PromotionWorkItemGate {
@@ -2638,6 +2671,25 @@ export interface PromotionPolicy {
   // Set only on create/update responses: how many pending promotions were re-gated under the saved
   // settings. Null when reading policies back.
   reappliedCandidates: number | null;
+}
+
+/** An active Promotion Freeze on (product, targetEnv); heldCandidates = Pending candidates of the pair. */
+export interface PromotionFreeze {
+  product: string;
+  targetEnv: string;
+  reason: string;
+  frozenBy: string;
+  frozenAt: string;
+  heldCandidates: number;
+}
+
+export interface PromotionFreezeHistoryEntry {
+  action: 'frozen' | 'unfrozen';
+  product: string;
+  targetEnv: string;
+  reason: string | null;
+  actor: string;
+  at: string;
 }
 
 export interface UpsertPromotionPolicyPayload {

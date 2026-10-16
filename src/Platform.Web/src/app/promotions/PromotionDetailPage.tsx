@@ -13,7 +13,9 @@ import type {
   PromotionApprovalProgress,
   EligibleRequirement,
   WorkItemContext,
+  PromotionFreeze,
 } from '@/lib/api';
+import { FreezeNotice } from './FreezeNotice';
 import { useAuthStore } from '@/stores/authStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
@@ -40,6 +42,7 @@ import {
   MessageSquare,
   Edit2,
   Trash2,
+  Snowflake,
   Undo2,
   Lock,
 } from 'lucide-react';
@@ -157,6 +160,7 @@ export function PromotionDetailPage() {
   const [approvalProgress, setApprovalProgress] = useState<PromotionApprovalProgress | null>(null);
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
+  const [freeze, setFreeze] = useState<Omit<PromotionFreeze, 'heldCandidates'> | null>(null);
   const [canCancelApproval, setCanCancelApproval] = useState(false);
   // The deploy event that put this version live in the target env — set only once the
   // promotion is Deployed, and the link the "Deployed" timestamp points at.
@@ -191,6 +195,7 @@ export function PromotionDetailPage() {
         setApprovalProgress(data.approvalProgress ?? null);
         setEligibleRequirements(data.eligibleRequirements || []);
         setBypass(data.bypass ?? null);
+        setFreeze(data.freeze ?? null);
         setCanCancelApproval(data.canCancelApproval ?? false);
         setDeploymentEventId(data.deploymentEventId ?? null);
         setFailedDeployments(data.failedDeployments ?? []);
@@ -600,7 +605,9 @@ export function PromotionDetailPage() {
           {/* Promotion approval — the live gate progress (per step / per requirement), who has
              approved each gate, and an Approve button on every gate the current user can still
              clear, all in one card. Progress and history are visible to everyone; the controls
-             appear only when the current user can act. */}
+             appear only when the current user can act. A Promotion Freeze holding this Pending
+             candidate is announced right above it, before the approver acts. */}
+          {freeze && candidate.status === 'Pending' && <FreezeNotice freeze={freeze} />}
           <div data-guide-anchor="promotion-approval-card">
             <PromotionApprovalCard
               candidate={candidate}
@@ -1945,7 +1952,7 @@ function ApprovalProgressBody({
   approveBlockedId: string;
   actionLoading: boolean;
 }) {
-  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate } = progress;
+  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate, frozen, blockedReason } = progress;
   const remaining = Math.max(0, totalRequired - totalApproved);
   const approveBlocked = approveBlockedReason !== null;
 
@@ -2059,6 +2066,16 @@ function ApprovalProgressBody({
 
   return (
     <div>
+      {/* A Promotion Freeze blocks the gate even when every requirement below is satisfied. */}
+      {frozen && (
+        <p
+          className="flex items-center gap-1.5 text-[12px] font-medium mb-2"
+          style={{ color: 'var(--info)' }}
+        >
+          <Snowflake size={13} style={{ flexShrink: 0 }} />
+          Held by freeze{blockedReason ? `: ${blockedReason}` : ''}
+        </p>
+      )}
       <div className="flex items-center justify-end mb-3">
         <span
           className="inline-flex items-center gap-1.5 text-[12px] font-medium"

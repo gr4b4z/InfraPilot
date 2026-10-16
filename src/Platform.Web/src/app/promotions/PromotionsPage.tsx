@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PromotionCandidate, PromotionStatus, WorkItemDecision } from '@/lib/api';
+import type { PromotionCandidate, PromotionFreeze, PromotionStatus, WorkItemDecision } from '@/lib/api';
+import { FreezeBanner, FrozenGroup } from './FreezeCues';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { getWorkItemContextCached } from '@/lib/workItemContextCache';
 import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
@@ -64,6 +65,7 @@ import {
   ShieldCheck,
   Lock,
   ListChecks,
+  Snowflake,
 } from 'lucide-react';
 import { HelpButton } from '@/components/guide/HelpButton';
 
@@ -340,6 +342,8 @@ export function PromotionsPage() {
   const [rejected, setRejected] = useState<PromotionCandidate[] | null>(null);
   const [rejectedLoading, setRejectedLoading] = useState(false);
   const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
+  // Active Promotion Freezes (readable by any signed-in user) for the banner and the Frozen group.
+  const [freezes, setFreezes] = useState<PromotionFreeze[]>([]);
 
   // `/` searches promotions while this page is up. No dependencies — the scope hits the server, so
   // it doesn't close over anything on screen.
@@ -543,6 +547,10 @@ export function PromotionsPage() {
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
+    api
+      .listPromotionFreezes()
+      .then((data) => setFreezes(data.freezes || []))
+      .catch(() => setFreezes([]));
   };
 
   // Approved-but-not-yet-deployed. Separate fetch (single-status ⇒ backend allows up
@@ -811,8 +819,18 @@ export function PromotionsPage() {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [filterOptions.gates, gateFilter]);
 
+  // Frozen rows stay individually selectable (approvals are still recorded) but are left out of
+  // select-all and the tab badge, matching the open list's count (ruling R10).
+  const openApprovable = approvablePending.filter((c) => !c.frozen);
+  // Candidates held by a freeze leave the main list for the Frozen group below it. Not on "All",
+  // whose mixed-status list keeps its order; the card's Frozen chip still marks them there.
+  const openDisplayed = view === 'all' ? displayed : displayed.filter((c) => !c.frozen);
+  const frozenDisplayed = view === 'all' ? [] : displayed.filter((c) => c.frozen);
+  const bannerFreezes = freezes.filter(
+    (f) => (!productFilter || f.product === productFilter) && (!targetEnvFilter || f.targetEnv === targetEnvFilter),
+  );
   const allApprovableSelected =
-    approvablePending.length > 0 && approvablePending.every((c) => selected.has(c.id));
+    openApprovable.length > 0 && openApprovable.every((c) => selected.has(c.id));
 
   // How many of the selected promotions deploy off the approval alone, for the line beside the bulk
   // button. Bulk approve is where a whole release goes out in one click, so it is the surface that
@@ -836,7 +854,7 @@ export function PromotionsPage() {
     if (allApprovableSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(approvablePending.map((c) => c.id)));
+      setSelected(new Set(openApprovable.map((c) => c.id)));
     }
   };
 
@@ -869,6 +887,22 @@ export function PromotionsPage() {
       refreshMyTasks();
     }
   };
+
+  const renderCard = (c: PromotionCandidate, index: number) => (
+    <CandidateCard
+      key={c.id}
+      index={index}
+      candidate={c}
+      /* The urgency tint only means something where every row is genuinely waiting
+         on someone. On a mixed list the status badge carries that instead. */
+      urgent={c.status === 'Pending'}
+      selectable={view === 'mine' && c.canApprove}
+      selected={selected.has(c.id)}
+      onToggleSelect={() => toggleSelect(c.id)}
+      workItemProgress={workItemProgress[c.id]}
+      awaitingCue={view !== 'mine'}
+    />
+  );
 
   return (
     <div className="space-y-6">
@@ -950,6 +984,8 @@ export function PromotionsPage() {
           onApplied={handleMassApproveApplied}
         />
       )}
+
+      {bannerFreezes.length > 0 && <FreezeBanner freezes={bannerFreezes} canManage={isAdmin} />}
 
       {/* Secondary filters */}
       <FilterPanel
@@ -1073,7 +1109,7 @@ export function PromotionsPage() {
       >
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
-          { key: 'mine', label: 'Awaiting my approval', count: approvablePending.length, showBadge: true },
+          { key: 'mine', label: 'Awaiting my approval', count: openApprovable.length, showBadge: true },
           { key: 'needs-attention', label: 'Needs attention', count: needsAttention.length, showBadge: true },
           { key: 'awaiting-deploy', label: 'Approved · awaiting deploy', count: awaitingDeploy.length, showBadge: true },
           { key: 'resolved', label: 'Resolved', count: 0, showBadge: false },
@@ -1126,7 +1162,7 @@ export function PromotionsPage() {
               {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
                  where every row is something you can act on. The other lists stay
                  action-per-row (Review →) without checkbox clutter. */}
-              {view === 'mine' && approvablePending.length > 0 && (
+              {view === 'mine' && openApprovable.length > 0 && (
                 <input
                   type="checkbox"
                   checked={allApprovableSelected}
@@ -1138,7 +1174,7 @@ export function PromotionsPage() {
                 className="text-[11px] font-semibold uppercase tracking-wider"
                 style={{ color: 'var(--text-muted)' }}
               >
-                {VIEW_HEADINGS[view]} ({displayed.length})
+                {VIEW_HEADINGS[view]} ({openDisplayed.length})
               </h2>
             </div>
             {view === 'mine' && selected.size > 0 && (
@@ -1164,22 +1200,11 @@ export function PromotionsPage() {
             )}
           </div>
           <div data-guide-anchor="promotions-list">
-            <KeyboardList className="space-y-2" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
-            {displayed.map((c, index) => (
-              <CandidateCard
-                key={c.id}
-                index={index}
-                candidate={c}
-                /* The urgency tint only means something where every row is genuinely waiting
-                   on someone. On a mixed list the status badge carries that instead. */
-                urgent={c.status === 'Pending'}
-                selectable={view === 'mine' && c.canApprove}
-                selected={selected.has(c.id)}
-                onToggleSelect={() => toggleSelect(c.id)}
-                workItemProgress={workItemProgress[c.id]}
-                awaitingCue={view !== 'mine'}
-              />
-            ))}
+            <KeyboardList className="space-y-5" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
+              <div className="space-y-2">{openDisplayed.map((c, index) => renderCard(c, index))}</div>
+              <FrozenGroup freezes={freezes} candidates={frozenDisplayed}>
+                {frozenDisplayed.map((c, index) => renderCard(c, openDisplayed.length + index))}
+              </FrozenGroup>
             </KeyboardList>
           </div>
           {displayed.length > PROGRESS_CANDIDATE_LIMIT && (
@@ -1377,6 +1402,12 @@ function CandidateCard({
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
           <WorkItemsBadge candidate={candidate} progress={workItemProgress} />
+          {candidate.frozen && (
+            <span className="flex items-center gap-1 font-medium" style={{ color: 'var(--info)' }}>
+              <Snowflake size={10} />
+              Frozen
+            </span>
+          )}
         </div>
         {/* Work items — key + optional title, tinted by their own sign-off state so a stalled bundle
            shows you *which* item is holding it. The chip opens the work-item detail page (sign-off,
