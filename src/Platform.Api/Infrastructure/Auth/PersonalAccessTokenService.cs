@@ -13,14 +13,17 @@ namespace Platform.Api.Infrastructure.Auth;
 ///
 /// <para>What a token may do is decided here and in two places that read its claims:
 /// <list type="bullet">
-/// <item>It carries the owner's roles minus <c>InfraPortal.Admin</c>, so the admin groups refuse it.
-/// Admin work stays in the portal, where the session reflects the role as Entra grants it today
-/// rather than as it was when the token was made.</item>
+/// <item>Its <see cref="PersonalTokenAccess"/>, chosen at creation and never above the owner's own
+/// role. A standard token carries the owner's roles minus <c>InfraPortal.Admin</c>, so the admin
+/// groups refuse it; a QA token adds <c>InfraPortal.QA</c>; only an Admin token keeps Admin. The roles
+/// are a snapshot: an Admin token stays Admin until it expires or is revoked, even if Entra takes the
+/// role away sooner.</item>
 /// <item>Its <c>auth_method</c> is <c>personal_token</c>, which the pipeline-only policy
 /// (<see cref="AuthorizationPolicies.DeploymentIngestion"/>) rejects — ingest, build registration and
 /// external promotion creation are for the configured pipeline keys — and which the decision routes
-/// refuse (<see cref="PersonalTokenRestrictions.DenyPersonalTokens{TBuilder}"/>): an approval is a
-/// person's judgement, and a token is how an agent acts for them.</item>
+/// check against the token's access
+/// (<see cref="PersonalTokenRestrictions.RequirePersonalTokenAccess{TBuilder}"/>): a standard token
+/// makes no decisions, a QA token signs off work items, an Admin token decides what its owner can.</item>
 /// </list></para>
 /// </summary>
 public class PersonalAccessTokenService
@@ -30,6 +33,9 @@ public class PersonalAccessTokenService
 
     public const string AuthMethod = "personal_token";
     public const string TokenIdClaim = "token_id";
+
+    /// <summary>The token's <see cref="PersonalTokenAccess"/>, by name.</summary>
+    public const string AccessClaim = "token_access";
 
     /// <summary>The lifetimes the portal offers. Always finite: a forgotten token stops working on its own.</summary>
     public static readonly int[] AllowedLifetimesDays = [7, 30, 90];
@@ -41,6 +47,7 @@ public class PersonalAccessTokenService
     public static readonly TimeSpan TouchInterval = TimeSpan.FromMinutes(5);
 
     private const string AdminRole = "InfraPortal.Admin";
+    private const string QaRole = "InfraPortal.QA";
     private const string DefaultRole = "InfraPortal.User";
 
     private readonly PlatformDbContext _db;
@@ -65,10 +72,18 @@ public class PersonalAccessTokenService
             .ToListAsync(ct);
     }
 
+    /// <summary>The access levels the signed-in user may give a token: never above their own role.</summary>
+    public IReadOnlyList<PersonalTokenAccess> AllowedAccess() =>
+        _user.IsAdmin ? [PersonalTokenAccess.Standard, PersonalTokenAccess.QA, PersonalTokenAccess.Admin]
+        : _user.IsQA ? [PersonalTokenAccess.Standard, PersonalTokenAccess.QA]
+        : [PersonalTokenAccess.Standard];
+
     /// <summary>Creates a token for the signed-in user. Returns the row and the secret, which is never stored.</summary>
     /// <exception cref="ArgumentException">Bad name, lifetime, or too many active tokens.</exception>
+    /// <exception cref="UnauthorizedAccessException">An access level above the user's own role.</exception>
     public async Task<(PersonalAccessToken Token, string Secret)> CreateAsync(
-        string? name, int expiresInDays, CancellationToken ct = default)
+        string? name, int expiresInDays, PersonalTokenAccess access = PersonalTokenAccess.Standard,
+        CancellationToken ct = default)
     {
         var owner = OwnerEmail;
         if (owner.Length == 0)
@@ -79,6 +94,12 @@ public class PersonalAccessTokenService
         if (label.Length > 100) throw new ArgumentException("The name can be at most 100 characters.");
         if (!AllowedLifetimesDays.Contains(expiresInDays))
             throw new ArgumentException($"expiresInDays must be one of: {string.Join(", ", AllowedLifetimesDays)}.");
+        if (!Enum.IsDefined(access))
+            throw new ArgumentException("access must be one of: Standard, QA, Admin.");
+        if (!AllowedAccess().Contains(access))
+            throw new UnauthorizedAccessException(access == PersonalTokenAccess.Admin
+                ? "Only an administrator can create an Admin token."
+                : "Only a QA member or an administrator can create a QA token.");
 
         var now = DateTimeOffset.UtcNow;
         var active = await _db.PersonalAccessTokens
@@ -87,9 +108,13 @@ public class PersonalAccessTokenService
             throw new ArgumentException($"You already have {MaxActivePerUser} active tokens. Revoke one you no longer use first.");
 
         var roles = _user.Roles
-            .Where(r => !string.Equals(r, AdminRole, StringComparison.OrdinalIgnoreCase))
+            .Where(r => access == PersonalTokenAccess.Admin || !string.Equals(r, AdminRole, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        // An administrator without the QA role holds its jurisdiction through Admin, which a QA token
+        // drops — so the token gets the QA role itself, or it could sign off nothing.
+        if (access == PersonalTokenAccess.QA && !roles.Contains(QaRole, StringComparer.OrdinalIgnoreCase))
+            roles.Add(QaRole);
         if (roles.Count == 0) roles.Add(DefaultRole);
 
         var secret = Prefix + Base64Url(RandomNumberGenerator.GetBytes(32));
@@ -103,6 +128,7 @@ public class PersonalAccessTokenService
             TokenHash = Hash(secret),
             Prefix = secret[..(Prefix.Length + 8)],
             Roles = string.Join(",", roles),
+            Access = access,
             CreatedAt = now,
             ExpiresAt = now.AddDays(expiresInDays),
         };
@@ -111,7 +137,7 @@ public class PersonalAccessTokenService
 
         await _audit.Log("auth", "personal_token.created", _user.Id, _user.Name, "user",
             nameof(PersonalAccessToken), token.Id, null,
-            new { token.Name, token.Prefix, token.ExpiresAt, roles });
+            new { token.Name, token.Prefix, token.ExpiresAt, roles, access = access.ToString() });
 
         return (token, secret);
     }
@@ -241,6 +267,7 @@ public class PersonalAccessTokenService
             new("preferred_username", token.UserEmail),
             new("auth_method", AuthMethod),
             new(TokenIdClaim, token.Id.ToString()),
+            new(AccessClaim, token.Access.ToString()),
             new(ApiKeyAuthHandler.ExpiresAtClaim, token.ExpiresAt.ToString("O")),
         };
         claims.AddRange(token.RoleList.Select(r => new Claim("roles", r)));
@@ -253,6 +280,16 @@ public class PersonalAccessTokenService
     public static bool LooksLikeToken(string presented) => presented.StartsWith(Prefix, StringComparison.Ordinal);
 
     public static bool IsPersonalToken(ClaimsPrincipal user) => user.FindFirstValue("auth_method") == AuthMethod;
+
+    /// <summary>
+    /// A personal token's access level, or null when the caller is not a personal token. A missing or
+    /// unreadable claim reads as <see cref="PersonalTokenAccess.Standard"/>: the least a token can do.
+    /// </summary>
+    public static PersonalTokenAccess? AccessOf(ClaimsPrincipal user) =>
+        !IsPersonalToken(user) ? null
+        : Enum.TryParse<PersonalTokenAccess>(user.FindFirstValue(AccessClaim), out var access) && Enum.IsDefined(access)
+            ? access
+            : PersonalTokenAccess.Standard;
 
     public static string Hash(string secret) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(secret)));

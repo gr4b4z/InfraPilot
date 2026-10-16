@@ -20,6 +20,10 @@ public static class PromotionAdminEndpoints
         // Force a Pending candidate to Approved without satisfying its gate. Admin-only via the
         // group's CatalogAdmin policy. A reason is required; the existing promotion.approved webhook
         // still fires so downstream automation is unchanged.
+        //
+        // The decisions here (bypass, reject, orphan sweep) also carry RequirePersonalTokenAccess:
+        // the group's Admin role already limits personal tokens to Admin ones, and the filter records
+        // that an agent made the decision.
         group.MapPost("/candidates/{id:guid}/bypass", async (
             PromotionService service, Guid id, BypassPromotionRequest? request, CancellationToken ct) =>
         {
@@ -36,7 +40,7 @@ public static class PromotionAdminEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Bypass in bulk: mass approve's admin column. One reason covers the batch, the same way one
         // comment covers a bulk approve, and each candidate is bypassed and audited on its own
@@ -76,7 +80,7 @@ public static class PromotionAdminEndpoints
             }
 
             return Results.Ok(new { results });
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // ── Candidate reject (admin override) ───────────────────────────────
         // Reject a Pending candidate without being an eligible approver for it — the counterpart of
@@ -101,7 +105,7 @@ public static class PromotionAdminEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Reject in bulk, for automation (the UI deliberately has no bulk reject — see the bulk approve
         // route). Same contract as bulk bypass: one reason for the batch, each candidate rejected and
@@ -140,7 +144,7 @@ public static class PromotionAdminEndpoints
             }
 
             return Results.Ok(new { results });
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // ── Completion reconciliation ───────────────────────────────────────
         // Settles open promotions that the target environment's deploy history has already decided:
@@ -268,7 +272,7 @@ public static class PromotionAdminEndpoints
             {
                 return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
             }
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // ── Duplicate candidates (Settings → Maintenance) ────────────────────
         // Residue of a pre-D15 create path that minted a new row per external POST instead of

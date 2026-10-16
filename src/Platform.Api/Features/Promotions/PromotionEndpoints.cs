@@ -662,14 +662,14 @@ public static class PromotionEndpoints
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Reject.
         group.MapPost("/{id:guid}/reject", async (
             PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
         {
             return await RunDecisionAsync(() => svc.RejectAsync(id, body?.Comment));
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Cancel approval — Approved back to Pending, for the wrong row approved by mistake. Only
         // while the candidate hasn't been dispatched; the service refuses everything else. Returns
@@ -691,7 +691,7 @@ public static class PromotionEndpoints
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Bulk approve — succeeds partially: returns per-id outcome so the UI can show
         // which ones went through and which failed. Rejecting in bulk is intentionally
@@ -755,7 +755,7 @@ public static class PromotionEndpoints
                         workItemsOutstanding = gateStatuses.GetValueOrDefault(o.Id, PromotionGateStatus.None).WorkItemsOutstanding,
                     }),
             });
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // The target envs a registered build can be promoted to for this service: every edge whose
         // source is the synthetic "build" env and whose policy resolves (service-specific row wins

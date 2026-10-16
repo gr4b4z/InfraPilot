@@ -17,10 +17,11 @@ import {
   api,
   type CreatedPersonalAccessToken,
   type PersonalAccessToken,
+  type TokenAccess,
   type TokenLifetimeDays,
 } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import { TOKEN_STATUS_STYLE, tokenRoleName, tokenStatus, type TokenStatus } from '@/lib/personalTokens';
+import { TOKEN_ACCESS, TOKEN_STATUS_STYLE, tokenRoleName, tokenStatus, type TokenStatus } from '@/lib/personalTokens';
 import { getBackendOrigin } from '@/lib/runtimeConfig';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { ENV_API_KEY, ENV_URL, TOKEN_PLACEHOLDER, buildAgentSnippets } from './agentSnippets';
@@ -30,6 +31,7 @@ const MAX_ACTIVE_TOKENS = 10;
 
 const LIFETIMES: TokenLifetimeDays[] = [7, 30, 90];
 const DEFAULT_LIFETIME: TokenLifetimeDays = 30;
+const DEFAULT_ACCESS: TokenAccess = 'Standard';
 
 const inputClass =
   'px-3 py-2 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]';
@@ -46,11 +48,15 @@ const inputStyle = {
  * Per-user, so it is reachable by everyone from the user menu rather than living under the
  * admin-only Settings. A token's secret is shown exactly once, on creation; until that reveal is
  * dismissed the setup snippets carry it, so the commands can be pasted as they stand.
+ *
+ * QA members and admins also pick the token's access level (QA, Admin). The server says which ones
+ * this user may create, so the picker only appears when there is a choice.
  */
 export function AgentAccessPage() {
   useDocumentTitle(['Agent access']);
 
   const [tokens, setTokens] = useState<PersonalAccessToken[]>([]);
+  const [allowedAccess, setAllowedAccess] = useState<TokenAccess[]>([DEFAULT_ACCESS]);
   const [loading, setLoading] = useState(true);
   // When the list was fetched — what "expired" is measured against, so rendering stays pure.
   const [loadedAt, setLoadedAt] = useState(0);
@@ -58,6 +64,7 @@ export function AgentAccessPage() {
 
   const [name, setName] = useState('');
   const [lifetime, setLifetime] = useState<TokenLifetimeDays>(DEFAULT_LIFETIME);
+  const [access, setAccess] = useState<TokenAccess>(DEFAULT_ACCESS);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedPersonalAccessToken | null>(null);
@@ -76,6 +83,7 @@ export function AgentAccessPage() {
       .then((data) => {
         if (cancelled) return;
         setTokens(data.tokens ?? []);
+        setAllowedAccess(data.allowedAccess?.length ? data.allowedAccess : [DEFAULT_ACCESS]);
         setLoadedAt(Date.now());
         setError(null);
       })
@@ -100,10 +108,12 @@ export function AgentAccessPage() {
     setCreating(true);
     setCreateError(null);
     try {
-      const result = await api.createMyToken({ name: name.trim(), expiresInDays: lifetime });
+      const result = await api.createMyToken({ name: name.trim(), expiresInDays: lifetime, access });
       setCreated(result);
       setName('');
       setLifetime(DEFAULT_LIFETIME);
+      // Back to the least: an elevated token should be a choice made each time, not a leftover.
+      setAccess(DEFAULT_ACCESS);
       reload();
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : 'Failed to create the token');
@@ -203,6 +213,26 @@ export function AgentAccessPage() {
               ))}
             </select>
           </label>
+          {allowedAccess.length > 1 && (
+            <label className="space-y-1.5">
+              <span className="block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Access
+              </span>
+              <select
+                value={access}
+                onChange={(e) => setAccess(e.target.value as TokenAccess)}
+                disabled={atLimit}
+                className={inputClass}
+                style={inputStyle}
+              >
+                {allowedAccess.map((level) => (
+                  <option key={level} value={level}>
+                    {TOKEN_ACCESS[level].label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             type="submit"
             disabled={!canCreate}
@@ -214,6 +244,15 @@ export function AgentAccessPage() {
           </button>
         </form>
 
+        {allowedAccess.length > 1 && (
+          <p
+            className="text-[12px]"
+            style={{ color: access === 'Admin' ? 'var(--warning)' : 'var(--text-muted)' }}
+          >
+            <strong>{TOKEN_ACCESS[access].label}:</strong> {TOKEN_ACCESS[access].summary}
+            {access !== 'Standard' && ' Give it only to an agent you trust with that, for no longer than it needs.'}
+          </p>
+        )}
         {atLimit && (
           <p className="text-[12px]" style={{ color: 'var(--warning)' }}>
             You have {MAX_ACTIVE_TOKENS} active tokens. Revoke one to create another.
@@ -257,16 +296,19 @@ export function AgentAccessPage() {
         <ul className="space-y-2 text-[13px] list-disc pl-5" style={{ color: 'var(--text-secondary)' }}>
           <li>
             <strong style={{ color: 'var(--text-primary)' }}>It acts as you.</strong> Comments and actions
-            carry your name and email, with the roles you hold when you create it — except Admin. Admin
-            actions stay in the portal.
+            carry your name and email, with the roles you hold when you create it — except Admin, unless
+            it is an Admin token.
           </li>
           <li>
             <strong style={{ color: 'var(--text-primary)' }}>No pipeline-only actions.</strong> It can't
             ingest deploy events, register builds or create promotions through the pipeline endpoint.
           </li>
           <li>
-            <strong style={{ color: 'var(--text-primary)' }}>No decisions.</strong> It can't approve,
-            reject or sign off promotions, work items or rollbacks — you make those calls in the portal.
+            <strong style={{ color: 'var(--text-primary)' }}>Decisions only if you allow them.</strong> A
+            standard token can't approve, reject or sign off promotions, work items or rollbacks — you make
+            those calls in the portal. QA members can create a <strong>QA</strong> token, which also signs off
+            work items; admins can create an <strong>Admin</strong> token, which keeps Admin and makes every
+            decision you can. Each decision a token makes is recorded in the audit log as made by an agent.
           </li>
           <li>
             <strong style={{ color: 'var(--text-primary)' }}>It expires</strong> after 7, 30 or 90 days, and
@@ -349,7 +391,8 @@ export function AgentAccessPage() {
           <li>Promote a registered build</li>
         </ul>
         <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-          Approving and rejecting stay a human decision, made here in the portal.
+          The MCP tools never approve or reject. With a QA or Admin token an agent can make those decisions
+          through the REST API; with a standard token they stay yours, made here in the portal.
         </p>
       </Panel>
 
@@ -442,6 +485,7 @@ function TokenRow({
   onRevoke: () => void;
 }) {
   const s = TOKEN_STATUS_STYLE[status];
+  const accessBadge = TOKEN_ACCESS[token.access]?.badge;
   const inactive = status !== 'active';
   const ended =
     status === 'revoked' && token.revokedAt
@@ -467,6 +511,15 @@ function TokenRow({
           >
             {s.label}
           </span>
+          {accessBadge && (
+            <span
+              className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
+              style={{ backgroundColor: accessBadge.bg, color: accessBadge.color }}
+              title={TOKEN_ACCESS[token.access].summary}
+            >
+              {accessBadge.label}
+            </span>
+          )}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px]" style={{ color: 'var(--text-muted)' }}>
           <span className="font-mono" title="Token prefix — the part that is safe to show">
