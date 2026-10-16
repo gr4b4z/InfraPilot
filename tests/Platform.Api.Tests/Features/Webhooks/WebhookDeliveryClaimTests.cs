@@ -268,4 +268,38 @@ public class WebhookDeliveryClaimTests : IDisposable
         Assert.Empty(handler.Sent);
         Assert.Equal("failed", (await _db.WebhookDeliveries.SingleAsync(d => d.Id == id)).Status);
     }
+
+    [Fact]
+    public async Task A_github_dispatch_too_big_to_trim_fails_at_once_without_being_sent()
+    {
+        // GitHub would refuse it, and a retry frames the same bytes: walking the retry schedule
+        // would only keep the failure out of sight for hours.
+        var sub = await _db.WebhookSubscriptions.SingleAsync(s => s.Id == _subscriptionId);
+        sub.TargetType = WebhookTargetTypes.GitHub;
+        await _db.SaveChangesAsync();
+
+        var id = Guid.NewGuid();
+        _db.WebhookDeliveries.Add(new WebhookDelivery
+        {
+            Id = id,
+            SubscriptionId = _subscriptionId,
+            EventType = "ping",
+            PayloadJson = $$$"""{"id":"{{{id}}}","eventType":"ping","data":{"note":"{{{new string('x', 80 * 1024)}}}"}}""",
+            Status = "pending",
+            NextRetryAt = DateTimeOffset.UtcNow.AddSeconds(-1),
+        });
+        await _db.SaveChangesAsync();
+
+        var handler = new RecordingHandler();
+        var worker = new TestWorker(_db, handler);
+
+        await worker.ProcessPendingDeliveries(CancellationToken.None);
+
+        Assert.Empty(handler.Sent);
+        var row = await _db.WebhookDeliveries.SingleAsync(d => d.Id == id);
+        Assert.Equal("failed", row.Status);
+        Assert.Equal(1, row.Attempts);
+        Assert.Null(row.HttpStatus);
+        Assert.Contains("64 KB", row.ErrorMessage);
+    }
 }

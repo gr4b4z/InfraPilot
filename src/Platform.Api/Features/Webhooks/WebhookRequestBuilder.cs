@@ -24,6 +24,40 @@ public static class WebhookRequestBuilder
     private const string GitHubApiVersion = "2022-11-28";
 
     /// <summary>
+    /// GitHub caps a repository_dispatch: client_payload may carry at most ten top-level properties
+    /// and its JSON must stay under 64 KB, or the call is answered 422 "client_payload is too large".
+    /// A retry sends the same bytes and fails the same way, so the cap has to be met before sending.
+    /// Measured over the whole request body in UTF-8 bytes — a superset of client_payload — and set a
+    /// few KB under the cap so neither reading of "64 KB" (64,000 or 65,536 bytes) is close.
+    /// </summary>
+    public const int GitHubDispatchBodyLimitBytes = 60 * 1024;
+
+    private const int GitHubClientPayloadMaxProperties = 10;
+
+    /// <summary>
+    /// References a dispatch workflow cannot work without, kept through every trimming step: the
+    /// build manifest is what a deploy workflow pulls, and the repository and pipeline references are
+    /// what a change-set refresh diffs from. The rest of the change set is context for people.
+    /// </summary>
+    private static readonly string[] GitHubEssentialReferenceTypes = ["build-manifest", "repository", "pipeline"];
+
+    /// <summary>
+    /// What an oversized dispatch gives up, in order, until it fits — heaviest and least read first.
+    /// A work item's <c>content</c> is the tracker's full description: the bulk of any large change
+    /// set, and read by no dispatch workflow. Reference-level participants and the commit lists that
+    /// tie a ticket to its commits come next. Only after all three are whole references dropped, and
+    /// never the essential ones. Each step returns what it removed, for the payload's
+    /// <c>omitted</c> list, or null when it found nothing to remove.
+    /// </summary>
+    private static readonly Func<JsonArray, string?>[] GitHubTrimSteps =
+    [
+        references => RemoveFromEachReference(references, "content"),
+        references => RemoveFromEachReference(references, "participants"),
+        references => RemoveFromEachReference(references, "commits"),
+        RemoveNonEssentialReferences,
+    ];
+
+    /// <summary>
     /// Adaptive Card schema version Teams renders reliably. Newer versions degrade silently on older
     /// clients, and nothing here needs what they add.
     /// </summary>
@@ -65,7 +99,14 @@ public static class WebhookRequestBuilder
     public sealed record WebhookHttpRequest(
         string Body,
         IReadOnlyList<(string Name, string Value)> Headers,
-        string ContentType = "application/json; charset=utf-8");
+        string ContentType = "application/json; charset=utf-8")
+    {
+        /// <summary>
+        /// What was cut from the payload to fit the target's size limit, in the order it was cut.
+        /// Empty for every delivery that fit as it was, which is nearly all of them.
+        /// </summary>
+        public IReadOnlyList<string> Omitted { get; init; } = [];
+    }
 
     /// <param name="message">
     /// The rendered notification text. Required for messaging targets, which have no envelope to send
@@ -135,8 +176,12 @@ public static class WebhookRequestBuilder
     /// <summary>
     /// GitHub has no inbound webhook receiver — the way in is the repository_dispatch REST call,
     /// which authenticates with a token rather than a signature and demands its own body shape.
-    /// The whole envelope rides along as client_payload so workflows keep the delivery id.
+    /// The whole envelope rides along as client_payload so workflows keep the delivery id — unless
+    /// it is too big for GitHub to accept, in which case the change set is trimmed until it fits.
     /// </summary>
+    /// <exception cref="WebhookUndeliverableException">
+    /// The payload exceeds GitHub's limits even after every trimming step.
+    /// </exception>
     private static WebhookHttpRequest BuildGitHub(
         WebhookSubscription sub, WebhookDelivery delivery, string secret)
     {
@@ -144,20 +189,102 @@ public static class WebhookRequestBuilder
             ? delivery.EventType
             : sub.GitHubEventType;
 
-        var body = new JsonObject
-        {
-            ["event_type"] = eventType,
-            // Parsed rather than re-serialized so the payload reaches the workflow unchanged.
-            ["client_payload"] = JsonNode.Parse(delivery.PayloadJson),
-        };
+        var (body, omitted) = FrameGitHubDispatch(eventType, delivery);
 
-        return new WebhookHttpRequest(body.ToJsonString(),
+        return new WebhookHttpRequest(body,
         [
             ("Authorization", $"Bearer {secret}"),
             ("Accept", "application/vnd.github+json"),
             ("X-GitHub-Api-Version", GitHubApiVersion),
             ("User-Agent", GitHubUserAgent),
-        ]);
+        ])
+        { Omitted = omitted };
+    }
+
+    /// <summary>
+    /// Frames the dispatch body, trimming the envelope only when it is over GitHub's limits. A
+    /// promotion's references carry each work item's full description, so a change set of a few
+    /// dozen tickets is enough to pass 64 KB — and GitHub refuses the whole dispatch, which leaves an
+    /// approved promotion with nothing to deploy it. Trimmed in place and re-measured after each
+    /// step, so the payload gives up only as much as it has to. A trimmed envelope says so:
+    /// <c>truncated: true</c> and an <c>omitted</c> list sit beside <c>data</c>, where a workflow
+    /// that needs the full change set can see it should read the record from the API instead.
+    /// </summary>
+    private static (string Body, IReadOnlyList<string> Omitted) FrameGitHubDispatch(
+        string eventType, WebhookDelivery delivery)
+    {
+        // Parsed rather than re-serialized so the payload reaches the workflow unchanged.
+        var payload = JsonNode.Parse(delivery.PayloadJson);
+        var body = new JsonObject
+        {
+            ["event_type"] = eventType,
+            ["client_payload"] = payload,
+        };
+
+        var json = body.ToJsonString();
+        if (FitsGitHubDispatch(json, payload)) return (json, []);
+
+        var omitted = new List<string>();
+        if (payload is JsonObject envelope
+            && (envelope["data"] as JsonObject)?["references"] is JsonArray references)
+        {
+            foreach (var trim in GitHubTrimSteps)
+            {
+                if (trim(references) is not { } removed) continue;
+
+                omitted.Add(removed);
+                envelope["truncated"] = true;
+                envelope["omitted"] = new JsonArray([.. omitted.Select(o => (JsonNode?)o)]);
+
+                json = body.ToJsonString();
+                if (FitsGitHubDispatch(json, payload)) return (json, omitted);
+            }
+        }
+
+        var properties = (payload as JsonObject)?.Count ?? 0;
+        var reason = properties > GitHubClientPayloadMaxProperties
+            ? $"client_payload has {properties} top-level properties and GitHub accepts at most {GitHubClientPayloadMaxProperties}"
+            : $"the dispatch body is {Encoding.UTF8.GetByteCount(json)} bytes"
+              + (omitted.Count > 0 ? $" even after omitting {string.Join("; ", omitted)}" : "")
+              + $", over the {GitHubDispatchBodyLimitBytes}-byte budget kept under GitHub's 64 KB client_payload limit";
+        throw new WebhookUndeliverableException(
+            $"Not sent to GitHub: {reason}. GitHub would answer 422, and a retry sends the same payload.");
+    }
+
+    private static bool FitsGitHubDispatch(string body, JsonNode? payload)
+        => Encoding.UTF8.GetByteCount(body) <= GitHubDispatchBodyLimitBytes
+           && ((payload as JsonObject)?.Count ?? 0) <= GitHubClientPayloadMaxProperties;
+
+    /// <summary>
+    /// Drops <paramref name="field"/> from every reference that has a value for it. A field already
+    /// null is left alone, so <c>omitted</c> only ever names something a consumer actually lost.
+    /// </summary>
+    private static string? RemoveFromEachReference(JsonArray references, string field)
+    {
+        var removed = false;
+        foreach (var reference in references.OfType<JsonObject>())
+        {
+            if (reference[field] is not null) removed |= reference.Remove(field);
+        }
+        return removed ? $"data.references[].{field}" : null;
+    }
+
+    private static string? RemoveNonEssentialReferences(JsonArray references)
+    {
+        var total = references.Count;
+        for (var i = references.Count - 1; i >= 0; i--)
+        {
+            var type = (references[i] as JsonObject)?["type"] is JsonValue value
+                       && value.TryGetValue<string>(out var t) ? t : null;
+            if (!GitHubEssentialReferenceTypes.Contains(type, StringComparer.OrdinalIgnoreCase))
+                references.RemoveAt(i);
+        }
+
+        var dropped = total - references.Count;
+        return dropped == 0
+            ? null
+            : $"data.references[]: {dropped} of {total} references other than "
+              + string.Join(", ", GitHubEssentialReferenceTypes);
     }
 
     // ── Chat notifications ──────────────────────────────────────────────────
@@ -351,3 +478,11 @@ public static class WebhookRequestBuilder
         return Convert.ToHexStringLower(hmac.ComputeHash(bytes));
     }
 }
+
+/// <summary>
+/// Framing found that the receiver must refuse this delivery whatever happens on the wire — today,
+/// a GitHub dispatch still over GitHub's size limit after trimming. Retrying would frame the same
+/// payload the same way, so the worker fails the delivery at once instead of spending its retry
+/// schedule on sends that cannot succeed.
+/// </summary>
+public class WebhookUndeliverableException(string message) : Exception(message);
