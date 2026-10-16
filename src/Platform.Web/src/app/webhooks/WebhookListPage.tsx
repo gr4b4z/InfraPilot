@@ -1085,6 +1085,15 @@ steps:
                 <strong>Contents: read and write</strong> on the target repository, or a classic
                 token with the <strong>repo</strong> scope.
               </p>
+              <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                GitHub refuses a <code>client_payload</code> of 64 KB or more. A bigger envelope —
+                usually a promotion whose change set carries dozens of work items with their full
+                descriptions — is trimmed until it fits: reference <code>content</code> first, then
+                reference <code>participants</code> and <code>commits</code>, and as a last resort every
+                reference except <code>build-manifest</code>, <code>repository</code> and{' '}
+                <code>pipeline</code>. A trimmed envelope carries <code>truncated: true</code> and an{' '}
+                <code>omitted</code> list; read the full record from the API when you need it.
+              </p>
               <pre
                 className="rounded-lg p-4 text-[12px] leading-relaxed overflow-x-auto"
                 style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
