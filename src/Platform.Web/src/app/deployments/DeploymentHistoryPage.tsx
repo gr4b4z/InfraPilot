@@ -12,6 +12,10 @@ import { formatDistanceToNow } from 'date-fns';
 import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
+import type { PromotionFreezeWindow } from '@/lib/api';
+import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
+import { DuringFreezeMark } from './FreezeCues';
+import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
 
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
@@ -60,6 +64,13 @@ export function DeploymentHistoryPage() {
   });
 
   const isBackgroundRefresh = useIsBackgroundRefresh();
+
+  // Freeze periods of the product, to mark the deploys that landed while one was on.
+  const promotionsEnabled = useFeatureFlag(FeatureFlag.Promotions);
+  const promotionsTick = useEntityRefresh(['promotion'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+  const freezeWindows = useFreezeWindows(product, promotionsEnabled, promotionsTick);
 
   useEffect(() => {
     if (!product || !service) return;
@@ -172,6 +183,8 @@ export function DeploymentHistoryPage() {
               key={evt.id}
               index={index}
               event={evt}
+              duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt)}
+              envLabel={getDisplayName(evt.environment)}
               detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
           ))}
@@ -202,10 +215,13 @@ export function DeploymentHistoryPage() {
  * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
  * a reader expects of a navigation.
  */
-function HistoryRow({ index, event: evt, detailHref }: {
+function HistoryRow({ index, event: evt, duringFreeze, envLabel, detailHref }: {
   /** Position in the list, for the roving tabindex. */
   index: number;
   event: DeployEvent;
+  /** The Promotion Freeze this deploy landed in, if any. */
+  duringFreeze?: PromotionFreezeWindow;
+  envLabel: string;
   detailHref: string;
 }) {
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
@@ -216,7 +232,9 @@ function HistoryRow({ index, event: evt, detailHref }: {
   const rowProps = useKeyboardListRow(index, () => {}, {
     role: null,
     selfActivating: true,
-    label: `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}`,
+    label:
+      `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}` +
+      `${duringFreeze ? ', deployed during a promotion freeze' : ''}`,
   });
 
   return (
@@ -234,6 +252,8 @@ function HistoryRow({ index, event: evt, detailHref }: {
       </span>
 
       <RollbackIndicator isRollback={evt.isRollback} previousVersion={evt.previousVersion} />
+
+      {duringFreeze && <DuringFreezeMark freeze={duringFreeze} envLabel={envLabel} />}
 
       <StatusBadge status={evt.status} />
 
