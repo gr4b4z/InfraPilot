@@ -163,6 +163,77 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         Assert.False(FrozenOf(await Json(await user.GetAsync("/api/promotions?product=frz-list-open"))));
     }
 
+    [Fact]
+    public async Task CreateAndLift_UnderAnEnvironmentAlias_UseTheCanonicalKey()
+    {
+        // Own factory: saving environments rewrites the shared settings row.
+        using var f = new TestFactory();
+        using var admin = f.CreateAdminClient();
+        var settings = await admin.PutAsJsonAsync("/api/settings", new
+        {
+            environments = new[] { new { key = "production", displayName = "Production", aliases = new[] { "prod" } } },
+            roles = Array.Empty<object>(),
+            activityTemplate = Array.Empty<object>(),
+        });
+        Assert.Equal(HttpStatusCode.NoContent, settings.StatusCode);
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            db.PromotionPolicies.Add(new PromotionPolicy
+            {
+                Id = Guid.NewGuid(), Product = "frz-alias", SourceEnv = "staging", TargetEnv = "production",
+            });
+            db.SaveChanges();
+        }
+
+        var created = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-alias", targetEnv = "prod", reason = "Release window" });
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal("production", (await Json(created)).GetProperty("targetEnv").GetString());
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal("production", db.PromotionFreezes.Single(x => x.Product == "frz-alias").TargetEnv);
+        }
+
+        var lift = await admin.DeleteAsync("/api/promotions/admin/freezes/frz-alias/prod");
+        Assert.Equal(HttpStatusCode.NoContent, lift.StatusCode);
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.False(db.PromotionFreezes.Any(x => x.Product == "frz-alias"));
+        }
+    }
+
+    [Fact]
+    public async Task Lift_FreezeStoredBeforeItsEnvBecameAnAlias_StillLifts()
+    {
+        using var f = new TestFactory();
+        using var admin = f.CreateAdminClient();
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            db.PromotionFreezes.Add(new PromotionFreeze
+            {
+                Id = Guid.NewGuid(), Product = "frz-legacy", TargetEnv = "prod", Reason = "old",
+                FrozenBy = "Admin User", FrozenByEmail = "admin@localhost", FrozenAt = DateTimeOffset.UtcNow,
+            });
+            db.SaveChanges();
+        }
+        var settings = await admin.PutAsJsonAsync("/api/settings", new
+        {
+            environments = new[] { new { key = "production", displayName = "Production", aliases = new[] { "prod" } } },
+            roles = Array.Empty<object>(),
+            activityTemplate = Array.Empty<object>(),
+        });
+        Assert.Equal(HttpStatusCode.NoContent, settings.StatusCode);
+
+        var lift = await admin.DeleteAsync("/api/promotions/admin/freezes/frz-legacy/prod");
+
+        Assert.Equal(HttpStatusCode.NoContent, lift.StatusCode);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private void SeedPolicy(string product)
