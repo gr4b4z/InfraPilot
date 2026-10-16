@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Copy, Loader2 } from 'lucide-react';
 import { marked } from 'marked';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { RovingGroup } from '@/components/ui/RovingGroup';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { api, type ReleaseNoteDetail } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 // Render markdown synchronously; content originates from our own server-side
 // template engine so we don't sanitize further here.
@@ -46,6 +50,10 @@ export function ReleaseNoteDetailPage() {
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
   }, [id]);
+
+  // Above the early returns below, so the hook order is stable. The product comes from the route, so
+  // it's there before the note loads; the environment arrives with it.
+  useDocumentTitle([note?.product ?? product, note?.environment, 'Release notes']);
 
   if (error) {
     return (
@@ -91,11 +99,16 @@ export function ReleaseNoteDetailPage() {
             {copied ? <Check size={12} /> : <Copy size={12} />}
             {copied ? 'Copied' : 'Copy markdown'}
           </button>
-          <div className="inline-flex items-center rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border-color)' }}>
+          <RovingGroup
+            ariaLabel="Release note view"
+            className="inline-flex items-center rounded-lg overflow-hidden border"
+            style={{ borderColor: 'var(--border-color)' }}
+          >
             {(['rendered', 'services'] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
+                aria-pressed={view === v}
                 className="px-3 py-1.5 text-[12px] capitalize"
                 style={{
                   backgroundColor: view === v ? 'var(--accent-subtle)' : 'transparent',
@@ -103,23 +116,37 @@ export function ReleaseNoteDetailPage() {
                 }}
               >{v}</button>
             ))}
-          </div>
+          </RovingGroup>
         </div>
       </div>
 
       {view === 'rendered' ? (
         <div
-          className="release-notes-prose rounded-xl border p-6 text-[14px] overflow-x-auto"
-          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+          className="rounded-xl border p-6"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+        >
+          {/* Card spans the page, but the prose keeps a reading width — full-viewport
+              line lengths are unreadable for long-form notes. */}
+          <div
+            className="release-notes-prose text-[14px] overflow-x-auto max-w-[80ch]"
+            style={{ color: 'var(--text-primary)' }}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        </div>
       ) : (
-        <div className="space-y-3">
-          {note.raw.services.map((svc) => (
-            <div
+        <KeyboardList
+          className="space-y-3"
+          count={note.raw.services.length}
+          ariaLabel="Services in this release note"
+          // These blocks are the content, not links to it — the work-item and pull-request links
+          // inside them have to stay tabbable.
+          sweepNestedTabStops={false}
+        >
+          {note.raw.services.map((svc, index) => (
+            <ServiceBlock
               key={svc.service}
-              className="rounded-xl border p-4"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+              index={index}
+              label={`${svc.service}, ${svc.previousVersion ?? 'none'} to ${svc.currentVersion}`}
             >
               <div className="flex items-baseline justify-between gap-3">
                 <h3 className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{svc.service}</h3>
@@ -165,10 +192,43 @@ export function ReleaseNoteDetailPage() {
                   </ul>
                 </div>
               )}
-            </div>
+            </ServiceBlock>
           ))}
-        </div>
+        </KeyboardList>
       )}
+    </div>
+  );
+}
+
+/**
+ * One service's entry in a release note's services view.
+ *
+ * A focusable wrapper rather than a link: the block has nothing to open — it *is* the content, a
+ * breakdown of work items, pull requests and people. So the arrow keys move between services and
+ * Enter does nothing, which is why no `onActivate` is supplied.
+ */
+function ServiceBlock({
+  index,
+  label,
+  children,
+}: {
+  index: number;
+  label: string;
+  children: React.ReactNode;
+}) {
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    label,
+    // Nothing to open; without this the no-op handler would swallow Enter.
+    selfActivating: true,
+  });
+  return (
+    <div
+      {...rowProps}
+      className="rounded-xl border p-4"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+    >
+      {children}
     </div>
   );
 }

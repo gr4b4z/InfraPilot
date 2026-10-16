@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 
@@ -16,7 +17,11 @@ public static class DeploymentEndpoints
             if (errors.Count > 0)
                 return Results.BadRequest(new { errors });
 
-            // Enforce product scope when the key restricts which products it can post for.
+            // Enforce product scope when the key restricts which products it can post for. Checked
+            // against the product the key SENT, not the one a ServiceProductOverride redirects it to:
+            // the claim says what this key is entitled to talk about, and the redirect is an admin
+            // decision the key neither chose nor can influence. Scoping on the resolved product would
+            // instead break every pipeline whose key still names the product it is migrating off.
             var allowedProducts = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
             if (allowedProducts.Count > 0 &&
                 !allowedProducts.Contains(dto.Product, StringComparer.OrdinalIgnoreCase))
@@ -24,8 +29,13 @@ public static class DeploymentEndpoints
                 return Results.Forbid();
             }
 
-            var result = await service.IngestEvent(dto, ct);
-            return Results.Created($"/api/deployments/events/{result.Id}", new { result.Id, result.Version, result.PreviousVersion });
+            var result = await service.IngestEventWithResult(dto, ct);
+            var body = new { result.Event.Id, result.Event.Version, result.Event.PreviousVersion, result.Replayed };
+            // Replay of an already-ingested event (same natural key) → 200 with the existing row,
+            // so retrying senders can distinguish "created" from "already there" but treat both as success.
+            return result.Replayed
+                ? Results.Ok(body)
+                : Results.Created($"/api/deployments/events/{result.Event.Id}", body);
         })
         .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
         .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
@@ -80,24 +90,88 @@ public static class DeploymentEndpoints
             }
         });
 
+        // Single deploy event — everything the deployment detail page shows: the event, its captured
+        // pipeline output (as summaries; content is a separate call), the neighbouring deployments of
+        // the same service, and the promotions / work items this deployment connects to.
+        group.MapGet("/events/{id:guid}", async (
+            DeploymentService service, Guid id, int? historyLimit, CancellationToken ct) =>
+        {
+            var detail = await service.GetEventDetail(id, historyLimit is > 0 ? historyLimit.Value : 10, ct);
+            return detail is null ? Results.NotFound() : Results.Ok(detail);
+        });
+
+        // One block of captured output, fetched on demand — a Helm printout is too large to ride
+        // along with the detail response for a page that may never expand it.
+        group.MapGet("/events/{id:guid}/logs/{logId:guid}", async (
+            DeploymentService service, Guid id, Guid logId, CancellationToken ct) =>
+        {
+            var log = await service.GetLogContent(id, logId, ct);
+            return log is null ? Results.NotFound() : Results.Ok(log);
+        });
+
         // Product overview
         group.MapGet("/products", async (DeploymentService service, CancellationToken ct) =>
         {
             return Results.Ok(await service.GetProductSummaries(ct));
         });
 
-        // Current state matrix
-        group.MapGet("/state", async (DeploymentService service, string? product, string? environment, string? serviceName, CancellationToken ct) =>
+        // Current state matrix.
+        //
+        // The environment filter is alias-resolved, here and on every read below: a pipeline that
+        // posts to "prod" queries for "prod" too, and it has to get back the rows it just wrote â€”
+        // which are stored under whatever canonical key the alias points at.
+        //
+        // `view=summary` is the web app's opt-in to a lighter payload — see DeploymentStateSummaryDto
+        // for what it leaves out. Everything else keeps the full shape by default: pipelines, scripts
+        // and the agent skill read references and participants off this response.
+        group.MapGet("/state", async (
+            DeploymentService service, EnvironmentAliasResolver environments,
+            string? product, string? environment, string? serviceName, string? view, CancellationToken ct) =>
         {
-            return Results.Ok(await service.GetState(product, environment, serviceName, ct));
+            var resolvedView = string.IsNullOrEmpty(view) ? "full" : view.ToLowerInvariant();
+            if (!StateViews.Contains(resolvedView))
+                return Results.BadRequest(new { error = "'view' must be one of: full, summary" });
+
+            var env = await environments.ResolveFilterAsync(environment, ct);
+            return resolvedView == "summary"
+                ? Results.Ok(await service.GetStateSummary(product, env, serviceName, ct))
+                : Results.Ok(await service.GetState(product, env, serviceName, ct));
+        });
+
+        // Cross-product service search — the deployments page's "find a service without knowing
+        // its product" box. Case-insensitive substring match on the service name; a name shared by
+        // two products returns two hits, because (product, service) is the identity.
+        group.MapGet("/services/search", async (
+            DeploymentService service, string? q, int? limit, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(q))
+                return Results.BadRequest(new { error = "'q' is required" });
+
+            var results = await service.SearchServices(q, limit is > 0 and <= 100 ? limit.Value : 20, ct);
+            return Results.Ok(new { results });
+        });
+
+        // Everything the service detail page shows, in one round trip: current state per
+        // environment, the last distinct versions, and the service's promotions. No collision with
+        // /services/search above — that route has one segment fewer, so a product named "search"
+        // would still resolve here.
+        group.MapGet("/services/{product}/{serviceName}", async (
+            DeploymentService service, string product, string serviceName,
+            int? versionsLimit, CancellationToken ct) =>
+        {
+            var detail = await service.GetServiceDetail(
+                product, serviceName, versionsLimit is > 0 and <= 50 ? versionsLimit.Value : 10, ct);
+            return detail is null ? Results.NotFound() : Results.Ok(detail);
         });
 
         // Deployment history for a specific service
         group.MapGet("/history/{product}/{serviceName}", async (
-            DeploymentService service, string product, string serviceName,
+            DeploymentService service, EnvironmentAliasResolver environments,
+            string product, string serviceName,
             string? environment, int? limit, CancellationToken ct) =>
         {
-            return Results.Ok(await service.GetHistory(product, serviceName, environment, limit ?? 50, ct));
+            var env = await environments.ResolveFilterAsync(environment, ct);
+            return Results.Ok(await service.GetHistory(product, serviceName, env, limit ?? 50, ct));
         });
 
         // Recent deployments across all environments for a product
@@ -111,24 +185,27 @@ public static class DeploymentEndpoints
 
         // Recent deployments for an environment
         group.MapGet("/recent/{product}/{environment}", async (
-            DeploymentService service, string product, string environment,
+            DeploymentService service, EnvironmentAliasResolver environments,
+            string product, string environment,
             DateTimeOffset? since, CancellationToken ct) =>
         {
             var sinceDate = since ?? DateTimeOffset.UtcNow.Date;
-            return Results.Ok(await service.GetRecentByEnvironment(product, environment, sinceDate, ct));
+            var env = await environments.ResolveAsync(environment, ct);
+            return Results.Ok(await service.GetRecentByEnvironment(product, env, sinceDate, ct));
         });
 
         // Versions deployed to a given (product, environment[, service]) — powers the rollback
         // picker's "source: deployments/versions" catalog input.
         group.MapGet("/versions", async (
-            DeploymentService service,
+            DeploymentService service, EnvironmentAliasResolver environments,
             string product, string environment, string? serviceName, int? limit,
             CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(environment))
                 return Results.BadRequest(new { error = "'product' and 'environment' are required" });
 
-            var versions = await service.GetVersions(product, environment, serviceName, limit ?? 50, ct);
+            var env = await environments.ResolveAsync(environment, ct);
+            var versions = await service.GetVersions(product, env, serviceName, limit ?? 50, ct);
             return Results.Ok(new { versions });
         });
 
@@ -187,6 +264,9 @@ public static class DeploymentEndpoints
     public record AssignReferenceParticipantRequest(string Role, AssigneeBody? Assignee);
     public record AssigneeBody(string? Email, string? DisplayName);
 
+    /// <summary>The state matrix's <c>view</c> values. <c>full</c> is the default.</summary>
+    private static readonly string[] StateViews = ["full", "summary"];
+
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "succeeded", "failed", "in_progress" };
 
@@ -201,6 +281,18 @@ public static class DeploymentEndpoints
         if (dto.DeployedAt == default) errors.Add("'deployedAt' is required");
         if (dto.Status is not null && !ValidStatuses.Contains(dto.Status))
             errors.Add($"'status' must be one of: {string.Join(", ", ValidStatuses)}");
+
+        // Log blocks are identified by name (that's the replace-on-retry key), so an unnamed block
+        // is rejected rather than silently dropped — a pipeline that captured output and got no
+        // error would otherwise never learn why its logs aren't showing.
+        if (dto.Logs is not null)
+        {
+            for (var i = 0; i < dto.Logs.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(dto.Logs[i].Name))
+                    errors.Add($"'logs[{i}].name' is required");
+            }
+        }
 
         // Reference-level participants: same shape as event-level — Role is required.
         if (dto.References is not null)

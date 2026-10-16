@@ -3,14 +3,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { Snowflake } from 'lucide-react';
 import { api, type PromotionFreeze, type PromotionFreezeHistoryEntry } from '@/lib/api';
 import { useSettingsStore } from '@/stores/settingsStore';
-
-const inputClass =
-  'px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]';
-const inputStyle = {
-  borderColor: 'var(--border-color)',
-  backgroundColor: 'var(--bg-primary)',
-  color: 'var(--text-primary)',
-};
+import { inputClass, inputStyle } from './formStyles';
 
 const errorStyle = {
   color: 'var(--danger, #dc2626)',
@@ -188,6 +181,8 @@ export function FreezeSettings() {
   }, []);
 
   useEffect(() => {
+    // The loaders only set state after their request resolves; the rule cannot see past the call.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     Promise.all([loadFreezes(), loadHistory(), api.listPromotionPolicies()])
       .then(([, , res]) => {
         const seen = new Set<string>();

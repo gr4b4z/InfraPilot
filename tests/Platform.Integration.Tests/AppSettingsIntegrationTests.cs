@@ -46,6 +46,11 @@ public class AppSettingsIntegrationTests : IClassFixture<AppSettingsIntegrationT
                  && e.GetProperty("displayName").GetString() == "Production");
         Assert.NotEmpty(body.GetProperty("roles").EnumerateArray());
         Assert.NotEmpty(body.GetProperty("activityTemplate").EnumerateArray());
+
+        // Defaults ship with colours so a fresh install is colour-coded before an admin
+        // touches anything.
+        var production = envs.EnumerateArray().Single(e => e.GetProperty("key").GetString() == "production");
+        Assert.False(string.IsNullOrWhiteSpace(production.GetProperty("color").GetString()));
     }
 
     [Fact]
@@ -57,8 +62,8 @@ public class AppSettingsIntegrationTests : IClassFixture<AppSettingsIntegrationT
         {
             environments = new[]
             {
-                new { key = "dev", displayName = "Development" },
-                new { key = "prod", displayName = "Production" },
+                new { key = "dev", displayName = "Development", color = "#16a34a" },
+                new { key = "prod", displayName = "Production", color = "#dc2626" },
             },
             roles = new[] { new { key = "qa", displayName = "QA" } },
             activityTemplate = new[] { new { template = "{service} — {time}", style = "muted" } },
@@ -72,6 +77,7 @@ public class AppSettingsIntegrationTests : IClassFixture<AppSettingsIntegrationT
         var dev = body.GetProperty("environments").EnumerateArray()
             .Single(e => e.GetProperty("key").GetString() == "dev");
         Assert.Equal("Development", dev.GetProperty("displayName").GetString());
+        Assert.Equal("#16a34a", dev.GetProperty("color").GetString());
     }
 
     [Fact]
@@ -94,6 +100,74 @@ public class AppSettingsIntegrationTests : IClassFixture<AppSettingsIntegrationT
         var envs = body.GetProperty("environments").EnumerateArray().ToList();
         Assert.Single(envs);
         Assert.Equal("staging", envs[0].GetProperty("key").GetString());
+    }
+
+    [Fact]
+    public async Task AdminSave_NormalisesEnvironmentColours()
+    {
+        // Environment colours drive the at-a-glance badges in the UI, which expect a single
+        // canonical form. Shorthand, missing hash and mixed casing all collapse to #rrggbb.
+        using var factory = new SettingsFactory();
+        using var admin = factory.CreateAdminClient();
+
+        var payload = new
+        {
+            environments = new[]
+            {
+                new { key = "shorthand", displayName = "Shorthand", color = (string?)"#ABC" },
+                new { key = "nohash", displayName = "No hash", color = (string?)"aB12Cd" },
+                new { key = "junk", displayName = "Junk", color = (string?)"not-a-colour" },
+                new { key = "unset", displayName = "Unset", color = (string?)null },
+            },
+            roles = Array.Empty<object>(),
+            activityTemplate = Array.Empty<object>(),
+        };
+
+        var put = await admin.PutAsJsonAsync("/api/settings", payload);
+        Assert.Equal(HttpStatusCode.NoContent, put.StatusCode);
+
+        var envs = (await Deserialize(await admin.GetAsync("/api/settings")))
+            .GetProperty("environments").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("key").GetString()!, e => e.GetProperty("color").GetString());
+
+        Assert.Equal("#aabbcc", envs["shorthand"]);
+        Assert.Equal("#ab12cd", envs["nohash"]);
+        // An unparseable swatch must not fail the save — the row survives without a colour and
+        // the client falls back to a colour derived from the key.
+        Assert.Null(envs["junk"]);
+        Assert.Null(envs["unset"]);
+    }
+
+    [Fact]
+    public async Task AdminSave_KeepsTheRetiredFlag()
+    {
+        // The PUT rebuilds every environment row while cleaning it; a field it forgets to carry is
+        // silently reset on the next save of anything else on the page.
+        using var factory = new SettingsFactory();
+        using var admin = factory.CreateAdminClient();
+
+        var payload = new
+        {
+            environments = new object[]
+            {
+                new { key = "dev", displayName = "Development" },
+                new { key = " stable ", displayName = "Staging Candidate", aliases = new[] { "release-track" }, retired = true },
+            },
+            roles = Array.Empty<object>(),
+            activityTemplate = Array.Empty<object>(),
+        };
+
+        var put = await admin.PutAsJsonAsync("/api/settings", payload);
+        Assert.Equal(HttpStatusCode.NoContent, put.StatusCode);
+
+        var envs = (await Deserialize(await admin.GetAsync("/api/settings")))
+            .GetProperty("environments").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("key").GetString()!);
+
+        Assert.True(envs["stable"].GetProperty("retired").GetBoolean());
+        Assert.Equal("release-track", Assert.Single(envs["stable"].GetProperty("aliases").EnumerateArray()).GetString());
+        // Omitted means not retired, so payloads from clients that predate the flag keep working.
+        Assert.False(envs["dev"].GetProperty("retired").GetBoolean());
     }
 
     [Fact]

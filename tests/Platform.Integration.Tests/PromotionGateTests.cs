@@ -24,7 +24,8 @@ namespace Platform.Integration.Tests;
 /// step tree. Drives candidates through
 /// <see cref="PromotionService.ApproveAsync"/>, <see cref="PromotionService.ReevaluateAsync"/>
 /// and <see cref="WorkItemApprovalService.ApproveAsync"/> /
-/// <see cref="WorkItemApprovalService.RejectAsync"/> and asserts the candidate-level transitions,
+/// <see cref="WorkItemApprovalService.RaiseIssueAsync"/> /
+/// <see cref="WorkItemApprovalService.BlockAsync"/> and asserts the candidate-level transitions,
 /// audit entries (legacy + ticket-level + coarse), and webhook dispatches that come out of them.
 ///
 /// <para>Each test owns its own <see cref="GateTestFactory"/> for isolation. The factory mirrors
@@ -43,7 +44,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -58,7 +59,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "ship it", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "ship it", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -89,11 +90,329 @@ public class PromotionGateTests
         await factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
         await factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.ticket.approved",
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
+    }
+
+    // ── 1a. WorkItemsOnly_Issue_ClearsGateAndPromotes ─────────────────────────
+
+    /// <summary>
+    /// An issue flags a problem on a change that is still going out, so it clears the item exactly as
+    /// an approval does: the gate is satisfied and the auto-approve accelerator fires. Only a block
+    /// holds a promotion. The ticket-level audit and webhook still say an issue was raised, so the
+    /// flag is not lost behind the promotion.
+    /// </summary>
+    [Fact]
+    public async Task WorkItemsOnly_Issue_ClearsGateAndPromotes()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "approver@example.com";
+        factory.Current.Name = "Approver";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
+            candidateId = c.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", "waiting on test data", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Approved, candidate.Status);
+            Assert.NotNull(candidate.ApprovedAt);
+
+            var ticket = await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.ticket.issue-raised").ToListAsync();
+            Assert.Single(ticket);
+        }
+
+        await factory.WebhookDispatcher.Received().DispatchAsync(
+            "promotion.ticket.issue-raised",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    // ── 1a-bis. WorkItemsOnly_Block_HoldsGateUntilChanged ─────────────────────
+
+    /// <summary>
+    /// The counterpart to the test above: a block on the only work item holds the gate, and the
+    /// promotion moves only once that block is replaced by another decision.
+    /// </summary>
+    [Fact]
+    public async Task WorkItemsOnly_Block_HoldsGateUntilChanged()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, c) = await SeedAsync(db,
+                workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true);
+            candidateId = c.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.BlockAsync("FOO-1", "acme", "api", "prod", "not going out", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
+            Assert.Null(candidate.ApprovedAt);
+        }
+
+        // Downgrading the block to an issue is enough — the item is cleared, not approved.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.RaiseIssueAsync("FOO-1", "acme", "api", "prod", "known cosmetic bug", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await db.PromotionCandidates.AsNoTracking()
+                .FirstAsync(c => c.Id == candidateId);
+            Assert.Equal(PromotionStatus.Approved, candidate.Status);
+        }
+    }
+
+    // ── 1b. SharedTicket_ApproveOnce_ReevaluatesAllCandidatesCarryingIt ───────
+
+    [Fact]
+    public async Task SharedTicket_ApproveOnce_AutoPromotesEveryCandidateCarryingIt()
+    {
+        // The same ticket (FOO-1) backs two Pending candidates of the SAME service in acme/prod (two
+        // source edges). WorkItemApproval is keyed by (key, product, service, targetEnv), so ONE
+        // sign-off counts for both — and the sign-off must re-evaluate BOTH gates, not just the one
+        // the row was attributed to. A third candidate carries the ticket on ANOTHER service: that is
+        // a different work item, and the sign-off must leave its gate alone.
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid candA, candB, candOther;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, a) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "api", sourceEnv: "staging");
+            var (_, _, b) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "api", sourceEnv: "uat");
+            var (_, _, other) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "web");
+            candA = a.Id;
+            candB = b.Id;
+            candOther = other.Id;
+        }
+
+        // Sign api/FOO-1 off once.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "ship it", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var a = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candA);
+            var b = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candB);
+            var other = await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == candOther);
+            // Both api gates satisfied by the single shared approval → both auto-promoted.
+            Assert.Equal(PromotionStatus.Approved, a.Status);
+            Assert.Equal(PromotionStatus.Approved, b.Status);
+            // web/FOO-1 is a separate work item nobody has signed off.
+            Assert.Equal(PromotionStatus.Pending, other.Status);
+        }
+    }
+
+    /// <summary>
+    /// RequireAllWorkItemInstancesApproved: the gate judges a ticket by its overall status across
+    /// every service carrying it, not by this promotion's own instance. Approving api/FOO-1 alone
+    /// leaves the api promotion Pending while web/FOO-1 is undecided; approving web/FOO-1 then
+    /// releases both, because the sign-off fans out to every pending candidate of the ticket.
+    /// </summary>
+    [Fact]
+    public async Task AllInstancesGate_WaitsForEveryServicesInstance_ThenPromotesAll()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid apiId, webId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, api) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "api");
+            var (_, _, web) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "web");
+            apiId = api.Id;
+            webId = web.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "api tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // Own instance approved, sibling not: the ticket is 1 of 2, so neither gate opens.
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == webId)).Status);
+
+            var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
+            Assert.NotNull(overall);
+            Assert.Equal(WorkItemInstanceState.Pending, overall!.State);
+            Assert.Equal(2, overall.Instances);
+            Assert.Equal(1, overall.Approved);
+
+            // The promotion page explains the shortfall in the ticket's overall terms.
+            var promotion = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var progress = await promotion.GetApprovalProgressAsync(
+                await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId));
+            Assert.NotNull(progress.WorkItems);
+            Assert.True(progress.WorkItems!.AllInstances);
+            Assert.False(progress.WorkItems.Satisfied);
+            Assert.Equal(0, progress.WorkItems.Approved);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.ApproveAsync("FOO-1", "acme", "web", "prod", "web tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal(PromotionStatus.Approved, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            Assert.Equal(PromotionStatus.Approved, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == webId)).Status);
+        }
+    }
+
+    /// <summary>
+    /// With the all-instances gate, an Issue on web/FOO-1 does not hold the api promotion: every
+    /// instance has been ruled on and none is blocked, so the ticket is cleared everywhere. The
+    /// roll-up still reads Issue — the flag is reported, it just isn't a hold.
+    /// </summary>
+    [Fact]
+    public async Task AllInstancesGate_SiblingIssueDoesNotHoldThePromotion()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid apiId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, api) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "api");
+            await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "web");
+            apiId = api.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.RaiseIssueAsync("FOO-1", "acme", "web", "prod", "web is broken", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "api tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal(PromotionStatus.Approved, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
+            Assert.Equal(WorkItemInstanceState.Issue, overall!.State);
+            Assert.Equal(1, overall.Issues);
+            Assert.True(overall.ClearsGateEverywhere);
+        }
+    }
+
+    /// <summary>
+    /// The same shape with a block: web/FOO-1 blocked keeps the api promotion Pending even though
+    /// api/FOO-1 is approved, because the all-instances gate reads the ticket across services.
+    /// </summary>
+    [Fact]
+    public async Task AllInstancesGate_SiblingBlockHoldsThePromotion()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "qa@example.com";
+        factory.Current.Name = "QA";
+        factory.Current.RolesList = new() { "InfraPortal.QA" };
+
+        Guid apiId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var (_, _, api) = await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                requireAllWorkItemInstancesApproved: true, service: "api");
+            await SeedAsync(db, workItemKeys: new[] { "FOO-1" },
+                requireAllWorkItemsApproved: true, autoApproveOnAllWorkItemsApproved: true,
+                service: "web");
+            apiId = api.Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            await svc.BlockAsync("FOO-1", "acme", "web", "prod", "web is broken", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "api tested", default);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Equal(PromotionStatus.Pending, (await db.PromotionCandidates.AsNoTracking().FirstAsync(c => c.Id == apiId)).Status);
+            var overall = await WorkItemOverallStatus.LoadOneAsync(db, "FOO-1", "acme", "prod", default);
+            Assert.Equal(WorkItemInstanceState.Blocked, overall!.State);
+            Assert.False(overall.ClearsGateEverywhere);
+        }
     }
 
     // ── 2. WorkItemsOnly_TwoTickets_DoesNotPromoteUntilAllApproved ────────────
@@ -103,7 +422,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -119,7 +438,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -134,7 +453,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-2", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-2", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -155,7 +474,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -172,7 +491,7 @@ public class PromotionGateTests
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 svc.ApproveAsync(candidateId, "ship it", default));
-            Assert.Contains("All work items must be approved", ex.Message,
+            Assert.Contains("All work items must be signed off", ex.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -190,7 +509,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -218,15 +537,21 @@ public class PromotionGateTests
         }
     }
 
-    // ── 5. WorkItemsOnly_TicketRejected_VetoesCandidate ───────────────────────
+    // ── 5. WorkItemsOnly_TicketBlocked_StallsGateWithoutTerminatingCandidate ──
 
+    /// <summary>
+    /// A work-item block is a verdict on the ticket, not on the promotion: it holds the gate (the item
+    /// never counts as resolved) but leaves the candidate Pending. It used to cascade into
+    /// <c>promotion.rejected</c>; that veto is gone, so a block is recoverable — the same user can
+    /// approve later, or a new version resets the decision.
+    /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_TicketRejected_VetoesCandidate()
+    public async Task WorkItemsOnly_TicketBlocked_StallsGateWithoutTerminatingCandidate()
     {
         await using var factory = new GateTestFactory();
-        factory.Current.Email = "rejector@example.com";
-        factory.Current.Name = "Rejector";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.Email = "blocker@example.com";
+        factory.Current.Name = "Blocker";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -238,11 +563,12 @@ public class PromotionGateTests
             candidateId = c.Id;
         }
 
-        // Reject one ticket — candidate should be terminated immediately, regardless of FOO-2.
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.RejectAsync("FOO-1", "acme", "prod", "blocked", default);
+            await svc.BlockAsync("FOO-1", "acme", "api", "prod", "not ready", default);
+            // Everything else in the bundle signed off: the block alone has to hold the gate.
+            await svc.ApproveAsync("FOO-2", "acme", "api", "prod", "fine", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -250,23 +576,25 @@ public class PromotionGateTests
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var candidate = await db.PromotionCandidates.AsNoTracking()
                 .FirstAsync(c => c.Id == candidateId);
-            Assert.Equal(PromotionStatus.Rejected, candidate.Status);
+            Assert.Equal(PromotionStatus.Pending, candidate.Status);
 
-            // The rejecting user (not "system") owns the coarse promotion.rejected audit.
-            var coarse = await db.AuditLog.AsNoTracking()
-                .FirstAsync(a => a.Action == "promotion.rejected" && a.EntityId == candidateId);
-            Assert.Equal("user", coarse.ActorType);
-            Assert.NotEqual("system", coarse.ActorId);
-            // Trigger marker is on AfterState (audit logger's payload arg).
-            Assert.Contains("ticket-veto", coarse.AfterState!);
+            // No promotion-level rejection at all — the cascade is gone.
+            Assert.Empty(await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.rejected").ToListAsync());
 
-            // Ticket-level audit also emitted for the rejection.
+            // Ticket-level audit is still emitted for the block.
             var ticket = await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "promotion.ticket.rejected").ToListAsync();
+                .Where(a => a.Action == "promotion.ticket.blocked").ToListAsync();
             Assert.Single(ticket);
+
+            // And the decision lands in the work item's comment thread.
+            var entry = await db.WorkItemComments.AsNoTracking()
+                .SingleAsync(c => c.WorkItemKey == "FOO-1");
+            Assert.Equal(WorkItemDecision.Blocked, entry.Decision);
+            Assert.Contains("not ready", entry.Body);
         }
 
-        await factory.WebhookDispatcher.Received().DispatchAsync(
+        await factory.WebhookDispatcher.DidNotReceive().DispatchAsync(
             "promotion.rejected",
             Arg.Any<object>(),
             Arg.Any<WebhookEventFilters>());
@@ -280,7 +608,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -296,7 +624,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -343,7 +671,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -361,7 +689,7 @@ public class PromotionGateTests
             var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 svc.ApproveAsync(candidateId, "ship", default));
-            Assert.Contains("All work items must be approved", ex.Message,
+            Assert.Contains("All work items must be signed off", ex.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
 
@@ -384,7 +712,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", null, default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -412,7 +740,7 @@ public class PromotionGateTests
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
         factory.Current.Name = "Approver";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid candidateId;
         using (var scope = factory.Services.CreateScope())
@@ -426,7 +754,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("FOO-1", "acme", "prod", "noted", default);
+            await svc.ApproveAsync("FOO-1", "acme", "api", "prod", "noted", default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -468,7 +796,7 @@ public class PromotionGateTests
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         Guid newerCandidateId;
         using (var scope = factory.Services.CreateScope())
@@ -496,7 +824,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("T1", "acme", "prod", null, default);
+            await svc.ApproveAsync("T1", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -512,7 +840,7 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            await svc.ApproveAsync("T2", "acme", "prod", null, default);
+            await svc.ApproveAsync("T2", "acme", "api", "prod", null, default);
         }
 
         using (var scope = factory.Services.CreateScope())
@@ -524,19 +852,19 @@ public class PromotionGateTests
         }
     }
 
-    // ── 10. WorkItemsOnly_OrphanedTicketSignoff_NoActiveCandidate_RejectsRecord ──
+    // ── 10. WorkItemsOnly_OrphanedTicketSignoff_IsRecorded ───────────────────────
 
-    // Adjusted from spec: the spec asks us to verify against actual Phase 3B
-    // behaviour. RecordAsync throws InvalidOperationException("No Pending promotion
-    // candidate references this ticket") when no candidate carries the ticket — it
-    // does NOT persist a row, NOT emit ticket audit, NOT emit webhook. We assert that.
-
+    /// <summary>
+    /// An orphaned work item — one no Pending candidate carries any more — is still signable. It
+    /// used to be refused, which stranded the item: it stayed unresolved forever with no way to
+    /// close it out. The sign-off records normally, just with a null candidate id on the events.
+    /// </summary>
     [Fact]
-    public async Task WorkItemsOnly_OrphanedTicketSignoff_NoActiveCandidate_ThrowsAndPersistsNothing()
+    public async Task WorkItemsOnly_OrphanedTicketSignoff_IsRecorded()
     {
         await using var factory = new GateTestFactory();
         factory.Current.Email = "approver@example.com";
-        factory.Current.RolesList = new() { "ReleaseApprovers" };
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
 
         // Seed a deploy event + work-item but mark its candidate as already Approved so there's
         // nothing Pending to attach to.
@@ -553,26 +881,59 @@ public class PromotionGateTests
         using (var scope = factory.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                svc.ApproveAsync("ORPH-1", "acme", "prod", null, default));
-            Assert.Contains("Pending", ex.Message, StringComparison.OrdinalIgnoreCase);
+            var row = await svc.ApproveAsync("ORPH-1", "acme", "api", "prod", null, default);
+            Assert.Equal(WorkItemDecision.Approved, row.Decision);
         }
 
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
-            // No WorkItemApproval row written.
-            Assert.Empty(await db.WorkItemApprovals.AsNoTracking().ToListAsync());
+            var rows = await db.WorkItemApprovals.AsNoTracking().ToListAsync();
+            Assert.Single(rows);
 
-            // No ticket-level audit (neither legacy nor new ticket-level event).
-            Assert.Empty(await db.AuditLog.AsNoTracking()
-                .Where(a => a.Action == "promotion.ticket.approved").ToListAsync());
-            Assert.Empty(await db.AuditLog.AsNoTracking()
+            // Both audit events are emitted, the ticket-level one with no candidate attached.
+            var ticketAudit = await db.AuditLog.AsNoTracking()
+                .SingleAsync(a => a.Action == "promotion.ticket.approved");
+            Assert.Null(ticketAudit.EntityId);
+            Assert.Single(await db.AuditLog.AsNoTracking()
                 .Where(a => a.Action == "work-item.approved").ToListAsync());
         }
 
-        // No webhook dispatch for a ticket that wasn't recorded.
+        await factory.WebhookDispatcher.Received().DispatchAsync(
+            "promotion.ticket.approved",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>());
+    }
+
+    /// <summary>
+    /// The other half of the orphan story: a signable orphan must be a work item the platform has
+    /// actually seen. An arbitrary key is still refused, so nothing can seed rows for a ticket that
+    /// was never promoted.
+    /// </summary>
+    [Fact]
+    public async Task UnknownTicketSignoff_ThrowsAndPersistsNothing()
+    {
+        await using var factory = new GateTestFactory();
+        factory.Current.Email = "approver@example.com";
+        factory.Current.RolesList = new() { "ReleaseApprovers", "InfraPortal.QA" };
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                svc.ApproveAsync("NOPE-1", "acme", "api", "prod", null, default));
+            Assert.Contains("not known", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.Empty(await db.WorkItemApprovals.AsNoTracking().ToListAsync());
+            Assert.Empty(await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.ticket.approved").ToListAsync());
+        }
+
         await factory.WebhookDispatcher.DidNotReceive().DispatchAsync(
             "promotion.ticket.approved",
             Arg.Any<object>(),
@@ -593,6 +954,7 @@ public class PromotionGateTests
             IEnumerable<string> workItemKeys,
             bool requireAllWorkItemsApproved = false,
             bool autoApproveOnAllWorkItemsApproved = false,
+            bool requireAllWorkItemInstancesApproved = false,
             string approverGroup = "ReleaseApprovers",
             string product = "acme",
             string service = "api",
@@ -607,7 +969,8 @@ public class PromotionGateTests
 
         var cand = NewCandidate(
             requireAllWorkItemsApproved, autoApproveOnAllWorkItemsApproved,
-            approverGroup, product, service, sourceEnv, targetEnv);
+            approverGroup, product, service, sourceEnv, targetEnv,
+            requireAllWorkItemInstancesApproved);
         if (createdAt is not null) cand.CreatedAt = createdAt.Value;
         db.PromotionCandidates.Add(cand);
 
@@ -623,6 +986,7 @@ public class PromotionGateTests
                 CandidateId = cand.Id,
                 WorkItemKey = key,
                 Product = product,
+                Service = service,
                 TargetEnv = targetEnv,
                 CreatedAt = DateTimeOffset.UtcNow,
             };
@@ -663,14 +1027,14 @@ public class PromotionGateTests
         string product = "acme",
         string service = "api",
         string sourceEnv = "staging",
-        string targetEnv = "prod")
+        string targetEnv = "prod",
+        bool requireAllWorkItemInstancesApproved = false)
     {
         // A single "any one member of <approverGroup>" requirement — the §8 rule-tree equivalent of
         // the legacy single-group / Strategy.Any / MinApprovers=1 policy. Gating on top of this
         // human step is expressed by the two orthogonal work-item flags.
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: Guid.NewGuid(),
-            TimeoutHours: 24,
             EscalationGroup: null)
         {
             ApprovalSteps = new()
@@ -682,6 +1046,7 @@ public class PromotionGateTests
             },
             RequireAllWorkItemsApproved = requireAllWorkItemsApproved,
             AutoApproveOnAllWorkItemsApproved = autoApproveOnAllWorkItemsApproved,
+            RequireAllWorkItemInstancesApproved = requireAllWorkItemInstancesApproved,
         };
 
         var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions
@@ -724,14 +1089,7 @@ public class PromotionGateTests
 
         public GateTestFactory()
         {
-            _connection = new SqliteConnection("DataSource=:memory:");
-            _connection.Open();
-
-            var options = new DbContextOptionsBuilder<SqliteTestDbContext>()
-                .UseSqlite(_connection)
-                .Options;
-            using var db = new SqliteTestDbContext(options);
-            db.Database.EnsureCreated();
+            _connection = TestDatabase.Open();
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -762,6 +1120,8 @@ public class PromotionGateTests
 
                 RemoveService<IWebhookDispatcher>(services);
                 services.AddSingleton(WebhookDispatcher);
+
+                TestHostIsolation.Apply(services);
             });
         }
 

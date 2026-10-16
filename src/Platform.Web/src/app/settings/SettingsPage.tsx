@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import {
   Layers,
   Users,
@@ -10,6 +11,8 @@ import {
   Wrench,
   ScrollText,
   Snowflake,
+  Shuffle,
+  KeyRound,
 } from 'lucide-react';
 
 interface NavItem {
@@ -66,13 +69,26 @@ const NAV: NavItem[] = [
     to: 'rollbacks',
     label: 'Rollbacks',
     icon: Undo2,
-    description: 'Choose which products can use rollbacks',
+    description: 'Who can create and who must approve rollbacks, per product',
   },
   {
-    to: 'deployment-maintenance',
-    label: 'Deployment Maintenance',
+    to: 'service-products',
+    label: 'Service Products',
+    icon: Shuffle,
+    description: 'Override which product a service’s deploys, builds and promotions belong to',
+  },
+  {
+    to: 'agent-tokens',
+    label: 'Agent Tokens',
+    icon: KeyRound,
+    description: 'Personal access tokens people created for their agents: find and revoke any of them',
+  },
+  {
+    to: 'maintenance',
+    label: 'Maintenance',
     icon: Wrench,
-    description: 'Clean up duplicate deployment events',
+    description:
+      'Data repair: duplicates, stranded promotions and work items, log retention, webhook deliveries and re-sends',
   },
   {
     to: 'release-notes-template',
@@ -83,6 +99,13 @@ const NAV: NavItem[] = [
 ];
 
 export function SettingsPage() {
+  // The section titles the whole page, from here rather than from each of the nine section
+  // components: the labels already live in NAV, and a settings section is a child route of this
+  // shell — so naming it here is one place instead of nine, and it can't drift from the nav.
+  const { pathname } = useLocation();
+  const section = NAV.find((item) => pathname.replace(/\/+$/, '').endsWith(`/${item.to}`));
+  useDocumentTitle([section?.label, 'Settings']);
+
   return (
     <div className="space-y-6">
       <div>
@@ -94,15 +117,17 @@ export function SettingsPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-[220px_1fr] gap-6">
-        {/* Left nav */}
-        <nav className="space-y-0.5">
+      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4 lg:gap-6">
+        {/* Left nav. Below `lg` it becomes a horizontally scrolling strip above the section — a
+            220px column plus a settings form doesn't fit, and eleven stacked links would bury the
+            section the user came to edit. */}
+        <nav className="flex gap-1.5 overflow-x-auto pb-1 lg:block lg:space-y-0.5 lg:overflow-x-visible lg:pb-0">
           {NAV.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition-colors ${
+                `flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] transition-colors lg:shrink lg:whitespace-normal ${
                   isActive ? 'font-medium' : 'font-normal'
                 }`
               }

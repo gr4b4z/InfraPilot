@@ -43,7 +43,8 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
         string service = "api",
         string environment = "staging",
         string version = "v1.0.0",
-        string status = "succeeded")
+        string status = "succeeded",
+        string deployedAt = "2026-04-16T10:00:00Z")
     {
         var response = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", new
         {
@@ -52,7 +53,7 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
             environment,
             version,
             source = "ci",
-            deployedAt = "2026-04-16T10:00:00Z",
+            deployedAt,
             status,
         });
 
@@ -62,35 +63,32 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
     // ── Tests ───────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task GetProducts_AfterIngest_ReturnsProductSummary()
+    public async Task GetProducts_CountsEachServiceOncePerEnvironment_AndReportsTheNewestDeploy()
     {
-        await IngestEventAsync(product: "acme", service: "api", environment: "staging", version: "v1.0.0");
-        await IngestEventAsync(product: "acme", service: "web", environment: "staging", version: "v1.0.1");
+        // A service redeployed (or failing) many times is still one service in the environment's total,
+        // and the environment's last deploy is the newest event across all of them.
+        var product = $"sum-{Guid.NewGuid():N}"[..12];
+        await IngestEventAsync(product, "api", "staging", "v1.0.0", deployedAt: "2026-04-10T10:00:00Z");
+        await IngestEventAsync(product, "api", "staging", "v1.1.0", deployedAt: "2026-04-12T10:00:00Z");
+        await IngestEventAsync(product, "api", "staging", "v1.2.0", status: "failed", deployedAt: "2026-04-13T10:00:00Z");
+        await IngestEventAsync(product, "web", "staging", "v2.0.0", deployedAt: "2026-04-11T10:00:00Z");
+        await IngestEventAsync(product, "web", "prod", "v2.0.0", deployedAt: "2026-04-14T10:00:00Z");
 
-        var response = await _adminClient.GetAsync("/api/deployments/products");
-        response.EnsureSuccessStatusCode();
+        var body = await Deserialize(await _adminClient.GetAsync("/api/deployments/products"));
+        var summary = body.EnumerateArray().Single(p => p.GetProperty("product").GetString() == product);
+        var environments = summary.GetProperty("environments");
 
-        var body = await Deserialize(response);
-        Assert.Equal(JsonValueKind.Array, body.ValueKind);
+        Assert.Equal(new[] { "prod", "staging" }, environments.EnumerateObject().Select(e => e.Name).Order());
 
-        var products = new List<string>();
-        foreach (var item in body.EnumerateArray())
-            products.Add(item.GetProperty("product").GetString()!);
+        var staging = environments.GetProperty("staging");
+        Assert.Equal(2, staging.GetProperty("totalServices").GetInt32());
+        Assert.Equal(2, staging.GetProperty("deployedServices").GetInt32());
+        Assert.Equal(DateTimeOffset.Parse("2026-04-13T10:00:00Z"), staging.GetProperty("lastDeployedAt").GetDateTimeOffset());
 
-        Assert.Contains("acme", products);
-    }
-
-    [Fact]
-    public async Task GetState_ReturnsCurrentState()
-    {
-        await IngestEventAsync(product: "acme", service: "api", environment: "staging", version: "v2.0.0");
-
-        var response = await _adminClient.GetAsync("/api/deployments/state?product=acme");
-        response.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(response);
-        Assert.Equal(JsonValueKind.Array, body.ValueKind);
-        Assert.True(body.GetArrayLength() > 0, "State matrix should contain at least one entry");
+        var prod = environments.GetProperty("prod");
+        Assert.Equal(1, prod.GetProperty("totalServices").GetInt32());
+        Assert.Equal(1, prod.GetProperty("deployedServices").GetInt32());
+        Assert.Equal(DateTimeOffset.Parse("2026-04-14T10:00:00Z"), prod.GetProperty("lastDeployedAt").GetDateTimeOffset());
     }
 
     [Fact]

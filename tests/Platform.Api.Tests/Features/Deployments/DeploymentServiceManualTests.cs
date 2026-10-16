@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Platform.Api.Features.Deployments;
@@ -30,7 +30,11 @@ public class DeploymentServiceManualTests : IDisposable
         _db = new PlatformDbContext(options);
         _sut = new DeploymentService(
             _db, _webhooks, Substitute.For<IPromotionIngestHook>(),
-            TestOptions.Normalization(), Substitute.For<ILogger<DeploymentService>>());
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
+            TestUserPreferences.For(_db),
+            TestServiceDeletions.For(_db),
+            TestProductOverrides.For(_db),
+            Substitute.For<ILogger<DeploymentService>>());
     }
 
     public void Dispose() => _db.Dispose();

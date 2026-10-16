@@ -1,0 +1,90 @@
+id: service-topology
+title: Which service is deployed where, and by what
+group: Topology
+summary: >-
+  How products, services and environments map onto the three delivery tracks, and how to tell which
+  track a given service is on.
+aliases:
+  - what service is deployed where
+  - which track is this service on
+  - where does this service run
+  - what products are there
+  - which environments exist
+  - is this an extension or core
+tags:
+  - product
+  - service
+  - environment
+  - mkp
+  - mkp-extensions
+  - ops
+  - topology
+source: mkp-release/docs/release-pipelines.md §2.4–2.5, §3.4–3.5, §4.4; marketplace/modules.yaml
+as_of: 2026-10-15
+body: |
+  ## Products and environments in InfraPortal
+
+  | Product | Environments | Delivered by |
+  |---|---|---|
+  | `mkp` | dev, test, staging, prod | Track A (SDP) for dev/test; staging via `build → staging`; components move to mkp-release over time |
+  | `mkp-extensions` | dev, test, staging, prod | Tracks B and C |
+  | `mkp-support-tools`, `ops` | varies | Tracks B and C |
+  | `marketplace` | staging, prod | **Historical** — not written to since 2026-08-07 |
+
+  ## How to tell which track a service is on
+
+  1. Does it have a directory in `mkp-release/<env>/`? → Track B or C.
+  2. Is it listed in `marketplace/manifest.json` / `modules.yaml`? → Track A.
+  3. Does it have builds in the registry *and* a `build → *` policy for its product? → Track C.
+
+  Every published build is registered, `mkp` services included. For `mkp` the registration opens a
+  `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
+  approved); there is **no `build → dev` policy for `mkp`**, so master builds of Track A services
+  still reach dev and test through the marketplace manifest.
+
+  The retired `stable` ("Staging Candidate") environment still exists in history for `mkp`,
+  `mkp-extensions` and `mkp-support-tools`, but is hidden from every current-state view.
+
+  ## Track A services (the monorepo)
+
+  `acx-platform`, `mkp-helpdesk`, `mkp-notifications`, `mkp-public-catalog`, `mkp-spotlight`,
+  `mkp-export`, `mkp-scheduler`, `acx-web-commerce`, `acx-web-accounts`, `acx-web-shell`,
+  `mkp-web-helpdesk`, `mkp-extensions`.
+
+  `marketplace/modules.yaml` groups these as `libs-frontend`, `libs-backend` and `services` — the
+  libraries are built and consumed by the services, not deployed on their own.
+
+  ## Track B / C services (mkp-release)
+
+  ADO-built: `mkp-extension-adobe`, `acx-extension-mscsp`, `mkp-extension-installation`,
+  `mkp-extension-usage-reporting`, `mkp-nav-stats`, `mkp-web-currency`, `mkp-web-publiccatalog`,
+  `mkp-extension-nav-billing`, `mkp-extension-procurement`, `mkp-extension-producthub`,
+  `acx-web-notifications`, `mkp-export`.
+
+  GitHub-Actions-built: `ops-dotnet-ci-sample`.
+
+  ## Deployment shapes
+
+  `New-DeploymentMatrix.ps1` splits each reconcile into three kinds of target:
+
+  - **helm** — containerised services onto AKS
+  - **web (storage)** — SPA bundles uploaded to blob storage; the container name comes from
+    `containerNameMap` in `components.yaml`, unless the component's `instance.yaml` overrides it
+  - **swa** — Azure Static Web Apps
+
+  `instance.yaml` decouples *what* is deployed and *where it lands* from the directory name, which
+  is what allows multiple instances of the same chart (`litellm-shared-services/`, `litellm-team-x/`)
+  and mirrored third-party charts under `helm/external/<name>`.
+
+  ## Disabling a component
+
+  `components.yaml` at the repository root sets global defaults; each stage or environment directory
+  can overlay its own. `disabledComponents` is skipped by metadata import, promotion *and* reconcile
+  for that target. The merge is additive for `disabledComponents` and `migrations.data`, and
+  override-based for `containerNameMap`.
+related:
+  - delivery-tracks
+  - environments-and-tracks
+  - deploy-event-sources
+related_guides:
+  - check-deployed-version

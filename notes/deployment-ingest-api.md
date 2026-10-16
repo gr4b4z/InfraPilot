@@ -95,8 +95,15 @@ Rate limiting is applied per key.
 | `provider` | string | no | Provider name (e.g. `github`, `azure-devops`, `gitlab`, `jira`). |
 | `key` | string | no | Unique identifier in that system (commit SHA, PR number, ticket key). |
 | `revision` | string | no | Git revision / commit SHA. Can be omitted if not available. |
-| `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. |
+| `title` | string | no | Human-readable title (e.g. work-item summary, PR title). When supplied for a `work-item` reference, the server uses it directly and skips the Jira lookup. Send the **tracker's own summary** (the Jira ticket title) here: one ticket routinely rides several commits, so no single commit subject can name it. The commit subjects are shown underneath, resolved from `commits` — see `subTitle`. |
+| `subTitle` | string | no | The tracker's own summary, for producers whose `title` carries a commit subject instead. Whenever it is sent it is taken as the item's real name and displayed as the title, with the commit messages moved to the second line — so a producer that already puts the tracker summary on `title` should omit it. **Never** put the commit messages here: the server builds that line itself from `commits` + the event's `commit` references, so all of them are shown, not just one. |
+| `content` | string | no | The reference's **body**, copied verbatim from the source system: a Jira ticket's description, a PR's description, a commit message body. Where `title` is the one-line summary, this is the prose under it. No length limit. On a `work-item` reference it surfaces as the **Content** section of the work-item detail page, between People and Sign-off; a work item with no `content` shows no such section. Rendered as plain text with line breaks preserved — **never** interpreted as markdown or HTML, so markup in the body appears literally. |
+| `priority` | string | no | The tracker's **priority** label for a `work-item`, verbatim — Jira's `Highest` / `High` / `Medium` / `Low` / `Lowest` (or the older `Blocker` … `Trivial`). Shown as a chip beside the title on the work-item detail page, the promotion's work-item rows, the sign-off queues and the deployment's work-item list; the well-known Jira names are coloured, anything else is shown as-is. Omit when the tracker was not asked — no chip is rendered. Ignored on other reference types. |
+| `workItemType` | string | no | The tracker's **issue type** for a `work-item`, verbatim — Jira's `Bug` / `Story` / `Task` / `Epic` / `Sub-task` and so on. Same surfaces as `priority`; the common Jira names get an icon, anything else a plain chip. Named `workItemType` because `type` already says what kind of *reference* this is. Omit when unknown. Ignored on other reference types. |
 | `participants` | array | no | Reference-scoped participants. Same shape as the top-level `participants[]` (see below) — a PR has its author/reviewer, a ticket has its QA/assignee, a commit has its author. Optional and may be omitted entirely on legacy senders. |
+| `resolution` | object | no | The item's state in its **source system**, for `work-item` references: `{ resolved, status?, at?, by? { displayName?, email? } }`. `resolved: true` means the tracker already reports the item finished; InfraPortal notes that on the work item's thread — the status, the date, and who performed the closing transition — so a reviewer can see where the ticket stands without opening the tracker. It does **not** approve anything: a closed ticket says the work is done, not that this release is fit to ship, so the work item stays pending and a human still signs it off. Only `true` is meaningful; `false` and an absent `resolution` are both "still open". Notes are deduplicated by content, so a producer re-posting the same change set does not repeat them. |
+| `commits` | array of strings | no | Commit hashes this reference was derived from. Meaningful on `work-item` references only: records which commit messages mentioned the ticket, so the read path can link the ticket to its `commit` references (matched on `key`) and the `pull-request` references those commits merged (matched on `revision`). Ignored on other types. |
+| `occurredAt` | ISO-8601 timestamp | no | When the referenced thing happened in its source system. Meaning follows `type`: `pull-request` → merge/completion time, `commit` → **committer** date (not the author date — author dates survive rebase/squash and would overstate lead time), `work-item` → created in the tracker, `pipeline` → build finish. Feeds the lead-time analytics clock start: `pull-request.occurredAt` first, `commit.occurredAt` as fallback (see `notes/analytics-api.md`). Omitting it is always safe — events without it are simply excluded from lead-time coverage. |
 
 #### `references[].participants[]` — reference-scoped participants
 
@@ -109,6 +116,9 @@ A reference may carry its own `participants[]` array. Same shape as the event-le
     "provider": "jira",
     "key": "PLT-1234",
     "title": "Add idempotency key to checkout endpoint",
+    "content": "Retried POSTs create duplicate orders.\n\nAccept an Idempotency-Key header and\nreturn the original response on replay.",
+    "priority": "High",
+    "workItemType": "Bug",
     "participants": [
       { "role": "qa",       "displayName": "Eve QA",     "email": "eve.qa@acmetrix.com" },
       { "role": "assignee", "displayName": "Dan Dev",    "email": "dan.dev@acmetrix.com" }
@@ -136,8 +146,13 @@ Common `type` values:
 |------|-------|
 | `repository` | Link to the source code repository. |
 | `pipeline` | Link to the CI/CD build or workflow run. |
+| `build` | The build that produced the artifact (e.g. Azure DevOps build id/number). Sent by producers that distinguish the artifact build from the deploying workflow. |
 | `pull-request` | Link to the merged PR that triggered the deploy. |
+| `commit` | The commit that was deployed. `key` is the SHA. |
+| `branch` | The source branch the build came from. `key` is the ref name. |
 | `work-item` | Link to a Jira ticket, Azure DevOps work item, etc. |
+
+The server stores any `type` verbatim — the table above is the vocabulary current producers send and the UI/analytics understand, not a validation list.
 
 **Commit deep-linking.** When a `repository` reference includes both `url` and `revision`, the UI renders a link to the specific commit, derived from `provider`:
 
@@ -181,6 +196,43 @@ By default the platform canonicalises role and environment strings to **kebab-ca
 ```
 
 Set either field to `null` to preserve sender casing exactly as sent. Read-time matching (e.g. participant-role and environment lookups) always normalises before comparing, so matching works regardless of sender casing.
+
+### Environment aliases
+
+Casing is only half the problem: different pipelines call the *same* environment different things — `dev` / `develop` / `development`, `prod` / `production` / `prd`. Left alone that is three environments on the deployment matrix, three columns in analytics, and three separate promotion edges to configure.
+
+An admin lists the variants as **aliases** of the one real environment in **Settings → Environments**, and the server resolves every environment name a caller sends through them before storing it. So with `production` and `productions` listed as aliases of `prod`:
+
+```json
+{ "environment": "productions", ... }   // stored as "prod"
+```
+
+This applies to every path that takes an environment from a caller — deploy ingest, manual deploys, external promotion create, promotion-from-build, rollback create/preview, release-note generation, webhook subscription filters, and the promotion/rollback policy editors — and to the environment **filter** on the read endpoints, so a pipeline that posts to `productions` and queries `?environment=productions` gets back the rows it just wrote.
+
+An environment that is not configured at all passes through unchanged: curating the list is never a precondition for ingesting.
+
+Aliases are **forward-only** — they fix what arrives next and leave rows that arrived under the old name where they are. **Settings → Environments → Merge environments** is the second, preview-then-apply step that moves that history (deployments, promotions and their ticket index, ticket sign-offs and comments, release notes and per-environment templates, rollback requests, promotion and rollback policies, webhook filters), records the merged names as aliases, and removes them from the environment list. Rows that would collide with one the target already has — a policy for the same edge, a sign-off from the same approver — are left in place and reported in the response.
+
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/settings/environments/usage` | GET | Every environment name the stored data actually uses, with deploy/promotion/release-note counts and whether an alias already redirects it. Admin only. |
+| `/api/settings/environments/merge/preview` | POST | Counts what a merge would move. Changes nothing. Admin only. |
+| `/api/settings/environments/merge` | POST | Performs the merge. Admin only. |
+
+```json
+// POST /api/settings/environments/merge
+{
+  "into": "prod",
+  "from": ["production", "productions"],
+  "recordAliases": true
+}
+```
+
+`recordAliases` defaults to `true`. Without it the merge is a one-off tidy-up that the next run of a pipeline still posting the old name undoes.
+
+### Retired environments
+
+An environment nothing deploys to any more can be marked **Retired** in **Settings → Environments** (`"retired": true` on its entry in `PUT /api/settings`; absent means `false`). Its last events would otherwise keep showing as the version "currently" there, so every current-state read leaves it out: `GET /api/deployments/state` (both views, even with `?environment=` naming it), `/api/deployments/products`, `/services/search` (a service seen only there is not a hit), `/services/{product}/{service}` (state and each version's environments; a version seen only there is not listed), the per-environment analytics (frequency `groupBy=environment`, lead time, the work-item matrix's columns and cells) and work items' deployed-to ("testable in") environments. Rows stored under one of its aliases count as the retired environment too. History is untouched — `/history`, event detail, the recent-activity feeds, `/versions`, promotions and rollbacks still return its rows, and the UI still labels them with its display name. Ingest is unaffected as well: a deploy to it, or to one of its aliases, is still stored under its key. Un-retiring restores everything, since nothing was deleted.
 
 ## Response
 
@@ -409,6 +461,31 @@ from the deploy graph. See `docs/plans/external-promotion-creation.md` for the f
 
 Ingest still **completes** promotions: when a `succeeded` event lands a version on a
 promotion's target environment, the matching in-flight candidate is marked `Deployed`.
+
+## Reading current state — `GET /api/deployments/state`
+
+Query params (all optional): `product`, `environment`, `serviceName`, `view`. `environment` is
+alias-resolved the same way ingest resolves it, so a pipeline that posts to `prod` can read `prod`
+back.
+
+Returns an array with one row per (product, service, environment): the newest event there by
+`deployedAt`, **whatever its `status`** — a `failed` or `in_progress` deploy on top is what that cell
+shows, and a rollback is an event like any other. Two events sharing the newest `deployedAt` are not
+ordered further, so send distinct timestamps when it matters which one is current. Retired services
+and retired environments (see "Retired environments" above) are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
+`product`, `service`, `environment`, `version`, `previousVersion`, `isRollback`, `status`, `source`,
+`deployedAt`, plus `references` (with operator overrides merged in — see below), `participants`,
+`enrichment` and `run`.
+
+**Response size — `view`.** `full` (the default) returns the rows as above. `view=summary` returns the
+same rows, in the same order, with only the scalar fields: `id`, `product`, `service`, `environment`,
+`version`, `previousVersion`, `isRollback`, `status`, `source`, `deployedAt`. Left out (absent, not
+null): `references`, `participants`, `enrichment`, `run` — most of a full response's weight (in
+production the references alone are about three quarters of it). Anything else is a `400`.
+
+Use `summary` to answer "what runs where" — it is what the product page's matrix and the
+rollback/policy pickers request. Use the default whenever you read a row's references or people
+(work items, PRs, who deployed it).
 
 ## Operator overrides (assigning a participant from the UI)
 

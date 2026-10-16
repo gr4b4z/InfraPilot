@@ -17,7 +17,7 @@ namespace Platform.Api.Migrations.SqlServer
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.6")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -125,6 +125,74 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("approval_requests", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Builds.Models.Build", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ArtifactDigest")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ArtifactRef")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Branch")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("BuildId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("BuildUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("CommitSha")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ManifestJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Branch");
+
+                    b.HasIndex("Product", "Service", "CreatedAt")
+                        .IsDescending(false, false, true);
+
+                    b.HasIndex("Product", "Service", "Version")
+                        .IsUnique();
+
+                    b.ToTable("builds", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Catalog.Models.CatalogItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -221,6 +289,47 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("catalog_item_versions", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeletedService", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("DeletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DeletedById")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("DeletedByName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "Service")
+                        .IsUnique();
+
+                    b.ToTable("deleted_services", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -273,6 +382,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(max)")
                         .HasDefaultValue("[]");
 
+                    b.Property<string>("RunJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("Service")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -308,17 +420,79 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("deploy_events", (string)null);
                 });
 
-            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventLog", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ByteCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
                     b.Property<Guid>("DeployEventId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("LineCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("OriginalByteCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<bool>("Truncated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeployEventId");
+
+                    b.HasIndex("DeployEventId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("deploy_event_logs", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("CommittedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Content")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("DeployEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<string>("Product")
                         .IsRequired()
@@ -333,6 +507,10 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("SubTitle")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
                     b.Property<string>("Title")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
@@ -343,6 +521,10 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.Property<string>("WorkItemKey")
                         .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("WorkItemType")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
@@ -408,6 +590,53 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("reference_participant_overrides", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.ServiceProductOverride", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("FromProduct")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedById")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("UpdatedByName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Service");
+
+                    b.ToTable("service_product_overrides", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
                 {
                     b.Property<Guid>("Id")
@@ -449,8 +678,9 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CandidateId", "ApproverEmail")
-                        .IsUnique();
+                    b.HasIndex("CandidateId", "ApproverEmail", "StepName", "RequirementName")
+                        .IsUnique()
+                        .HasFilter("[StepName] IS NOT NULL AND [RequirementName] IS NOT NULL");
 
                     b.ToTable("promotion_approvals", (string)null);
                 });
@@ -475,6 +705,10 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("FromRevision")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FromVersion")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
@@ -633,6 +867,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(max)")
                         .HasDefaultValue("[]");
 
+                    b.Property<int?>("ApprovedWebhookDelaySeconds")
+                        .HasColumnType("int");
+
                     b.Property<bool>("AutoApproveOnAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
@@ -643,8 +880,16 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
 
+                    b.Property<string>("AutoCreateFromBranchesJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("DeploysOnApproval")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
 
                     b.Property<string>("EscalationGroup")
                         .HasMaxLength(400)
@@ -655,10 +900,21 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<bool>("RequireAllWorkItemInstancesApproved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("RequireAllWorkItemsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
+
+                    b.Property<string>("RequiredWorkItemRolesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
 
                     b.Property<string>("Service")
                         .HasMaxLength(200)
@@ -669,13 +925,20 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<bool>("SourceRequiresDeploy")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<int>("TimeoutHours")
-                        .HasColumnType("int");
+                    b.Property<bool>("TracksWorkItems")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
@@ -700,8 +963,18 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<Guid>("CandidateId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTimeOffset?>("CommittedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Content")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Priority")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<string>("Product")
                         .IsRequired()
@@ -715,6 +988,17 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<string>("Revision")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
+                    b.Property<string>("SubTitle")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<string>("TargetEnv")
                         .IsRequired()
@@ -734,11 +1018,15 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<string>("WorkItemType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CandidateId");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "Service");
 
                     b.ToTable("promotion_work_items", (string)null);
                 });
@@ -776,10 +1064,20 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("WorkItemKey")
                         .IsRequired()
@@ -790,12 +1088,72 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasIndex("Product", "TargetEnv");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv");
+                    b.HasIndex("WorkItemKey", "Product", "Service", "TargetEnv");
 
-                    b.HasIndex("WorkItemKey", "Product", "TargetEnv", "ApproverEmail")
+                    b.HasIndex("WorkItemKey", "Product", "Service", "TargetEnv", "ApproverEmail")
                         .IsUnique();
 
                     b.ToTable("work_item_approvals", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Promotions.Models.WorkItemComment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AuthorEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("AuthorName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Decision")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
+                    b.Property<string>("TargetEnv")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("WorkItemKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("WorkItemKey", "Product", "Service", "TargetEnv", "CreatedAt");
+
+                    b.ToTable("work_item_comments", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.ReleaseNotes.Models.ReleaseNote", b =>
@@ -1033,6 +1391,11 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
+                    b.Property<bool>("IsOverride")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<Guid>("RequestId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1068,6 +1431,10 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<Guid>("RequestId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1095,14 +1462,84 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("rollback_items", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Rollbacks.Models.RollbackPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ApprovalStepsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatorsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("{}");
+
+                    b.Property<string>("EscalationGroup")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("TargetEnv")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Product", "TargetEnv")
+                        .IsUnique()
+                        .HasFilter("[TargetEnv] IS NOT NULL");
+
+                    b.ToTable("rollback_policies", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Rollbacks.Models.RollbackRequest", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<bool>("ApprovalOverridden")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<DateTimeOffset?>("ApprovedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CancelledBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("CancelledByName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
 
                     b.Property<DateTimeOffset?>("CompletedAt")
                         .HasColumnType("datetimeoffset");
@@ -1169,6 +1606,38 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("rollback_requests", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Users.Models.UserPreference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UserEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserEmail", "Key")
+                        .IsUnique();
+
+                    b.ToTable("user_preferences", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Webhooks.Models.WebhookDelivery", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1177,6 +1646,10 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.Property<int>("Attempts")
                         .HasColumnType("int");
+
+                    b.Property<string>("CancelKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
@@ -1219,6 +1692,8 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CancelKey");
+
                     b.HasIndex("SubscriptionId");
 
                     b.HasIndex("Status", "NextRetryAt");
@@ -1248,11 +1723,33 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(max)")
                         .HasDefaultValue("[]");
 
-                    b.Property<string>("FilterEnvironment")
+                    b.Property<string>("FilterEnvironmentsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
+                    b.Property<string>("FilterProductsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
+                    b.Property<string>("FilterServicesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
+                    b.Property<string>("GitHubEventType")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<string>("FilterProduct")
+                    b.Property<string>("MessageTemplate")
+                        .HasMaxLength(8000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MessageTitle")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
@@ -1260,6 +1757,17 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("SignatureHeader")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("TargetType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)")
+                        .HasDefaultValue("generic");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
@@ -1344,6 +1852,8 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasIndex("Module", "Action");
 
+                    b.HasIndex("Module", "Timestamp");
+
                     b.ToTable("audit_log", (string)null);
                 });
 
@@ -1386,6 +1896,69 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsUnique();
 
                     b.ToTable("local_users", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Infrastructure.Auth.PersonalAccessToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Prefix")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Roles")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("UserEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("UserName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserEmail");
+
+                    b.ToTable("personal_access_tokens", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Infrastructure.Features.PlatformSetting", b =>
@@ -1443,6 +2016,15 @@ namespace Platform.Api.Migrations.SqlServer
                         .IsRequired();
 
                     b.Navigation("CatalogItem");
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventLog", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
+                        .WithMany()
+                        .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Deployments.Models.DeployEventWorkItem", b =>

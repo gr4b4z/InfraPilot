@@ -1,4 +1,3 @@
-using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -56,6 +55,213 @@ public class DeployEventWorkItemTests
         var keys = rows.Select(r => r.WorkItemKey).OrderBy(k => k).ToList();
         Assert.Equal(new[] { "FOO-123", "FOO-456" }, keys);
         Assert.All(rows, r => Assert.Equal("acme", r.Product));
+    }
+
+    /// <summary>
+    /// The reference's body is persisted on the projection and re-synced in place, like title and
+    /// url — a producer that edits a ticket description and re-sends should see the new one.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_PersistsAndUpdatesWorkItemContent()
+    {
+        await using var factory = new TestFactory();
+
+        Guid eventId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var dto = NewDto(references: new List<ReferenceDto>
+            {
+                new("work-item", Key: "FOO-1", Title: "Fix retry",
+                    Content: "Checkout double-charges.\n\nRepro: submit, then retry."),
+            });
+
+            var ev = await service.IngestEvent(dto);
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+            eventId = ev.Id;
+
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+            Assert.Equal("Checkout double-charges.\n\nRepro: submit, then retry.", row.Content);
+        }
+
+        // Re-sync the same event with an edited body.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
+            ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
+                new List<ReferenceDto> { new("work-item", Key: "FOO-1", Content: "rewritten") },
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                });
+
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Equal("rewritten", row.Content);
+        }
+    }
+
+    /// <summary>
+    /// The tracker's priority and issue type persist on the projection exactly as sent and re-sync in
+    /// place — a ticket re-prioritised in Jira and re-sent shows the new level, and a producer that
+    /// stops sending them clears them rather than leaving a stale label behind.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_PersistsAndUpdatesWorkItemPriorityAndType()
+    {
+        await using var factory = new TestFactory();
+
+        Guid eventId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var dto = NewDto(references: new List<ReferenceDto>
+            {
+                new("work-item", Key: "FOO-1", Title: "Fix retry", Priority: "High", WorkItemType: "Bug"),
+            });
+
+            var ev = await service.IngestEvent(dto);
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+            eventId = ev.Id;
+
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+            Assert.Equal("High", row.Priority);
+            Assert.Equal("Bug", row.WorkItemType);
+        }
+
+        // Re-sync the same event: re-prioritised, and the type no longer sent.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
+            ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
+                new List<ReferenceDto> { new("work-item", Key: "FOO-1", Priority: "Lowest") },
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                });
+
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Equal("Lowest", row.Priority);
+            Assert.Null(row.WorkItemType);
+        }
+    }
+
+    /// <summary>
+    /// The two display lines are resolved at sync time and re-synced in place: the ticket's own name
+    /// on <c>Title</c>, the messages of every commit it rode in on underneath. A producer that titles
+    /// the item by a commit subject and carries the Jira summary as subTitle gets the same answer as
+    /// one that sends the summary as the title — the tracker's name is never the second line.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_TitlesWorkItemByTracker_AndSubTitlesItWithEveryCommitMessage()
+    {
+        await using var factory = new TestFactory();
+
+        Guid eventId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var dto = NewDto(references: new List<ReferenceDto>
+            {
+                new("work-item", Key: "FOO-1",
+                    Title: "fix: send an idempotency key with the retry",
+                    SubTitle: "Fix retry",
+                    Commits: new[] { "aaaaaaa1111", "bbbbbbb2222" }),
+                new("commit", Key: "aaaaaaa1111", Title: "fix: send an idempotency key with the retry"),
+                new("commit", Key: "bbbbbbb2222", Title: "test: cover the duplicate submit"),
+            });
+
+            var ev = await service.IngestEvent(dto);
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+            eventId = ev.Id;
+
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+            Assert.Equal("Fix retry", row.Title);
+            Assert.Equal(
+                "fix: send an idempotency key with the retry • test: cover the duplicate submit",
+                row.SubTitle);
+        }
+
+        // Re-sync the same event with a single-commit ticket named the same thing as its commit —
+        // the row follows the payload, and a second line repeating the first is dropped.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = await db.DeployEvents.FirstAsync(e => e.Id == eventId);
+            ev.ReferencesJson = System.Text.Json.JsonSerializer.Serialize(
+                new List<ReferenceDto>
+                {
+                    new("work-item", Key: "FOO-1", Title: "Fix retry", Commits: new[] { "aaaaaaa1111" }),
+                    new("commit", Key: "aaaaaaa1111", Title: "Fix retry"),
+                },
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                });
+
+            await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == eventId);
+            Assert.Equal("Fix retry", row.Title);
+            Assert.Null(row.SubTitle);
+        }
+    }
+
+    /// <summary>
+    /// A payload whose `commit` references were trimmed away (workflow_dispatch inputs are capped, and
+    /// the commits are the first thing dropped) still gets a second line: the producer's own commit
+    /// subject, which is what `title` carries in the two-line shape. Losing the commit list should
+    /// cost the list of messages, not the fact that a change is described.
+    /// </summary>
+    [Fact]
+    public async Task Ingest_FallsBackToTheProducersCommitSubject_WhenCommitReferencesAreMissing()
+    {
+        await using var factory = new TestFactory();
+        using var scope = factory.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+
+        var dto = NewDto(references: new List<ReferenceDto>
+        {
+            new("work-item", Key: "FOO-1",
+                Title: "fix: send an idempotency key with the retry",
+                SubTitle: "Fix retry",
+                Commits: new[] { "aaaaaaa1111" }),
+        });
+
+        var ev = await service.IngestEvent(dto);
+        await scope.ServiceProvider.GetRequiredService<WorkItemSyncService>().SyncAsync(ev);
+        await db.SaveChangesAsync();
+
+        var row = await db.DeployEventWorkItems.SingleAsync(w => w.DeployEventId == ev.Id);
+        Assert.Equal("Fix retry", row.Title);
+        Assert.Equal("fix: send an idempotency key with the retry", row.SubTitle);
     }
 
     [Fact]
@@ -427,16 +633,8 @@ public class DeployEventWorkItemTests
             scopeFactory,
             NullLogger<DeployEventWorkItemBackfillService>.Instance);
 
-        // Use a token that's already (well past) the 5-second delay so the Task.Delay inside
-        // ExecuteAsync returns immediately. We pass CancellationToken.None — the service
-        // catches OperationCanceledException specifically and would skip the work; we want
-        // it to run to completion so we accept the 5-second delay.
-        var method = typeof(DeployEventWorkItemBackfillService)
-            .GetMethod("ExecuteAsync", BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("ExecuteAsync not found");
-
-        var task = (Task)method.Invoke(svc, new object[] { CancellationToken.None })!;
-        await task;
+        // The pass itself, skipping the 5-second startup delay the hosted service waits out.
+        await svc.RunOnceAsync(CancellationToken.None);
     }
 
     /// <summary>

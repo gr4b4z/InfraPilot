@@ -14,21 +14,14 @@ public class FeatureFlagsTests : IDisposable
 
     public FeatureFlagsTests()
     {
-        // Shared in-process cache — reset between tests so they don't pollute each other.
-        FeatureFlags.ClearCacheForTesting();
-
         var options = new DbContextOptionsBuilder<PlatformDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
             .Options;
         _db = new PlatformDbContext(options);
-        _flags = new FeatureFlags(_db, Substitute.For<ILogger<FeatureFlags>>());
+        _flags = new FeatureFlags(_db, new FeatureFlagCache(), Substitute.For<ILogger<FeatureFlags>>());
     }
 
-    public void Dispose()
-    {
-        _db.Dispose();
-        FeatureFlags.ClearCacheForTesting();
-    }
+    public void Dispose() => _db.Dispose();
 
     [Fact]
     public async Task IsEnabled_MissingKey_ReturnsFalse()
@@ -112,6 +105,39 @@ public class FeatureFlagsTests : IDisposable
 
         var row = await _db.PlatformSettings.SingleAsync(s => s.Key == FeatureFlagKeys.Promotions);
         Assert.Equal("false", row.Value);
+    }
+
+    [Fact]
+    public async Task Seeder_SeedDefaults_EnableAllByDefault_TurnsOnFlagsThatShipOff()
+    {
+        // What Development passes. Promotions ships off, which on a fresh dev database hides the
+        // feature behind an admin toggle nobody knows to look for.
+        var config = new ConfigurationBuilder().Build();
+        await FeatureFlagSeeder.SeedDefaults(_db, config, enableAllByDefault: true);
+
+        var rows = await _db.PlatformSettings.ToListAsync();
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.Equal("true", r.Value));
+    }
+
+    [Fact]
+    public async Task Seeder_SeedDefaults_EnableAllByDefault_StillHonoursExplicitFalse()
+    {
+        // "Default everything on" must not outrank an operator who configured a flag off.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Features:Promotions:DefaultEnabled"] = "false",
+            })
+            .Build();
+
+        await FeatureFlagSeeder.SeedDefaults(_db, config, enableAllByDefault: true);
+
+        var row = await _db.PlatformSettings.SingleAsync(s => s.Key == FeatureFlagKeys.Promotions);
+        Assert.Equal("false", row.Value);
+        // Other flags are untouched by that override.
+        var rollbacks = await _db.PlatformSettings.SingleAsync(s => s.Key == FeatureFlagKeys.Rollbacks);
+        Assert.Equal("true", rollbacks.Value);
     }
 
     [Fact]

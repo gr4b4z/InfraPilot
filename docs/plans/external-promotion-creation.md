@@ -264,7 +264,7 @@ already-approved ticket still counts after a supersede — no re-signoff. (Free 
 | D6 | Approval authority location | **Stays in the tool** (admin-managed, snapshotted); payload carries context only, never authority | §"trust boundary" / §8 |
 | D7 | Approval rule shape | **Bounded step → requirement → (groups ∪ users) tree**, not a free-form rules engine | §8.1, §8.2 |
 | D8 | Step evaluation | **Parallel** — all requirements across all steps must pass, any order | §8.1, §8.4 |
-| D9 | Distinct-people scope | **Global** — one human satisfies at most one requirement across the whole policy | §8.1, §8.4 |
+| D9 | Distinct-people scope | **Global** — one human satisfies at most one requirement across the whole policy. **Revised Sep 2026 → per requirement:** a person eligible for several requirements approves each separately (one `PromotionApproval` row per requirement); N-of-M distinctness holds within a requirement only. The global rule left a promotion stuck whenever one person was the only eligible approver for two gates. | §8.1, §8.4 |
 | D10 | Service vs product policy | **Full override** (no field-level merge) — current resolver behavior | §8.6 |
 | D11 | QA blanket approve shortcut | **Removed** — QA is just a group on a requirement; admin bootstrap shortcut stays | §8.3 |
 | D12 | Approver tree storage | **JSON column** (`ApprovalStepsJson`), snapshotted onto candidate | §8.2 |

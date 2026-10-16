@@ -23,27 +23,60 @@ public class AppSettingsService
         PropertyNameCaseInsensitive = true,
     };
 
+    /// <summary>
+    /// The built-in participant-role vocabulary. Separate from <see cref="Defaults"/> because
+    /// <see cref="ParticipantRoleSeeder"/> also merges it into an <i>existing</i> settings row: a
+    /// role the platform never learned about can't be assigned to or filtered on, and installs
+    /// predate the roles their producers now send.
+    /// </summary>
+    public static readonly List<RoleConfigDto> DefaultRoles =
+    [
+        new("triggered-by", "Triggered by"),
+        new("author", "Author"),
+        new("reviewer", "Reviewer"),
+        new("qa", "QA"),
+        new("qa-owner", "QA owner"),
+        new("assignee", "Assignee"),
+        new("reporter", "Reporter"),
+    ];
+
     // Built-in defaults — mirror the web client's former DEFAULT_* constants so a fresh
     // install (no saved row) behaves identically to the old localStorage-seeded store.
     public static readonly AppSettingsDto Defaults = new(
         Environments:
         [
-            new("development", "Development"),
-            new("staging", "Staging"),
-            new("production", "Production"),
+            new("development", "Development", "#2563eb"),
+            new("staging", "Staging", "#d97706"),
+            new("production", "Production", "#dc2626", IsProduction: true),
         ],
-        Roles:
-        [
-            new("triggered-by", "Triggered by"),
-            new("author", "Author"),
-            new("reviewer", "Reviewer"),
-            new("qa", "QA"),
-        ],
+        // The roles producers actually send. Anything missing here reads as "not a configured role"
+        // in the UI and can't be assigned to, so the defaults cover the whole vocabulary the deploy
+        // ingest path emits (triggered-by, author, reviewer) plus what Jira contributes on a work
+        // item (assignee, reporter, qa-owner).
+        Roles: DefaultRoles,
         ActivityTemplate:
         [
             new("{ref:work-item:key} — {label:workItemTitle}", "secondary"),
             new("PR: {participant:PR Author}  ·  QA: {participant:QA}  ·  {time}", "muted"),
         ]);
+
+    /// <summary>
+    /// Normalise an environment colour to <c>#rrggbb</c>. Accepts <c>#rgb</c> shorthand and any
+    /// casing, with or without the leading hash. Anything else (including blank) returns null,
+    /// which the client reads as "derive a colour from the key" rather than as an error — a
+    /// bad swatch should never block saving the rest of the settings.
+    /// </summary>
+    public static string? NormalizeHexColor(string? value)
+    {
+        var hex = (value ?? "").Trim().TrimStart('#');
+        if (hex.Length is not (3 or 6)) return null;
+        foreach (var c in hex)
+        {
+            if (!Uri.IsHexDigit(c)) return null;
+        }
+        if (hex.Length == 3) hex = string.Concat(hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]);
+        return "#" + hex.ToLowerInvariant();
+    }
 
     private readonly PlatformDbContext _db;
     private readonly ICurrentUser _user;
@@ -69,6 +102,40 @@ public class AppSettingsService
             // A malformed row should never strip the UI of its config — fall back to defaults.
             return Defaults;
         }
+    }
+
+    /// <summary>
+    /// The environment names the current-state read paths leave out — see
+    /// <see cref="EnvironmentConfigDto.Retired"/>. Read paths that already hold the request's
+    /// <see cref="EnvironmentAliasResolver"/> should ask it instead, which answers from the snapshot
+    /// alias resolution already loaded.
+    /// </summary>
+    public async Task<IReadOnlySet<string>> GetRetiredEnvironmentKeysAsync(CancellationToken ct = default)
+        => RetiredEnvironmentKeys((await GetSettings(ct)).Environments);
+
+    /// <summary>
+    /// Every name a retired environment's rows can be stored under: its key, plus its aliases. An
+    /// alias row that has not been merged yet is the same environment — the web client already
+    /// renders it under the retired label — so leaving it in would put the retired column straight
+    /// back on the matrix under another spelling. Case-insensitive, like every other environment
+    /// lookup. Empty when nothing is retired, which is what lets the query filter skip itself.
+    /// </summary>
+    public static IReadOnlySet<string> RetiredEnvironmentKeys(IEnumerable<EnvironmentConfigDto>? environments)
+    {
+        var retired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var env in environments ?? [])
+        {
+            if (!env.Retired) continue;
+            var key = (env.Key ?? "").Trim();
+            if (key.Length == 0) continue;
+            retired.Add(key);
+            foreach (var alias in env.Aliases ?? [])
+            {
+                var name = (alias ?? "").Trim();
+                if (name.Length > 0) retired.Add(name);
+            }
+        }
+        return retired;
     }
 
     public async Task SaveSettings(AppSettingsDto settings, CancellationToken ct = default)

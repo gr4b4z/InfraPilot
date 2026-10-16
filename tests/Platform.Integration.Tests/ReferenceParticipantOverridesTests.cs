@@ -290,14 +290,7 @@ public class ReferenceParticipantOverridesTests
 
         public OverrideFactory()
         {
-            _connection = new SqliteConnection("DataSource=:memory:");
-            _connection.Open();
-
-            var options = new DbContextOptionsBuilder<SqliteTestDbContext>()
-                .UseSqlite(_connection)
-                .Options;
-            using var db = new SqliteTestDbContext(options);
-            db.Database.EnsureCreated();
+            _connection = TestDatabase.Open();
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -320,6 +313,8 @@ public class ReferenceParticipantOverridesTests
                 services.AddSingleton<DbConnection>(_connection);
                 services.AddDbContext<PlatformDbContext, SqliteTestDbContext>((sp, options) =>
                     options.UseSqlite(sp.GetRequiredService<DbConnection>()));
+
+                TestHostIsolation.Apply(services);
             });
         }
 

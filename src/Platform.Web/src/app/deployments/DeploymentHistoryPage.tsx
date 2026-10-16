@@ -1,10 +1,15 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+import { deploymentDetailPath } from '@/lib/deploymentPath';
+import { useDocumentTitle } from '@/lib/pageTitle';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
+import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
-import { ArrowLeft, Loader2, ExternalLink, ChevronDown, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
+import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
 import type { DeployEvent, DeployReference } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
 
@@ -44,12 +49,26 @@ export function DeploymentHistoryPage() {
   const environment = searchParams.get('environment') ?? undefined;
   const { history: allHistory, loading, fetchHistory } = useDeploymentStore();
   const { getDisplayName } = useSettingsStore();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
 
+  // The environment filter is in the URL, so "the prod history for checkout-api/api" is a link — and
+  // the title has to name the environment or every one of those links reads the same.
+  useDocumentTitle([`${product}/${service}`, environment, 'Deployment history']);
+
+  const deploymentsTick = useEntityRefresh(['deployment'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+
   useEffect(() => {
-    if (product && service) fetchHistory(product, service, undefined, MAX_HISTORY_FETCH);
-  }, [product, service, fetchHistory]);
+    if (!product || !service) return;
+    // A push for this product refreshes the mounted rows in place — the reader's scroll position and
+    // any "Show more" they pressed survive. Only a different service shows the spinner.
+    fetchHistory(product, service, undefined, MAX_HISTORY_FETCH, {
+      silent: isBackgroundRefresh(`${product}/${service}`),
+    });
+  }, [product, service, fetchHistory, deploymentsTick, isBackgroundRefresh]);
 
   const environments = useMemo(() => {
     const envSet = new Set(allHistory.map((e) => e.environment));
@@ -65,9 +84,15 @@ export function DeploymentHistoryPage() {
     setDisplayCount(PAGE_SIZE);
   }, [environment]);
 
+  // Where the detail page's back link should return to: this page with its environment filter intact,
+  // rather than the product matrix a level up.
+  const backHref = useMemo(
+    () => `/deployments/${product}/${service}/history${environment ? `?environment=${encodeURIComponent(environment)}` : ''}`,
+    [product, service, environment],
+  );
+
   const visibleHistory = useMemo(() => history.slice(0, displayCount), [history, displayCount]);
   const hasMore = displayCount < history.length;
-  const selectedEvent = useMemo(() => history.find((e) => e.id === selectedId) ?? null, [history, selectedId]);
 
   const setEnvironmentFilter = useCallback((env: string | undefined) => {
     setSearchParams(env ? { environment: env } : {});
@@ -99,8 +124,10 @@ export function DeploymentHistoryPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
+        {/* Up one level is the service's detail page, not the product matrix — history is a
+            sub-page of the service now that the service has a page of its own. */}
         <Link
-          to={`/deployments/${product}`}
+          to={`/deployments/${product}/${service}`}
           className="p-1.5 rounded-lg transition-colors hover:opacity-80"
           style={{ color: 'var(--text-muted)' }}
         >
@@ -135,13 +162,17 @@ export function DeploymentHistoryPage() {
           No deployment history found
         </div>
       ) : (
-        <div className="space-y-1.5">
-          {visibleHistory.map((evt) => (
+        <KeyboardList
+          className="space-y-1.5"
+          count={visibleHistory.length}
+          ariaLabel={`${service ?? 'Service'} deployment history`}
+        >
+          {visibleHistory.map((evt, index) => (
             <HistoryRow
               key={evt.id}
+              index={index}
               event={evt}
-              isSelected={selectedId === evt.id}
-              onClick={() => setSelectedId(selectedId === evt.id ? null : evt.id)}
+              detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
           ))}
           {hasMore && (
@@ -159,37 +190,44 @@ export function DeploymentHistoryPage() {
               </span>
             </div>
           )}
-        </div>
+        </KeyboardList>
       )}
 
-      {selectedEvent && product && (
-        <DeployEventDetail
-          entry={selectedEvent}
-          product={product}
-          onClose={() => setSelectedId(null)}
-        />
-      )}
     </div>
   );
 }
 
-function HistoryRow({ event: evt, isSelected, onClick }: {
+/**
+ * One deployment in the history list. The whole row is a link to that deployment's page — a real
+ * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
+ * a reader expects of a navigation.
+ */
+function HistoryRow({ index, event: evt, detailHref }: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
   event: DeployEvent;
-  isSelected: boolean;
-  onClick: () => void;
+  detailHref: string;
 }) {
-  const { getDisplayName } = useSettingsStore();
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
   const labels = evt.enrichment?.labels ?? {};
 
+  // The row is already an anchor, so it activates itself — see `selfActivating`. All this adds is the
+  // roving tabindex and the arrow keys.
+  const rowProps = useKeyboardListRow(index, () => {}, {
+    role: null,
+    selfActivating: true,
+    label: `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}`,
+  });
+
   return (
-    <div
-      className="rounded-lg border px-3 py-2.5 flex items-center gap-3 cursor-pointer transition-colors hover:opacity-90"
+    <Link
+      {...rowProps}
+      to={detailHref}
+      className="card-hover rounded-lg border px-3 py-2.5 flex items-center gap-3 transition-colors"
       style={{
-        borderColor: isSelected ? 'var(--accent)' : 'var(--border-color)',
-        backgroundColor: isSelected ? 'var(--accent-muted)' : 'var(--bg-secondary)',
+        borderColor: 'var(--border-color)',
+        backgroundColor: 'var(--bg-secondary)',
       }}
-      onClick={onClick}
     >
       <span className="font-mono text-[13px] font-medium min-w-[80px]" style={{ color: statusColor(evt.status) }}>
         v{evt.version}
@@ -199,12 +237,7 @@ function HistoryRow({ event: evt, isSelected, onClick }: {
 
       <StatusBadge status={evt.status} />
 
-      <span
-        className="badge text-[11px]"
-        style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }}
-      >
-        {getDisplayName(evt.environment)}
-      </span>
+      <EnvBadge env={evt.environment} />
 
       {/* Reference chips — work-item key + PR number */}
       {evt.references
@@ -237,7 +270,9 @@ function HistoryRow({ event: evt, isSelected, onClick }: {
       <span className="text-[12px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
         {formatDistanceToNow(new Date(evt.deployedAt), { addSuffix: true })}
       </span>
-    </div>
+
+      <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+    </Link>
   );
 }
 
@@ -329,7 +364,7 @@ function EnvironmentFilter({ environments, selected, displayName, onChange }: {
         style={{ color: selected ? 'var(--accent)' : 'var(--text-muted)', border: '1px solid var(--border-color)' }}
       >
         <Filter size={13} />
-        {selected ? displayName(selected) : 'All environments'}
+        {selected ? <EnvLabel env={selected} /> : 'All environments'}
         <ChevronDown size={12} />
       </button>
       {open && (
@@ -343,7 +378,8 @@ function EnvironmentFilter({ environments, selected, displayName, onChange }: {
               All environments
             </button>
             {environments.map((env) => (
-              <button key={env} onClick={() => { onChange(env); setOpen(false); }} className="w-full text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}>
+              <button key={env} onClick={() => { onChange(env); setOpen(false); }} className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-secondary)]" style={{ color: selected === env ? 'var(--accent)' : 'var(--text-primary)', fontWeight: selected === env ? 600 : 400 }}>
+                <EnvDot env={env} />
                 {displayName(env)}
               </button>
             ))}

@@ -1,0 +1,599 @@
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure.Persistence;
+
+namespace Platform.Integration.Tests;
+
+/// <summary>
+/// Covers what <c>canApprove</c> promises. The promotions list spends it on claims that the current
+/// user can act — the "Awaiting your approval" badge, the my-approvals tab, the bulk selection, the
+/// my-tasks badge — so it has to mean "<see cref="PromotionService.ApproveAsync"/> would accept this
+/// right now", not merely "you are in one of the approver groups".
+///
+/// <para>Two ways it used to over-report, both regression-tested here: a requirement already satisfied
+/// by somebody else, and a work-item gate still holding the promotion back. Reuses
+/// <see cref="PromotionGateTests.GateTestFactory"/> (fake current user, so group membership is a role
+/// claim) since these are service-level questions.</para>
+/// </summary>
+public class PromotionCanApproveTests
+{
+    private const string ApproverGroup = "ReleaseApprovers";
+
+    // ── A requirement somebody else already satisfied ────────────────────────
+
+    [Fact]
+    public async Task CanApprove_False_WhenTheOnlyRequirementIsAlreadySatisfied()
+    {
+        await using var factory = new GateFixture();
+        factory.AsUser("second@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await SeedAsync(db, minApprovers: 1);
+            candidateId = candidate.Id;
+
+            // A colleague fills the requirement's only slot. Nothing is left for this user to approve —
+            // ApproveAsync would answer with RequirementAlreadySatisfiedException.
+            db.PromotionApprovals.Add(NewApproval(candidateId, "first@example.com"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_True_WhenTheRequirementStillNeedsAnotherApprover()
+    {
+        // Same setup, but the requirement wants two distinct approvers — so one recorded approval
+        // leaves it open and this user really is being waited on.
+        await using var factory = new GateFixture();
+        factory.AsUser("second@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await SeedAsync(db, minApprovers: 2);
+            candidateId = candidate.Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "first@example.com"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.True(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_False_ForAUserInNoApproverGroup()
+    {
+        await using var factory = new GateFixture();
+        factory.AsUser("outsider@example.com", groups: Array.Empty<string>());
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1)).Id;
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    // ── A work-item gate still holding the promotion ─────────────────────────
+
+    [Fact]
+    public async Task CanApprove_False_WhenOnlySomeWorkItemsAreSignedOff()
+    {
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1", "FOO-2" });
+            candidateId = candidate.Id;
+            db.WorkItemApprovals.Add(NewWorkItemDecision(candidate, "FOO-1", WorkItemDecision.Approved));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_True_OnceEveryWorkItemIsSignedOff()
+    {
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1", "FOO-2" });
+            candidateId = candidate.Id;
+            db.WorkItemApprovals.Add(NewWorkItemDecision(candidate, "FOO-1", WorkItemDecision.Approved));
+            db.WorkItemApprovals.Add(NewWorkItemDecision(candidate, "FOO-2", WorkItemDecision.Approved));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.True(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_False_WhenAWorkItemIsApprovedButAlsoBlocked()
+    {
+        // A block outranks a sibling approval — the same precedence the gate evaluator applies, so
+        // canApprove must not read a blocked item as resolved.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var candidate = await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1" });
+            candidateId = candidate.Id;
+            db.WorkItemApprovals.Add(NewWorkItemDecision(candidate, "FOO-1", WorkItemDecision.Approved));
+            db.WorkItemApprovals.Add(
+                NewWorkItemDecision(candidate, "FOO-1", WorkItemDecision.Blocked, "blocker@example.com"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_True_WhenTheGateIsSetButTheCandidateCarriesNoWorkItems()
+    {
+        // RequireAllWorkItemsApproved has nothing to wait for on a bundle with no work items — the
+        // gate evaluator treats that as satisfied, and so must this.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(
+                db, minApprovers: 1, requireAllWorkItemsApproved: true)).Id;
+        }
+
+        Assert.True(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_True_WhenWorkItemsAreOutstandingButThePolicyDoesNotGateOnThem()
+    {
+        // Outstanding work items only block when the policy says so. Without the flag the approver is
+        // free to go ahead, which is the pre-existing behaviour this fix must not change.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: false,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        Assert.True(await CanApproveAsync(factory, candidateId));
+    }
+
+    // ── Agreement with the detail view ───────────────────────────────────────
+
+    [Fact]
+    public async Task CanApprove_AgreesWithApproveAsync_AcrossTheBlockingCases()
+    {
+        // The point of the whole fix: wherever canApprove says false for a candidate the user is
+        // authorised on, ApproveAsync must refuse — and where it says true, ApproveAsync must accept.
+        // The blocked candidate is the case that prompted it: the requirement is open and nobody has
+        // approved, but the policy holds approval until every work item is signed off.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid blockedId;
+        Guid approvableId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            blockedId = (await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "BLOCK-1" },
+                service: "blocked-svc")).Id;
+            approvableId = (await SeedAsync(
+                db, minApprovers: 1, service: "open-svc")).Id;
+        }
+
+        Assert.False(await CanApproveAsync(factory, blockedId));
+        Assert.True(await CanApproveAsync(factory, approvableId));
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => svc.ApproveAsync(blockedId, null));
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var approved = await svc.ApproveAsync(approvableId, null);
+            Assert.Equal(PromotionStatus.Approved, approved.Status);
+        }
+    }
+
+    [Fact]
+    public async Task CanApprove_False_OnceThisUserHasDecided()
+    {
+        // A legacy, unattributed decision (no step/requirement) closes the whole candidate to its
+        // author — pinned so the per-gate rewrite can't drop it.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 2)).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "first@example.com"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_False_OnceThisUserHasApprovedTheOnlyGate()
+    {
+        // The gate still wants a second person, but not this one — they already signed it.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 2)).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "first@example.com", "Approval", "Approvers"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    // ── One person in two gates ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task CanApprove_True_ForTheSecondGate_AfterApprovingTheFirst()
+    {
+        // The stuck-promotion bug from the list's point of view: the QA manager who is also the
+        // release manager has signed QA. The release gate is still theirs to approve, so the list
+        // must keep the promotion in their queue — and ApproveAsync must accept it.
+        await using var factory = new GateFixture();
+        factory.AsUser("pawel@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1, steps: TwoGates())).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "pawel@example.com", "QA Review", "QA Manager"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.True(await CanApproveAsync(factory, candidateId));
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var approved = await svc.ApproveAsync(candidateId, null); // only one gate left → auto-picked
+            Assert.Equal(PromotionStatus.Approved, approved.Status);
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task CanApprove_False_OnceBothGatesCarryThisUsersApproval()
+    {
+        // Both gates want two people; this user has given each gate their one approval.
+        await using var factory = new GateFixture();
+        factory.AsUser("pawel@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 2, steps: TwoGates(minApprovers: 2))).Id;
+            db.PromotionApprovals.Add(NewApproval(candidateId, "pawel@example.com", "QA Review", "QA Manager"));
+            db.PromotionApprovals.Add(NewApproval(candidateId, "pawel@example.com", "Release Approval", "Release Manager"));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.False(await CanApproveAsync(factory, candidateId));
+    }
+
+    // ── Which gates are yours (approvableGates, mass approve) ────────────────
+
+    [Fact]
+    public async Task ApprovableRequirements_NameOnlyTheGatesThisUserIsAnApproverFor()
+    {
+        // The per-row answer mass approve reads: QA is this user's gate, Release Approval is somebody
+        // else's, although the promotion waits on both.
+        await using var factory = new GateFixture();
+        factory.AsUser("qa@example.com", groups: new[] { "QaGroup" });
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1, steps: new()
+            {
+                new ApprovalStep("QA Review", new()
+                {
+                    new ApproverRequirement("QA", new() { new GroupRef("QaGroup", "QaGroup") }, new(), 1),
+                }),
+                new ApprovalStep("Release Approval", new()
+                {
+                    new ApproverRequirement("Release Manager", new() { new GroupRef(ApproverGroup, ApproverGroup) }, new(), 1),
+                }),
+            })).Id;
+        }
+
+        var approvable = await ApprovableAsync(factory, candidateId);
+        Assert.Equal(new[] { new RequirementRef("QA Review", "QA") }, approvable);
+    }
+
+    [Fact]
+    public async Task ApprovableRequirements_AreEmptyWhileTheWorkItemGateHolds()
+    {
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        Assert.Empty(await ApprovableAsync(factory, candidateId));
+    }
+
+    [Fact]
+    public async Task ApproveGate_RefusesWhileTheWorkItemGateHolds()
+    {
+        // The gate-scoped approve goes through ApproveAsync, so the work-item guard applies to every
+        // row of a mass approval just as it does to one click on the detail page.
+        await using var factory = new GateFixture();
+        factory.AsUser("first@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(
+                db, minApprovers: 1,
+                requireAllWorkItemsApproved: true,
+                workItemKeys: new[] { "FOO-1" })).Id;
+        }
+
+        using var actScope = factory.Services.CreateScope();
+        var svc = actScope.ServiceProvider.GetRequiredService<PromotionService>();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ApproveGateAsync(candidateId, "Approval", null));
+        Assert.Contains("work items", ex.Message);
+    }
+
+    [Fact]
+    public async Task ApproveGate_SignsOnlyTheNamedGate_WhenTheUserIsInBoth()
+    {
+        // The plain approve would refuse this user with "multiple requirements available". Naming the
+        // gate settles which one is meant.
+        await using var factory = new GateFixture();
+        factory.AsUser("pawel@example.com");
+
+        Guid candidateId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            candidateId = (await SeedAsync(db, minApprovers: 1, steps: TwoGates())).Id;
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+            var result = await svc.ApproveGateAsync(candidateId, "Release Approval", null);
+            Assert.Equal(PromotionStatus.Pending, result.Candidate.Status);
+            Assert.Equal(new[] { new RequirementRef("Release Approval", "Release Manager") }, result.Approved);
+        }
+
+        Assert.Equal(new[] { new RequirementRef("QA Review", "QA Manager") }, await ApprovableAsync(factory, candidateId));
+    }
+
+    private static async Task<IReadOnlyList<RequirementRef>> ApprovableAsync(GateFixture factory, Guid candidateId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+        var candidate = await db.PromotionCandidates.AsNoTracking()
+            .FirstAsync(c => c.Id == candidateId);
+        var result = await svc.GetApprovableRequirementsManyAsync(new[] { candidate });
+        return result[candidateId];
+    }
+
+    /// <summary>Two steps, one requirement each, both behind the same approver group.</summary>
+    private static List<ApprovalStep> TwoGates(int minApprovers = 1) => new()
+    {
+        new ApprovalStep("QA Review", new()
+        {
+            new ApproverRequirement("QA Manager", new() { new GroupRef(ApproverGroup, ApproverGroup) }, new(), minApprovers),
+        }),
+        new ApprovalStep("Release Approval", new()
+        {
+            new ApproverRequirement("Release Manager", new() { new GroupRef(ApproverGroup, ApproverGroup) }, new(), minApprovers),
+        }),
+    };
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private static async Task<bool> CanApproveAsync(GateFixture factory, Guid candidateId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var svc = scope.ServiceProvider.GetRequiredService<PromotionService>();
+        var candidate = await db.PromotionCandidates.AsNoTracking()
+            .FirstAsync(c => c.Id == candidateId);
+        var result = await svc.CanUserApproveManyAsync(new[] { candidate });
+        return result[candidateId];
+    }
+
+    /// <summary>
+    /// Seeds a Pending candidate on a single-requirement step tree, with a matching succeeded source
+    /// deploy so the gate's source checks never interfere.
+    /// </summary>
+    private static async Task<PromotionCandidate> SeedAsync(
+        PlatformDbContext db,
+        int minApprovers,
+        bool requireAllWorkItemsApproved = false,
+        IEnumerable<string>? workItemKeys = null,
+        string product = "acme",
+        string service = "api",
+        string targetEnv = "prod",
+        List<ApprovalStep>? steps = null)
+    {
+        const string version = "v1.0.0";
+        db.DeployEvents.Add(new DeployEvent
+        {
+            Id = Guid.NewGuid(),
+            Product = product,
+            Service = service,
+            Environment = "staging",
+            Version = version,
+            Source = "ci",
+            Status = "succeeded",
+            DeployedAt = DateTimeOffset.UtcNow,
+            ReferencesJson = "[]",
+            ParticipantsJson = "[]",
+            MetadataJson = "{}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
+        var snapshot = new ResolvedPolicySnapshot(PolicyId: Guid.NewGuid(), EscalationGroup: null)
+        {
+            ApprovalSteps = steps ?? new()
+            {
+                new ApprovalStep("Approval", new()
+                {
+                    new ApproverRequirement(
+                        "Approvers",
+                        new() { new GroupRef(ApproverGroup, ApproverGroup) },
+                        new(),
+                        minApprovers),
+                }),
+            },
+            RequireAllWorkItemsApproved = requireAllWorkItemsApproved,
+        };
+
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = product,
+            Service = service,
+            SourceEnv = "staging",
+            TargetEnv = targetEnv,
+            Version = version,
+            Status = PromotionStatus.Pending,
+            PolicyId = snapshot.PolicyId,
+            ResolvedPolicyJson = JsonSerializer.Serialize(
+                snapshot, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
+            ReferencesJson = "[]",
+            ParticipantsJson = "[]",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.PromotionCandidates.Add(candidate);
+
+        foreach (var key in workItemKeys ?? Array.Empty<string>())
+        {
+            db.PromotionWorkItems.Add(new PromotionWorkItem
+            {
+                Id = Guid.NewGuid(),
+                CandidateId = candidate.Id,
+                WorkItemKey = key,
+                Product = product,
+                Service = service,
+                TargetEnv = targetEnv,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+
+        await db.SaveChangesAsync();
+        return candidate;
+    }
+
+    private static PromotionApproval NewApproval(
+        Guid candidateId, string email, string? stepName = null, string? requirementName = null) => new()
+    {
+        Id = Guid.NewGuid(),
+        CandidateId = candidateId,
+        ApproverEmail = email,
+        ApproverName = email,
+        Decision = PromotionDecision.Approved,
+        StepName = stepName,
+        RequirementName = requirementName,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+
+    private static WorkItemApproval NewWorkItemDecision(
+        PromotionCandidate candidate,
+        string key,
+        WorkItemDecision decision,
+        string email = "qa@example.com") => new()
+    {
+        Id = Guid.NewGuid(),
+        WorkItemKey = key,
+        Product = candidate.Product,
+        Service = candidate.Service,
+        TargetEnv = candidate.TargetEnv,
+        ApproverEmail = email,
+        ApproverName = email,
+        Decision = decision,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+
+    /// <summary>
+    /// Thin wrapper over <see cref="PromotionGateTests.GateTestFactory"/> adding a one-liner for
+    /// "run as this person, in these groups" — group membership resolves off the fake user's role
+    /// claims in the Testing environment.
+    /// </summary>
+    private sealed class GateFixture : PromotionGateTests.GateTestFactory
+    {
+        public void AsUser(string email, string[]? groups = null)
+        {
+            Current.Email = email;
+            Current.Name = email;
+            Current.RolesList = (groups ?? new[] { ApproverGroup }).ToList();
+        }
+    }
+}

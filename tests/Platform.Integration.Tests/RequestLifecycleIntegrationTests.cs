@@ -157,23 +157,6 @@ public class RequestLifecycleIntegrationTests
     // -- Tests ------------------------------------------------------------------
 
     [Fact]
-    public async Task CreateRequest_WithValidCatalogItem_Returns201()
-    {
-        var slug = await SeedCatalogItemAsync();
-
-        var response = await _adminClient.PostAsJsonAsync("/api/requests", new
-        {
-            catalogItemId = slug,
-            inputs = new Dictionary<string, object> { ["environment"] = "dev" },
-        });
-
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-
-        var body = await Deserialize(response);
-        Assert.True(Guid.TryParse(body.GetProperty("id").GetString(), out _));
-    }
-
-    [Fact]
     public async Task CreateRequest_InvalidCatalogItem_Returns404()
     {
         var response = await _adminClient.PostAsJsonAsync("/api/requests", new

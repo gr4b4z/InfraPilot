@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Platform.Api.Features.Deployments;
@@ -23,7 +23,11 @@ public class DeploymentServiceDedupTests : IDisposable
 
         var webhooks = Substitute.For<IWebhookDispatcher>();
         var hook = Substitute.For<IPromotionIngestHook>();
-        _sut = new DeploymentService(_db, webhooks, hook, TestOptions.Normalization(), Substitute.For<ILogger<DeploymentService>>());
+        _sut = new DeploymentService(_db, webhooks, hook, TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
+            TestUserPreferences.For(_db),
+            TestServiceDeletions.For(_db),
+            TestProductOverrides.For(_db),
+            Substitute.For<ILogger<DeploymentService>>());
     }
 
     public void Dispose() => _db.Dispose();

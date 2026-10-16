@@ -1,0 +1,34 @@
+id: generate-release-notes
+title: Produce release notes for an environment
+group: Release Notes
+summary: >-
+  Generate a note covering what shipped to an environment over a period, preview the draft, and
+  publish it.
+aliases:
+  - release notes
+  - what shipped
+  - generate release notes
+  - publish release notes
+  - tell people what shipped
+route: /release-notes
+requires:
+  feature_flag: ReleaseNotes
+  roles: []
+steps:
+  - text: Open **Release Notes**. Each row is a product that has notes.
+    anchor: nav-release-notes
+  - text: Choose the product you are writing for.
+    anchor: release-notes-product-list
+  - text: >-
+      Pick the **environment** and the period the note should cover. The range defaults to
+      everything since the last note, which is usually what you want.
+    anchor: release-notes-range
+  - text: >-
+      Click **Preview** to assemble the draft from the deployments and work items in that window,
+      then review and publish it.
+    anchor: release-notes-preview-button
+    note: >-
+      The shape of the generated note comes from the template under
+      Settings → Release note template.
+related:
+  - check-deployed-version

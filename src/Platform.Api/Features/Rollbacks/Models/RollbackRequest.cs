@@ -14,13 +14,17 @@ namespace Platform.Api.Features.Rollbacks.Models;
 ///
 /// <para>Lifecycle: Pending → Approved → RollingBack → RolledBack, with Rejected / Cancelled as
 /// terminal off-ramps. Completion is detected per-item from the deploy event the operator (or
-/// Logic App executor) emits when the target version lands — there is no trusted callback.</para>
+/// Logic App executor) emits when the target version lands — there is no trusted callback. The
+/// request reaches RolledBack once every item is terminal, however each one closed.</para>
 /// </summary>
 public class RollbackRequest
 {
     public Guid Id { get; set; }
 
-    /// <summary>Product the rollback belongs to. Must be promotion-enrolled + rollback-opted-in.</summary>
+    /// <summary>
+    /// Product the rollback belongs to. Must have a <see cref="RollbackPolicy"/> covering the target
+    /// environment, unless an admin is creating it.
+    /// </summary>
     public string Product { get; set; } = "";
 
     /// <summary>The environment being rolled back. Rollback is in-place: source == target.</summary>
@@ -48,16 +52,35 @@ public class RollbackRequest
     /// <summary>Optional free-text reason (e.g. "prod incident INC-1234").</summary>
     public string? Reason { get; set; }
 
-    // Snapshot of the resolved promotion policy (approver group / strategy) at creation time, so a
-    // later policy edit never changes the gate for an in-flight rollback. Same shape promotions use.
+    // Snapshot of the resolved RollbackPolicy's approval tree at creation time, so a later policy edit
+    // never changes the gate for an in-flight rollback. Stored in the same ResolvedPolicySnapshot shape
+    // promotions use, so requests written before rollbacks had their own policy table still read back.
+    //
+    // A null PolicyId means no policy governed this scope: the request cannot be approved normally and
+    // needs an admin override. (On requests created before the RollbackPolicy table existed, a non-null
+    // PolicyId refers to the PromotionPolicy the gate was borrowed from.)
     public Guid? PolicyId { get; set; }
     public string? ResolvedPolicyJson { get; set; }
+
+    /// <summary>
+    /// True when an admin forced this request past its approval gate. Denormalised from the flagged
+    /// <see cref="RollbackApproval"/> row so the queue list can mark overridden requests without
+    /// loading approvals for every row; the who and why live on that row.
+    /// </summary>
+    public bool ApprovalOverridden { get; set; }
 
     public string CreatedBy { get; set; } = "";
     public string CreatedByName { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ApprovedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
+
+    // Who cancelled the request, when, and why. The reason is mandatory when an admin cancels a
+    // request that was already approved, and optional for a Pending one.
+    public string? CancelledBy { get; set; }
+    public string? CancelledByName { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public string? CancelReason { get; set; }
 
     public List<RollbackItem> Items { get; set; } = new();
 

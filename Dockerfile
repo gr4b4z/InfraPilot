@@ -8,7 +8,7 @@ RUN dotnet restore src/Platform.Api/Platform.Api.csproj
 COPY . .
 RUN dotnet publish src/Platform.Api/Platform.Api.csproj -c Release -o /app/api /p:UseAppHost=false
 
-FROM node:25-alpine AS web-build
+FROM node:26-alpine AS web-build
 WORKDIR /app
 
 ARG APP_VERSION=dev
@@ -35,10 +35,20 @@ RUN chmod +x /start.sh
 COPY --from=api-build /app/api /app/api
 COPY --from=web-build /app/dist /usr/share/nginx/html
 COPY catalog /app/catalog
+COPY guides /app/guides
+COPY knowledge /app/knowledge
+COPY playbooks /app/playbooks
 
 ENV ASPNETCORE_ENVIRONMENT=Production
+# Loopback only — nginx is the container's one public listener. The base image sets
+# ASPNETCORE_HTTP_PORTS=8080, which URLS overrides anyway; clearing it stops the API warning about that
+# at every start.
 ENV ASPNETCORE_URLS=http://127.0.0.1:8081
+ENV ASPNETCORE_HTTP_PORTS=
 ENV CatalogPath=/app/catalog
+ENV GUIDES_PATH=/app/guides
+ENV KNOWLEDGE_PATH=/app/knowledge
+ENV PLAYBOOKS_PATH=/app/playbooks
 ENV BACKEND_BASE_URL=
 ENV APP_NAME=InfraPilot
 ENV APP_SUBTITLE="Infrastructure Portal"
@@ -49,6 +59,19 @@ ENV PAGE_TITLE="InfraPilot | Infrastructure Portal"
 # time with -e AZURE_CLIENT_ID=... -e AZURE_TENANT_ID=... or equivalent.
 ENV AZURE_CLIENT_ID=
 ENV AZURE_TENANT_ID=
+# Logging. The API starts from /app, which makes /app its content root, so the appsettings.json
+# published to /app/api is never loaded — this image is configured from the environment alone (hence
+# CatalogPath above). These mirror the "Logging" section of appsettings.json; without them every
+# category logs at Information, every SQL statement and token validation included. SingleLine puts
+# each entry on one console line, i.e. one Log Analytics row; it only takes effect with the formatter
+# named explicitly.
+ENV Logging__LogLevel__Default=Information
+ENV Logging__LogLevel__Microsoft.AspNetCore=Warning
+ENV Logging__LogLevel__Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware=Information
+ENV Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Warning
+ENV Logging__LogLevel__Microsoft.IdentityModel=Warning
+ENV Logging__Console__FormatterName=simple
+ENV Logging__Console__FormatterOptions__SingleLine=true
 
 EXPOSE 8080
 

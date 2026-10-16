@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { StatusBadge } from '@/components/requests/StatusBadge';
 import type { ServiceRequest } from '@/lib/types';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import { FileText, ArrowUpRight, Inbox, User, Users } from 'lucide-react';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 type Scope = 'mine' | 'all';
 
@@ -14,15 +17,25 @@ export function RequestsPage() {
   const [scope, setScope] = useState<Scope>('mine');
   const navigate = useNavigate();
 
+  // The scope toggle isn't in the URL, so a link always opens on "mine" for whoever follows it. The
+  // title tracks the toggle anyway — it's what the tab is showing, which is the other half of the job.
+  useDocumentTitle([scope === 'mine' ? 'My requests' : 'All requests']);
+
+  // Status changes are driven by approvers and the executor worker, not this user — push keeps
+  // the badges honest while the page sits open.
+  const requestsTick = useEntityRefresh(['request', 'approval']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+
   useEffect(() => {
-    setLoading(true);
+    // Only a new scope shows the skeleton; a push refresh swaps the response into the mounted rows.
+    if (!isBackgroundRefresh(scope)) setLoading(true);
     const params: Record<string, string> = {};
     if (scope === 'all') params.scope = 'all';
     api.getRequests(params)
       .then((data) => setRequests(data.items || []))
       .catch(() => setRequests([]))
       .finally(() => setLoading(false));
-  }, [scope]);
+  }, [scope, requestsTick, isBackgroundRefresh]);
 
   const statusCounts = {
     total: requests.length,
@@ -35,9 +48,19 @@ export function RequestsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            Requests
-          </h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Requests
+            </h1>
+            <HelpButton
+              page="Requests"
+              context={{
+                scope: scope === 'mine' ? 'my requests' : 'all requests',
+                total: statusCounts.total,
+                active: statusCounts.active,
+              }}
+            />
+          </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {scope === 'mine' ? 'Track your infrastructure service requests' : 'All team infrastructure requests'}
           </p>
@@ -52,11 +75,12 @@ export function RequestsPage() {
         </button>
       </div>
 
-      {/* Scope toggle + stats */}
-      <div className="flex items-center justify-between gap-4">
+      {/* Scope toggle + stats. The segmented control and the three counts together need ~380px, so
+          below `sm` the counts drop to their own line rather than squeezing the toggle. */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
         {/* Segmented control */}
         <div
-          className="inline-flex rounded-lg p-0.5 gap-0.5"
+          className="inline-flex self-start rounded-lg p-0.5 gap-0.5"
           style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}
         >
           <button
@@ -133,6 +157,7 @@ export function RequestsPage() {
         </div>
       ) : (
         <div
+          data-guide-anchor="requests-list"
           className="rounded-xl border overflow-hidden"
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
         >

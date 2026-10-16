@@ -10,6 +10,7 @@ using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.Tests.Features.Promotions;
 
@@ -50,7 +51,9 @@ public class PromotionFreezeTests : IDisposable
             _currentUser, _identity, Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
         _promotions = new PromotionService(
             _db, new PromotionPolicyResolver(_db), auth, _currentUser, _audit,
-            Substitute.For<ILogger<PromotionService>>(), _webhooks, TestOptions.Normalization());
+            Substitute.For<ILogger<PromotionService>>(), _webhooks, TestOptions.Normalization(),
+            TestEnvironmentAliases.For(_db), TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db), TestRoleCatalog.For(_db));
         _sut = new PromotionFreezeService(
             _db, _promotions, _currentUser, _audit, _webhooks, _freezeLogger);
     }
@@ -153,7 +156,7 @@ public class PromotionFreezeTests : IDisposable
         Assert.Equal(PromotionStatus.Pending, result.Status);
         Assert.Single(_db.PromotionApprovals.Where(a => a.CandidateId == candidate.Id
                                                        && a.Decision == PromotionDecision.Approved));
-        await _webhooks.DidNotReceive().DispatchAsync("promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+        await _webhooks.DidNotReceive().DispatchAsync("promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -256,10 +259,10 @@ public class PromotionFreezeTests : IDisposable
         var workItems = new WorkItemApprovalService(
             _db, new PromotionApprovalAuthorizer(_currentUser, _identity, Substitute.For<ILogger<PromotionApprovalAuthorizer>>()),
             _currentUser, _audit, _webhooks, _promotions,
-            new PromotionAssigneeRoleSettings(_db, Substitute.For<ILogger<PromotionAssigneeRoleSettings>>()),
-            Substitute.For<ILogger<WorkItemApprovalService>>());
+            TestUserPreferences.For(_db), Substitute.For<ILogger<WorkItemApprovalService>>(),
+            Substitute.For<IPlatformEventPublisher>(), TestRoleCatalog.For(_db), TestEnvironmentAliases.For(_db));
 
-        await workItems.ApproveAsync("ACME-1", "acme", "prod", comment: null);
+        await workItems.ApproveAsync("ACME-1", "acme", "api", "prod", comment: null);
 
         Assert.Single(_db.WorkItemApprovals.Where(a => a.WorkItemKey == "ACME-1"));
         Assert.Equal(PromotionStatus.Pending, StatusOf(candidate.Id));
@@ -275,7 +278,7 @@ public class PromotionFreezeTests : IDisposable
 
         Assert.Equal(PromotionStatus.Pending, candidate.Status);
         Assert.Null(candidate.ApprovedAt);
-        await _webhooks.DidNotReceive().DispatchAsync("promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+        await _webhooks.DidNotReceive().DispatchAsync("promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -306,7 +309,7 @@ public class PromotionFreezeTests : IDisposable
         await _webhooks.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Is<object>(o => JsonContains(o, "\"frozen\":true")),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
     }
 
     // ---------------------------------------------------------------------
@@ -464,11 +467,11 @@ public class PromotionFreezeTests : IDisposable
         Assert.Equal(PromotionStatus.Approved, StatusOf(acme.Id));
         Assert.Equal(PromotionStatus.Pending, StatusOf(other.Id));
         await _webhooks.Received(1).DispatchAsync(
-            "promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+            "promotion.approved", Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
         await _webhooks.Received(1).DispatchAsync(
             "promotion.approved",
             Arg.Is<object>(o => JsonContains(o, acme.Id.ToString())),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
         Assert.DoesNotContain(_db.PromotionFreezes, f => f.Product == "acme");
     }
 
@@ -603,15 +606,15 @@ public class PromotionFreezeTests : IDisposable
 
         await _sut.LiftAsync("acme", "prod");
 
-        await _webhooks.DidNotReceive().DispatchAsync("promotion.unfrozen", Arg.Any<object>(), Arg.Any<WebhookEventFilters>());
+        await _webhooks.DidNotReceive().DispatchAsync("promotion.unfrozen", Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
     public async Task Freeze_WebhookDispatchFailure_DoesNotFailTheFreeze()
     {
         SeedPolicy();
-        _webhooks.DispatchAsync(Arg.Any<string>(), Arg.Any<object>(), Arg.Any<WebhookEventFilters?>())
-            .Returns(Task.FromException(new InvalidOperationException("webhook queue down")));
+        _webhooks.DispatchAsync(Arg.Any<string>(), Arg.Any<object>(), Arg.Any<WebhookEventFilters?>(), Arg.Any<WebhookDispatchOptions?>())
+            .Returns(Task.FromException<int>(new InvalidOperationException("webhook queue down")));
 
         var freeze = await _sut.FreezeAsync("acme", "prod", "Release window");
 
@@ -626,8 +629,8 @@ public class PromotionFreezeTests : IDisposable
         var candidate = await CreateAsync();
         await _sut.FreezeAsync("acme", "prod", "Release window");
         await _promotions.ApproveAsync(candidate.Id, comment: null);
-        _webhooks.DispatchAsync("promotion.unfrozen", Arg.Any<object>(), Arg.Any<WebhookEventFilters?>())
-            .Returns(Task.FromException(new InvalidOperationException("webhook queue down")));
+        _webhooks.DispatchAsync("promotion.unfrozen", Arg.Any<object>(), Arg.Any<WebhookEventFilters?>(), Arg.Any<WebhookDispatchOptions?>())
+            .Returns(Task.FromException<int>(new InvalidOperationException("webhook queue down")));
 
         var lifted = await _sut.LiftAsync("acme", "prod");
 

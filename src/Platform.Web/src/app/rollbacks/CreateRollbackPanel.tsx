@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { RollbackInput, RollbackPreview, RollbackMode, DeploymentVersion } from '@/lib/api';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { X, ArrowRight, Loader2, AlertTriangle, Undo2 } from 'lucide-react';
 
 interface Prefill {
@@ -15,7 +16,8 @@ interface Prefill {
  *  - Manual: pick a target version for a single service (prefilled from a deploy
  *    event when deep-linked).
  *  - Align: pick a reference environment and exclude services; the backend
- *    resolves which services move and to what version.
+ *    resolves which services move and to what version (services already on the
+ *    reference version aren't in the diff, so they never reach this panel).
  *
  * Both modes run `previewRollback` to surface the resolved items (eligible +
  * skipped-with-reason) before the user commits with `createRollback`.
@@ -47,10 +49,24 @@ export function CreateRollbackPanel({
   const [services, setServices] = useState<string[]>([]);
   const [versions, setVersions] = useState<DeploymentVersion[]>([]);
 
+  const targetEnvStyle = useEnvControlStyle(targetEnv);
+  const referenceEnvStyle = useEnvControlStyle(referenceEnv);
+
   const [preview, setPreview] = useState<RollbackPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Result of the last create-permission probe, tagged with the scope it answered for. Create
+  // permission is per-(product, environment), so a product appearing in the picker doesn't settle it
+  // — the panel checks up front and explains itself rather than letting Preview come back 403.
+  // Tagging (rather than clearing on change) means a slow answer for the previous scope can never be
+  // shown against the current one.
+  const [createCheck, setCreateCheck] = useState<{
+    product: string;
+    targetEnv: string;
+    reason: string | null;
+  } | null>(null);
 
   useEffect(() => {
     api
@@ -58,6 +74,36 @@ export function CreateRollbackPanel({
       .then((d) => setProducts(d.products || []))
       .catch(() => setProducts([]));
   }, []);
+
+  useEffect(() => {
+    if (!product || !targetEnv) return;
+    let cancelled = false;
+    api
+      .canCreateRollback(product, targetEnv)
+      .then((r) => {
+        if (!cancelled)
+          setCreateCheck({
+            product,
+            targetEnv,
+            reason: r.allowed ? null : (r.reason ?? 'You cannot create rollbacks here'),
+          });
+      })
+      // A transient probe failure shouldn't lock the form: create/preview are authoritative and will
+      // refuse on their own, so treat an unknown answer as "not blocked here".
+      .catch(() => {
+        if (!cancelled) setCreateCheck({ product, targetEnv, reason: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product, targetEnv]);
+
+  const scopeChosen = !!product && !!targetEnv;
+  const permissionKnown =
+    createCheck?.product === product && createCheck?.targetEnv === targetEnv;
+  const createBlock = scopeChosen && permissionKnown ? createCheck!.reason : null;
+  // Hold Preview until the probe lands, so the first click can't race the answer.
+  const permissionPending = scopeChosen && !permissionKnown;
 
   // Manual mode (not deep-linked): load the services deployed in the target env so the user
   // can pick which one to roll back.
@@ -67,7 +113,7 @@ export function CreateRollbackPanel({
       return;
     }
     api
-      .getDeploymentState({ product, environment: targetEnv })
+      .getDeploymentStateSummary({ product, environment: targetEnv })
       .then((rows) => setServices([...new Set(rows.map((r) => r.service))].sort()))
       .catch(() => setServices([]));
   }, [mode, product, targetEnv, prefill.service]);
@@ -102,7 +148,7 @@ export function CreateRollbackPanel({
       return;
     }
     api
-      .getDeploymentState({ product })
+      .getDeploymentStateSummary({ product })
       .then((rows) => setProductEnvs([...new Set(rows.map((r) => r.environment))]))
       .catch(() => setProductEnvs([]));
   }, [product]);
@@ -136,6 +182,8 @@ export function CreateRollbackPanel({
   const canPreview =
     !!product &&
     !!targetEnv &&
+    !createBlock &&
+    !permissionPending &&
     (mode === 'Align'
       ? !!referenceEnv && referenceEnv !== targetEnv
       : !!manualService && !!manualVersion);
@@ -174,11 +222,12 @@ export function CreateRollbackPanel({
   return (
     <>
       <div className="fixed inset-0 z-40" style={{ backgroundColor: 'rgba(0,0,0,0.35)' }} onClick={onClose} />
+      {/* Full-bleed sheet on a phone, 480px drawer once there's room beside it. */}
       <div
-        className="fixed inset-y-0 right-0 w-[480px] z-50 border-l shadow-lg overflow-y-auto"
+        className="fixed inset-y-0 right-0 w-full sm:w-[480px] z-50 border-l shadow-lg overflow-y-auto"
         style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
       >
-        <div className="p-5 space-y-5">
+        <div className="p-4 sm:p-5 space-y-5">
           {/* Header */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
@@ -201,6 +250,7 @@ export function CreateRollbackPanel({
             <select
               value={product}
               onChange={(e) => setProduct(e.target.value)}
+              data-guide-anchor="rollback-create-product"
               className="w-full rounded-lg border px-3 py-2 text-[13px]"
               style={selectStyle}
             >
@@ -215,11 +265,14 @@ export function CreateRollbackPanel({
 
           {/* Target env */}
           <Field label="Target environment" hint="The environment that will be rolled back">
+            {/* Coloured once chosen — rolling back the wrong environment is the expensive
+                mistake this form can make, so the choice stays visible. */}
             <select
               value={targetEnv}
               onChange={(e) => setTargetEnv(e.target.value)}
-              className="w-full rounded-lg border px-3 py-2 text-[13px]"
-              style={selectStyle}
+              data-guide-anchor="rollback-create-target-env"
+              className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
+              style={targetEnvStyle}
             >
               <option value="">Select an environment…</option>
               {envOptions.map((env) => (
@@ -230,9 +283,25 @@ export function CreateRollbackPanel({
             </select>
           </Field>
 
+          {/* Not permitted here. Placed directly under the two inputs that decide it, so the cause
+              is adjacent to the message, and above Mode so the rest of the form reads as inert. */}
+          {createBlock && (
+            <div
+              className="flex items-start gap-2 px-3 py-2 rounded-lg text-[12px]"
+              style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            >
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>{createBlock}</span>
+            </div>
+          )}
+
           {/* Mode */}
           <Field label="Mode">
-            <div className="inline-flex rounded-lg p-0.5 gap-0.5" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+            <div
+              data-guide-anchor="rollback-create-mode"
+              className="inline-flex rounded-lg p-0.5 gap-0.5"
+              style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}
+            >
               {(['Manual', 'Align'] as RollbackMode[]).map((m) => (
                 <button
                   key={m}
@@ -256,6 +325,7 @@ export function CreateRollbackPanel({
                 {prefill.service ? (
                   // Deep-linked from a deployment — service is fixed.
                   <div
+                    data-guide-anchor="rollback-create-service"
                     className="rounded-lg border px-3 py-2 text-[13px]"
                     style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
                   >
@@ -268,6 +338,7 @@ export function CreateRollbackPanel({
                       setManualService(e.target.value);
                       setManualVersion('');
                     }}
+                    data-guide-anchor="rollback-create-service"
                     className="w-full rounded-lg border px-3 py-2 text-[13px]"
                     style={selectStyle}
                     disabled={!product || !targetEnv || services.length === 0}
@@ -314,8 +385,8 @@ export function CreateRollbackPanel({
               <select
                 value={referenceEnv}
                 onChange={(e) => setReferenceEnv(e.target.value)}
-                className="w-full rounded-lg border px-3 py-2 text-[13px]"
-                style={selectStyle}
+                className="w-full rounded-lg border px-3 py-2 text-[13px] font-medium"
+                style={referenceEnvStyle}
               >
                 <option value="">Select a reference…</option>
                 {envOptions
@@ -334,6 +405,7 @@ export function CreateRollbackPanel({
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+              data-guide-anchor="rollback-create-reason"
               rows={2}
               placeholder="Why are you rolling back?"
               className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
@@ -361,7 +433,7 @@ export function CreateRollbackPanel({
                 {preview.items.map((item) => (
                   <div
                     key={item.service}
-                    className="flex items-center gap-2 text-[12px] px-2.5 py-1.5 rounded-lg border"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] px-2.5 py-1.5 rounded-lg border"
                     style={{
                       borderColor: 'var(--border-color)',
                       backgroundColor: item.eligible ? 'var(--bg-primary)' : 'var(--bg-secondary)',
@@ -398,6 +470,13 @@ export function CreateRollbackPanel({
                         skipped{item.skipReason ? ` — ${item.skipReason}` : ''}
                       </span>
                     )}
+                    {/* The newest deploy failed. Deploy history shows that version, so say why the
+                        preview reports the last succeeded one as current. */}
+                    {item.note && (
+                      <span className="basis-full text-[11px]" style={{ color: 'var(--warning)' }}>
+                        {item.note}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -409,6 +488,7 @@ export function CreateRollbackPanel({
             <button
               onClick={handlePreview}
               disabled={!canPreview || previewing}
+              data-guide-anchor="rollback-create-preview-button"
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 border: '1px solid var(--border-color)',
@@ -422,10 +502,11 @@ export function CreateRollbackPanel({
             <button
               onClick={handleSubmit}
               disabled={!preview || eligibleCount === 0 || submitting}
+              data-guide-anchor="rollback-create-submit-button"
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',
-                color: '#fff',
+                color: 'var(--accent-fg)',
                 opacity: !preview || eligibleCount === 0 || submitting ? 0.5 : 1,
               }}
             >
