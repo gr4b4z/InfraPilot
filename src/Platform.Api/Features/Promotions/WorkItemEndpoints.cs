@@ -196,7 +196,7 @@ public static class WorkItemEndpoints
             var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.ApproveAsync(
                 decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.QA);
 
         // Raise an issue — flags a problem on the item without calling it undeliverable.
         group.MapPost("/{key}/issues", async (
@@ -210,7 +210,7 @@ public static class WorkItemEndpoints
             var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.RaiseIssueAsync(
                 decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.QA);
 
         // Record a block — holds the item back. Neither this nor /issues vetoes the promotion, and
         // both are reversible: the same user may later POST /approvals to release the item.
@@ -229,7 +229,7 @@ public static class WorkItemEndpoints
             var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.BlockAsync(
                 decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.QA);
 
         // ── Comment thread ────────────────────────────────────────────────
         // Keyed by (key, product, service, targetEnv) like the decisions, so the thread survives a
