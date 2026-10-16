@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Diagnostics;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -90,7 +91,7 @@ public class PromotionDiagnosisTests : IDisposable
             Id = Guid.NewGuid(),
             SubscriptionId = Guid.NewGuid(),
             EventType = "promotion.approved",
-            CancelKey = $"promotion-approved:{candidateId}",
+            CancelKey = PromotionService.ApprovedWebhookCancelKey(candidateId),
             Status = status,
             Attempts = attempts,
             ErrorMessage = error,
