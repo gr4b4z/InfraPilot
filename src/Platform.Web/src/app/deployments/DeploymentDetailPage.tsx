@@ -36,6 +36,8 @@ import { deploymentHistoryPath } from '@/lib/deploymentPath';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { DuringFreezeMark } from './FreezeCues';
+import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
@@ -132,6 +134,14 @@ export function DeploymentDetailPage() {
     void load({ silent: isBackgroundRefresh(id ?? '') });
   }, [load, realtimeTick, id, isBackgroundRefresh]);
 
+  // Freeze periods of this deployment's product: the header says when it landed during one.
+  const freezeProduct = detail?.event.product;
+  const freezeTick = useEntityRefresh(['promotion'], {
+    filter: (evt) => !evt.product || evt.product === freezeProduct,
+  });
+  const freezeWindows = useFreezeWindows(freezeProduct, promotionsEnabled, freezeTick);
+  const { getDisplayName } = useSettingsStore();
+
   // The registry row this deployment shipped, looked up on the triple the two records share
   // (product, service, version). A separate request rather than part of the event payload: the
   // registry is its own store, and a deployment reads perfectly well without it — plenty of deploys
@@ -191,6 +201,7 @@ export function DeploymentDetailPage() {
 
   const { event: evt, logs, history, promotions, workItems } = detail;
   const failed = evt.status === 'failed';
+  const duringFreeze = freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt);
   const status = STATUS_STYLES[evt.status] ?? STATUS_STYLES.succeeded;
 
   // The release repository's record of what this version is built from. The version number hangs off
@@ -225,6 +236,13 @@ export function DeploymentDetailPage() {
               <span className="badge" style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}>
                 <Undo2 size={10} /> Rollback
               </span>
+            )}
+            {duringFreeze && (
+              <DuringFreezeMark
+                freeze={duringFreeze}
+                envLabel={getDisplayName(evt.environment)}
+                variant="badge"
+              />
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>

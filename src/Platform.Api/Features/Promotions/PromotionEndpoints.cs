@@ -342,6 +342,11 @@ public static class PromotionEndpoints
         group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
             Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
 
+        // Active and lifted freeze periods, optionally for one product — the deployments pages mark
+        // a deploy that landed inside one. Same audience as /freezes.
+        group.MapGet("/freezes/windows", async (PromotionFreezeService freezes, string? product, CancellationToken ct) =>
+            Results.Ok(new { windows = await freezes.GetWindowsAsync(product, ct) }));
+
         // Participant roles actually *observed* in the data (distinct, frequency-ordered). Note this
         // is the opposite question from "which roles may I assign?" — that one is answered by the
         // configured vocabulary (Settings → Participant Roles), which is what the pickers list. This

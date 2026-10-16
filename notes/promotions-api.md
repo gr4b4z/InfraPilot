@@ -710,10 +710,35 @@ Freeze and lift events, **newest first**, derived from the audit log (`promotion
 `action` is `"frozen"` or `"unfrozen"`; for `unfrozen`, `reason` is the lifted freeze's original
 reason and `actor` is who lifted it. `reason` is `null` when the audit payload has none.
 
+### `GET /api/promotions/freezes/windows?product=X` — freeze periods
+Readable by any signed-in user (not under `/admin`). Every period a pair was frozen, **newest
+first**: the active freezes (`until: null`) plus the last 500 lifted ones, rebuilt from their
+`promotion.unfrozen` audit entries. `product` is optional; without it every product is listed.
+
+```json
+{ "windows": [ { "product": "checkout", "targetEnv": "prod", "reason": "Release window",
+                 "frozenBy": "Ada Admin", "from": "2026-01-01T08:00:00Z",
+                 "until": "2026-01-01T10:00:00Z", "liftedBy": "Ada Admin" } ] }
+```
+
+The deployments pages use it to mark a deploy whose `deployedAt` falls inside a window of its
+`(product, environment)`. A freeze only holds promotions, so such deploys still happen: a promotion
+approved before the freeze, an Administrator Bypass, or a pipeline that does not go through
+promotions.
+
 ### UI
 Admins manage freezes at **Settings → Freeze**: active freezes (with the held count) and a form to
 freeze a product → environment pair that has an approval policy and is not already frozen, plus a
 **Journal** (latest 10 events from the history endpoint; refreshed after every freeze or lift).
+
+The **Deployments** pages show freezes too, for any signed-in user:
+- product page — a banner of the product's active freezes (reason, who, since when, promotions
+  held), a snowflake and tint on each frozen environment's column, and held promotion chips in the
+  freeze's blue with a snowflake;
+- overview — a snowflake on each frozen product × environment cell;
+- service page — the same banner, a snowflake on the frozen environment's card, and held chips;
+- an amber snowflake (a "During freeze" badge on the deployment page and environment cards) on
+  every deploy that landed inside a freeze window, on the matrix, Activity, history and detail.
 
 ### Gate behaviour while frozen
 - **Only the transition to `Approved` is held.** Approvals and work-item sign-offs are still

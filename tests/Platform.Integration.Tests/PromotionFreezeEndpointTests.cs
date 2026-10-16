@@ -108,6 +108,36 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
     }
 
     [Fact]
+    public async Task Windows_ListLiftedAndActiveFreezesOfTheProduct_ForNonAdmin()
+    {
+        SeedPolicy("frz-win");
+        SeedPolicy("frz-win-other");
+        var admin = _factory.CreateAdminClient();
+        Assert.Equal(HttpStatusCode.Created, (await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-win", targetEnv = "prod", reason = "First window" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await admin.DeleteAsync("/api/promotions/admin/freezes/frz-win/prod")).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-win", targetEnv = "prod", reason = "Second window" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-win-other", targetEnv = "prod", reason = "Other product" })).StatusCode);
+        var user = CreateUserClient();
+
+        var response = await user.GetAsync("/api/promotions/freezes/windows?product=frz-win");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var windows = (await Json(response)).GetProperty("windows").EnumerateArray().ToList();
+        Assert.Equal(2, windows.Count);
+        Assert.Equal("Second window", windows[0].GetProperty("reason").GetString());
+        Assert.Equal(JsonValueKind.Null, windows[0].GetProperty("until").ValueKind);
+        Assert.Equal("First window", windows[1].GetProperty("reason").GetString());
+        Assert.Equal(JsonValueKind.String, windows[1].GetProperty("from").ValueKind);
+        Assert.Equal(JsonValueKind.String, windows[1].GetProperty("until").ValueKind);
+        Assert.Equal("Admin User", windows[1].GetProperty("liftedBy").GetString());
+        Assert.All(windows, w => Assert.Equal("prod", w.GetProperty("targetEnv").GetString()));
+    }
+
+    [Fact]
     public async Task Detail_FrozenPendingCandidate_ReturnsFreeze_UnfrozenReturnsNull()
     {
         SeedPolicy("frz-detail");
