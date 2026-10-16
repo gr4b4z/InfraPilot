@@ -28,6 +28,7 @@ import { ActivityTemplateSettings } from '@/app/settings/ActivityTemplateSetting
 import { FeatureFlagSettings } from '@/app/settings/FeatureFlagSettings';
 import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
+import { FreezeSettings } from '@/app/settings/FreezeSettings';
 import { RollbackSettings } from '@/app/settings/RollbackSettings';
 import { MaintenanceSettings } from '@/app/settings/MaintenanceSettings';
 import { ServiceProductsSettings } from '@/app/settings/ServiceProductsSettings';
@@ -133,6 +134,7 @@ function App() {
             <Route path="feature-flags" element={<FeatureFlagSettings />} />
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
+            <Route path="freeze" element={<FreezeSettings />} />
             <Route path="rollbacks" element={<RollbackSettings />} />
             <Route path="service-products" element={<ServiceProductsSettings />} />
             <Route path="agent-tokens" element={<AgentTokensSettings />} />

@@ -243,6 +243,7 @@ builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionFreezeService>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();

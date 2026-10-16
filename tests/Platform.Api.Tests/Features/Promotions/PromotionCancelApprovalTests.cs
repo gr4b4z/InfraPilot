@@ -498,4 +498,54 @@ public class PromotionCancelApprovalTests : IDisposable
         Assert.Contains("work item", ex.Message);
         Assert.DoesNotContain("Add an approval requirement", ex.Message);
     }
+
+    [Fact]
+    public async Task Cancel_RefusedOnANoWorkItemsAutoApprovePolicy_NamesThatRule()
+    {
+        // The requirement tree names approvers, but AutoApproveWhenNoWorkItems cleared the gate at
+        // create because the payload carried no work items. The gate (step 3b) would clear it again
+        // at once, so cancel is refused — and the message must name that rule, not work-item sign-off.
+        SeedPolicy();
+        var policy = _db.PromotionPolicies.Single();
+        policy.AutoApproveWhenNoWorkItems = true;
+        _db.SaveChanges();
+
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, candidate.Status);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.CancelApprovalAsync(candidate.Id, comment: null));
+        Assert.Contains("would approve this promotion again immediately", ex.Message);
+        Assert.Contains("no work items", ex.Message);
+        Assert.DoesNotContain("signed off", ex.Message);
+        Assert.DoesNotContain("Add an approval requirement", ex.Message);
+        Assert.Equal(PromotionStatus.Approved, _db.PromotionCandidates.Single().Status);
+        Assert.False(await _sut.CanUserCancelApprovalAsync(candidate));
+    }
+
+    // ---------------------------------------------------------------------
+    // Under a Promotion Freeze
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task Cancel_UnderAFreeze_AllowedOnAnAutoApprovedPromotion_AndTheLiftReApprovesIt()
+    {
+        // The freeze holds the gate shut, so "would it re-approve at once?" is no while it lasts:
+        // cancelling an auto-approved promotion is allowed and parks it in Pending. Lifting the
+        // freeze re-evaluates the pair and the auto-approve policy approves it again.
+        SeedPolicy(approverGroup: null);
+        var candidate = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, candidate.Status);
+
+        var freezes = new PromotionFreezeService(
+            _db, _sut, _currentUser, _audit, _webhooks, Substitute.For<ILogger<PromotionFreezeService>>());
+        await freezes.FreezeAsync("acme", "prod", "release window");
+        Assert.True(await _sut.CanUserCancelApprovalAsync(candidate));
+
+        var result = await _sut.CancelApprovalAsync(candidate.Id, comment: null);
+        Assert.Equal(PromotionStatus.Pending, result.Candidate.Status);
+
+        Assert.True(await freezes.LiftAsync("acme", "prod"));
+        Assert.Equal(PromotionStatus.Approved, _db.PromotionCandidates.AsNoTracking().Single().Status);
+    }
 }

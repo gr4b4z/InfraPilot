@@ -19,6 +19,8 @@ export const AVAILABLE_EVENTS = [
   'promotion.deployed',
   'promotion.superseded',
   'promotion.updated',
+  'promotion.frozen',
+  'promotion.unfrozen',
   'promotion.ticket.approved',
   'promotion.ticket.issue-raised',
   'promotion.ticket.blocked',

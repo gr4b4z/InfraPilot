@@ -25,7 +25,7 @@ the thread is a reliable history of what happened to the promotion. The design r
 |---|---|---|
 | `POST /api/promotions` (create) | **API key** (`X-Api-Key`) + per-key rate limit + product scope | CI / external systems |
 | Other `/api/promotions/*` (read, approve, reject, comments, participants) | **User** (`CanApprove` policy) | The web UI / approvers |
-| `/api/promotions/admin/*` (policies, bypass) | **User** (`CatalogAdmin` policy) | Admins |
+| `/api/promotions/admin/*` (policies, freezes, bypass) | **User** (`CatalogAdmin` policy) | Admins |
 
 > Note: `POST /api/promotions` overrides the group's user-auth with API-key auth, mirroring
 > `POST /api/deployments/events`. The product scope is enforced from the key's `allowed_product`
@@ -142,8 +142,12 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`, `gate`,
 `gateOnly`, `view`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
-current user (Pending + authorized for ≥1 open requirement + not already decided) and a
-**`deploysOnApproval`** boolean read off its policy snapshot.
+current user (Pending + authorized for ≥1 open requirement + not already decided), a
+**`deploysOnApproval`** boolean read off its policy snapshot, and a **`frozen`** boolean: `true`
+when the candidate is `Pending` and its `(product, targetEnv)` is held by an active
+[Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes). The Promotions page shows
+such candidates in a separate "Frozen" group under a banner of the active freezes (read from
+`GET /api/promotions/freezes`) matching the product / target-env filters.
 
 **Response size — `view`.** `full` (the default) returns every candidate's references whole, in
 `sourceEventReferences` — the same list `GET /api/promotions/{id}` returns. `view=summary` returns
@@ -209,7 +213,7 @@ things once the promotion is no longer open:
   promotion is open, and to `version` once it lands. Use `fromVersion` to render history.
 
 ### `GET /api/promotions/{id}` — detail
-Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress }`.
+Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress, freeze }`.
 
 - **`eligibleRequirements`** — `[{ stepName, requirementName }]`: the open requirements the
   current user may approve (drives the "Approve as…" selector).
@@ -231,9 +235,19 @@ Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, ap
   "workItems": {                 // null unless the policy gates on work items
     "required": true, "total": 3, "approved": 2, "satisfied": false,
     "autoApprove": false          // true ⇒ resolving all work items auto-approves the promotion
-  }
+  },
+  "frozen": false,               // true ⇒ a Promotion Freeze holds this Pending candidate
+  "blockedReason": null          // the freeze's reason when frozen, else null
 }
 ```
+
+  While the candidate's `(product, targetEnv)` is frozen and the candidate is `Pending`,
+  `allSatisfied` is `false` and `frozen`/`blockedReason` name the freeze — even when every
+  requirement is met. Step / requirement / work-item counts are unchanged.
+- **`freeze`** — the active [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes)
+  holding this candidate, `{ product, targetEnv, reason, frozenBy, frozenAt }`; `null` when the pair
+  is not frozen or the candidate is no longer `Pending`. Once the freeze is lifted, a candidate whose
+  gate was already satisfied reloads as `Approved`.
 
 ### `GET /api/promotions/audit` — activity feed
 Every recorded action on a promotion, newest first. This is what the **Promotions audit** page
@@ -370,6 +384,12 @@ no bulk reject.
 Pending promotions after a release-track change. The key needs the `InfraPortal.Admin` role (any
 `/admin` route does); a non-admin key gets `403`. Approving stays a human action — there is no
 admin approve beyond the audited bypass.
+
+### `GET /api/promotions/freezes` — active Promotion Freezes
+Same response as the admin `GET /api/promotions/admin/freezes` (see
+[Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes)), readable by any signed-in
+user so the promotions pages can show which product → environment pairs are frozen. Creating and
+lifting a freeze stays admin-only.
 
 ### Other
 - `GET /api/promotions/{id}/comments`, `POST /api/promotions/{id}/comments`,
@@ -595,3 +615,116 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
   Re-deciding updates the approver's existing row (stamping `updatedAt`) instead of appending a
   second one; recording the *same* decision twice is a 400.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).
+- **Promotion Freeze**: while the candidate's `(product, targetEnv)` is frozen the gate is never
+  satisfied — see [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes).
+
+---
+
+## Promotion Freeze (admin) — `/api/promotions/admin/freezes`
+
+A **Promotion Freeze** stops one product's promotions into one target environment from becoming
+`Approved` — e.g. a release freeze on `checkout → production` while other products keep shipping.
+The key is the pair `(product, targetEnv)`; there is no whole-environment freeze. Rationale:
+[`GLOSSARY.md`](../GLOSSARY.md), [ADR-0001](../docs/adr/0001-environment-freeze-holds-the-approval-gate.md),
+[ADR-0002](../docs/adr/0002-freeze-is-scoped-to-product-and-environment.md).
+
+### `GET /freezes` — active freezes
+
+```jsonc
+{
+  "freezes": [
+    {
+      "product": "checkout",
+      "targetEnv": "production",
+      "reason": "Black Friday — no releases until Monday",
+      "frozenBy": "Dana Lee",
+      "frozenAt": "2026-10-15T09:12:00+00:00",
+      "heldCandidates": 3          // Pending candidates of this (product, targetEnv) right now
+    }
+  ]
+}
+```
+
+Also available to non-admins as `GET /api/promotions/freezes`.
+
+### `POST /freezes` — freeze a pair
+Body: `{ "product": "checkout", "targetEnv": "production", "reason": "Black Friday" }`.
+
+| Status | Meaning | Body |
+|---|---|---|
+| `201 Created` | Pair frozen | the freeze, same shape as a `freezes[]` entry |
+| `400 Bad Request` | `product`, `targetEnv` or `reason` missing/blank, or `reason` over 1000 chars | `{ "error": "..." }` |
+| `409 Conflict` | The pair is already frozen | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | No approval policy targets the pair (any service, any source env) — it cannot receive promotions, so there is nothing to freeze | `{ "error": "..." }` |
+| `403 Forbidden` | Caller is not an admin | — |
+
+Audited as `promotion.frozen` (actor, product, targetEnv, reason).
+Also dispatches the [`promotion.frozen` webhook](#webhooks-promotionfrozen--promotionunfrozen).
+
+### `DELETE /freezes/{product}/{targetEnv}` — lift a freeze
+`204 No Content` when lifted, `404` when the pair is not frozen, `403` for non-admins. Whoever may
+freeze may lift, regardless of who froze it. Audited as `promotion.unfrozen` (actor, plus the
+lifted freeze's product, targetEnv, reason, frozenBy, frozenAt).
+
+Lifting **re-evaluates every Pending candidate of that pair** (and only that pair): any candidate
+whose gate is already satisfied — approvals collected during the freeze, auto-approve, all work
+items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
+burst of webhooks when a freeze holding several candidates is lifted.
+A candidate whose re-evaluation fails is logged and skipped; the others are still re-evaluated and
+the lift still returns `204`.
+Also dispatches the [`promotion.unfrozen` webhook](#webhooks-promotionfrozen--promotionunfrozen),
+just before that sweep.
+
+### Webhooks: `promotion.frozen` / `promotion.unfrozen`
+Dispatched when a freeze is created (`promotion.frozen`) or lifted (`promotion.unfrozen`). Subscribe to
+them like any other event type (they are in the event list on the Webhooks page). Both are filtered
+by the pair — a subscription with `product` and/or `environment` filters only receives events for a
+matching `(product, targetEnv)`, exactly like the other promotion events. Dispatch is non-fatal: a
+failure is logged and never fails the freeze/unfreeze request.
+
+```jsonc
+{
+  "eventType": "promotion.frozen",        // or "promotion.unfrozen"
+  "product": "checkout",
+  "targetEnv": "production",
+  "reason": "Black Friday — no releases until Monday",   // the freeze's reason (also on unfrozen)
+  "frozenBy": "Dana Lee",                 // who created the freeze
+  "frozenAt": "2026-10-15T09:12:00+00:00",
+  "actor": { "name": "Dana Lee", "email": "dana@example.com" },  // who performed THIS action
+  "at": "2026-10-15T09:12:00+00:00",      // when this action happened
+  "heldCandidates": 3   // frozen: Pending candidates held at freeze time; unfrozen: candidates re-evaluated
+}
+```
+
+`promotion.unfrozen` is sent before the `promotion.approved` events the lift triggers.
+
+### `GET /freezes/history?limit=N` — freeze journal
+Freeze and lift events, **newest first**, derived from the audit log (`promotion.frozen` /
+`promotion.unfrozen`). `limit` defaults to 10 and is clamped to 1–50.
+
+```json
+{ "entries": [ { "action": "unfrozen", "product": "checkout", "targetEnv": "prod",
+                 "reason": "Release window", "actor": "Ada Admin", "at": "2026-01-01T10:00:00Z" } ] }
+```
+
+`action` is `"frozen"` or `"unfrozen"`; for `unfrozen`, `reason` is the lifted freeze's original
+reason and `actor` is who lifted it. `reason` is `null` when the audit payload has none.
+
+### UI
+Admins manage freezes at **Settings → Freeze**: active freezes (with the held count) and a form to
+freeze a product → environment pair that has an approval policy and is not already frozen, plus a
+**Journal** (latest 10 events from the history endpoint; refreshed after every freeze or lift).
+
+### Gate behaviour while frozen
+- **Only the transition to `Approved` is held.** Approvals and work-item sign-offs are still
+  recorded (no error); the candidate simply stays `Pending`. The gate reports the freeze as the
+  blocking reason (`Promotions of {product} to {targetEnv} are frozen — {reason}`).
+- **Auto-approve waits.** All three paths — empty step tree, `autoApproveWhenNoWorkItems`,
+  `autoApproveOnAllWorkItemsApproved` — are held. A candidate created via `POST /api/promotions`
+  under an auto-approve policy is created `Pending` (`201` with `"status": "Pending"`) and no
+  `promotion.approved` webhook fires until the freeze is lifted.
+- **Administrator Bypass ignores the freeze.** `POST /api/promotions/admin/candidates/{id}/bypass`
+  still forces the candidate to `Approved`; its `promotion.bypassed` audit entry and the webhook's
+  `change` carry `"frozen": true` when the pair was frozen (`false` otherwise).
+- Candidates already `Approved` before the freeze are not affected. Rollbacks, service-request
+  approvals and candidate creation are not blocked.

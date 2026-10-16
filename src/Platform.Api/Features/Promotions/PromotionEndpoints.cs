@@ -39,6 +39,7 @@ public static class PromotionEndpoints
         // List candidates with filters + capability flags.
         group.MapGet("/", async (
             PromotionService svc,
+            PromotionFreezeService freezes,
             PlatformDbContext db,
             EnvironmentAliasResolver environments,
             ParticipantRoleCatalog roleCatalog,
@@ -128,6 +129,7 @@ public static class PromotionEndpoints
 
             // Handed the gate statuses so the work-item gate behind both is evaluated once per request.
             var approvable = await svc.GetApprovableRequirementsManyAsync(candidates, gateStatuses);
+            var heldByFreeze = await freezes.GetHeldByFreezeAsync(candidates);
             var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
             var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
@@ -153,7 +155,8 @@ public static class PromotionEndpoints
                         decidedWorkItemKeys: decidedKeys,
                         gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None),
                         roleAliases: roleAliases,
-                        summaryReferences: summary);
+                        summaryReferences: summary,
+                        frozen: heldByFreeze.Contains(c.Id));
                 }),
             });
         });
@@ -193,6 +196,20 @@ public static class PromotionEndpoints
             // Work items on this edge that have already been ruled on — they report no role gap.
             var decidedWorkItems = (await LoadDecidedWorkItemKeysAsync(db, new[] { c }))
                 .GetValueOrDefault((c.Product, c.Service, c.TargetEnv));
+
+            // The active Promotion Freeze holding this candidate, if any. A freeze holds only Pending
+            // candidates (ADR-0001), so decided candidates never carry one.
+            var activeFreeze = c.Status == PromotionStatus.Pending
+                ? await svc.FindFreezeAsync(c.Product, c.TargetEnv, CancellationToken.None)
+                : null;
+            var freeze = activeFreeze is null ? null : new
+            {
+                product = activeFreeze.Product,
+                targetEnv = activeFreeze.TargetEnv,
+                reason = activeFreeze.Reason,
+                frozenBy = activeFreeze.FrozenBy,
+                frozenAt = activeFreeze.FrozenAt,
+            };
 
             // Surface an admin bypass, if any. A bypass records NO approval row, so without this a
             // force-approved candidate would show an empty approval trail with no trace of who did it
@@ -279,7 +296,8 @@ public static class PromotionEndpoints
                     fromVersion: target.Baseline,
                     sourceBranch: sourceBranch,
                     decidedWorkItemKeys: decidedWorkItems,
-                    roleAliases: await roleCatalog.MapAsync()),
+                    roleAliases: await roleCatalog.MapAsync(),
+                    frozen: activeFreeze is not null),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -312,11 +330,17 @@ public static class PromotionEndpoints
                 comments = comments.Select(ToCommentDto),
                 approvalProgress = progress,
                 bypass,
+                freeze,
                 canCancelApproval,
                 deploymentEventId,
                 failedDeployments,
             });
         });
+
+        // Active Promotion Freezes with their held counts — readable by any signed-in user so the
+        // promotions pages can show freeze cues. Creating / lifting stays under /admin/freezes.
+        group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
+            Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
 
         // Participant roles actually *observed* in the data (distinct, frequency-ordered). Note this
         // is the opposite question from "which roles may I assign?" — that one is answered by the
@@ -997,7 +1021,9 @@ public static class PromotionEndpoints
         RoleAliasMap? roleAliases = null,
         // True ⇒ references go out in the list's `view=summary` shape (see SummaryReference). Only the
         // list asks for it, and only when the caller opted in.
-        bool summaryReferences = false) => new
+        bool summaryReferences = false,
+        // Pending and held by an active Promotion Freeze on (product, targetEnv).
+        bool frozen = false) => new
     {
         id = c.Id,
         product = c.Product,
@@ -1038,6 +1064,8 @@ public static class PromotionEndpoints
             Deployments.WorkItemDisplay.ApplyToReferences(sourceEventReferences ?? Array.Empty<ReferenceDto>()),
             summaryReferences),
         canApprove,
+        // Pending and held by an active Promotion Freeze on (product, targetEnv).
+        frozen,
         // The approval steps this promotion is still short of approvals on, named as the policy names
         // them ("Release Approval"). Empty on anything that isn't Pending, on auto-approve edges, and
         // on responses that don't compute it. Short of approvals is not the same as open: read it

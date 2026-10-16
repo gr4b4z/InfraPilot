@@ -20,7 +20,7 @@ tags:
   - azure devops
   - github actions
 source: InfraPilot webhookTargets.ts + mpt-release/.github/workflows + mpt-release/docs/release-pipelines.md
-as_of: 2026-08-28
+as_of: 2026-10-16
 body: |
   InfraPortal is the **decision** plane, not the delivery plane. It never deploys anything itself —
   it publishes an event, and something downstream acts. Webhooks are that boundary.
@@ -45,7 +45,13 @@ body: |
 
   Promotions — `promotion.created`, `promotion.approved`, `promotion.approval.cancelled`,
   `promotion.rejected`, `promotion.deploying`, `promotion.deployed`, `promotion.superseded`,
-  `promotion.updated`
+  `promotion.updated`, `promotion.frozen`, `promotion.unfrozen`
+
+  `promotion.frozen` and `promotion.unfrozen` fire when an admin creates or lifts a Promotion
+  Freeze on a (product, target environment) pair. Nothing downstream consumes them yet. They carry
+  `product`, `targetEnv`, `reason` and `actor` (plus `frozenBy`, `frozenAt`, `at` and
+  `heldCandidates`), and `promotion.unfrozen` goes out before the `promotion.approved` events the
+  lift releases.
 
   Work items — `promotion.ticket.approved`, `promotion.ticket.issue-raised`,
   `promotion.ticket.blocked`

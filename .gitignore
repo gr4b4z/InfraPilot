@@ -57,3 +57,6 @@ site/
 
 # Test runner output
 **/TestResults/
+
+# Local planning scratch (tickets, plans) — kept on disk, not shipped
+.scratch/
