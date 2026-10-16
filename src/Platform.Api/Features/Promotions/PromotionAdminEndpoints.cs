@@ -302,13 +302,17 @@ public static class PromotionAdminEndpoints
                 entries = await freezes.GetHistoryAsync(limit ?? PromotionFreezeService.DefaultHistoryLimit, ct),
             }));
 
+        // The target env is resolved to its canonical key, like the policy editors, so freezing
+        // "prod" freezes the "production" pair the policies and candidates are stored under.
         group.MapPost("/freezes", async (
-            PromotionFreezeService freezes, FreezePromotionsRequest? request, CancellationToken ct) =>
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            FreezePromotionsRequest? request, CancellationToken ct) =>
         {
             try
             {
                 var freeze = await freezes.FreezeAsync(
-                    request?.Product ?? "", request?.TargetEnv ?? "", request?.Reason ?? "", ct);
+                    request?.Product ?? "", await environments.ResolveAsync(request?.TargetEnv, ct),
+                    request?.Reason ?? "", ct);
                 return Results.Created("/api/promotions/admin/freezes", freeze);
             }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -316,9 +320,17 @@ public static class PromotionAdminEndpoints
             catch (NoApprovalPolicyForPairException ex) { return Results.UnprocessableEntity(new { error = ex.Message }); }
         });
 
+        // Falls back to the key exactly as sent, so a freeze stored before that name became an alias
+        // can still be lifted.
         group.MapDelete("/freezes/{product}/{targetEnv}", async (
-            PromotionFreezeService freezes, string product, string targetEnv, CancellationToken ct) =>
-            await freezes.LiftAsync(product, targetEnv, ct) ? Results.NoContent() : Results.NotFound());
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            string product, string targetEnv, CancellationToken ct) =>
+        {
+            var canonical = await environments.ResolveAsync(targetEnv, ct);
+            var lifted = await freezes.LiftAsync(product, canonical, ct)
+                || (canonical != targetEnv && await freezes.LiftAsync(product, targetEnv, ct));
+            return lifted ? Results.NoContent() : Results.NotFound();
+        });
 
         // ── Policies ────────────────────────────────────────────────────────
 
