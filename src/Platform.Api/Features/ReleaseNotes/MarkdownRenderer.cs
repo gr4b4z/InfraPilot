@@ -19,6 +19,15 @@ public class MarkdownRenderer
         .UseAdvancedExtensions()
         .Build();
 
+    /// <summary>
+    /// For callers that are pure and static and so cannot take this as a dependency — notably the
+    /// webhook request builder, which converts a rendered notification to HTML for the Teams HTML
+    /// target. Shared rather than a second pipeline so both paths turn the same markdown into the
+    /// same HTML; a release note that reaches a channel and one that reaches a Confluence page
+    /// should not differ because they were rendered by different configurations.
+    /// </summary>
+    public static readonly MarkdownRenderer Shared = new();
+
     public string ToHtml(string markdown)
     {
         if (string.IsNullOrEmpty(markdown)) return "";

@@ -5,7 +5,10 @@ import { Loader2, CheckCircle, ArrowLeft, FileText, Shield, Send } from 'lucide-
 import { useConversationStore } from '@/stores/conversationStore';
 import { api } from '@/lib/api';
 import { buildAgentUrl } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
+import { useDocumentTitle } from '@/lib/pageTitle';
 import type { A2UIComponent, CatalogItem } from '@/lib/types';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 interface CatalogDetail {
   item: CatalogItem;
@@ -73,6 +76,10 @@ export function RequestPage() {
   const values = context.formData || {};
   const currentStep = context.step || 'form';
 
+  // The slug stands in until the item's real name arrives — it's what the URL carries, so it's never
+  // wrong, just terser.
+  useDocumentTitle([detail?.item.name ?? slug, 'New request']);
+
   useEffect(() => {
     if (!slug) return;
 
@@ -115,7 +122,7 @@ export function RequestPage() {
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           message,
@@ -213,9 +220,24 @@ export function RequestPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          {detail.item.name}
-        </h1>
+        <div className="flex items-center gap-1">
+          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            {detail.item.name}
+          </h1>
+          {/* The form's own state, so "what do I do here?" can answer with the fields still empty
+              rather than describing the form from scratch. */}
+          <HelpButton
+            page={detail.item.name}
+            context={{
+              service: slug,
+              step: currentStep,
+              filledFields: Object.keys(values).filter((k) => values[k] !== '' && values[k] != null).length,
+              totalFields: detail.inputs.length,
+              validationErrors: Object.keys(errors).length,
+            }}
+            question={`How do I fill in and submit the "${detail.item.name}" request?`}
+          />
+        </div>
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
           {detail.item.description}
         </p>
@@ -235,7 +257,7 @@ export function RequestPage() {
                   className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
                   style={{
                     backgroundColor: isActive ? 'var(--accent)' : isPast ? 'var(--success)' : 'var(--bg-secondary)',
-                    color: isActive || isPast ? 'white' : 'var(--text-muted)',
+                    color: isActive || isPast ? 'var(--accent-fg)' : 'var(--text-muted)',
                     border: !isActive && !isPast ? '1px solid var(--border-color)' : undefined,
                   }}
                 >
@@ -261,6 +283,7 @@ export function RequestPage() {
 
       {/* Form */}
       <div
+        data-guide-anchor="catalog-request-form"
         className="rounded-xl border p-6"
         style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
       >
@@ -279,7 +302,7 @@ export function RequestPage() {
               disabled={submitting}
               className="w-full py-3 text-[13px] font-semibold rounded-lg transition-all flex items-center justify-center gap-2"
               style={{
-                backgroundColor: 'var(--success)',
+                backgroundColor: 'var(--success-solid)',
                 color: 'white',
                 opacity: submitting ? 0.7 : 1,
               }}

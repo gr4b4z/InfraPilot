@@ -78,21 +78,32 @@ public class PromotionPolicyResolver
     /// Projects a resolved policy into the snapshot stored on the candidate. A <c>null</c> policy
     /// yields an auto-approve snapshot (empty ApprovalSteps ⇒ IsAutoApprove) — "no gate configured".
     /// Old candidates whose snapshot JSON predates a field deserialise to its default.
+    ///
+    /// <para>Public because it is the <b>only</b> policy → snapshot projection: seed data builds
+    /// candidate snapshots through it too. A second copy of this mapping drifts the moment a policy
+    /// field is added (it did — seeded candidates silently lost every gate flag added after the
+    /// copy was written).</para>
     /// </summary>
-    private static ResolvedPolicySnapshot Project(PromotionPolicy? policy)
+    public static ResolvedPolicySnapshot Project(PromotionPolicy? policy)
     {
         if (policy is null)
-            return new ResolvedPolicySnapshot(PolicyId: null, TimeoutHours: 0, EscalationGroup: null);
+            return new ResolvedPolicySnapshot(PolicyId: null, EscalationGroup: null);
 
         return new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
-            TimeoutHours: policy.TimeoutHours,
             EscalationGroup: policy.EscalationGroup)
         {
             ApprovalSteps = policy.ApprovalSteps,
+            TracksWorkItems = policy.TracksWorkItems,
+            RequiredWorkItemRoles = policy.RequiredWorkItemRoles,
             RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
+            RequireAllWorkItemInstancesApproved = policy.RequireAllWorkItemInstancesApproved,
             AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
             AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
+            SourceRequiresDeploy = policy.SourceRequiresDeploy,
+            AutoCreateFromBranches = policy.AutoCreateFromBranches,
+            ApprovedWebhookDelaySeconds = policy.ApprovedWebhookDelaySeconds,
+            DeploysOnApproval = policy.DeploysOnApproval,
         };
     }
 }

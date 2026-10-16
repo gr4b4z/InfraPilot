@@ -1,0 +1,40 @@
+id: check-deployed-version
+title: See what version is deployed where
+group: Deployments
+summary: >-
+  Read the version matrix for a product — every service against every environment — and drill into
+  the deployment activity behind any cell.
+aliases:
+  - what is deployed
+  - which version is in production
+  - check the deployed version
+  - what is running in staging
+  - deployment state
+  - version matrix
+  - what changed recently
+route: /deployments
+requires:
+  roles: []
+steps:
+  - text: Open **Deployments** to see the products that report deployment data.
+    anchor: nav-deployments
+  - text: >-
+      Pick a product. The **state matrix** shows the latest version of each service in each
+      environment.
+    anchor: deployments-product-list
+    note: >-
+      Versions belong to services, not products — a product is a grouping, so the matrix shows one
+      row per service rather than a single version for the whole product.
+  - text: >-
+      Switch to the **Activity** tab for the deployment history: what moved, when, and the work
+      items and pull requests behind it.
+    anchor: deployments-activity-tab
+    note: >-
+      Activity can be filtered by time and environment. The URL carries the filters, so a filtered
+      view is a shareable link — for example `?tab=activity&atime=today&env=production`.
+  - text: >-
+      You can also just ask me — "what's in production for identity-platform" — and I will pull the
+      matrix into the chat.
+related:
+  - request-rollback
+  - generate-release-notes

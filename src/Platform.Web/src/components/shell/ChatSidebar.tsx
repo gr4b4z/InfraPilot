@@ -2,9 +2,16 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { Send, Loader2, Sparkles, ArrowRight, X, RotateCcw, Bell, Maximize2, Minimize2 } from 'lucide-react';
 import { useConversationStore } from '@/stores/conversationStore';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { ChatCard } from '@/components/chat/ChatCard';
 import { ChatInlineForm } from '@/components/chat/ChatInlineForm';
+import { GuideCard } from '@/components/guide/GuideCard';
+import { NavigationChip } from '@/components/guide/NavigationChip';
+import { useGuideStore } from '@/stores/guideStore';
+import { useHighlightStore } from '@/stores/highlightStore';
+import { usePageContextStore, collectAnchors } from '@/stores/pageContextStore';
 import { buildAgentUrl, getAssistantName } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
 
 export function ChatSidebar() {
   const {
@@ -20,6 +27,8 @@ export function ChatSidebar() {
     toggleSidebarExpanded,
     startNewThread,
     getHistoryForAgent,
+    pendingQuestion,
+    consumePendingQuestion,
   } = useConversationStore();
 
   const [input, setInput] = useState('');
@@ -28,19 +37,24 @@ export function ChatSidebar() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const isDesktop = useIsDesktop();
   const assistantName = getAssistantName();
+  const startGuide = useGuideStore((s) => s.start);
+  const showHighlights = useHighlightStore((s) => s.show);
+  const clearHighlights = useHighlightStore((s) => s.clear);
 
   // Auto-scroll on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Focus input when sidebar opens
+  // Focus input when the panel opens — but not on a phone, where focusing raises the keyboard over
+  // the conversation the user just opened to read.
   useEffect(() => {
-    if (sidebarOpen) {
+    if (sidebarOpen && isDesktop) {
       setTimeout(() => inputRef.current?.focus(), 150);
     }
-  }, [sidebarOpen]);
+  }, [sidebarOpen, isDesktop]);
 
   // Clear catalog-specific context when the user navigates away from a catalog form.
   // Without this, a stale catalogSlug leaks into subsequent requests on other pages.
@@ -54,7 +68,7 @@ export function ChatSidebar() {
   // Derive current slug from the URL only — never fall back to stale store value.
   const currentSlug = slugMatch?.[1];
 
-  const sendMessage = async (overrideMessage?: string) => {
+  const sendMessage = async (overrideMessage?: string, pageState?: Record<string, string> | null) => {
     const msg = overrideMessage || input.trim();
     if (!msg || loading) return;
 
@@ -65,18 +79,30 @@ export function ChatSidebar() {
 
     setLoading(true);
     addMessage({ role: 'assistant', text: '', isLoading: true });
+    // Rings belong to the answer they came with. A new question retires them.
+    clearHighlights();
+
+    // The screen, as it is at this moment: what the page says it is showing (kept current by the
+    // page itself), anything the caller added, and every element the assistant could point at.
+    // The assistant is told to read this before the conversation history, so it has to go out with
+    // every message — not only from the Help buttons.
+    const screen = usePageContextStore.getState();
+    const mergedState = { ...screen.state, ...(pageState ?? {}) };
 
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           message: msg,
           pageContext: {
-            currentPath: location.pathname,
+            currentPath: location.pathname + location.search,
             currentSlug: currentSlug || undefined,
             formData: currentSlug ? (context.formData || undefined) : undefined,
+            page: screen.page ?? undefined,
+            pageState: Object.keys(mergedState).length > 0 ? mergedState : undefined,
+            anchors: collectAnchors(),
           },
           history: getHistoryForAgent(),
         }),
@@ -112,7 +138,38 @@ export function ChatSidebar() {
         fieldSuggestions,
         cards: data.cards || undefined,
         a2uiSurface: data.a2uiSurface || undefined,
+        guide: data.guide || undefined,
+        navigation: data.navigation || undefined,
+        highlights: Array.isArray(data.highlights) && data.highlights.length > 0 ? data.highlights : undefined,
       });
+
+      // The answer may move the screen. Skipped when a guide is also running — the guide owns
+      // navigation from here, and two routers fighting over the same turn lands nowhere useful.
+      if (data.navigation?.route && !data.guide) {
+        if (!isDesktop) setSidebarOpen(false);
+        if (data.navigation.route !== location.pathname + location.search) {
+          navigate(data.navigation.route);
+        }
+      }
+
+      // Ring what the answer talked about — on the page just navigated to, or on this one. The
+      // layer waits for the destination to render, so this is safe to call before the route lands.
+      if (Array.isArray(data.highlights) && data.highlights.length > 0 && !data.guide) {
+        const route = data.navigation?.route ?? location.pathname;
+        showHighlights(data.highlights, route.split('?')[0]);
+        // On a phone the chat covers the page the rings are on.
+        if (!isDesktop) setSidebarOpen(false);
+      }
+
+      // The agent started a walkthrough — navigate and light up the first control. On a phone the
+      // chat covers the page it is about to point at, so close it first.
+      if (data.guide) {
+        if (!isDesktop) setSidebarOpen(false);
+        if (data.guide.route && data.guide.route !== location.pathname) {
+          navigate(data.guide.route);
+        }
+        startGuide(data.guide);
+      }
 
       // If a service was suggested, set it in context
       if (data.suggestedSlug) {
@@ -128,6 +185,23 @@ export function ChatSidebar() {
     }
   };
 
+  // A Help button elsewhere on the page queued a question. Consuming it before sending is what stops
+  // a re-render from asking twice; the user message is added here rather than inside sendMessage so
+  // the question they effectively asked is visible in the transcript.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const queued = consumePendingQuestion();
+    if (!queued) return;
+
+    // Sent from a microtask rather than the effect body: sendMessage sets state immediately, and
+    // doing that while React is committing this effect cascades an extra render. The closure is the
+    // one from the render that queued the question, so the page context it sends is current.
+    queueMicrotask(() => {
+      addMessage({ role: 'user', text: queued.question });
+      void sendMessage(queued.question, queued.pageState);
+    });
+  }, [pendingQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleNavigate = (slug: string) => {
     setContext({ catalogSlug: slug, step: 'form' });
     navigate(`/catalog/${slug}`);
@@ -135,13 +209,17 @@ export function ChatSidebar() {
 
   if (!sidebarOpen) return null;
 
+  // Below `lg` the panel is the content area (Layout hides `main` while it's open), so it fills the
+  // width rather than reserving a 380px column that wouldn't fit next to anything.
+  const docked = isDesktop && !sidebarExpanded;
+
   return (
     <div
       className="flex flex-col border-l h-full"
       style={{
-        ...(sidebarExpanded
-          ? { flex: 1, minWidth: 0 }
-          : { width: 380, minWidth: 380, flex: 'none' }),
+        ...(docked
+          ? { width: 380, minWidth: 380, flex: 'none' }
+          : { flex: 1, minWidth: 0 }),
         borderColor: 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
       }}
@@ -154,7 +232,7 @@ export function ChatSidebar() {
         <div className="flex items-center gap-2">
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             <Sparkles size={14} />
           </div>
@@ -173,9 +251,10 @@ export function ChatSidebar() {
           >
             <RotateCcw size={14} />
           </button>
+          {/* Expand/dock is meaningless below `lg`, where the panel is already the whole view. */}
           <button
             onClick={toggleSidebarExpanded}
-            className="p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
+            className="hidden lg:block p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
             style={{ color: 'var(--text-muted)' }}
             title={sidebarExpanded ? 'Collapse to sidebar' : 'Expand to full view'}
           >
@@ -185,6 +264,7 @@ export function ChatSidebar() {
             onClick={() => setSidebarOpen(false)}
             className="p-1.5 rounded-lg transition-colors hover:bg-[var(--bg-secondary)]"
             style={{ color: 'var(--text-muted)' }}
+            aria-label="Close assistant"
           >
             <X size={16} />
           </button>
@@ -204,7 +284,7 @@ export function ChatSidebar() {
                     : msg.role === 'assistant'
                       ? 'var(--bg-secondary)'
                       : 'var(--accent)',
-                color: msg.role === 'assistant' ? 'var(--text-primary)' : 'white',
+                color: msg.role === 'assistant' ? 'var(--text-primary)' : 'var(--accent-fg)',
                 ...(msg.isNotification
                   ? { borderLeft: '3px solid var(--accent)', paddingLeft: 12, backgroundColor: 'var(--bg-secondary)' }
                   : {}),
@@ -228,6 +308,17 @@ export function ChatSidebar() {
                 surfaceJson={msg.a2uiSurface}
                 initialValues={msg.fieldSuggestions}
               />
+            )}
+
+            {msg.guide && <GuideCard plan={msg.guide} />}
+            {msg.navigation ? (
+              <NavigationChip
+                route={msg.navigation.route}
+                label={msg.navigation.label}
+                highlights={msg.highlights}
+              />
+            ) : (
+              msg.highlights && <NavigationChip label="" highlights={msg.highlights} />
             )}
 
             {/* Structured data cards */}
@@ -295,7 +386,12 @@ export function ChatSidebar() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') sendMessage();
+              // The app-wide Escape binding ignores keys typed into inputs, and this box has focus
+              // whenever the panel is open — so it clears the assistant's rings itself.
+              if (e.key === 'Escape') clearHighlights();
+            }}
             placeholder={currentSlug ? `Ask about ${currentSlug}...` : 'Ask anything...'}
             disabled={loading}
             className="flex-1 px-3 py-2 text-sm rounded-lg border outline-none transition-colors focus:border-[var(--accent)]"
@@ -309,7 +405,7 @@ export function ChatSidebar() {
             onClick={() => sendMessage()}
             disabled={loading || !input.trim()}
             className="px-3 py-2 rounded-lg transition-colors disabled:opacity-40"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>

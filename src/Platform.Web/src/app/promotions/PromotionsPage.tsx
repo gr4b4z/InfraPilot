@@ -1,39 +1,100 @@
-import { useEffect, useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import type { PromotionCandidate, PromotionFreeze, PromotionStatus } from '@/lib/api';
-import { useAuthStore } from '@/stores/authStore';
+import type { PromotionCandidate, PromotionFreeze, PromotionStatus, WorkItemDecision } from '@/lib/api';
 import { FreezeBanner, FrozenGroup } from './FreezeCues';
 import { resolveReferenceHref } from '@/lib/refUrl';
-import { roleDisplay } from '@/lib/roleLabel';
+import { getWorkItemContextCached } from '@/lib/workItemContextCache';
+import { decisionStyle, missingRolesLabel, workItemDetailPath } from '@/lib/workItem';
+import { WorkItemsNeedingAttentionBadge } from '@/components/promotions/MissingRoles';
+import { BulkApprovalEffectLine } from '@/components/promotions/ApprovalEffect';
+import { MassApproveDialog } from '@/components/promotions/MassApproveDialog';
+import { approvalDeploys } from '@/lib/approvalEffect';
+import {
+  readEnumPref,
+  readPref,
+  writePref,
+  PROMOTIONS_VIEW_PREF,
+  PROMOTIONS_PRODUCT_FILTER_PREF,
+  PROMOTIONS_SERVICE_FILTER_PREF,
+  PROMOTIONS_TARGET_ENV_FILTER_PREF,
+  PROMOTIONS_REFERENCE_FILTER_PREF,
+  PROMOTIONS_GATE_FILTER_PREF,
+  PROMOTIONS_GATE_ONLY_FILTER_PREF,
+} from '@/lib/prefs';
+import { PromotionRoute } from '@/components/promotions/PromotionRoute';
+import { useEnvControlStyle } from '@/components/environments/useEnvColor';
+import { FilterPanel } from '@/components/ui/FilterPanel';
+import {
+  ListEmptyState,
+  type ActiveFilterChip,
+  type EmptyStateTone,
+} from '@/components/ui/ListEmptyState';
+import { CopyViewLinkButton } from '@/components/ui/CopyViewLinkButton';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { RovingGroup } from '@/components/ui/RovingGroup';
+import {
+  buildPromotionParams,
+  hasPromotionParams,
+  parsePromotionParams,
+  PROMOTION_VIEWS,
+  type PromotionParams,
+  type PromotionView,
+} from './promotionFilterParams';
+import { promotionSearchScope } from '@/components/shell/searchScopes';
+import { useAuthStore } from '@/stores/authStore';
+import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
+import { useSearchScope } from '@/stores/searchScopeStore';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { refreshMyTasks } from '@/stores/myTasksStore';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { formatDistanceToNow } from 'date-fns';
 import {
+  AlertTriangle,
   ArrowRight,
   Clock,
   CheckCircle,
+  History,
   XCircle,
   Rocket,
   GitPullRequest,
   Ticket,
   ExternalLink,
+  Filter,
+  ShieldCheck,
+  Lock,
+  ListChecks,
   Snowflake,
 } from 'lucide-react';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 /**
- * Per-candidate work-item signoff progress for the list. Computed lazily for the
- * pending rows only — non-pending candidates show "—". The list API returns the
- * candidate's own sourceEventReferences (work-items + others); we filter to
- * work-items, then call /work-items/{key}?... for each to get approval state.
+ * Per-candidate work-item signoff state for the list. The list API returns the candidate's own
+ * sourceEventReferences (work-items + others) but not their approval state, so we filter to
+ * work-items and call /work-items/{key}?... for each.
  *
- * Cap at the visible Pending set per render, which is bounded by the page's
- * filter so this stays well-behaved in practice.
+ * `decisions` carries the per-key outcome so each work-item chip can be tinted by its own state —
+ * the counts alone can't tell you *which* item is the blocked one, which is the thing you want to
+ * see when scanning a stalled bundle.
+ *
+ * Fetching is capped at {@link PROGRESS_CANDIDATE_LIMIT} candidates per render: the resolved and
+ * "all" tabs are unbounded in a way the pending queue never was, and a chip with no tint is a fine
+ * degradation. Rows past the cap render as undecided.
  */
 interface WorkItemProgress {
   total: number;
   approved: number;
-  rejected: number;
+  /** Carrying an Issue — a flagged problem on a change that still ships. Does not stall the gate. */
+  issues: number;
+  /** Held back by a Block — the only decision that stalls the gate. */
+  blocked: number;
+  /** Work-item key → the decision on it, or null when nobody has decided yet. */
+  decisions: Record<string, WorkItemDecision | null>;
   loading: boolean;
 }
+
+const PROGRESS_CANDIDATE_LIMIT = 25;
 
 const STATUS_CONFIG: Record<
   PromotionStatus,
@@ -47,44 +108,442 @@ const STATUS_CONFIG: Record<
   Rejected: { icon: XCircle, color: 'var(--danger)', bg: 'var(--danger-bg)' },
 };
 
+/**
+ * Which slice of the promotions set the page is showing. `mine` and `needs-attention` narrow `pending`
+ * client-side (no refetch); `resolved` and `all` share one lazy fetch; `rejected` has its own so a long
+ * resolved tail can't clip it.
+ *
+ * <p>The two narrowings answer different questions and can both be non-empty for the same promotion:
+ * `mine` is "can I approve this now", `needs-attention` is "is somebody missing from its work items".</p>
+ *
+ * <p>The type and the list itself live in {@link promotionFilterParams} — they're part of the URL
+ * contract, and the parser has to validate a link's tab against the same list this renders.</p>
+ */
+export type { PromotionView };
+
+const VIEW_HEADINGS: Record<PromotionView, string> = {
+  pending: 'All pending',
+  mine: 'Awaiting my approval',
+  'needs-attention': 'Needs attention',
+  'awaiting-deploy': 'Approved · awaiting deploy',
+  resolved: 'Resolved',
+  rejected: 'Rejected',
+  all: 'All promotions',
+};
+
+/**
+ * What each tab shows, as a noun phrase — the subject of the "no … match these filters" sentence.
+ * Deliberately spells out the narrowing the tab itself applies: on a filtered empty list the tab is
+ * as likely to be the reason as any dropdown, and it isn't one of the chips the panel can clear.
+ */
+const VIEW_SUBJECTS: Record<PromotionView, string> = {
+  pending: 'pending promotions',
+  mine: 'promotions you can approve',
+  'needs-attention': 'promotions with a work item missing someone',
+  'awaiting-deploy': 'approved promotions waiting to deploy',
+  resolved: 'resolved promotions',
+  rejected: 'rejected promotions',
+  all: 'promotions',
+};
+
+/**
+ * The unfiltered empty state per tab. Tone is the editorial call: an empty "Awaiting my approval" or
+ * "Needs attention" is the queue being clear, which reads better in green than as a shrug; history
+ * tabs with nothing in them are neither good nor bad.
+ */
+const EMPTY_STATES: Record<
+  PromotionView,
+  { icon: typeof Clock; tone: EmptyStateTone; title: string; body: string }
+> = {
+  pending: {
+    icon: CheckCircle,
+    tone: 'good',
+    title: 'No promotions are waiting for approval',
+    body: 'When a new version is ready to move up an environment, it lands here for review.',
+  },
+  mine: {
+    icon: CheckCircle,
+    tone: 'good',
+    title: 'Nothing is waiting on you',
+    body: 'This tab holds the promotions you are authorised to approve. Others may still be pending for someone else — "All pending" shows those.',
+  },
+  'needs-attention': {
+    icon: CheckCircle,
+    tone: 'good',
+    title: 'Every pending promotion has the people it needs',
+    body: 'A promotion shows up here when one of its work items has nobody in a role its policy requires, so nobody can sign it off.',
+  },
+  'awaiting-deploy': {
+    icon: Rocket,
+    tone: 'neutral',
+    title: 'Nothing approved is waiting to deploy',
+    body: 'Approved promotions sit here until the deployment that carries them runs.',
+  },
+  resolved: {
+    icon: Clock,
+    tone: 'neutral',
+    title: 'Nothing has been resolved yet',
+    body: 'Promotions that were approved, deployed, rejected or superseded are kept here as history.',
+  },
+  rejected: {
+    icon: XCircle,
+    tone: 'neutral',
+    title: 'No promotion has been rejected',
+    body: 'A promotion someone turns down is kept here along with the reason they gave.',
+  },
+  all: {
+    icon: GitPullRequest,
+    tone: 'neutral',
+    title: 'No promotions recorded yet',
+    body: 'Every promotion, at any status, appears here once one is created for a product you can see.',
+  },
+};
+
+function EmptyState({
+  view,
+  filters,
+  onClearFilters,
+}: {
+  view: PromotionView;
+  /** The dropdowns and boxes currently narrowing the fetch, as clearable chips. */
+  filters: ActiveFilterChip[];
+  onClearFilters: () => void;
+}) {
+  // Filters win over the per-tab copy. "No rejected promotions" is a claim about the whole system,
+  // and printing it while a product filter is quietly narrowing the fetch is how an empty list gets
+  // mistaken for a fact.
+  if (filters.length > 0) {
+    const one = filters.length === 1;
+    return (
+      <ListEmptyState
+        icon={Filter}
+        tone="filtered"
+        title={`No ${VIEW_SUBJECTS[view]} match ${one ? 'this filter' : 'these filters'}`}
+        body={`The "${VIEW_HEADINGS[view]}" tab has nothing left once ${
+          one ? 'this narrowing is' : `all ${filters.length} narrowings are`
+        } applied. Drop one to widen the list, or try another tab — a promotion you are looking for may have moved on already.`}
+        filters={filters}
+        onClearFilters={onClearFilters}
+      />
+    );
+  }
+
+  const { icon, tone, title, body } = EMPTY_STATES[view];
+  return <ListEmptyState icon={icon} tone={tone} title={title} body={body} />;
+}
+
+/**
+ * A filter value that survives leaving the page. Writes the cookie on every change — the same shape
+ * as `useState`, so call sites are unchanged.
+ *
+ * The initial value comes from the caller rather than the cookie: on arrival a link's filters take
+ * precedence over the saved ones, and only the page can tell whether the URL is describing a view
+ * (see {@link parsePromotionParams}). The returned setter persists but does not touch the URL — the
+ * page's own handlers do that, since a shareable link is built from every filter at once.
+ */
+function usePersistedFilter(prefKey: string, initial: string): [string, (next: string) => void] {
+  const [value, setValue] = useState(initial);
+
+  const update = useCallback(
+    (next: string) => {
+      setValue(next);
+      writePref(prefKey, next);
+    },
+    [prefKey],
+  );
+
+  return [value, update];
+}
+
 export function PromotionsPage() {
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  // The audit feed is admin-only, so the shortcut to it is too — a button that lands on a redirect
+  // is worse than no button.
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
+  // The URL is the shareable form of this page's state; the cookies are the resumable one. A link
+  // carrying any promotion parameter wins outright on arrival — see promotionFilterParams for why a
+  // shared view must not blend with the recipient's saved filters. Read once, on mount: after that
+  // the state below owns the view and the change handlers write it back to the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initial = useMemo(
+    () => {
+      const savedView = readEnumPref(PROMOTIONS_VIEW_PREF, PROMOTION_VIEWS, 'pending');
+      if (hasPromotionParams(searchParams)) return parsePromotionParams(searchParams, savedView);
+      return {
+        view: savedView,
+        product: readPref(PROMOTIONS_PRODUCT_FILTER_PREF) ?? '',
+        service: readPref(PROMOTIONS_SERVICE_FILTER_PREF) ?? '',
+        targetEnv: readPref(PROMOTIONS_TARGET_ENV_FILTER_PREF) ?? '',
+        reference: readPref(PROMOTIONS_REFERENCE_FILTER_PREF) ?? '',
+        gate: readPref(PROMOTIONS_GATE_FILTER_PREF) ?? '',
+        gateOnly: readPref(PROMOTIONS_GATE_ONLY_FILTER_PREF) === '1',
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
   // The page is pending-by-default: `candidates` holds only Pending promotions.
   // Resolved (Approved/Deploying/Deployed/Rejected) promotions are never fetched
   // until the user explicitly opens the resolved section (lazy-loaded below).
   const [candidates, setCandidates] = useState<PromotionCandidate[]>([]);
   const [loading, setLoading] = useState(true);
-  const [productFilter, setProductFilter] = useState('');
-  const [serviceFilter, setServiceFilter] = useState('');
-  const [targetEnvFilter, setTargetEnvFilter] = useState('');
-  const [referenceFilter, setReferenceFilter] = useState('');
+  // Cookie-persisted, like the tab above: list → detail → back is the main path through this page,
+  // and filters that don't survive it aren't worth setting. `usePersistedFilter` writes on change;
+  // the initial values come from the link if there is one, otherwise from the cookies (see `initial`).
+  const [productFilter, persistProduct] = usePersistedFilter(
+    PROMOTIONS_PRODUCT_FILTER_PREF,
+    initial.product,
+  );
+  const [serviceFilter, persistService] = usePersistedFilter(
+    PROMOTIONS_SERVICE_FILTER_PREF,
+    initial.service,
+  );
+  const [targetEnvFilter, persistTargetEnv] = usePersistedFilter(
+    PROMOTIONS_TARGET_ENV_FILTER_PREF,
+    initial.targetEnv,
+  );
+  const [referenceFilter, persistReference] = usePersistedFilter(
+    PROMOTIONS_REFERENCE_FILTER_PREF,
+    initial.reference,
+  );
+  // The approval gate a promotion is still waiting on ("Release Approval"), and whether to narrow
+  // further to the ones waiting on nothing else. The pair is a single filter as far as the reader is
+  // concerned — the checkbox is meaningless without a gate picked, and the handlers keep them in step.
+  const [gateFilter, persistGate] = usePersistedFilter(PROMOTIONS_GATE_FILTER_PREF, initial.gate);
+  const [gateOnlyRaw, persistGateOnly] = usePersistedFilter(
+    PROMOTIONS_GATE_ONLY_FILTER_PREF,
+    initial.gateOnly ? '1' : '',
+  );
+  const gateOnlyFilter = gateOnlyRaw === '1';
+  // Filter vocabulary. Fetched once and never re-fetched on a filter change — that is the whole
+  // point of it (see api.getPromotionFilterOptions).
+  const [filterOptions, setFilterOptions] = useState<{
+    products: string[];
+    targetEnvs: string[];
+    gates: string[];
+  }>({ products: [], targetEnvs: [], gates: [] });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [massApproveOpen, setMassApproveOpen] = useState(false);
   const [workItemProgress, setWorkItemProgress] = useState<Record<string, WorkItemProgress>>({});
-  // Two-tab view over the loaded Pending set: all pending, or only the ones the
-  // current user can act on right now (per-candidate `canApprove`). No refetch.
-  const [view, setView] = useState<'pending' | 'mine'>('pending');
-  // Resolved section — lazy. Only fetched when the user opens it.
-  const [resolved, setResolved] = useState<PromotionCandidate[]>([]);
-  const [resolvedShown, setResolvedShown] = useState(false);
-  const [resolvedLoading, setResolvedLoading] = useState(false);
+  // Cookie-persisted so the tab you work from is the tab you come back to — unless a link named one.
+  const [view, setView] = useState<PromotionView>(initial.view);
+  // Approved-awaiting-deploy set. Fetched eagerly (alongside Pending) so the tab
+  // badge shows a live count without the user having to open the tab first.
+  const [awaitingDeploy, setAwaitingDeploy] = useState<PromotionCandidate[]>([]);
+  const [awaitingDeployLoading, setAwaitingDeployLoading] = useState(true);
+  // Everything, any status — backs both the "All" and "Resolved" tabs. Lazy: null means
+  // "not fetched yet", which is how the effect below knows to go and get it.
+  const [archive, setArchive] = useState<PromotionCandidate[] | null>(null);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  // Rejected gets its own single-status fetch rather than being filtered out of `archive`: the
+  // no-status query caps its non-Pending tail, which would silently clip old rejections.
+  const [rejected, setRejected] = useState<PromotionCandidate[] | null>(null);
+  const [rejectedLoading, setRejectedLoading] = useState(false);
+  const targetEnvSelectStyle = useEnvControlStyle(targetEnvFilter);
   // Active Promotion Freezes (readable by any signed-in user) for the banner and the Frozen group.
   const [freezes, setFreezes] = useState<PromotionFreeze[]>([]);
-  const isAdmin = useAuthStore((s) => s.user?.isAdmin) ?? false;
 
-  // Secondary filters shared by both the pending fetch and the resolved fetch.
-  const filterParams = () => {
-    const params: Record<string, string> = {};
+  // `/` searches promotions while this page is up. No dependencies — the scope hits the server, so
+  // it doesn't close over anything on screen.
+  useSearchScope(promotionSearchScope(), []);
+
+  // The tab and the filters are the whole point of the URL parameters above: this page is meant to be
+  // handed over as "the checkout-api promotions waiting on prod". The title says the same thing the
+  // link does, so it survives being pasted into a chat and read before anyone clicks it.
+  useDocumentTitle([
+    VIEW_HEADINGS[view],
+    scopeTitle({ product: productFilter, service: serviceFilter, targetEnv: targetEnvFilter }),
+    referenceFilter && `ref ${referenceFilter}`,
+    gateFilter && (gateOnlyFilter ? `only ${gateFilter} left` : `waiting on ${gateFilter}`),
+    'Promotions',
+  ]);
+
+  /**
+   * Mirrors the view into the query string, so from the first filter change onwards the address bar is
+   * itself a link to what is on screen. Called from the change handlers rather than from an effect
+   * watching the state: a filter change is a user action with a known outcome, and deriving the URL in
+   * an effect would cost a render pass whose only job is to fix up the address bar. (Copy link doesn't
+   * depend on this having run — it builds the URL from the state directly.)
+   *
+   * `replace` rather than `push` — changing a filter is not a navigation, and pushing would make Back
+   * walk out of the page one dropdown (or one keystroke of the service box) at a time.
+   */
+  const currentParams = (next: Partial<PromotionParams> = {}): URLSearchParams =>
+    buildPromotionParams({
+      view,
+      product: productFilter,
+      service: serviceFilter,
+      targetEnv: targetEnvFilter,
+      reference: referenceFilter,
+      gate: gateFilter,
+      gateOnly: gateOnlyFilter,
+      ...next,
+    });
+
+  /**
+   * The filters this page has set, in the audit page's own parameter names — so "the checkout-api
+   * promotions on prod" becomes "what happened to the checkout-api promotions on prod". The tab and
+   * window aren't carried: this list's tabs are states (pending, resolved) and the audit page's are
+   * kinds of action, so there is nothing to map them onto. It picks its own default window.
+   */
+  const auditLinkParams = (): URLSearchParams => {
+    const params = new URLSearchParams();
+    if (productFilter) params.set('product', productFilter);
+    if (serviceFilter) params.set('service', serviceFilter);
+    if (targetEnvFilter) params.set('targetEnv', targetEnvFilter);
+    return params;
+  };
+
+  const syncUrl = (next: Partial<PromotionParams>) => {
+    const params = currentParams(next);
+    if (params.toString() === searchParams.toString()) return;
+    setSearchParams(params, { replace: true });
+  };
+
+  // Each handler does the same three things: persist (so the view resumes), set state (so the page
+  // re-renders), and update the URL (so the view can be handed to someone).
+  const changeView = (next: PromotionView) => {
+    writePref(PROMOTIONS_VIEW_PREF, next);
+    setView(next);
+    syncUrl({ view: next });
+  };
+
+  const handleProductChange = (next: string) => {
+    persistProduct(next);
+    syncUrl({ product: next });
+  };
+
+  const handleServiceChange = (next: string) => {
+    persistService(next);
+    syncUrl({ service: next });
+  };
+
+  const handleTargetEnvChange = (next: string) => {
+    persistTargetEnv(next);
+    syncUrl({ targetEnv: next });
+  };
+
+  const handleReferenceChange = (next: string) => {
+    persistReference(next);
+    syncUrl({ reference: next });
+  };
+
+  // Clearing the gate clears the "only this one left" narrowing with it: on its own it has nothing to
+  // be "only" about, and leaving it set would silently re-narrow the list the next time a gate is
+  // picked. One URL write, for the same reason clearAllFilters does it that way.
+  const handleGateChange = (next: string) => {
+    persistGate(next);
+    if (!next) persistGateOnly('');
+    syncUrl({ gate: next, gateOnly: next ? gateOnlyFilter : false });
+  };
+
+  const handleGateOnlyChange = (next: boolean) => {
+    persistGateOnly(next ? '1' : '');
+    syncUrl({ gateOnly: next });
+  };
+
+  const clearAllFilters = () => {
+    persistProduct('');
+    persistService('');
+    persistTargetEnv('');
+    persistReference('');
+    persistGate('');
+    persistGateOnly('');
+    // One URL write rather than six: the handlers above each build the parameters from state that
+    // hasn't re-rendered yet, so calling them in sequence would leave five of the six behind.
+    syncUrl({ product: '', service: '', targetEnv: '', reference: '', gate: '', gateOnly: false });
+  };
+
+  /**
+   * The narrowings currently applied to the fetch, for the empty state to name and clear. Every
+   * filter here is server-side, so an empty list can't be attributed between them — the panel lists
+   * all of them and lets the reader drop whichever one it is.
+   */
+  const activeFilters: ActiveFilterChip[] = [];
+  if (productFilter) {
+    activeFilters.push({
+      label: 'Product',
+      value: productFilter,
+      onClear: () => handleProductChange(''),
+    });
+  }
+  if (serviceFilter) {
+    activeFilters.push({
+      label: 'Service',
+      value: serviceFilter,
+      onClear: () => handleServiceChange(''),
+    });
+  }
+  if (targetEnvFilter) {
+    activeFilters.push({
+      // The display name, not the raw key — it's what the dropdown shows, and the chip has to be
+      // recognisable as the control the reader set.
+      label: 'Target env',
+      value: getDisplayName(targetEnvFilter),
+      onClear: () => handleTargetEnvChange(''),
+    });
+  }
+  if (referenceFilter) {
+    activeFilters.push({
+      label: 'Reference',
+      value: referenceFilter,
+      onClear: () => handleReferenceChange(''),
+    });
+  }
+  if (gateFilter) {
+    // One chip for the pair. "Only gate left" isn't a narrowing anybody set on its own, and a second
+    // chip offering to clear it would suggest the gate filter survives that — it doesn't.
+    activeFilters.push({
+      label: gateOnlyFilter ? 'Waiting only on' : 'Waiting on',
+      value: gateFilter,
+      onClear: () => handleGateChange(''),
+    });
+  }
+
+  // Identity of the current filter set — the dependency that invalidates a lazy fetch in flight.
+  const filterKey = `${productFilter}|${serviceFilter}|${targetEnvFilter}|${referenceFilter}|${gateFilter}|${gateOnlyFilter}`;
+  // The same identity, readable from a response handler that outlives the render it started in.
+  const filterKeyRef = useRef(filterKey);
+  useEffect(() => {
+    filterKeyRef.current = filterKey;
+  }, [filterKey]);
+
+  /**
+   * Secondary filters shared by every fetch on this page.
+   *
+   * The gate filter rides along with the rest, on every tab. It is a question only a pending promotion
+   * can answer — nothing already approved, deployed or rejected is waiting on a gate — so the resolved
+   * tabs legitimately come back empty while it is set, and the empty state names it as one of the
+   * narrowings in play rather than the tab being quietly exempted from it.
+   */
+  const filterParams = (): {
+    product?: string;
+    service?: string;
+    targetEnv?: string;
+    reference?: string;
+    gate?: string;
+    gateOnly?: boolean;
+  } => {
+    const params: ReturnType<typeof filterParams> = {};
     if (productFilter) params.product = productFilter;
     if (serviceFilter) params.service = serviceFilter;
     if (targetEnvFilter) params.targetEnv = targetEnvFilter;
     if (referenceFilter) params.reference = referenceFilter;
+    if (gateFilter) {
+      params.gate = gateFilter;
+      params.gateOnly = gateOnlyFilter;
+    }
     return params;
   };
 
-  const fetchData = () => {
-    setLoading(true);
+  // `silent` refetches keep the rows on screen and swap the response into them by key — the
+  // realtime and post-action paths. Only a new query (mount, filter change) shows skeletons.
+  const fetchData = ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     api
-      .listPromotions({ status: 'Pending', ...filterParams() })
+      .listPromotions({ status: 'Pending', ...filterParams(), view: 'summary' })
       .then((data) => setCandidates(data.candidates || []))
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false));
@@ -94,43 +553,178 @@ export function PromotionsPage() {
       .catch(() => setFreezes([]));
   };
 
-  useEffect(() => {
-    fetchData();
-    // A filter change invalidates any loaded resolved set — collapse it so it
-    // reloads fresh (with the new filters) if the user reopens it.
-    setResolvedShown(false);
-    setResolved([]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productFilter, serviceFilter, targetEnvFilter, referenceFilter]);
-
-  const loadResolved = () => {
-    setResolvedShown(true);
-    setResolvedLoading(true);
+  // Approved-but-not-yet-deployed. Separate fetch (single-status ⇒ backend allows up
+  // to 200) so the count is available for the tab badge before the tab is opened.
+  const fetchAwaitingDeploy = ({ silent = false } = {}) => {
+    if (!silent) setAwaitingDeployLoading(true);
     api
-      .listPromotions(filterParams())
-      .then((data) => setResolved((data.candidates || []).filter((c) => c.status !== 'Pending')))
-      .catch(() => setResolved([]))
-      .finally(() => setResolvedLoading(false));
+      .listPromotions({ status: 'Approved', ...filterParams(), view: 'summary' })
+      .then((data) => setAwaitingDeploy(data.candidates || []))
+      .catch(() => setAwaitingDeploy([]))
+      .finally(() => setAwaitingDeployLoading(false));
   };
 
-  const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
+  // Filter vocabulary — fetched once on mount, deliberately outside the filter-change effect below.
+  // Refetching it with the filters applied is exactly the bug this replaced.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPromotionFilterOptions()
+      .then((o) => {
+        // `gates` is absent on an older API — defaulted here so the dropdown simply doesn't render
+        // rather than the page failing on an undefined list.
+        if (!cancelled) setFilterOptions({ ...o, gates: o.gates ?? [] });
+      })
+      .catch(() => {
+        // Leave the dropdowns with only their current selection; the rest of the page is unaffected.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  // Lazy work-item-progress fetch for Pending rows only. Non-pending rows show "—"
-  // so we never spend an HTTP round-trip on them. We fan out concurrently per
-  // candidate and per work item, capped by the natural Pending bound (small in
-  // practice). A cancellation guard avoids overwriting state when the candidate
-  // list churns mid-flight (e.g. a filter changes).
+  // Server-pushed promotion changes rerun the same invalidation a filter change does; work-item
+  // sign-offs refresh the per-row progress cells without refetching the candidate lists.
+  const promotionsTick = useEntityRefresh(['promotion']);
+  const workItemsTick = useEntityRefresh(['work-item']);
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+
+  // Refetches whichever lazy sets are already loaded, in place. The realtime and post-action paths
+  // use this rather than dropping the sets back to null: a null set unmounts that tab's list for a
+  // skeleton, which for the tab the reader is on means losing their place. A result is only applied
+  // while the filters it was fetched under are still current — otherwise it would land over the
+  // null a filter change just set and stop the lazy effect from fetching the right data.
+  const refreshLazySets = () => {
+    const keyAtStart = filterKey;
+    const stillCurrent = () => filterKeyRef.current === keyAtStart;
+    if (archive !== null) {
+      api
+        .listPromotions({ ...filterParams(), view: 'summary' })
+        .then((data) => { if (stillCurrent()) setArchive(data.candidates || []); })
+        .catch(() => { /* keep the rows on screen; the next event retries */ });
+    }
+    if (rejected !== null) {
+      api
+        .listPromotions({ status: 'Rejected', ...filterParams(), view: 'summary' })
+        .then((data) => { if (stillCurrent()) setRejected(data.candidates || []); })
+        .catch(() => { /* as above */ });
+    }
+  };
+
+  useEffect(() => {
+    // A realtime tick re-runs the query already on screen: refresh every loaded set in place and
+    // leave the skeletons out of it. A filter change is a new query — show skeletons, and drop the
+    // lazy sets back to "not fetched" so the effect below refetches with the new filters when
+    // their tab is next shown.
+    const silent = isBackgroundRefresh(filterKey);
+    fetchData({ silent });
+    fetchAwaitingDeploy({ silent });
+    if (silent) {
+      refreshLazySets();
+    } else {
+      setArchive(null);
+      setRejected(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, promotionsTick]);
+
+  // Lazy loads for the tabs that aren't fetched up front. Fires on tab change and after a filter
+  // change has reset the sets to null. `filterKey` is a dependency so a filter change tears down an
+  // in-flight request rather than letting its stale result land — and a `null` set is the only
+  // trigger, so a settled fetch (success or failure) can't loop.
+  useEffect(() => {
+    let cancelled = false;
+    if ((view === 'all' || view === 'resolved') && archive === null) {
+      setArchiveLoading(true);
+      api
+        .listPromotions({ ...filterParams(), view: 'summary' })
+        .then((data) => { if (!cancelled) setArchive(data.candidates || []); })
+        .catch(() => { if (!cancelled) setArchive([]); })
+        .finally(() => { if (!cancelled) setArchiveLoading(false); });
+    }
+    if (view === 'rejected' && rejected === null) {
+      setRejectedLoading(true);
+      api
+        .listPromotions({ status: 'Rejected', ...filterParams(), view: 'summary' })
+        .then((data) => { if (!cancelled) setRejected(data.candidates || []); })
+        .catch(() => { if (!cancelled) setRejected([]); })
+        .finally(() => { if (!cancelled) setRejectedLoading(false); });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, archive, rejected, filterKey]);
+
+  const pending = useMemo(() => candidates.filter((c) => c.status === 'Pending'), [candidates]);
+  const resolved = useMemo(
+    () => (archive ?? []).filter((c) => c.status !== 'Pending'),
+    [archive],
+  );
+
+  const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
+
+  // Pending promotions carrying a work item with nobody in a role its policy requires. Filtered from
+  // the already-fetched pending set rather than queried, like `mine`: the gaps ride along on every
+  // candidate in the list response, so the tab and its badge cost nothing and stay live as people are
+  // assigned. Scoped to Pending because that's where an assignment still changes the outcome.
+  const needsAttention = useMemo(
+    () => pending.filter((c) => (c.workItemRoleGaps ?? []).length > 0),
+    [pending],
+  );
+
+  // The rows the active tab shows, and whether we're still waiting on them.
+  const displayed = useMemo((): PromotionCandidate[] => {
+    switch (view) {
+      case 'mine':
+        return approvablePending;
+      case 'needs-attention':
+        return needsAttention;
+      case 'awaiting-deploy':
+        return awaitingDeploy;
+      case 'resolved':
+        return resolved;
+      case 'rejected':
+        return rejected ?? [];
+      case 'all':
+        return archive ?? [];
+      default:
+        return pending;
+    }
+  }, [view, pending, approvablePending, needsAttention, awaitingDeploy, resolved, rejected, archive]);
+
+  const displayedLoading =
+    view === 'awaiting-deploy'
+      ? awaitingDeployLoading
+      : view === 'resolved' || view === 'all'
+        ? archiveLoading || archive === null
+        : view === 'rejected'
+          ? rejectedLoading || rejected === null
+          : loading;
+
+  // Work-item signoff state for the rows on screen. One request per work item per candidate, fanned
+  // out concurrently within a candidate and sequentially across them so a wide tab doesn't open
+  // hundreds of sockets at once. A cancellation guard avoids overwriting state when the list churns
+  // mid-flight (a filter or tab change). Answers come through a short-lived cache that the realtime
+  // events themselves invalidate, so the reruns below — a remount, a reshuffled row set, a work-item
+  // event — only refetch the work items that actually changed.
+  const progressTargets = useMemo(
+    () => displayed.slice(0, PROGRESS_CANDIDATE_LIMIT),
+    [displayed],
+  );
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      for (const c of pending) {
+      for (const c of progressTargets) {
+        // An edge that doesn't create work items has no sign-off state to fetch — its references are
+        // change-set history. Skipping it saves a request per reference that could only 404.
+        if (c.tracksWorkItems === false) continue;
         const tickets = (c.sourceEventReferences ?? []).filter(
           (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
         );
         if (tickets.length === 0) {
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: 0, approved: 0, rejected: 0, loading: false },
+            [c.id]: { total: 0, approved: 0, issues: 0, blocked: 0, decisions: {}, loading: false },
           }));
           continue;
         }
@@ -140,32 +734,40 @@ export function PromotionsPage() {
           [c.id]: prev[c.id] ?? {
             total: tickets.length,
             approved: 0,
-            rejected: 0,
+            issues: 0,
+            blocked: 0,
+            decisions: {},
             loading: true,
           },
         }));
         try {
           const ctxs = await Promise.all(
             tickets.map((t) =>
-              api
-                .getWorkItemContext(t.key ?? '', c.product, c.targetEnv)
-                .catch(() => null),
+              getWorkItemContextCached(t.key ?? '', c.product, c.service, c.targetEnv)
+                .then((ctx) => ({ key: t.key ?? '', ctx }))
+                .catch(() => ({ key: t.key ?? '', ctx: null })),
             ),
           );
           if (cancelled) return;
           let approved = 0;
-          let rejected = 0;
-          for (const ctx of ctxs) {
-            const decision = ctx?.approvals?.[0]?.decision;
+          let issues = 0;
+          let blocked = 0;
+          const decisions: Record<string, WorkItemDecision | null> = {};
+          for (const { key, ctx } of ctxs) {
+            const decision = ctx?.approvals?.[0]?.decision ?? null;
+            decisions[key] = decision;
             if (decision === 'Approved') approved++;
-            else if (decision === 'Rejected') rejected++;
+            else if (decision === 'Issue') issues++;
+            else if (decision === 'Blocked') blocked++;
           }
           setWorkItemProgress((prev) => ({
             ...prev,
             [c.id]: {
               total: tickets.length,
               approved,
-              rejected,
+              issues,
+              blocked,
+              decisions,
               loading: false,
             },
           }));
@@ -173,7 +775,14 @@ export function PromotionsPage() {
           if (cancelled) return;
           setWorkItemProgress((prev) => ({
             ...prev,
-            [c.id]: { total: tickets.length, approved: 0, rejected: 0, loading: false },
+            [c.id]: {
+              total: tickets.length,
+              approved: 0,
+              issues: 0,
+              blocked: 0,
+              decisions: {},
+              loading: false,
+            },
           }));
         }
       }
@@ -182,37 +791,55 @@ export function PromotionsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending.map((c) => c.id).join(',')]);
+  }, [progressTargets.map((c) => c.id).join(','), workItemsTick]);
 
   // Known target envs from the currently-loaded candidate set, for the dropdown. Keeping the
   // current filter selection in the list even if nothing matches so the user can clear it.
+  // Configured order, not alphabetical: that's the deployment order (dev → staging → prod), the
+  // sequence a reader is already thinking in when picking a target environment.
   const targetEnvOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const c of candidates) if (c.targetEnv) set.add(c.targetEnv);
+    const set = new Set(filterOptions.targetEnvs);
+    // Keep the current selection listed even if nothing carries it any more, or there is no way
+    // to clear a filter that has outlived its promotions.
     if (targetEnvFilter) set.add(targetEnvFilter);
-    return Array.from(set).sort();
-  }, [candidates, targetEnvFilter]);
+    return getOrderedEnvironments(Array.from(set));
+  }, [filterOptions.targetEnvs, targetEnvFilter, getOrderedEnvironments]);
 
   const productOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const c of candidates) if (c.product) set.add(c.product);
+    const set = new Set(filterOptions.products);
     if (productFilter) set.add(productFilter);
     return Array.from(set).sort();
-  }, [candidates, productFilter]);
+  }, [filterOptions.products, productFilter]);
 
-  const approvablePending = useMemo(() => pending.filter((c) => c.canApprove), [pending]);
+  // Approval gates to offer. Like the other dropdowns, the current selection stays listed even once
+  // nothing is waiting on it — otherwise a filter that has outlived its promotions can't be cleared.
+  const gateOptions = useMemo(() => {
+    const set = new Set(filterOptions.gates);
+    if (gateFilter) set.add(gateFilter);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [filterOptions.gates, gateFilter]);
+
   // Frozen rows stay individually selectable (approvals are still recorded) but are left out of
   // select-all and the tab badge, matching the open list's count (ruling R10).
   const openApprovable = approvablePending.filter((c) => !c.frozen);
-  const displayedPending = view === 'mine' ? approvablePending : pending;
-  // Candidates held by a freeze leave the main list for the Frozen group below it.
-  const openPending = displayedPending.filter((c) => !c.frozen);
-  const frozenPending = displayedPending.filter((c) => c.frozen);
+  // Candidates held by a freeze leave the main list for the Frozen group below it. Not on "All",
+  // whose mixed-status list keeps its order; the card's Frozen chip still marks them there.
+  const openDisplayed = view === 'all' ? displayed : displayed.filter((c) => !c.frozen);
+  const frozenDisplayed = view === 'all' ? [] : displayed.filter((c) => c.frozen);
   const bannerFreezes = freezes.filter(
     (f) => (!productFilter || f.product === productFilter) && (!targetEnvFilter || f.targetEnv === targetEnvFilter),
   );
   const allApprovableSelected =
     openApprovable.length > 0 && openApprovable.every((c) => selected.has(c.id));
+
+  // How many of the selected promotions deploy off the approval alone, for the line beside the bulk
+  // button. Bulk approve is where a whole release goes out in one click, so it is the surface that
+  // most needs to say so — and the one where nothing said it before.
+  const selectedDeployingCount = useMemo(
+    () =>
+      approvablePending.filter((c) => selected.has(c.id) && approvalDeploys(c)).length,
+    [approvablePending, selected],
+  );
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -231,30 +858,47 @@ export function PromotionsPage() {
     }
   };
 
+  // After a mass approval (or bypass) the same re-read as after a bulk approve: approved rows have left
+  // Pending, signed-but-waiting rows have fewer gates, and the user's task counters are stale.
+  const handleMassApproveApplied = () => {
+    setSelected(new Set());
+    fetchData({ silent: true });
+    fetchAwaitingDeploy({ silent: true });
+    refreshLazySets();
+    refreshMyTasks();
+  };
+
   const handleBulkApprove = async () => {
     if (selected.size === 0) return;
     setBulkLoading(true);
     try {
       await api.bulkApprovePromotions(Array.from(selected));
       setSelected(new Set());
-      fetchData();
-    } catch {
-      // silently refresh
-      fetchData();
     } finally {
+      // Refresh either way: on failure the server may still have approved some of the batch, so
+      // re-reading is the only way to know what actually happened. Approved rows leave Pending and
+      // land in the awaiting-deploy set, and any loaded lazy tab is now stale — refetch it in place
+      // rather than showing a pre-approval snapshot.
+      fetchData({ silent: true });
+      fetchAwaitingDeploy({ silent: true });
+      refreshLazySets();
       setBulkLoading(false);
+      // The sidebar counter and the bell badge counted these as awaiting the user.
+      refreshMyTasks();
     }
   };
 
-  const renderCard = (c: PromotionCandidate) => (
+  const renderCard = (c: PromotionCandidate, index: number) => (
     <CandidateCard
       key={c.id}
+      index={index}
       candidate={c}
-      urgent
+      /* The urgency tint only means something where every row is genuinely waiting
+         on someone. On a mixed list the status badge carries that instead. */
+      urgent={c.status === 'Pending'}
       selectable={view === 'mine' && c.canApprove}
       selected={selected.has(c.id)}
       onToggleSelect={() => toggleSelect(c.id)}
-      onFilterByReference={setReferenceFilter}
       workItemProgress={workItemProgress[c.id]}
       awaitingCue={view !== 'mine'}
     />
@@ -262,23 +906,97 @@ export function PromotionsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          Promotions
-        </h1>
-        <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          Review and approve version promotions across environments
-        </p>
+      {/* Header. Wraps on a phone: three actions beside the title don't fit in 375px, and the row
+          below is a better home for them than a sideways-scrolling page. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+        <div>
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Promotions
+            </h1>
+            <HelpButton
+              page="Promotions"
+              context={{
+                view: VIEW_HEADINGS[view],
+                product: productFilter,
+                gate: gateFilter,
+                showing: displayed.length,
+              }}
+            />
+          </div>
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            Review and approve version promotions across environments
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Release night: one gate, one environment, dozens of promotions. The dialog is where that
+              is a single decision rather than forty trips through the detail page. Offered to everyone
+              — whether a row is yours to sign is a per-row answer the dialog shows, and an admin gets
+              bypass there too. */}
+          <button
+            type="button"
+            onClick={() => setMassApproveOpen(true)}
+            data-guide-anchor="promotions-mass-approve"
+            className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
+            style={{
+              borderColor: 'var(--success)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--success)',
+            }}
+            title="Approve one gate on many promotions to an environment at once"
+          >
+            <ListChecks size={12} />
+            Mass approve
+          </button>
+          {/* The audit page answers the questions this list can't: what already happened, and who did
+              it. Linked from here because that is where somebody stands when they think to ask — and
+              it carries the current product/service/env narrowing across, so the question stays
+              scoped to whatever they were already looking at. Admins only, like the page itself. */}
+          {isAdmin && (
+            <Link
+              to={`/promotions/audit?${auditLinkParams().toString()}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-secondary)',
+              }}
+              title="Recent actions taken on promotions — approvals, rejections, sign-offs and deploys"
+            >
+              <History size={12} />
+              Audit
+            </Link>
+          )}
+          {/* The point of putting the filters in the URL was so this view could be handed to someone,
+              and nobody thinks to look in the address bar for that. Built from the state rather than
+              read back off `location`, so it's exact even before the first filter change has written
+              the parameters there. */}
+          <CopyViewLinkButton params={currentParams()} />
+        </div>
       </div>
+
+      {massApproveOpen && (
+        <MassApproveDialog
+          isAdmin={isAdmin}
+          initialTargetEnv={targetEnvFilter || undefined}
+          initialGate={gateFilter || undefined}
+          onClose={() => setMassApproveOpen(false)}
+          onApplied={handleMassApproveApplied}
+        />
+      )}
 
       {bannerFreezes.length > 0 && <FreezeBanner freezes={bannerFreezes} canManage={isAdmin} />}
 
       {/* Secondary filters */}
-      <div className="flex items-center gap-3 flex-wrap">
+      <FilterPanel
+        activeCount={
+          [productFilter, serviceFilter, targetEnvFilter, referenceFilter, gateFilter].filter(Boolean)
+            .length
+        }
+      >
         <select
           value={productFilter}
-          onChange={(e) => setProductFilter(e.target.value)}
+          onChange={(e) => handleProductChange(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px]"
           style={{
             borderColor: 'var(--border-color)',
@@ -297,7 +1015,7 @@ export function PromotionsPage() {
           type="text"
           placeholder="Service search..."
           value={serviceFilter}
-          onChange={(e) => setServiceFilter(e.target.value)}
+          onChange={(e) => handleServiceChange(e.target.value)}
           className="rounded-lg border px-3 py-1.5 text-[13px]"
           style={{
             borderColor: 'var(--border-color)',
@@ -305,20 +1023,18 @@ export function PromotionsPage() {
             color: 'var(--text-primary)',
           }}
         />
+        {/* When a target env is selected the control itself takes that environment's colour,
+            so an active env filter is visible without reading the dropdown. */}
         <select
           value={targetEnvFilter}
-          onChange={(e) => setTargetEnvFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-[13px]"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-primary)',
-            color: 'var(--text-primary)',
-          }}
+          onChange={(e) => handleTargetEnvChange(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px] font-medium"
+          style={targetEnvSelectStyle}
         >
           <option value="">All target envs</option>
           {targetEnvOptions.map((env) => (
             <option key={env} value={env}>
-              {env}
+              {getDisplayName(env)}
             </option>
           ))}
         </select>
@@ -326,30 +1042,88 @@ export function PromotionsPage() {
           type="text"
           placeholder="Reference (PR, work item, commit...)"
           value={referenceFilter}
-          onChange={(e) => setReferenceFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-[13px] min-w-[240px]"
+          onChange={(e) => handleReferenceChange(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-[13px] sm:min-w-[240px]"
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-primary)',
             color: 'var(--text-primary)',
           }}
         />
-      </div>
+        {/* Approval gate. Hidden entirely when no pending promotion has a human gate — on an
+            all-auto-approve instance the dropdown could only ever offer its own empty default. Each
+            option carries the "Waiting on:" prefix rather than relying on a label, so the closed
+            select still says what the name in it means. */}
+        {gateOptions.length > 0 && (
+          <div className="flex items-center gap-2">
+            <select
+              value={gateFilter}
+              onChange={(e) => handleGateChange(e.target.value)}
+              aria-label="Waiting on approval gate"
+              className="rounded-lg border px-3 py-1.5 text-[13px]"
+              style={{
+                borderColor: 'var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              <option value="">Waiting on: any gate</option>
+              {gateOptions.map((g) => (
+                <option key={g} value={g}>
+                  Waiting on: {g}
+                </option>
+              ))}
+            </select>
+            {/* The second half of the question this filter exists to answer: not "which promotions
+                need a Release Approval at some point" but "which ones am I the last signature on".
+                Only offered once a gate is picked — on its own it has nothing to be "only" about. */}
+            {gateFilter && (
+              <label
+                className="flex cursor-pointer items-center gap-1.5 text-[12px] whitespace-nowrap"
+                style={{ color: 'var(--text-secondary)' }}
+                title={`Only promotions where ${gateFilter} is the last thing outstanding — every other approval step already signed off. (Either way the list leaves out promotions whose work items must be signed off first: nobody can approve those yet.)`}
+              >
+                <input
+                  type="checkbox"
+                  checked={gateOnlyFilter}
+                  onChange={(e) => handleGateOnlyChange(e.target.checked)}
+                  className="rounded"
+                />
+                Only gate left
+              </label>
+            )}
+          </div>
+        )}
+      </FilterPanel>
 
-      {/* Segmented control: all pending vs. only what the current user can approve. */}
-      <div className="flex items-center gap-2">
+      {/* Tabs over the promotions set. Resolved sits here rather than behind a "show resolved"
+          disclosure at the bottom of the page: it's a slice of the same list, and hiding it below
+          the fold made looking something up feel like an archaeology exercise. Counts are only
+          shown for the eagerly-fetched tabs — a badge on a lazy tab would either lie until you
+          opened it or force the fetch the laziness exists to avoid. */}
+      {/* Seven pills wrap to several rows on a phone and push the list off-screen, so below `sm` this
+          scrolls sideways instead — the usual mobile tab strip. One tab stop, arrows inside. */}
+      <RovingGroup
+        ariaLabel="Promotion views"
+        className="flex items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0"
+      >
         {([
           { key: 'pending', label: 'All pending', count: pending.length, showBadge: false },
           { key: 'mine', label: 'Awaiting my approval', count: openApprovable.length, showBadge: true },
+          { key: 'needs-attention', label: 'Needs attention', count: needsAttention.length, showBadge: true },
+          { key: 'awaiting-deploy', label: 'Approved · awaiting deploy', count: awaitingDeploy.length, showBadge: true },
+          { key: 'resolved', label: 'Resolved', count: 0, showBadge: false },
+          { key: 'rejected', label: 'Rejected', count: 0, showBadge: false },
+          { key: 'all', label: 'All', count: 0, showBadge: false },
         ] as const).map((tab) => {
           const active = view === tab.key;
           return (
             <button
               key={tab.key}
               type="button"
-              onClick={() => setView(tab.key)}
+              onClick={() => changeView(tab.key)}
               aria-pressed={active}
-              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
+              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1.5 text-[13px] font-medium transition-colors"
               style={{
                 borderColor: active ? 'var(--accent)' : 'var(--border-color)',
                 backgroundColor: active ? 'var(--accent-bg)' : 'var(--bg-primary)',
@@ -362,7 +1136,7 @@ export function PromotionsPage() {
                   className="ml-0.5 px-1.5 rounded-full text-[11px] font-semibold"
                   style={{
                     backgroundColor: active ? 'var(--accent)' : 'var(--warning-bg)',
-                    color: active ? '#fff' : 'var(--warning)',
+                    color: active ? 'var(--accent-fg)' : 'var(--warning)',
                   }}
                 >
                   {tab.count}
@@ -371,149 +1145,74 @@ export function PromotionsPage() {
             </button>
           );
         })}
-      </div>
+      </RovingGroup>
 
-      {loading ? (
+      {displayedLoading ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="skeleton h-24" />
           ))}
         </div>
+      ) : displayed.length === 0 ? (
+        <EmptyState view={view} filters={activeFilters} onClearFilters={clearAllFilters} />
       ) : (
-        <div className="space-y-6">
-          {/* Pending list (or "awaiting my approval" when that tab is active) */}
-          {displayedPending.length > 0 ? (
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
-                     where every row is something you can act on. The default list stays
-                     action-per-row (Review →) without checkbox clutter. */}
-                  {view === 'mine' && openApprovable.length > 0 && (
-                    <input
-                      type="checkbox"
-                      checked={allApprovableSelected}
-                      onChange={toggleSelectAll}
-                      className="rounded"
-                    />
-                  )}
-                  <h2
-                    className="text-[11px] font-semibold uppercase tracking-wider"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    {view === 'mine' ? 'Awaiting my approval' : 'All pending'} ({openPending.length})
-                  </h2>
-                </div>
-                {view === 'mine' && selected.size > 0 && (
-                  <button
-                    onClick={handleBulkApprove}
-                    disabled={bulkLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
-                    style={{
-                      backgroundColor: 'var(--success)',
-                      color: '#fff',
-                      opacity: bulkLoading ? 0.6 : 1,
-                    }}
-                  >
-                    <CheckCircle size={12} />
-                    {bulkLoading ? 'Approving...' : `Approve selected (${selected.size})`}
-                  </button>
-                )}
-              </div>
-              <div className="space-y-5">
-                <div className="space-y-2">{openPending.map(renderCard)}</div>
-                <FrozenGroup freezes={freezes} candidates={frozenPending}>
-                  {frozenPending.map(renderCard)}
-                </FrozenGroup>
-              </div>
-            </div>
-          ) : view === 'mine' ? (
-            <div
-              className="flex flex-col items-center justify-center py-16 rounded-xl border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              >
-                <CheckCircle size={24} />
-              </div>
-              <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                Nothing awaiting your approval
-              </p>
-              <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                Promotions you can approve will appear here.
-              </p>
-            </div>
-          ) : (
-            <div
-              className="flex flex-col items-center justify-center py-16 rounded-xl border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              >
-                <GitPullRequest size={24} />
-              </div>
-              <p className="text-[14px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                No pending promotions
-              </p>
-              <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                Pending promotions awaiting approval will appear here.
-              </p>
-            </div>
-          )}
-
-          {/* Resolved promotions — lazy-loaded only when the user asks. */}
-          {!resolvedShown ? (
-            <button
-              type="button"
-              onClick={loadResolved}
-              className="text-[13px] font-medium transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              Show resolved promotions
-            </button>
-          ) : (
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2
-                  className="text-[11px] font-semibold uppercase tracking-wider"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Resolved ({resolved.length})
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResolvedShown(false);
-                    setResolved([]);
-                  }}
-                  className="text-[12px] font-medium transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  Hide resolved
-                </button>
-              </div>
-              {resolvedLoading ? (
-                <div className="space-y-3">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="skeleton h-24" />
-                  ))}
-                </div>
-              ) : resolved.length > 0 ? (
-                <div className="space-y-2">
-                  {resolved.map((c) => (
-                    <CandidateCard key={c.id} candidate={c} compact onFilterByReference={setReferenceFilter} />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-                  No resolved promotions.
-                </p>
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              {/* Bulk-select is opt-in: only offered in the "Awaiting my approval" view,
+                 where every row is something you can act on. The other lists stay
+                 action-per-row (Review →) without checkbox clutter. */}
+              {view === 'mine' && openApprovable.length > 0 && (
+                <input
+                  type="checkbox"
+                  checked={allApprovableSelected}
+                  onChange={toggleSelectAll}
+                  className="rounded"
+                />
               )}
+              <h2
+                className="text-[11px] font-semibold uppercase tracking-wider"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {VIEW_HEADINGS[view]} ({openDisplayed.length})
+              </h2>
             </div>
+            {view === 'mine' && selected.size > 0 && (
+              <div className="flex items-center gap-3">
+              <BulkApprovalEffectLine
+                deployingCount={selectedDeployingCount}
+                totalCount={selected.size}
+              />
+              <button
+                onClick={handleBulkApprove}
+                disabled={bulkLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{
+                  backgroundColor: 'var(--success-solid)',
+                  color: '#fff',
+                  opacity: bulkLoading ? 0.6 : 1,
+                }}
+              >
+                <CheckCircle size={12} />
+                {bulkLoading ? 'Approving...' : `Approve selected (${selected.size})`}
+              </button>
+              </div>
+            )}
+          </div>
+          <div data-guide-anchor="promotions-list">
+            <KeyboardList className="space-y-5" count={displayed.length} ariaLabel={VIEW_HEADINGS[view]}>
+              <div className="space-y-2">{openDisplayed.map((c, index) => renderCard(c, index))}</div>
+              <FrozenGroup freezes={freezes} candidates={frozenDisplayed}>
+                {frozenDisplayed.map((c, index) => renderCard(c, openDisplayed.length + index))}
+              </FrozenGroup>
+            </KeyboardList>
+          </div>
+          {displayed.length > PROGRESS_CANDIDATE_LIMIT && (
+            <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              Work-item sign-off state is loaded for the first {PROGRESS_CANDIDATE_LIMIT} rows;
+              beyond that, work-item chips are shown without their decision colour. Narrow the
+              filters above to see it for a specific product or service.
+            </p>
           )}
         </div>
       )}
@@ -521,43 +1220,117 @@ export function PromotionsPage() {
   );
 }
 
+/**
+ * What a pending promotion is waiting on — "Waiting on: Release Approval". The list can be filtered
+ * by exactly these gate names, so the badge doubles as the legend for the gate dropdown: whatever a
+ * card says here is a value that dropdown offers, and searching for it finds this card.
+ *
+ * <p>That last part is why a promotion whose policy holds approval until every work item is signed
+ * off says <b>work items</b> instead of naming its steps. Its steps are short of approvals, but they
+ * are held, not waiting: nobody may sign them, the detail page padlocks them ("opens once all work
+ * items are resolved"), and the gate filter passes the promotion over. Naming a gate here that the
+ * gate filter doesn't answer for would send a reader looking for work that isn't theirs yet.</p>
+ *
+ * <p>Renders nothing when the promotion isn't waiting on anything (everything resolved, and every
+ * auto-approve edge with no work-item gate), and nothing at all on a response from an API that
+ * doesn't report gates. Two names are shown before it collapses to a count — a card that lists four
+ * gates has stopped saying anything the reader can act on, and the detail page's progress panel is
+ * where that belongs.</p>
+ */
+function PendingGatesBadge({ candidate }: { candidate: PromotionCandidate }) {
+  const gates = candidate.pendingGates ?? [];
+
+  // Held behind the work-item gate: that is the one thing to chase, so it is the one thing named.
+  // The steps it holds go in the tooltip — useful context, not the answer to "what now".
+  if (candidate.workItemsOutstanding) {
+    return (
+      <span
+        className="badge shrink-0 whitespace-nowrap"
+        style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+        title={
+          'Waiting on every work item being signed off' +
+          (gates.length > 0 ? `. ${gates.join(' and ')} open once they are.` : '')
+        }
+      >
+        <Lock size={10} />
+        Waiting on: work items
+      </span>
+    );
+  }
+
+  if (gates.length === 0) return null;
+
+  const MAX_NAMES = 2;
+  const shown = gates.slice(0, MAX_NAMES);
+  const hidden = gates.length - shown.length;
+  const label = hidden > 0 ? `${shown.join(', ')} +${hidden}` : shown.join(', ');
+
+  return (
+    <span
+      className="badge shrink-0 whitespace-nowrap"
+      style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+      title={`Waiting on ${gates.join(', ')}`}
+    >
+      <ShieldCheck size={10} />
+      Waiting on: {label}
+    </span>
+  );
+}
+
 function CandidateCard({
+  index,
   candidate,
   urgent,
   selectable,
   selected,
   onToggleSelect,
-  onFilterByReference,
   workItemProgress,
   awaitingCue,
-  compact,
 }: {
+  /** Position in the list, for {@link useKeyboardListRow}'s roving tabindex. */
+  index: number;
   candidate: PromotionCandidate;
   urgent?: boolean;
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
-  onFilterByReference?: (key: string) => void;
   workItemProgress?: WorkItemProgress;
   /** Show the "Awaiting your approval" cue when the user can act (used in the all-pending view). */
   awaitingCue?: boolean;
-  /** Compact reference row for the resolved (browse-only) list: drops work-item chips,
-     people chips, and signoff progress; keeps service, version/env, status, time, View. */
-  compact?: boolean;
 }) {
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[candidate.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
+  // Inline "+N more" expansion for the work-item chip row — collapsed by default so a large
+  // bundle doesn't turn the card into a wall of chips.
+  const [showAllTickets, setShowAllTickets] = useState(false);
+  const MAX_TICKETS = 5;
+
+  // Work items on this promotion with nobody in a role the policy requires. Keyed for the per-chip
+  // flag below; the count and the distinct roles drive the card-level badge. Not memoised — a bundle
+  // is a handful of entries, and the list re-renders far less often than it would cost to track.
+  const roleGaps = candidate.workItemRoleGaps ?? [];
+  const missingRolesByKey = new Map(roleGaps.map((g) => [g.workItemKey, g.missingRoles]));
+  const distinctMissingRoles = Array.from(new Set(roleGaps.flatMap((g) => g.missingRoles)));
+  // Dev-only edge: the policy creates no work items, so the references are history and there is
+  // nothing to sign off. The server already returns no role gaps for these.
+  const untracked = candidate.tracksWorkItems === false;
+
+  const rowProps = useKeyboardListRow(index, () => navigate(`/promotions/${candidate.id}`), {
+    label: `${candidate.product} / ${candidate.service} to ${candidate.targetEnv} — ${candidate.status}. Open promotion.`,
+  });
 
   return (
     <div
+      {...rowProps}
+      // Addressable by id so the assistant can ring the one candidate it is talking about.
+      data-guide-anchor={`promotion-row:${candidate.id}`}
       className="card-hover rounded-xl border p-4 cursor-pointer flex items-start gap-3"
       style={{
         borderColor: urgent ? cfg.color + '40' : 'var(--border-color)',
         backgroundColor: 'var(--bg-primary)',
         borderLeft: candidate.canApprove ? `3px solid var(--warning)` : undefined,
       }}
-      onClick={() => navigate(`/promotions/${candidate.id}`)}
     >
       {selectable && (
         <input
@@ -569,50 +1342,66 @@ function CandidateCard({
         />
       )}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <h3 className="text-[14px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
+        {/* Wraps rather than compresses: on a phone the title and the badges cannot all fit on one
+           line, and a squashed "Awaiting your approval" pill reading over three lines inside its own
+           border is worse than the same pill sitting on the next row at full size. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1">
+          <h3
+            className="text-[14px] font-semibold truncate min-w-0"
+            style={{ color: 'var(--text-primary)' }}
+          >
             {candidate.product} / {candidate.service}
           </h3>
           {/* The status badge only carries information once status varies (the resolved list).
              In the all-pending list it's constant noise, so drop it there and surface the
              actionable "Awaiting your approval" cue instead. */}
           {candidate.status !== 'Pending' && (
-            <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
+            <span
+              className="badge shrink-0 whitespace-nowrap"
+              style={{ backgroundColor: cfg.bg, color: cfg.color }}
+            >
               <StatusIcon size={10} />
               {candidate.status}
             </span>
           )}
           {awaitingCue && candidate.canApprove && (
-            <span className="badge" style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}>
+            <span
+              className="badge shrink-0 whitespace-nowrap"
+              style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}
+            >
               <Clock size={10} />
               Awaiting your approval
             </span>
           )}
+          {/* Work items with nobody in a policy-required role. Sits with the status badges rather
+             than down by the ticket chips: it's a property of the promotion's readiness, and it has
+             to be visible without expanding a truncated chip row. */}
+          <WorkItemsNeedingAttentionBadge
+            count={roleGaps.length}
+            roles={distinctMissingRoles}
+          />
+          <PendingGatesBadge candidate={candidate} />
         </div>
-        <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          <span className="font-medium">{candidate.sourceEnv}</span>
-          <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
-          <span className="font-medium">{candidate.targetEnv}</span>
-          <span
-            className="ml-2 px-1.5 py-0.5 rounded text-[11px] font-mono"
-            style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
-            title={
-              candidate.targetCurrentVersion
-                ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
-                : `First deploy to ${candidate.targetEnv}`
-            }
-          >
-            {candidate.targetCurrentVersion
-              ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
-              : candidate.version}
-          </span>
+        {/* Where it lands and how that environment's version moves. Wraps on a narrow viewport
+           so the pieces drop to their own line instead of running off the edge of the screen. */}
+        <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          <PromotionRoute
+            product={candidate.product}
+            service={candidate.service}
+            sourceEnv={candidate.sourceEnv}
+            targetEnv={candidate.targetEnv}
+            version={candidate.version}
+            fromVersion={candidate.fromVersion}
+            targetCurrentVersion={candidate.targetCurrentVersion}
+            sourceBranch={candidate.sourceBranch}
+          />
         </div>
         <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
           <span className="flex items-center gap-1">
             <Clock size={10} />
             {formatDistanceToNow(new Date(candidate.createdAt), { addSuffix: true })}
           </span>
-          {!compact && <WorkItemsBadge candidate={candidate} progress={workItemProgress} />}
+          <WorkItemsBadge candidate={candidate} progress={workItemProgress} />
           {candidate.frozen && (
             <span className="flex items-center gap-1 font-medium" style={{ color: 'var(--info)' }}>
               <Snowflake size={10} />
@@ -620,16 +1409,21 @@ function CandidateCard({
             </span>
           )}
         </div>
-        {/* Work items — key + optional title, click-to-filter + external link */}
-        {!compact && (() => {
+        {/* Work items — key + optional title, tinted by their own sign-off state so a stalled bundle
+           shows you *which* item is holding it. The chip opens the work-item detail page (sign-off,
+           comments, people); the icon beside it opens the ticket in its tracker. To narrow the list
+           to one work item instead, use the reference filter at the top of the page. */}
+        {(() => {
           const tickets = (candidate.sourceEventReferences ?? []).filter(
             (r) => r.type === 'work-item' && (r.key ?? '').trim().length > 0,
           );
           if (tickets.length === 0) return null;
+          const visibleTickets = showAllTickets ? tickets : tickets.slice(0, MAX_TICKETS);
+          const hiddenTickets = tickets.length - visibleTickets.length;
           return (
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
-              {tickets.map((ref, i) => {
-                const filterKey = ref.key ?? '';
+              {visibleTickets.map((ref, i) => {
+                const workItemKey = ref.key ?? '';
                 const href = resolveReferenceHref({
                   type: ref.type,
                   url: ref.url ?? undefined,
@@ -637,26 +1431,76 @@ function CandidateCard({
                   revision: ref.revision ?? undefined,
                 });
                 const chipLabel = ref.title ? `${ref.key} — ${ref.title}` : ref.key!;
+                // Undecided (or state not loaded — see PROGRESS_CANDIDATE_LIMIT) keeps the neutral
+                // chip, so a tint always means somebody has actually decided something.
+                const decision = workItemProgress?.decisions[workItemKey] ?? null;
+                const decided = decision ? decisionStyle(decision) : null;
+                // Unfilled policy-required roles win the chip's tint over the sign-off state: an item
+                // nobody owns is the thing to act on. The two can't actually collide — the server
+                // reports no gap once an item has been decided — so this is belt and braces.
+                const missingRoles = missingRolesByKey.get(workItemKey);
+                const needsPeople = (missingRoles?.length ?? 0) > 0;
+                // On an edge that doesn't create work items there is no detail page to open — the
+                // reference is change-set history. Rendered as plain text so the ticket is still
+                // visible rather than a link to a 404. The tracker icon beside it still works.
+                const chipStyle = {
+                  backgroundColor: needsPeople
+                    ? 'var(--warning-bg)'
+                    : decided?.bg ?? 'var(--bg-secondary)',
+                  color: needsPeople ? 'var(--warning)' : decided?.color ?? 'var(--text-secondary)',
+                  maxWidth: 200,
+                } as const;
+                const chipTitle = [
+                  ref.title ? `${ref.key} — ${ref.title}` : workItemKey,
+                  needsPeople ? `Needs ${missingRolesLabel(missingRoles!)}` : null,
+                  untracked
+                    ? "Work items aren't tracked on this edge"
+                    : decided
+                      ? decided.label
+                      : 'Not signed off yet',
+                ]
+                  .filter(Boolean)
+                  .join(' · ');
+                const chipBody = (
+                  <>
+                    {needsPeople ? (
+                      <AlertTriangle size={10} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                    ) : (
+                      <Ticket
+                        size={10}
+                        style={{ color: decided?.color ?? 'var(--text-muted)', flexShrink: 0 }}
+                      />
+                    )}
+                    <span className="font-medium truncate">{chipLabel}</span>
+                  </>
+                );
                 return (
                   <span key={`wi-${i}`} className="inline-flex items-center gap-1 text-[10px]">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (filterKey && onFilterByReference) onFilterByReference(filterKey);
-                      }}
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
-                      style={{
-                        backgroundColor: 'var(--bg-secondary)',
-                        color: 'var(--text-secondary)',
-                        cursor: filterKey ? 'pointer' : 'default',
-                        maxWidth: 200,
-                      }}
-                      title={ref.title ? `${ref.key} — ${ref.title}` : `Filter by ${filterKey}`}
-                    >
-                      <Ticket size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                      <span className="font-medium truncate">{chipLabel}</span>
-                    </button>
+                    {untracked ? (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+                        style={chipStyle}
+                        title={chipTitle}
+                      >
+                        {chipBody}
+                      </span>
+                    ) : (
+                      <Link
+                        to={workItemDetailPath(
+                          workItemKey,
+                          candidate.product,
+                          candidate.service,
+                          candidate.targetEnv,
+                          candidate.id,
+                        )}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                        style={chipStyle}
+                        title={chipTitle}
+                      >
+                        {chipBody}
+                      </Link>
+                    )}
                     {href && (
                       <a
                         href={href}
@@ -665,7 +1509,8 @@ function CandidateCard({
                         onClick={(e) => e.stopPropagation()}
                         style={{ color: 'var(--text-muted)' }}
                         className="transition-opacity hover:opacity-80"
-                        title="Open work item"
+                        title={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
+                        aria-label={`Open ${workItemKey} in ${ref.provider ?? 'the tracker'}`}
                       >
                         <ExternalLink size={10} />
                       </a>
@@ -673,69 +1518,31 @@ function CandidateCard({
                   </span>
                 );
               })}
-            </div>
-          );
-        })()}
-        {/* People — reference-level (from work items) + promotion root */}
-        {!compact && (() => {
-          type Chip = {
-            role: string;
-            displayName?: string | null;
-            email?: string | null;
-            /** Set for reference-level participants; absent for promotion-root ones */
-            via?: string;
-            fromPromotion?: boolean;
-          };
-          const chips: Chip[] = [];
-
-          // Participants scoped to a work-item reference (QA on OBS-265, author of PR, etc.)
-          for (const ref of candidate.sourceEventReferences ?? []) {
-            if (ref.type !== 'work-item') continue;
-            const refLabel = ref.key ?? ref.type;
-            for (const p of ref.participants ?? []) {
-              chips.push({ role: p.role, displayName: p.displayName, email: p.email, via: refLabel });
-            }
-          }
-
-          // Promotion-root participants (assigned directly on the promotion candidate)
-          for (const p of candidate.participants ?? []) {
-            chips.push({ role: p.role, displayName: p.displayName, email: p.email, fromPromotion: true });
-          }
-
-          if (chips.length === 0) return null;
-          return (
-            <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
-              {chips.map((p, i) => (
-                <span
-                  key={`p-${p.role}-${p.via ?? 'root'}-${i}`}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
-                  style={{
-                    backgroundColor: p.fromPromotion ? 'var(--accent-bg)' : 'var(--bg-secondary)',
-                    color: 'var(--text-secondary)',
-                    border: p.fromPromotion ? '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' : undefined,
+              {hiddenTickets > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAllTickets(true);
                   }}
-                  title={[
-                    `${roleDisplay(p)}: ${p.displayName ?? p.email ?? '—'}`,
-                    p.via ? `via ${p.via}` : null,
-                    p.email ?? null,
-                  ].filter(Boolean).join(' · ')}
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }}
                 >
-                  <span style={{ color: 'var(--text-muted)' }}>{roleDisplay(p)}:</span>
-                  <span className="font-medium">{p.displayName ?? p.email ?? '—'}</span>
-                  {p.via && (
-                    <span style={{ color: 'var(--text-muted)' }}>· {p.via}</span>
-                  )}
-                </span>
-              ))}
+                  +{hiddenTickets} more
+                </button>
+              )}
             </div>
           );
         })()}
       </div>
       {/* Explicit per-row action. The whole card is the click target (navigates to detail);
          this is the visible CTA so the row reads as an action, not a static record. A right
-         chevron (not ↗) — it stays in-app. */}
+         chevron (not ↗) — it stays in-app.
+
+         Hidden below `sm`: on a phone it competes for the width the content actually needs, and
+         a tap anywhere on the card already does the same thing, so it buys nothing there. */}
       <span
-        className="shrink-0 self-center inline-flex items-center gap-1 text-[12px] font-medium"
+        className="hidden sm:inline-flex shrink-0 self-center items-center gap-1 text-[12px] font-medium"
         style={{ color: candidate.canApprove ? 'var(--accent)' : 'var(--text-muted)' }}
       >
         {candidate.canApprove ? 'Review' : 'View'}
@@ -746,10 +1553,9 @@ function CandidateCard({
 }
 
 /**
- * Inline work-item-progress indicator for the list. The list response surfaces
- * the candidate's own work-item refs (sourceEventReferences) but not approval
- * state, so the parent fetches /work-items/{key}?... lazily for Pending rows
- * only. Non-pending rows render "—" so historical state isn't fetched.
+ * Inline work-item-progress indicator for the list. The list response surfaces the candidate's own
+ * work-item refs (sourceEventReferences) but not approval state, so the parent fetches
+ * /work-items/{key}?... for the rows on screen. Rows past the fetch cap fall back to the bare count.
  */
 function WorkItemsBadge({
   candidate,
@@ -761,6 +1567,20 @@ function WorkItemsBadge({
   const bundleSize = (candidate.sourceEventReferences ?? []).filter(
     (r) => r.type === 'work-item',
   ).length;
+  // An edge that doesn't create work items has no sign-off state to report — and no progress was
+  // fetched for it. Say why rather than showing a bare count that looks like it's waiting on someone.
+  if (candidate.tracksWorkItems === false) {
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        style={{ color: 'var(--text-muted)' }}
+        title="This edge doesn't create work items — nothing here needs a sign-off."
+      >
+        <Ticket size={10} />
+        Work items not tracked
+      </span>
+    );
+  }
   if (bundleSize === 0) {
     return (
       <span
@@ -773,7 +1593,7 @@ function WorkItemsBadge({
       </span>
     );
   }
-  if (candidate.status !== 'Pending' || !progress) {
+  if (!progress) {
     return (
       <span
         className="inline-flex items-center gap-1"
@@ -793,24 +1613,40 @@ function WorkItemsBadge({
       </span>
     );
   }
+  // Blocks and issues are called out in the label: without them a stalled bundle looks identical to
+  // one nobody has looked at yet, which is the opposite of the truth. Blocks lead — they are what
+  // actually holds the promotion; an issue is a flag on something still going out.
+  const held = [
+    progress.blocked > 0 ? `${progress.blocked} blocked` : null,
+    progress.issues > 0 ? `${progress.issues} issue${progress.issues === 1 ? '' : 's'}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const label = progress.approved === 0
-    ? 'Awaiting'
-    : `${progress.approved}/${progress.total} approved`;
+    ? held || 'Awaiting'
+    : held
+      ? `${progress.approved}/${progress.total} approved · ${held}`
+      : `${progress.approved}/${progress.total} approved`;
+  const undecided = progress.total - progress.approved - progress.issues - progress.blocked;
   return (
     <span
       className="inline-flex items-center gap-1.5"
-      title={
-        progress.rejected > 0
-          ? `${progress.approved} approved, ${progress.rejected} rejected, ${progress.total - progress.approved - progress.rejected} pending`
-          : `${progress.approved} of ${progress.total} approved`
-      }
+      title={[
+        `${progress.approved} approved`,
+        progress.blocked > 0 ? `${progress.blocked} blocked` : null,
+        progress.issues > 0 ? `${progress.issues} with issues` : null,
+        `${undecided} pending`,
+      ]
+        .filter(Boolean)
+        .join(', ')}
     >
       <Ticket size={10} />
       {label}
       <ProgressBar
         approved={progress.approved}
         total={progress.total}
-        rejected={progress.rejected}
+        issues={progress.issues}
+        blocked={progress.blocked}
       />
     </span>
   );
@@ -819,15 +1655,18 @@ function WorkItemsBadge({
 function ProgressBar({
   approved,
   total,
-  rejected = 0,
+  issues = 0,
+  blocked = 0,
 }: {
   approved: number;
   total: number;
-  rejected?: number;
+  issues?: number;
+  blocked?: number;
 }) {
   if (total === 0) return null;
   const approvedPct = (approved / total) * 100;
-  const rejectedPct = (rejected / total) * 100;
+  const issuesPct = (issues / total) * 100;
+  const blockedPct = (blocked / total) * 100;
   return (
     <span
       className="inline-block rounded-full overflow-hidden"
@@ -842,10 +1681,16 @@ function ProgressBar({
         className="inline-block align-top h-full"
         style={{ width: `${approvedPct}%`, backgroundColor: 'var(--success)' }}
       />
-      {rejectedPct > 0 && (
+      {issuesPct > 0 && (
         <span
           className="inline-block align-top h-full"
-          style={{ width: `${rejectedPct}%`, backgroundColor: 'var(--danger)' }}
+          style={{ width: `${issuesPct}%`, backgroundColor: 'var(--warning)' }}
+        />
+      )}
+      {blockedPct > 0 && (
+        <span
+          className="inline-block align-top h-full"
+          style={{ width: `${blockedPct}%`, backgroundColor: 'var(--danger)' }}
         />
       )}
     </span>

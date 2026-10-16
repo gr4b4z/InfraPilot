@@ -63,7 +63,7 @@ export function ActivityTemplateSettings() {
         <div className="font-medium" style={{ color: 'var(--text-secondary)' }}>
           Available placeholders:
         </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-0.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5">
           <span>
             <code className="text-[11px]">{'{label:workItemTitle}'}</code> — Jira issue title
           </span>
@@ -118,7 +118,7 @@ export function ActivityTemplateSettings() {
               value={line.template}
               onChange={(e) => updateLine(index, 'template', e.target.value)}
               placeholder="e.g. {ref:work-item:key} — {label:workItemTitle}"
-              className="px-2.5 py-1.5 rounded-lg border text-[13px] font-mono outline-none transition-colors focus:border-[var(--accent)]"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] font-mono outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',
@@ -128,7 +128,7 @@ export function ActivityTemplateSettings() {
             <select
               value={line.style}
               onChange={(e) => updateLine(index, 'style', e.target.value)}
-              className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
+              className="min-w-0 px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Layout } from '@/components/shell/Layout';
 import { CatalogPage } from '@/app/catalog/CatalogPage';
 import { RequestPage } from '@/app/catalog/RequestPage';
@@ -9,10 +9,18 @@ import { ApprovalDetailPage } from '@/app/approvals/ApprovalDetailPage';
 import { DeploymentsPage } from '@/app/deployments/DeploymentsPage';
 import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage';
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
+import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
+import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
+import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
+import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
+import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
 import { MyQueuePage } from '@/app/me/MyQueuePage';
+import { MyTasksPage } from '@/app/me/MyTasksPage';
+import { AgentAccessPage } from '@/app/me/AgentAccessPage';
+import { WorkItemDetailPage, LegacyWorkItemRedirect } from '@/app/work-items/WorkItemDetailPage';
 import { SettingsPage } from '@/app/settings/SettingsPage';
 import { EnvironmentsSettings } from '@/app/settings/EnvironmentsSettings';
 import { RolesSettings } from '@/app/settings/RolesSettings';
@@ -22,7 +30,9 @@ import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
 import { FreezeSettings } from '@/app/settings/FreezeSettings';
 import { RollbackSettings } from '@/app/settings/RollbackSettings';
-import { DeploymentMaintenanceSettings } from '@/app/settings/DeploymentMaintenanceSettings';
+import { MaintenanceSettings } from '@/app/settings/MaintenanceSettings';
+import { ServiceProductsSettings } from '@/app/settings/ServiceProductsSettings';
+import { AgentTokensSettings } from '@/app/settings/AgentTokensSettings';
 import { ReleaseNoteTemplateSettings } from '@/app/settings/ReleaseNoteTemplateSettings';
 import { ReleaseNotesPage } from '@/app/release-notes/ReleaseNotesPage';
 import { ReleaseNotesIndexPage } from '@/app/release-notes/ReleaseNotesIndexPage';
@@ -32,14 +42,43 @@ import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
 import { AdminRoute } from '@/components/auth/AdminRoute';
 import { FeatureRoute } from '@/components/auth/FeatureRoute';
+import { QaRoute } from '@/components/auth/QaRoute';
 import { FeatureFlag } from '@/stores/featureFlagsStore';
+import { useAuthStore } from '@/stores/authStore';
+
+/** `/builds?product=x` → `/artifacts?product=x`. See the route it serves. */
+function LegacyBuildsRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/artifacts${search}`} replace />;
+}
+
+/**
+ * Role-aware landing page. QA and Admins land on "My tasks" — the "is anything waiting on me?"
+ * page. Plain users can't act on tasks, so their home is Deployments, the page they actually
+ * come here to read.
+ */
+function HomeRedirect() {
+  const user = useAuthStore((s) => s.user);
+  const isLoading = useAuthStore((s) => s.isLoading);
+
+  // Wait for the auth fetch so we don't send a QA user to Deployments during boot.
+  if (isLoading) return null;
+
+  const canSeeTasks = (user?.isQA ?? false) || (user?.isAdmin ?? false);
+  return <Navigate to={canSeeTasks ? '/my-tasks' : '/deployments'} replace />;
+}
 
 function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
-          <Route path="/" element={<Navigate to="/catalog" replace />} />
+          <Route path="/" element={<HomeRedirect />} />
+          {/* "My tasks" — the topbar bell's destination: everything awaiting the signed-in user,
+              across promotions and work items. QA/Admin only — plain users have nothing assignable
+              to them, so for them the page is gone rather than permanently empty. Not feature-gated:
+              it degrades to an empty page when Promotions is off. */}
+          <Route path="/my-tasks" element={<QaRoute><MyTasksPage /></QaRoute>} />
           <Route path="/catalog" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><CatalogPage /></FeatureRoute>} />
           <Route path="/catalog/:slug" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestPage /></FeatureRoute>} />
           <Route path="/requests" element={<FeatureRoute flag={FeatureFlag.ServiceCatalog}><RequestsPage /></FeatureRoute>} />
@@ -47,12 +86,38 @@ function App() {
           <Route path="/approvals" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalsPage /></FeatureRoute>} />
           <Route path="/approvals/:id" element={<FeatureRoute flag={FeatureFlag.Approvals}><ApprovalDetailPage /></FeatureRoute>} />
           <Route path="/deployments" element={<DeploymentsPage />} />
+          {/* The artifact registry — all published artifacts, any branch. Sits beside
+              /deployments: an artifact is a fact about CI, not about any environment. */}
+          <Route path="/artifacts" element={<ArtifactsPage />} />
+          {/* The old name. A filtered registry is a link people paste and bookmark, so the rename
+              carries the query string across rather than dropping them on the unfiltered list. */}
+          <Route path="/builds" element={<LegacyBuildsRedirect />} />
+          {/* Deploy-event detail. Keyed on the event id alone — product and service are properties of
+              the event, not of its identity — and ranked above /deployments/:product by the router's
+              static-segment-wins rule, so "events" can't be read as a product name. */}
+          <Route path="/deployments/events/:id" element={<DeploymentDetailPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
+          {/* The service's home page — environments, recent versions, promotions. The flat
+              per-deploy list keeps living under /history as a sub-page of it. */}
+          <Route path="/deployments/:product/:service" element={<ServiceDetailPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
+          <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
+          {/* "audit" ahead of the dynamic :id route so it can't be read as a promotion id. */}
+          <Route path="/promotions/audit" element={<AdminRoute><FeatureRoute flag={FeatureFlag.Promotions}><PromotionsAuditPage /></FeatureRoute></AdminRoute>} />
           <Route path="/promotions/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionDetailPage /></FeatureRoute>} />
           {/* "My queue" — work items awaiting the current user's signoff across products/envs. */}
           <Route path="/me/work-items" element={<FeatureRoute flag={FeatureFlag.Promotions}><MyQueuePage /></FeatureRoute>} />
+          {/* "Agent access" — the signed-in user's personal access tokens for AI agents, and the MCP setup
+              snippets. Every signed-in user manages their own, so it is neither admin- nor
+              feature-gated; it is reached from the user menu. */}
+          <Route path="/me/agent-access" element={<AgentAccessPage />} />
+          {/* Work-item detail. The sign-off grain is (key, product, service, targetEnv): the service
+              is a path segment (it names which service's change this is), product and targetEnv ride
+              along as query params. The single-segment form is what links looked like before the
+              service joined the identity; it resolves to the right instance (or offers a choice). */}
+          <Route path="/work-items/:service/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><WorkItemDetailPage /></FeatureRoute>} />
+          <Route path="/work-items/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><LegacyWorkItemRedirect /></FeatureRoute>} />
           <Route path="/rollbacks" element={<FeatureRoute flag={FeatureFlag.Rollbacks}><RollbacksPage /></FeatureRoute>} />
           <Route path="/release-notes" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesIndexPage /></FeatureRoute>} />
           <Route path="/release-notes/:product" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesPage /></FeatureRoute>} />
@@ -71,7 +136,12 @@ function App() {
             <Route path="promotions" element={<PromotionSettings />} />
             <Route path="freeze" element={<FreezeSettings />} />
             <Route path="rollbacks" element={<RollbackSettings />} />
-            <Route path="deployment-maintenance" element={<DeploymentMaintenanceSettings />} />
+            <Route path="service-products" element={<ServiceProductsSettings />} />
+            <Route path="agent-tokens" element={<AgentTokensSettings />} />
+            <Route path="maintenance" element={<MaintenanceSettings />} />
+            {/* The old name, kept as a redirect — this page is where bookmarked one-off fixes live,
+                which is exactly the kind of page that gets bookmarked. */}
+            <Route path="deployment-maintenance" element={<Navigate to="../maintenance" replace />} />
             <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>
         </Route>

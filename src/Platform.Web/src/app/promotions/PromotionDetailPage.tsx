@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo, createContext, useContext } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useEffect, useId, useState, useMemo, createContext, useContext } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import type {
   PromotionCandidate,
@@ -17,9 +17,12 @@ import type {
 } from '@/lib/api';
 import { FreezeNotice } from './FreezeNotice';
 import { useAuthStore } from '@/stores/authStore';
-import { roleDisplay } from '@/lib/roleLabel';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useDocumentTitle } from '@/lib/pageTitle';
+import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Clock,
@@ -27,6 +30,7 @@ import {
   XCircle,
   Rocket,
   ExternalLink,
+  GitCompareArrows,
   GitPullRequest,
   GitBranch,
   Ticket,
@@ -34,58 +38,96 @@ import {
   Users,
   Plus,
   X,
+  History,
   MessageSquare,
   Edit2,
   Trash2,
   Snowflake,
+  Undo2,
+  Lock,
 } from 'lucide-react';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { PromotionRoute } from '@/components/promotions/PromotionRoute';
+import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
+import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
+import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { AssignToAllWorkItems } from '@/components/promotions/AssignToAllWorkItems';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
+import {
+  MissingRolesBadge,
+  MissingRolesNotice,
+  WorkItemsNeedingAttentionBadge,
+} from '@/components/promotions/MissingRoles';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import {
+  commitCompareUrl,
+  commitMessageLines,
+  decisionStyle,
+  shortHash,
+  workItemDetailPath,
+} from '@/lib/workItem';
+import { refreshMyTasks } from '@/stores/myTasksStore';
+import { HelpButton } from '@/components/guide/HelpButton';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
+
+/**
+ * How long a promotion has been sitting in a non-terminal state, once that is long enough to be
+ * worth explaining — otherwise null.
+ *
+ * The threshold matches the server's diagnostic grace period: approval has to cross a webhook
+ * delivery, a workflow start, a commit and a reconcile that takes the deployment lock, so minutes
+ * are normal and a shorter window would describe healthy promotions as stuck.
+ */
+function stalledFor(candidate: PromotionCandidate): string | null {
+  if (TERMINAL_STATUSES.includes(candidate.status)) return null;
+
+  const since = candidate.approvedAt ?? candidate.createdAt;
+  if (!since) return null;
+
+  const minutes = (Date.now() - new Date(since).getTime()) / 60000;
+  if (minutes < 20) return null;
+
+  if (minutes < 60) return `${Math.floor(minutes)} minutes`;
+  if (minutes < 60 * 24) return `${Math.floor(minutes / 60)} hours`;
+  return `${Math.floor(minutes / (60 * 24))} days`;
+}
+
+// Author email the API stamps on entries it writes itself (PromotionComment.SystemAuthor).
+const SYSTEM_COMMENT_AUTHOR = 'system';
+
+// How long the API holds a promotion.approved webhook before sending it — the window in which
+// cancelling the approval also stops the delivery. Display only; the authority is
+// PromotionService.ApprovedWebhookDelay, so keep the two in step.
+const APPROVED_WEBHOOK_DELAY_MS = 10_000;
 
 // Context that gates all interactive controls on the detail page.
 // Set to true when the candidate is in a terminal state.
 const PromoReadOnlyCtx = createContext(false);
 
-// Distinct work-items in the candidate's bundle. Built from the source event's
-// references (the candidate's own references). Deduped on key. Each entry carries
-// the origin deploy event id so the override-assign PATCH can target the right event.
-export interface BundleWorkItem {
-  reference: PromotionSourceEventReference;
-  /** Deploy event id this reference came from. Needed to PATCH overrides. */
-  deployEventId: string | null;
-}
-
+// Distinct work-items in the candidate's bundle, built from the candidate's own references and
+// deduped on key. Participants on these references are edited through the candidate itself — the
+// candidate is self-contained, so there is no deploy event to override.
 function buildBundleWorkItems(
   sourceEvent: PromotionSourceEvent | null,
-): BundleWorkItem[] {
-  const out: BundleWorkItem[] = [];
+): PromotionSourceEventReference[] {
+  const out: PromotionSourceEventReference[] = [];
   const seen = new Set<string>();
-  const push = (r: PromotionSourceEventReference, deployEventId: string | null) => {
-    if (r.type !== 'work-item') return;
+  if (!sourceEvent) return out;
+  for (const r of sourceEvent.references) {
+    if (r.type !== 'work-item') continue;
     const k = (r.key ?? '').trim();
-    if (!k || seen.has(k)) return;
+    if (!k || seen.has(k)) continue;
     seen.add(k);
-    out.push({ reference: r, deployEventId });
-  };
-  if (sourceEvent) for (const r of sourceEvent.references) push(r, sourceEvent.id);
+    out.push(r);
+  }
   return out;
-}
-
-// Compact one-line label for a reference-level participant. Format: "Role: Display <email>",
-// falling back to email-only or just the role label when no human name is available.
-// Display names are truncated client-side so a long full name can't blow the row layout.
-function formatReferenceParticipant(p: PromotionSourceEventParticipant): string {
-  const role = roleDisplay(p);
-  const name = (p.displayName ?? '').trim();
-  const truncatedName = name.length > 40 ? `${name.slice(0, 37)}...` : name;
-  const email = (p.email ?? '').trim();
-  if (truncatedName && email) return `${role}: ${truncatedName} <${email}>`;
-  if (truncatedName) return `${role}: ${truncatedName}`;
-  if (email) return `${role}: ${email}`;
-  return role;
 }
 
 const STATUS_CONFIG: Record<
@@ -119,13 +161,30 @@ export function PromotionDetailPage() {
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
   const [freeze, setFreeze] = useState<Omit<PromotionFreeze, 'heldCandidates'> | null>(null);
+  const [canCancelApproval, setCanCancelApproval] = useState(false);
+  // The deploy event that put this version live in the target env — set only once the
+  // promotion is Deployed, and the link the "Deployed" timestamp points at.
+  const [deploymentEventId, setDeploymentEventId] = useState<string | null>(null);
+  // Failed attempts to deploy this version to the target env, newest first. A failed deploy never
+  // completes the promotion, so this is the only trace on the page that one was tried.
+  const [failedDeployments, setFailedDeployments] = useState<
+    { id: string; deployedAt: string; source: string }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionDone, setActionDone] = useState<string | null>(null);
+  // Set when the user approved one gate but still has another to approve on this promotion — the
+  // card stays actionable (no `actionDone` latch) and this names what was just recorded.
+  const [approvedAs, setApprovedAs] = useState<string | null>(null);
+  // Set once an approval is cancelled on this page. `webhookStopped` says whether the
+  // promotion.approved delivery was still in its hold window — two rather different pieces of news,
+  // so the banner reports which one happened.
+  const [cancelled, setCancelled] = useState<{ webhookStopped: boolean } | null>(null);
 
-  const fetchData = () => {
+  // Resolves to the fresh payload (or null on failure) so an action handler can decide what to do
+  // next from the state the server now reports, not from what it assumed the action would do.
+  const fetchData = () =>
     api
       .getPromotion(id!)
       .then((data) => {
@@ -137,31 +196,84 @@ export function PromotionDetailPage() {
         setEligibleRequirements(data.eligibleRequirements || []);
         setBypass(data.bypass ?? null);
         setFreeze(data.freeze ?? null);
+        setCanCancelApproval(data.canCancelApproval ?? false);
+        setDeploymentEventId(data.deploymentEventId ?? null);
+        setFailedDeployments(data.failedDeployments ?? []);
+        return data;
       })
-      .catch((err) => setError(err.message))
+      .catch((err) => {
+        setError(err.message);
+        return null;
+      })
       .finally(() => setLoading(false));
-  };
+
+  // Live refresh for this candidate: its own events by id, plus work-item sign-offs which
+  // change the approval progress shown here (their events carry a key, not the candidate id).
+  const realtimeTick = useEntityRefresh(['promotion', 'work-item'], {
+    filter: (evt) => evt.entity === 'work-item' || !evt.id || evt.id === id,
+  });
 
   useEffect(() => {
     fetchData();
-  }, [id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, realtimeTick]);
+
+  // Above the early returns below, so the hook order holds on every render. The edge is in the title
+  // as well as the service: "which promotion" is a (service, source → target) question, and two
+  // pending candidates for the same service differ only by their edge.
+  useDocumentTitle([
+    candidate && `${candidate.product}/${candidate.service}`,
+    candidate && `${candidate.sourceEnv} → ${candidate.targetEnv}`,
+    'Promotion',
+  ]);
 
   const handleAction = async (
     action: 'approve' | 'reject',
+    actionComment: string,
     target?: EligibleRequirement,
   ) => {
     setActionLoading(true);
+    setError(null);
     try {
       if (action === 'approve') {
-        await api.approvePromotion(id!, comment || undefined, target);
+        await api.approvePromotion(id!, actionComment || undefined, target);
       } else {
-        await api.rejectPromotion(id!, comment || undefined);
+        await api.rejectPromotion(id!, actionComment || undefined);
       }
-      setActionDone(action === 'approve' ? 'Approved' : 'Rejected');
-      setComment('');
-      fetchData();
+      const refreshed = await fetchData();
+      // A rejection ends the promotion, and so does the approval that satisfies its gate. But an
+      // approver who sits in several gates has only cleared one of them — the card has to stay
+      // actionable for the rest, so the "done" state latches only once nothing is left for this user.
+      const moreForMe =
+        action === 'approve'
+        && refreshed != null
+        && refreshed.candidate.status === 'Pending'
+        && refreshed.eligibleRequirements.length > 0;
+      if (moreForMe) setApprovedAs(target?.requirementName ?? null);
+      else setActionDone(action === 'approve' ? 'Approved' : 'Rejected');
+      // This candidate just left (or is about to leave) the user's awaiting-me list.
+      refreshMyTasks();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Undo an approval made by mistake: Approved back to Pending, sign-offs cleared. `actionDone` is
+  // deliberately NOT set — unlike approve/reject this leaves the promotion open and actionable, and
+  // latching the card into a "done" state would hide the approve controls the user now needs.
+  const handleCancelApproval = async (cancelComment: string) => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      const result = await api.cancelPromotionApproval(id!, cancelComment || undefined);
+      setCancelled({ webhookStopped: result.approvedWebhookStopped });
+      fetchData();
+      // Back in the pending queue — it may be awaiting this user again.
+      refreshMyTasks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cancelling the approval failed');
     } finally {
       setActionLoading(false);
     }
@@ -183,9 +295,28 @@ export function PromotionDetailPage() {
     }
   };
 
+  // Admin override of reject: turns down a Pending candidate without the admin being one of its
+  // approvers. Same outcome as a normal rejection, so the same "done" latch; the reason is required
+  // (the dialog that calls this won't confirm without one).
+  const handleAdminReject = async (reason: string) => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      await api.adminRejectPromotion(id!, reason);
+      setActionDone('Rejected');
+      fetchData();
+      // It may have been sitting in somebody's — possibly this admin's — awaiting-me list.
+      refreshMyTasks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reject failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto space-y-4">
+      <div className="max-w-6xl mx-auto space-y-4">
         <div className="skeleton h-8 w-48" />
         <div className="skeleton h-64" />
       </div>
@@ -211,9 +342,28 @@ export function PromotionDetailPage() {
   const bundleWorkItems = buildBundleWorkItems(sourceEvent);
   const isReadOnly = TERMINAL_STATUSES.includes(candidate.status);
 
+  // Where every "Deployed" on this page points: the status badge, the read-only banner and the
+  // timestamp all name the same fact, so they all link to the deploy that shipped it. Null while
+  // the promotion is open, or when no matching deploy event can be found.
+  const deploymentHref = deploymentEventId ? `/deployments/events/${deploymentEventId}` : null;
+
+  // The provider's commit-diff view between what the target runs and what is being promoted — the
+  // exact change set the work items below were derived from. Needs both revisions plus the
+  // candidate's repository reference for the URL shape; absent any of them the row shows what it
+  // can (bare revisions) or nothing.
+  const repositoryRef = candidate.sourceEventReferences.find((r) => r.type === 'repository');
+  const compareUrl = commitCompareUrl(
+    repositoryRef?.url,
+    repositoryRef?.provider,
+    candidate.fromRevision,
+    candidate.toRevision,
+  );
+
   return (
     <PromoReadOnlyCtx.Provider value={isReadOnly}>
-    <div className="max-w-3xl mx-auto space-y-6">
+    {/* Wider than the usual reading width: the left column carries the work-item bundle, whose
+        titles truncate on a single line. At a narrower cap most of them were cut off. */}
+    <div className="max-w-6xl mx-auto space-y-6">
       {/* Breadcrumb */}
       <Link
         to="/promotions"
@@ -226,32 +376,100 @@ export function PromotionDetailPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-            {candidate.product} / {candidate.service}
-          </h1>
-          <div className="flex items-center gap-3 mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
-            <span className="font-medium">{candidate.sourceEnv}</span>
-            <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-            <span className="font-medium">{candidate.targetEnv}</span>
-            <span
-              className="px-1.5 py-0.5 rounded text-[12px] font-mono"
-              style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
-              title={
-                candidate.targetCurrentVersion
-                  ? `Replaces v${candidate.targetCurrentVersion} currently in ${candidate.targetEnv}`
-                  : `First deploy to ${candidate.targetEnv}`
+          <div className="flex items-center gap-1">
+            <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              {candidate.product} / {candidate.service}
+            </h1>
+            {/* Carries the candidate id so the assistant diagnoses this exact promotion rather than
+                asking which one, and the status and age so it reaches for diagnose_promotion when
+                the thing is actually stalled instead of explaining the page. */}
+            <HelpButton
+              page="Promotion"
+              context={{
+                candidateId: candidate.id,
+                product: candidate.product,
+                service: candidate.service,
+                promotion: `${candidate.sourceEnv} → ${candidate.targetEnv}`,
+                version: candidate.version,
+                status: candidate.status,
+                waitingFor: stalledFor(candidate),
+              }}
+              question={
+                stalledFor(candidate)
+                  ? `This promotion has been ${candidate.status} for ${stalledFor(candidate)}. What is happening and what do I need to do?`
+                  : `What can I do with this promotion?`
               }
-            >
-              {candidate.targetCurrentVersion
-                ? `v${candidate.targetCurrentVersion} → v${candidate.version}`
-                : candidate.version}
-            </span>
+            />
           </div>
+          <div
+            className="mt-1.5 text-[13px]"
+            style={{ color: 'var(--text-secondary)' }}
+            data-guide-anchor="promotion-route"
+          >
+            <PromotionRoute
+              product={candidate.product}
+              service={candidate.service}
+              sourceEnv={candidate.sourceEnv}
+              targetEnv={candidate.targetEnv}
+              version={candidate.version}
+              fromVersion={candidate.fromVersion}
+              targetCurrentVersion={candidate.targetCurrentVersion}
+              sourceBranch={candidate.sourceBranch}
+            />
+          </div>
+          {/* Commit-level provenance: the revision span this promotion ships, linking to the
+              provider's diff so "what exactly is in this?" is one click, not an archaeology dig. */}
+          {(candidate.fromRevision || candidate.toRevision) && (
+            <div
+              className="mt-1.5 flex items-center gap-1.5 text-[12px] font-mono"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <GitCompareArrows size={13} style={{ flexShrink: 0 }} />
+              {candidate.fromRevision && candidate.toRevision ? (
+                compareUrl ? (
+                  <a
+                    href={compareUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 transition-colors hover:text-[var(--accent)]"
+                    style={{ color: 'var(--text-secondary)' }}
+                    title="Open the commit diff this promotion ships"
+                  >
+                    {shortHash(candidate.fromRevision)} → {shortHash(candidate.toRevision)}
+                    <ExternalLink size={11} />
+                  </a>
+                ) : (
+                  <span>
+                    {shortHash(candidate.fromRevision)} → {shortHash(candidate.toRevision)}
+                  </span>
+                )
+              ) : (
+                <span>{shortHash(candidate.toRevision ?? candidate.fromRevision ?? '')}</span>
+              )}
+            </div>
+          )}
         </div>
-        <span className="badge" style={{ backgroundColor: cfg.bg, color: cfg.color }}>
-          <StatusIcon size={10} />
-          {candidate.status}
-        </span>
+        {deploymentHref ? (
+          <Link
+            to={deploymentHref}
+            data-guide-anchor="promotion-status"
+            className="badge transition-opacity hover:opacity-80 hover:underline"
+            style={{ backgroundColor: cfg.bg, color: cfg.color }}
+            title="View the deployment that shipped this version"
+          >
+            <StatusIcon size={10} />
+            {candidate.status}
+          </Link>
+        ) : (
+          <span
+            className="badge"
+            data-guide-anchor="promotion-status"
+            style={{ backgroundColor: cfg.bg, color: cfg.color }}
+          >
+            <StatusIcon size={10} />
+            {candidate.status}
+          </span>
+        )}
       </div>
 
       {/* Success banner. Approved and Bypassed are both positive outcomes (the candidate advanced);
@@ -279,6 +497,52 @@ export function PromotionDetailPage() {
         );
       })()}
 
+      {/* One gate down, another still waiting on this same user. Not folded into `actionDone`: that
+         latch hides the controls, and the controls are exactly what this person needs next. */}
+      {!actionDone && approvedAs && (
+        <div
+          className="flex items-center gap-3 p-4 rounded-xl border"
+          style={{
+            backgroundColor: 'var(--success-bg)',
+            borderColor: 'var(--success)',
+            color: 'var(--success)',
+          }}
+        >
+          <CheckCircle size={18} />
+          <span className="text-[13px] font-medium">
+            Your approval as &lsquo;{approvedAs}&rsquo; was recorded. This promotion still needs your
+            approval on another gate below.
+          </span>
+        </div>
+      )}
+
+      {/* Cancelled-approval banner. Not folded into `actionDone` above: this outcome leaves the
+         promotion open, and the one thing the user needs to know is whether the downstream webhook
+         got out before they took the approval back. */}
+      {cancelled && (
+        <div
+          className="flex items-start gap-3 p-4 rounded-xl border"
+          style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderColor: 'var(--border-color)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <Undo2 size={18} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 1 }} />
+          <span className="text-[13px]">
+            Approval cancelled — this promotion is back to <strong>Pending</strong> and awaits sign-off again.
+            {cancelled.webhookStopped ? (
+              <> The <code>promotion.approved</code> webhook was stopped before it went out.</>
+            ) : (
+              <>
+                {' '}The <code>promotion.approved</code> webhook had already been sent, so anything
+                downstream may have acted on it.
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
       {/* Error banner */}
       {error && candidate && (
         <div
@@ -301,39 +565,65 @@ export function PromotionDetailPage() {
           }}
         >
           <CheckCircle size={13} style={{ color: cfg.color, flexShrink: 0 }} />
-          This promotion is <strong style={{ color: cfg.color }}>{candidate.status}</strong> — the page is read-only.
+          This promotion is{' '}
+          {deploymentHref ? (
+            <Link
+              to={deploymentHref}
+              className="hover:underline"
+              title="View the deployment that shipped this version"
+            >
+              <strong style={{ color: cfg.color }}>{candidate.status}</strong>
+            </Link>
+          ) : (
+            <strong style={{ color: cfg.color }}>{candidate.status}</strong>
+          )}{' '}
+          — the page is read-only.
         </div>
+      )}
+
+      {failedDeployments.length > 0 && (
+        <FailedDeploymentsBanner
+          attempts={failedDeployments}
+          version={candidate.version}
+          targetEnv={candidate.targetEnv}
+          open={!isReadOnly}
+        />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Work items card — bundle of work-items keyed (key, product, targetEnv).
-             Per-row Approve / Reject buttons hit the work-item endpoints; after each
-             decision we refetch the candidate so the manual card stays in sync. */}
+          {/* Work items card — bundle of work-items keyed (key, product, service, targetEnv). Rows link to
+             the work-item detail page, which owns sign-off and discussion; assigning people here
+             refetches the candidate so the row re-renders with the new participant. */}
           <WorkItemsCard
             candidate={candidate}
             workItems={bundleWorkItems}
             onChanged={fetchData}
           />
 
-          {/* Promotion approval — the live gate progress (per step / per requirement) and the
-             approve/reject action shown together in one card. Progress is visible to everyone;
-             the controls appear only when the current user can act. A Promotion Freeze holding
-             this Pending candidate is announced right above it, before the approver acts. */}
+          {/* Promotion approval — the live gate progress (per step / per requirement), who has
+             approved each gate, and an Approve button on every gate the current user can still
+             clear, all in one card. Progress and history are visible to everyone; the controls
+             appear only when the current user can act. A Promotion Freeze holding this Pending
+             candidate is announced right above it, before the approver acts. */}
           {freeze && candidate.status === 'Pending' && <FreezeNotice freeze={freeze} />}
-          <PromotionApprovalCard
-            candidate={candidate}
-            progress={approvalProgress}
-            actionDone={actionDone}
-            comment={comment}
-            setComment={setComment}
-            actionLoading={actionLoading}
-            onAction={handleAction}
-            onBypass={handleBypass}
-            isAdmin={isAdmin}
-            eligibleRequirements={eligibleRequirements}
-          />
+          <div data-guide-anchor="promotion-approval-card">
+            <PromotionApprovalCard
+              candidate={candidate}
+              progress={approvalProgress}
+              approvals={approvals}
+              actionDone={actionDone}
+              actionLoading={actionLoading}
+              onAction={handleAction}
+              onBypass={handleBypass}
+              onAdminReject={handleAdminReject}
+              onCancelApproval={handleCancelApproval}
+              canCancelApproval={canCancelApproval}
+              isAdmin={isAdmin}
+              eligibleRequirements={eligibleRequirements}
+            />
+          </div>
 
           {/* Admin bypass banner — a bypass leaves no approval row, so this is the only trace of
              who force-approved the promotion and why. Shown in the approval area. */}
@@ -357,70 +647,6 @@ export function PromotionDetailPage() {
             </div>
           )}
 
-          {/* Approval trail */}
-          {approvals.length > 0 && (
-            <div
-              className="rounded-xl border p-5"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            >
-              <h2
-                className="text-[11px] font-semibold uppercase tracking-wider mb-4"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                Approval Trail ({approvals.length})
-              </h2>
-              <div className="space-y-2">
-                {approvals.map((a) => {
-                  const isApproved = a.decision === 'Approved';
-                  return (
-                    <div
-                      key={a.id}
-                      className="flex items-start gap-3 p-3 rounded-lg border"
-                      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-                    >
-                      <div
-                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                        style={{
-                          backgroundColor: isApproved ? 'var(--success-bg)' : 'var(--danger-bg)',
-                          color: isApproved ? 'var(--success)' : 'var(--danger)',
-                        }}
-                      >
-                        {isApproved ? <CheckCircle size={14} /> : <XCircle size={14} />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="inline-flex items-center gap-1.5 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                            {a.approverName}
-                            <CopyEmailButton email={a.approverEmail} />
-                          </span>
-                          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                            {format(new Date(a.createdAt), 'MMM d, HH:mm')}
-                          </span>
-                        </div>
-                        <div className="mt-1">
-                          <span
-                            className="badge"
-                            style={{
-                              backgroundColor: isApproved ? 'var(--success-bg)' : 'var(--danger-bg)',
-                              color: isApproved ? 'var(--success)' : 'var(--danger)',
-                            }}
-                          >
-                            {a.decision}
-                          </span>
-                        </div>
-                        {a.comment && (
-                          <p className="text-[12px] mt-1.5" style={{ color: 'var(--text-secondary)' }}>
-                            &ldquo;{a.comment}&rdquo;
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
           {/* Comments */}
           <CommentsCard
             candidateId={candidate.id}
@@ -433,6 +659,7 @@ export function PromotionDetailPage() {
              bottom of the main column because it can be long; the full width keeps it readable. */}
           {sourceEvent && sourceEvent.references.length > 0 && (
             <div
+              data-guide-anchor="promotion-references"
               className="rounded-xl border p-5"
               style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
             >
@@ -488,6 +715,7 @@ export function PromotionDetailPage() {
 
           {/* Timestamps */}
           <div
+            data-guide-anchor="promotion-timestamps"
             className="rounded-xl border p-5"
             style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
           >
@@ -521,9 +749,24 @@ export function PromotionDetailPage() {
               )}
               {candidate.deployedAt && (
                 <div>
-                  <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-                    Deployed
-                  </span>
+                  {/* "Deployed" links to the deploy event that put this version live, when we can
+                      resolve it — the promotion says the change shipped, and this is where to go to
+                      see what actually landed. Plain text when there is no event to point at. */}
+                  {deploymentHref ? (
+                    <Link
+                      to={deploymentHref}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider hover:underline"
+                      style={{ color: 'var(--accent)' }}
+                      title="View the deployment that shipped this version"
+                    >
+                      Deployed
+                      <ArrowRight size={11} />
+                    </Link>
+                  ) : (
+                    <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      Deployed
+                    </span>
+                  )}
                   <p className="font-medium mt-0.5" style={{ color: 'var(--text-primary)' }}>
                     {format(new Date(candidate.deployedAt), 'MMM d, yyyy HH:mm')}
                   </p>
@@ -561,6 +804,70 @@ export function PromotionDetailPage() {
       </div>
     </div>
     </PromoReadOnlyCtx.Provider>
+  );
+}
+
+/**
+ * Failed attempts to deploy the promoted version to the target environment. On an open promotion it
+ * is a warning: the deploy was tried and failed, and the promotion stays open until one succeeds.
+ * On a closed one it is history, kept because "it took three tries" is worth knowing when debugging.
+ * Each attempt links to its deploy event, which carries the pipeline run.
+ */
+function FailedDeploymentsBanner({
+  attempts,
+  version,
+  targetEnv,
+  open,
+}: {
+  attempts: { id: string; deployedAt: string; source: string }[];
+  version: string;
+  targetEnv: string;
+  open: boolean;
+}) {
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  const latest = attempts[0];
+  const count = attempts.length >= 20 ? '20+' : String(attempts.length);
+  const tone = open ? 'var(--danger)' : 'var(--text-muted)';
+  return (
+    <div
+      className="rounded-xl border p-4 flex items-start gap-3"
+      style={{
+        borderColor: open ? 'var(--danger)' : 'var(--border-color)',
+        backgroundColor: open ? 'var(--danger-bg)' : 'var(--bg-secondary)',
+      }}
+    >
+      <AlertTriangle size={18} style={{ color: tone, flexShrink: 0, marginTop: 1 }} />
+      <div className="text-[13px] min-w-0">
+        <p style={{ color: 'var(--text-primary)' }}>
+          {open ? (
+            <>
+              Deploying <b>v{version}</b> to <b>{getDisplayName(targetEnv)}</b> failed
+              {attempts.length > 1 ? <> {count} times</> : null}, most recently{' '}
+              {formatDistanceToNow(new Date(latest.deployedAt), { addSuffix: true })}. A failed deploy
+              does not complete the promotion, so it stays open until a deploy succeeds.
+            </>
+          ) : (
+            <>
+              {count} failed {attempts.length === 1 ? 'attempt' : 'attempts'} to deploy <b>v{version}</b> to{' '}
+              <b>{getDisplayName(targetEnv)}</b>.
+            </>
+          )}
+        </p>
+        <ul className="mt-1.5 space-y-0.5 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {attempts.slice(0, 5).map((a) => (
+            <li key={a.id}>
+              <Link to={`/deployments/events/${a.id}`} className="hover:underline" style={{ color: tone }}>
+                {format(new Date(a.deployedAt), 'MMM d, yyyy HH:mm')}
+              </Link>
+              <span style={{ color: 'var(--text-muted)' }}> · {a.source}</span>
+            </li>
+          ))}
+          {attempts.length > 5 && (
+            <li style={{ color: 'var(--text-muted)' }}>and {attempts.length - 5} earlier</li>
+          )}
+        </ul>
+      </div>
+    </div>
   );
 }
 
@@ -662,7 +969,7 @@ function PeopleCard({
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
   const [showForm, setShowForm] = useState(false);
-  const [roles, setRoles] = useState<string[]>([]);
+  const configuredRoles = useConfiguredRoles();
   const [role, setRole] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
@@ -674,14 +981,6 @@ function PeopleCard({
   >([]);
   const [userSearchOpen, setUserSearchOpen] = useState(false);
   const [userSearchLoading, setUserSearchLoading] = useState(false);
-
-  useEffect(() => {
-    if (!showForm || roles.length > 0) return;
-    api
-      .listPromotionRoles()
-      .then((d) => setRoles(d.roles || []))
-      .catch(() => setRoles([]));
-  }, [showForm, roles.length]);
 
   // Debounced directory search (Entra / local users via IIdentityService).
   useEffect(() => {
@@ -773,6 +1072,7 @@ function PeopleCard({
 
   return (
     <div
+      data-guide-anchor="promotion-people-card"
       className="rounded-xl border p-5"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
@@ -786,6 +1086,7 @@ function PeopleCard({
         {!readOnly && !showForm && (
           <button
             onClick={() => setShowForm(true)}
+            data-guide-anchor="promotion-assign-button"
             className="inline-flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
             style={{ color: 'var(--accent)' }}
           >
@@ -842,18 +1143,33 @@ function PeopleCard({
           className="mt-4 pt-4 space-y-2 border-t"
           style={{ borderColor: 'var(--border-color)' }}
         >
-          <input
-            list="promotion-roles"
+          {/* The configured vocabulary, not free text: the server rejects roles that aren't in it,
+              and a typo here would otherwise become a slot nothing can label, filter, or route on. */}
+          <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            placeholder="Role (e.g. QA, reviewer)"
             className="w-full rounded-lg border px-3 py-1.5 text-[13px]"
             style={{
               borderColor: 'var(--border-color)',
               backgroundColor: 'var(--bg-secondary)',
               color: 'var(--text-primary)',
             }}
-          />
+            disabled={configuredRoles.length === 0}
+          >
+            <option value="">
+              {configuredRoles.length === 0 ? 'No roles configured' : 'Pick a role…'}
+            </option>
+            {configuredRoles.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.displayName}
+              </option>
+            ))}
+          </select>
+          {configuredRoles.length === 0 && (
+            <p className="text-[12px]" style={{ color: 'var(--warning)' }}>
+              Add participant roles under Settings → Participant Roles before assigning anyone.
+            </p>
+          )}
           <div className="relative">
             <input
               value={userQuery}
@@ -906,13 +1222,6 @@ function PeopleCard({
               </div>
             )}
           </div>
-          <datalist id="promotion-roles">
-            {roles.map((r) => (
-              // Suggest humanised forms ("QA", "Triggered by") so the user's pick is already
-              // how the card will render. The backend canonicalises on write.
-              <option key={r} value={roleDisplay({ role: r })} />
-            ))}
-          </datalist>
           <input
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
@@ -945,10 +1254,11 @@ function PeopleCard({
             <button
               onClick={handleSave}
               disabled={saving}
+              data-guide-anchor="promotion-comment-save"
               className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',
-                color: '#fff',
+                color: 'var(--accent-fg)',
                 opacity: saving ? 0.6 : 1,
               }}
             >
@@ -1054,6 +1364,10 @@ function CommentsCard({
           const isMine =
             !!currentUserEmail &&
             c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
+          // Entries the platform wrote for an action taken on the promotion. Every action leaves
+          // one, so they outnumber human comments — muted and marked so the thread still reads as
+          // discussion with a history running through it, not one undifferentiated wall.
+          const isSystem = c.authorEmail.toLowerCase() === SYSTEM_COMMENT_AUTHOR;
           const isEditing = editingId === c.id;
           return (
             <div
@@ -1061,14 +1375,16 @@ function CommentsCard({
               className="p-3 rounded-lg border"
               style={{
                 borderColor: 'var(--border-color)',
-                backgroundColor: 'var(--bg-secondary)',
+                backgroundColor: isSystem ? 'transparent' : 'var(--bg-secondary)',
+                borderStyle: isSystem ? 'dashed' : 'solid',
               }}
             >
               <div className="flex items-center justify-between mb-1">
                 <span
-                  className="text-[13px] font-medium"
-                  style={{ color: 'var(--text-primary)' }}
+                  className="text-[13px] font-medium inline-flex items-center gap-1.5"
+                  style={{ color: isSystem ? 'var(--text-muted)' : 'var(--text-primary)' }}
                 >
+                  {isSystem && <History size={11} />}
                   {c.authorName || c.authorEmail}
                 </span>
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -1097,7 +1413,7 @@ function CommentsCard({
                     <button
                       onClick={() => saveEdit(c.id)}
                       className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
-                      style={{ backgroundColor: 'var(--accent)', color: '#fff' }}
+                      style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
                     >
                       Save
                     </button>
@@ -1117,7 +1433,7 @@ function CommentsCard({
                 <>
                   <p
                     className="text-[13px] whitespace-pre-wrap"
-                    style={{ color: 'var(--text-secondary)' }}
+                    style={{ color: isSystem ? 'var(--text-muted)' : 'var(--text-secondary)' }}
                   >
                     {c.body}
                   </p>
@@ -1175,7 +1491,7 @@ function CommentsCard({
               className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
               style={{
                 backgroundColor: 'var(--accent)',
-                color: '#fff',
+                color: 'var(--accent-fg)',
                 opacity: posting || !body.trim() ? 0.6 : 1,
               }}
             >
@@ -1191,66 +1507,118 @@ function CommentsCard({
 // ─────────────────────────────────────────────────────────────────────────
 // Promotion approval (manual) card
 //
-// Shows the live gate progress plus the approve/reject controls. When a policy
-// has no manual approver requirements there is nothing to manually approve —
-// the approver has no eligible requirements — so the controls simply don't render.
+// Shows the live gate progress — each gate with who has approved it and, for
+// every gate the current user is still eligible for, its own Approve button —
+// plus the promotion-level Reject. When a policy has no manual approver
+// requirements there is nothing to manually approve — the approver has no
+// eligible requirements — so the controls simply don't render.
 // ─────────────────────────────────────────────────────────────────────────
 function PromotionApprovalCard({
   candidate,
   progress,
+  approvals,
   actionDone,
-  comment,
-  setComment,
   actionLoading,
   onAction,
   onBypass,
+  onAdminReject,
+  onCancelApproval,
+  canCancelApproval,
   isAdmin,
   eligibleRequirements,
 }: {
   candidate: PromotionCandidate;
   progress: PromotionApprovalProgress | null;
+  approvals: PromotionApprovalEntry[];
   actionDone: string | null;
-  comment: string;
-  setComment: (v: string) => void;
   actionLoading: boolean;
-  onAction: (action: 'approve' | 'reject', target?: EligibleRequirement) => void;
+  onAction: (action: 'approve' | 'reject', comment: string, target?: EligibleRequirement) => void;
   onBypass: (reason: string) => void;
+  onAdminReject: (reason: string) => void;
+  onCancelApproval: (comment: string) => void;
+  canCancelApproval: boolean;
   isAdmin: boolean;
   eligibleRequirements: EligibleRequirement[];
 }) {
-  const showActions = candidate.canApprove && !actionDone;
+  // Driven by "am I an eligible approver", NOT by candidate.canApprove — that flag now also means
+  // "and nothing is blocking right now", which would hide this card exactly when the approver most
+  // needs it: the Approve button below renders disabled with `approveBlockedReason` explaining what
+  // to go and do. Same set the radios are built from, so the card and its controls can't disagree.
+  const showActions = eligibleRequirements.length > 0 && !actionDone;
   const showProgress = !!progress?.requiresApproval;
   // Admin escape hatch: available on any Pending candidate regardless of whether this admin is an
   // eligible approver — that's the point of a bypass.
   const showBypass = isAdmin && candidate.status === 'Pending' && !actionDone;
-  const [showCommentBox, setShowCommentBox] = useState(false);
   const [showBypassBox, setShowBypassBox] = useState(false);
   const [bypassReason, setBypassReason] = useState('');
+  // Its counterpart, admin reject — offered only when the card has no ordinary Reject for this user
+  // (they aren't an approver here, or have nothing left to approve). An admin who is an approver
+  // rejects the normal way, so the page never shows two Reject buttons that do the same thing.
+  const showAdminReject = showBypass && !showActions;
+  const [confirmingAdminReject, setConfirmingAdminReject] = useState(false);
+  // Undo, for the wrong row approved by mistake. The server decides who may do it and until when
+  // (Approved, not yet dispatched) — this only asks whether it said yes.
+  const showCancelApproval = canCancelApproval && !actionDone;
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
 
-  // When the approver is eligible for more than one open requirement they must choose which one
-  // they approve as. Key by `${stepName}\u0000${requirementName}` so step+requirement is unique.
-  const reqKey = (r: EligibleRequirement) => `${r.stepName}\u0000${r.requirementName}`;
-  const [selectedKey, setSelectedKey] = useState<string>('');
-  // Always offer the "Approve as" radios. With exactly one eligible requirement, preselect it
-  // (one pre-checked radio) so the UI is uniform; with more than one, the approver must pick.
-  const selected =
-    eligibleRequirements.find((r) => reqKey(r) === selectedKey)
-    ?? (eligibleRequirements.length === 1 ? eligibleRequirements[0] : null);
+  // Approving releases a deploy and rejecting refuses one; both are single keystrokes now (`A`, `R`),
+  // so both go through a confirmation that names what it is about to do. `pending` is which one is
+  // waiting on that confirmation — for an approval, which gate it is for, since every gate the user
+  // is eligible for carries its own Approve button. Declared with the other hooks, above the early
+  // return below.
+  const [pending, setPending] = useState<
+    | { action: 'approve'; target: EligibleRequirement }
+    | { action: 'reject' }
+    | null
+  >(null);
+  // Ties the visible "why you can't approve" line to the Approve buttons. Up here with the other
+  // hooks — the early return below means anything called after it runs conditionally.
+  const approveBlockedId = useId();
 
   // Hide the card entirely when there's nothing to show: no progress to surface, no action
-  // available to the current user, and no admin bypass on offer.
-  if (!showActions && !showProgress && !showBypass) return null;
+  // available to the current user, and neither escape hatch on offer.
+  if (!showActions && !showProgress && !showBypass && !showCancelApproval) return null;
 
-  const handleAction = (action: 'approve' | 'reject') => {
-    // For approvals: pass the chosen requirement (preselected when only one is eligible).
-    const target = action === 'approve' ? selected ?? undefined : undefined;
-    onAction(action, target);
-    setShowCommentBox(false);
-    setComment('');
+  const confirmAction = (actionComment: string) => {
+    if (!pending) return;
+    onAction(pending.action, actionComment, pending.action === 'approve' ? pending.target : undefined);
+    setPending(null);
   };
 
-  // Block the Approve button until a requirement is selected (the single case is preselected).
-  const approveBlocked = !selected;
+  // Why every Approve button is unavailable, or null when they aren't. Doubles as the tooltip, so a
+  // button can never be greyed out without saying why.
+  //
+  // When the policy holds approval back until every work item is signed off, no gate is approvable
+  // whichever one the user sits in. The condition mirrors the server's guard in ApproveAsync exactly
+  // — an approver should learn this from a disabled button, not from a failed request.
+  const gate = progress?.workItems;
+  const approveBlockedReason: string | null = (() => {
+    if (gate && gate.required && !gate.satisfied) {
+      // What is actually holding the gate: blocked items plus items nobody has ruled on. Issues are
+      // signed off as far as the gate is concerned, so they are reported but never counted as
+      // outstanding — naming them here would send the approver chasing something that isn't the hold.
+      const blocked = gate.blocked ?? 0;
+      const undecided = gate.total - gate.approved - (gate.issues ?? 0) - blocked;
+      const held = [
+        blocked > 0 ? `${blocked} blocked` : null,
+        undecided > 0 ? `${undecided} not signed off yet` : null,
+      ]
+        .filter(Boolean)
+        .join(' and ');
+      const issues = (gate.issues ?? 0) > 0 ? `, ${gate.issues} flagged with issues (not a hold)` : '';
+      const scope = gate.allInstances ? ' on every service carrying it' : '';
+      return (
+        `This promotion's policy requires every work item to be signed off${scope} first. ` +
+        `${gate.approved} of ${gate.total} approved${issues} — ` +
+        `${held}. Clear them from the work items below or the queue.`
+      );
+    }
+    return null;
+  })();
+
+  // What Approve actually does on this edge — a deploy, or a hand-off to a pipeline that asks again.
+  // Stated in the card and repeated in the confirmation, from one place (see ApprovalEffect).
+  const deploys = approvalDeploys(candidate);
 
   return (
     <div
@@ -1266,102 +1634,66 @@ function PromotionApprovalCard({
         </h2>
       </div>
 
-      {/* Live gate progress (per step / requirement). Shown to everyone who can see the card;
-         a divider separates it from the action controls when those are present. */}
+      {/* Live gate progress (per step / requirement) with who approved each gate and, for the
+         current user, an Approve button on every gate still open to them. Shown to everyone who
+         can see the card; a divider separates it from the action controls when those are present. */}
       {showProgress && progress && (
         <div
           className={showActions ? 'mb-4 pb-4 border-b' : ''}
           style={showActions ? { borderColor: 'var(--border-color)' } : undefined}
         >
-          <ApprovalProgressBody progress={progress} />
+          <ApprovalProgressBody
+            progress={progress}
+            approvals={approvals}
+            eligibleRequirements={showActions ? eligibleRequirements : []}
+            onApprove={(target) => setPending({ action: 'approve', target })}
+            approveBlockedReason={approveBlockedReason}
+            approveBlockedId={approveBlockedId}
+            actionLoading={actionLoading}
+          />
         </div>
       )}
 
       {showActions && (
         <>
-          {/* "Approve as" selector — always shown when the user is eligible for any open
-             requirement. A single eligible requirement is preselected (one pre-checked radio);
-             with more than one the approver must pick before the Approve button enables. */}
-          {eligibleRequirements.length > 0 && (
-            <div className="mb-3">
-              <p
-                className="text-[12px] font-medium mb-1.5"
-                style={{ color: 'var(--text-secondary)' }}
-              >
-                Approve as
-              </p>
-              <div className="flex flex-col gap-1.5">
-                {eligibleRequirements.map((r) => {
-                  const key = reqKey(r);
-                  const active = selected != null && reqKey(selected) === key;
-                  return (
-                    <label
-                      key={key}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-[13px] transition-colors"
-                      style={{
-                        borderColor: active ? 'var(--accent)' : 'var(--border-color)',
-                        backgroundColor: active ? 'var(--bg-secondary)' : 'transparent',
-                        color: 'var(--text-primary)',
-                      }}
-                    >
-                      <input
-                        type="radio"
-                        name="approve-as"
-                        value={key}
-                        checked={active}
-                        onChange={() => setSelectedKey(key)}
-                      />
-                      <span className="font-medium">{r.requirementName}</span>
-                      {r.stepName && (
-                        <span style={{ color: 'var(--text-muted)' }}>· {r.stepName}</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
+          {/* Above the controls, not inside the confirmation only: the decision to press Approve is
+             made here, and somebody who learns what it does after clicking has already decided. */}
+          <div className="mb-3">
+            <ApprovalEffectNotice
+              deploys={deploys}
+              version={candidate.version}
+              targetEnv={candidate.targetEnv}
+            />
+          </div>
+
+          {/* Why the gates' Approve buttons are greyed out, stated in the open and not only on
+              hover. A greyed-out primary action is the thing people report as broken, and a tooltip
+              is unreachable on touch and to a screen reader that never lands on the disabled
+              button. `aria-describedby` on every Approve button ties it here. */}
+          {approveBlockedReason && (
+            <p
+              id={approveBlockedId}
+              className="text-[12px] mb-3 flex items-start gap-1.5"
+              style={{ color: 'var(--warning)' }}
+            >
+              <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+              <span>{approveBlockedReason}</span>
+            </p>
           )}
 
-          {showCommentBox && (
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Optional comment..."
-              rows={3}
-              className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
-              style={{
-                borderColor: 'var(--border-color)',
-                backgroundColor: 'var(--bg-secondary)',
-                color: 'var(--text-primary)',
-              }}
-            />
-          )}
-          <div className="flex items-center gap-2">
+          {/* Approving happens per gate — each open gate the user is eligible for carries its own
+              Approve button in the progress list above, beside who has already approved it.
+              Rejecting is a veto on the whole promotion, so it stays a single control here. The
+              comment for either lives in the confirmation, which always asks. */}
+          <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={() => handleAction('approve')}
-              disabled={actionLoading || approveBlocked}
-              title={
-                approveBlocked
-                  ? 'Select which requirement you are approving as'
-                  : undefined
-              }
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
-              style={{
-                backgroundColor: 'var(--success)',
-                color: '#fff',
-                opacity: actionLoading || approveBlocked ? 0.5 : 1,
-                cursor: approveBlocked ? 'not-allowed' : 'pointer',
-              }}
-            >
-              <CheckCircle size={14} />
-              Approve
-            </button>
-            <button
-              onClick={() => handleAction('reject')}
+              onClick={() => setPending({ action: 'reject' })}
+              data-guide-anchor="promotion-reject-button"
+              {...{ [ROW_ACTION_ATTR]: 'reject' }}
               disabled={actionLoading}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
               style={{
-                backgroundColor: 'var(--danger)',
+                backgroundColor: 'var(--danger-solid)',
                 color: '#fff',
                 opacity: actionLoading ? 0.5 : 1,
                 cursor: 'pointer',
@@ -1370,39 +1702,143 @@ function PromotionApprovalCard({
               <XCircle size={14} />
               Reject
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowCommentBox((v) => !v);
-                if (showCommentBox) setComment('');
-              }}
-              className="text-[13px] transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              {showCommentBox ? 'Hide comment' : 'Add comment'}
-            </button>
+            <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              or press <kbd className="font-mono">A</kbd> to approve the first open gate /{' '}
+              <kbd className="font-mono">R</kbd> to reject
+            </span>
           </div>
         </>
       )}
 
-      {/* Admin-only bypass. Shown on any Pending candidate to admins, even when they aren't an
-         eligible approver. Force-approves the candidate without satisfying the gate; the reason is
-         required and the existing promotion.approved webhook still fires. */}
+      {pending && (
+        <ConfirmDialog
+          title={
+            pending.action === 'approve'
+              ? `Approve as ‘${pending.target.requirementName}’?`
+              : 'Reject this promotion?'
+          }
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong>.
+              {pending.action === 'approve' ? (
+                <>
+                  {' '}You are approving the{' '}
+                  <strong>{pending.target.stepName || 'Approval'}</strong> gate as{' '}
+                  <strong>{pending.target.requirementName}</strong>.
+                  {approvalEffectSentence(deploys, candidate.targetEnv)}
+                </>
+              ) : (
+                ' Rejecting turns this promotion down. It will not deploy.'
+              )}
+            </>
+          }
+          confirmLabel={pending.action === 'approve' ? 'Approve' : 'Reject'}
+          confirmTone={pending.action === 'approve' ? 'success' : 'danger'}
+          commentLabel={pending.action === 'approve' ? 'Comment (optional)' : 'Reason'}
+          // A refusal without a reason leaves the author nothing to act on, so rejection asks for one.
+          commentRequired={pending.action === 'reject'}
+          busy={actionLoading}
+          onConfirm={confirmAction}
+          onCancel={() => setPending(null)}
+        />
+      )}
+
+      {/* Undo. Only ever on an Approved candidate the executor hasn't taken yet — the moment it is
+         Deploying the answer is a rollback, and the server stops offering this. */}
+      {showCancelApproval && (
+        <div
+          className={showProgress ? 'mt-4 pt-4 border-t' : ''}
+          style={showProgress ? { borderColor: 'var(--border-color)' } : undefined}
+        >
+          <p className="text-[12px] mb-2" style={{ color: 'var(--text-muted)' }}>
+            Approved by mistake? Cancelling puts this promotion back to <b>Pending</b> and clears the
+            recorded sign-offs, so it has to be approved again. The <code>promotion.approved</code>{' '}
+            webhook is held for {Math.round(APPROVED_WEBHOOK_DELAY_MS / 1000)} seconds — cancel within
+            that window and it never goes out.
+          </p>
+          <button
+            type="button"
+            onClick={() => setConfirmingCancel(true)}
+            disabled={actionLoading}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+            style={{
+              borderColor: 'var(--border-color)',
+              color: 'var(--text-secondary)',
+              opacity: actionLoading ? 0.5 : 1,
+            }}
+          >
+            <Undo2 size={14} />
+            Cancel approval
+          </button>
+        </div>
+      )}
+
+      {confirmingCancel && (
+        <ConfirmDialog
+          title="Cancel this approval?"
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong> goes back to Pending and
+              every recorded sign-off is cleared — the approval has to be given again. If the{' '}
+              <code>promotion.approved</code> webhook has already gone out, downstream may have acted
+              on it.
+            </>
+          }
+          confirmLabel="Cancel approval"
+          confirmTone="danger"
+          commentLabel="Reason (optional)"
+          busy={actionLoading}
+          onConfirm={(cancelComment) => {
+            onCancelApproval(cancelComment);
+            setConfirmingCancel(false);
+          }}
+          onCancel={() => setConfirmingCancel(false)}
+        />
+      )}
+
+      {/* Admin-only overrides. Shown on any Pending candidate to admins, even when they aren't an
+         eligible approver. Bypass force-approves the candidate without satisfying the gate (the
+         existing promotion.approved webhook still fires); admin reject turns it down without the
+         approver check, and appears only when there is no ordinary Reject above. Both need a reason. */}
       {showBypass && (
         <div
           className={showActions || showProgress ? 'mt-4 pt-4 border-t' : ''}
           style={showActions || showProgress ? { borderColor: 'var(--border-color)' } : undefined}
         >
           {!showBypassBox ? (
-            <button
-              type="button"
-              onClick={() => setShowBypassBox(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
-              style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
-            >
-              <Rocket size={14} />
-              Bypass approval gate
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowBypassBox(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+                style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
+              >
+                <Rocket size={14} />
+                Bypass approval gate
+              </button>
+              {showAdminReject && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingAdminReject(true)}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+                  style={{
+                    borderColor: 'var(--danger)',
+                    color: 'var(--danger)',
+                    opacity: actionLoading ? 0.5 : 1,
+                  }}
+                >
+                  <XCircle size={14} />
+                  Reject as admin
+                </button>
+              )}
+            </div>
           ) : (
             <div className="space-y-2">
               <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -1429,7 +1865,7 @@ function PromotionApprovalCard({
                   title={bypassReason.trim().length === 0 ? 'Enter a reason first' : undefined}
                   className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium transition-opacity"
                   style={{
-                    backgroundColor: 'var(--warning)',
+                    backgroundColor: 'var(--warning-solid)',
                     color: '#fff',
                     opacity: actionLoading || bypassReason.trim().length === 0 ? 0.5 : 1,
                     cursor: bypassReason.trim().length === 0 ? 'not-allowed' : 'pointer',
@@ -1454,22 +1890,179 @@ function PromotionApprovalCard({
           )}
         </div>
       )}
+
+      {confirmingAdminReject && (
+        <ConfirmDialog
+          title="Reject this promotion as admin?"
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong>. Rejecting as an
+              administrator skips the approver check: the promotion is turned down and will not
+              deploy. It is recorded under your name with this reason, audited as an admin override,
+              and announced with the usual <code>promotion.rejected</code> webhook.
+            </>
+          }
+          confirmLabel="Reject as admin"
+          confirmTone="danger"
+          commentLabel="Reason"
+          commentRequired
+          busy={actionLoading}
+          onConfirm={(reason) => {
+            onAdminReject(reason);
+            setConfirmingAdminReject(false);
+          }}
+          onCancel={() => setConfirmingAdminReject(false)}
+        />
+      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Approval progress card
+// Approval progress
 //
 // Surfaces the live promotion gate (GET /promotions/{id} → approvalProgress)
 // as a per-step / per-requirement breakdown of "how many approvals are in vs.
 // required". The counts come straight from the backend matcher so the panel
-// always mirrors the real gate — it never recomputes progress. Approver names
-// live in the Approval Trail; this panel is counts + status only.
+// always mirrors the real gate — it never recomputes progress. Under each
+// requirement it lists who approved it (the rows recorded against that gate)
+// and, when the current user is eligible for it, an Approve button — one per
+// gate, so somebody sitting in two gates approves each on its own. Decisions
+// that belong to no current gate — rejections, approvals recorded before gates
+// were tracked — are listed separately below the steps so nothing is hidden.
 // ─────────────────────────────────────────────────────────────────────────
-function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgress }) {
+function ApprovalProgressBody({
+  progress,
+  approvals,
+  eligibleRequirements,
+  onApprove,
+  approveBlockedReason,
+  approveBlockedId,
+  actionLoading,
+}: {
+  progress: PromotionApprovalProgress;
+  approvals: PromotionApprovalEntry[];
+  /** Open gates the current user may approve — each gets an Approve button. Empty hides them all. */
+  eligibleRequirements: EligibleRequirement[];
+  onApprove: (target: EligibleRequirement) => void;
+  approveBlockedReason: string | null;
+  approveBlockedId: string;
+  actionLoading: boolean;
+}) {
   const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate, frozen, blockedReason } = progress;
   const remaining = Math.max(0, totalRequired - totalApproved);
+  const approveBlocked = approveBlockedReason !== null;
+
+  // The progress payload names an unnamed step or requirement "Approval"; approval rows and
+  // eligible requirements carry the raw (possibly empty) name. Normalise both onto one key so a
+  // row lands on the gate it was recorded against.
+  const gateKey = (stepName: string | null | undefined, requirementName: string | null | undefined) =>
+    `${stepName || 'Approval'}\u0000${requirementName || 'Approval'}`;
+  const gateKeys = new Set(steps.flatMap((s) => s.requirements.map((r) => gateKey(s.name, r.name))));
+  const approvalsByGate = new Map<string, PromotionApprovalEntry[]>();
+  const otherDecisions: PromotionApprovalEntry[] = [];
+  for (const a of [...approvals].sort((x, y) => x.createdAt.localeCompare(y.createdAt))) {
+    const key = gateKey(a.stepName, a.requirementName);
+    if (a.decision === 'Approved' && gateKeys.has(key)) {
+      const list = approvalsByGate.get(key) ?? [];
+      list.push(a);
+      approvalsByGate.set(key, list);
+    } else {
+      otherDecisions.push(a);
+    }
+  }
+  const eligibleByGate = new Map(
+    eligibleRequirements.map((r) => [gateKey(r.stepName, r.requirementName), r] as const),
+  );
+  // The `A` shortcut approves "the first open gate": tag only the first Approve button, so one
+  // keystroke can never be ambiguous about which gate it is about to sign.
+  const firstEligibleKey = steps
+    .flatMap((s) => s.requirements.map((r) => gateKey(s.name, r.name)))
+    .find((k) => eligibleByGate.has(k));
+
+  // When the policy requires every work item signed off before anyone may approve, that gate comes
+  // first in every sense: it is listed on top, and while it is unmet the human steps are not
+  // "waiting" on anybody — nobody can approve them yet. They render held (padlock, muted, no
+  // Approve button) rather than pending, so the page does not claim the promotion is waiting on QA
+  // Review when it is in fact waiting on work items. A policy that only auto-approves on work items
+  // (`autoApprove` without `required`) holds nothing: approvers may go ahead regardless.
+  const heldByWorkItems = !!workItemGate && workItemGate.required && !workItemGate.satisfied;
+
+  // The "all work items resolved" gate. Rendered first, above the approval steps, because when the
+  // policy requires it the steps below cannot be approved until it is met — the order on screen is
+  // the order things actually happen in.
+  const workItemGateBlock = workItemGate && (
+    <div>
+      <div className="flex items-center gap-1.5 mb-2">
+        {workItemGate.satisfied ? (
+          <CheckCircle size={13} style={{ color: 'var(--success)' }} />
+        ) : (
+          <Clock size={13} style={{ color: 'var(--warning)' }} />
+        )}
+        <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+          Work items
+        </span>
+      </div>
+      <div
+        className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+      >
+        <div className="min-w-0">
+          <span
+            className="inline-flex items-center gap-2 text-[13px] min-w-0"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            {workItemGate.satisfied ? (
+              <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+            ) : (
+              <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+            )}
+            <span className="truncate">
+              {workItemGate.allInstances
+                ? 'All work items resolved on every service'
+                : 'All work items resolved'}
+            </span>
+          </span>
+          {workItemGate.required && steps.length > 0 && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
+              {workItemGate.satisfied
+                ? 'Cleared — the approval steps below are open'
+                : 'The approval steps below wait for this first'}
+            </p>
+          )}
+          {workItemGate.autoApprove && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
+              {workItemGate.satisfied
+                ? 'Auto-approved the promotion'
+                : 'Resolving all work items auto-approves this promotion'}
+            </p>
+          )}
+          {/* A block is the hold; an issue is a flag on something that is still going out.
+              Both are named, so a satisfied gate never hides a flagged item and an unsatisfied
+              one names what to actually chase. */}
+          {(workItemGate.blocked ?? 0) > 0 && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--danger)' }}>
+              {workItemGate.blocked} blocked — this gate stays unmet until that changes
+            </p>
+          )}
+          {(workItemGate.issues ?? 0) > 0 && (
+            <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--warning)' }}>
+              {workItemGate.issues} with issues — flagged, but not holding this gate
+            </p>
+          )}
+        </div>
+        <span
+          className="text-[12px] font-medium whitespace-nowrap"
+          style={{ color: workItemGate.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
+        >
+          {workItemGate.approved} of {workItemGate.total} approved
+        </span>
+      </div>
+    </div>
+  );
 
   return (
     <div>
@@ -1493,6 +2086,11 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
               <CheckCircle size={14} />
               All approvals met
             </>
+          ) : heldByWorkItems && workItemGate ? (
+            <>
+              <Clock size={14} />
+              Waiting for work items · {workItemGate.approved} of {workItemGate.total} resolved
+            </>
           ) : (
             <>
               <Clock size={14} />
@@ -1504,111 +2102,233 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
       </div>
 
       <div className="space-y-4">
-        {steps.map((step, si) => (
+        {workItemGateBlock}
+
+        {steps.map((step, si) => {
+          const held = heldByWorkItems && !step.satisfied;
+          return (
           <div key={`${step.name}-${si}`}>
             <div className="flex items-center gap-1.5 mb-2">
               {step.satisfied ? (
                 <CheckCircle size={13} style={{ color: 'var(--success)' }} />
+              ) : held ? (
+                <Lock size={13} style={{ color: 'var(--text-muted)' }} />
               ) : (
                 <Clock size={13} style={{ color: 'var(--warning)' }} />
               )}
               <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
                 {step.name}
               </span>
+              {held && (
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  · not yet — opens once all work items are resolved
+                </span>
+              )}
             </div>
             <div className="space-y-1.5">
               {step.requirements.map((req, ri) => {
                 // Who can satisfy this requirement: group names + explicitly-listed users.
                 const approvers = [...req.groups.map((g) => g.name), ...req.users];
                 const approversText = approvers.join(' · ');
+                const key = gateKey(step.name, req.name);
+                const approvedBy = approvalsByGate.get(key) ?? [];
+                // No Approve button on a held gate: the work-items gate above says what to do, and
+                // a button nobody can press would only claim the gate is waiting on this user.
+                const eligible = held ? undefined : eligibleByGate.get(key);
                 return (
                   <div
                     key={`${req.name}-${ri}`}
-                    className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
-                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                    className="p-2.5 rounded-lg border"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-secondary)',
+                      opacity: held && !req.satisfied ? 0.7 : 1,
+                    }}
                   >
-                    <div className="min-w-0">
-                      <span
-                        className="inline-flex items-center gap-2 text-[13px] min-w-0"
-                        style={{ color: 'var(--text-primary)' }}
-                      >
-                        {req.satisfied ? (
-                          <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
-                        ) : (
-                          <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-                        )}
-                        <span className="truncate">{req.name}</span>
-                      </span>
-                      {approversText && (
-                        <p
-                          className="text-[11px] mt-0.5 ml-6 truncate"
-                          style={{ color: 'var(--text-muted)' }}
-                          title={`Can approve: ${approversText}`}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <span
+                          className="inline-flex items-center gap-2 text-[13px] min-w-0"
+                          style={{ color: 'var(--text-primary)' }}
                         >
-                          Approvers: {approversText}
-                        </p>
-                      )}
+                          {req.satisfied ? (
+                            <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
+                          ) : held ? (
+                            <Lock size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                          ) : (
+                            <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
+                          )}
+                          <span className="truncate">{req.name}</span>
+                        </span>
+                        {approversText && (
+                          <p
+                            className="text-[11px] mt-0.5 ml-6 truncate"
+                            style={{ color: 'var(--text-muted)' }}
+                            title={`Can approve: ${approversText}`}
+                          >
+                            Approvers: {approversText}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className="text-[12px] font-medium whitespace-nowrap"
+                          style={{
+                            color: req.satisfied
+                              ? 'var(--success)'
+                              : held
+                                ? 'var(--text-muted)'
+                                : 'var(--text-secondary)',
+                          }}
+                        >
+                          {req.approved} of {req.required} approved
+                        </span>
+                        {eligible && (
+                          /* The tooltip lives on a wrapper, not on the button. A disabled button
+                             receives no pointer events, so a `title` on it never opens — the
+                             explanation for why a control is unavailable would be invisible on
+                             exactly the control that needs it. */
+                          <span
+                            title={approveBlockedReason ?? undefined}
+                            style={{ cursor: approveBlocked ? 'not-allowed' : undefined }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => onApprove(eligible)}
+                              // One name for every gate's button: "where do I approve?" rings all
+                              // the places this user can, which is the honest answer.
+                              data-guide-anchor="promotion-approve-button"
+                              {...(key === firstEligibleKey ? { [ROW_ACTION_ATTR]: 'approve' } : {})}
+                              disabled={actionLoading || approveBlocked}
+                              aria-describedby={approveBlocked ? approveBlockedId : undefined}
+                              aria-label={`Approve as ${req.name}`}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                              style={{
+                                backgroundColor: 'var(--success-solid)',
+                                color: '#fff',
+                                opacity: actionLoading || approveBlocked ? 0.5 : 1,
+                                cursor: approveBlocked ? 'not-allowed' : 'pointer',
+                                pointerEvents: approveBlocked ? 'none' : undefined,
+                              }}
+                            >
+                              <CheckCircle size={13} />
+                              Approve
+                            </button>
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <span
-                      className="text-[12px] font-medium whitespace-nowrap"
-                      style={{ color: req.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
-                    >
-                      {req.approved} of {req.required} approved
-                    </span>
+
+                    {/* Who has approved this gate, oldest first. Kept on the gate itself rather
+                        than in a separate trail so a gate's count and its names never disagree. */}
+                    {approvedBy.length > 0 && (
+                      <div className="mt-2 ml-6">
+                        <p
+                          className="text-[11px] font-medium uppercase tracking-wider mb-1"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          Approved by
+                        </p>
+                        <ul className="space-y-1">
+                          {approvedBy.map((a) => (
+                            <li
+                              key={a.id}
+                              className="flex items-start gap-1.5 text-[12px]"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              <CheckCircle
+                                size={12}
+                                style={{ color: 'var(--success)', flexShrink: 0, marginTop: 3 }}
+                              />
+                              <span className="min-w-0">
+                                <span
+                                  className="inline-flex items-center gap-1 font-medium"
+                                  style={{ color: 'var(--text-primary)' }}
+                                >
+                                  {a.approverName}
+                                  <CopyEmailButton email={a.approverEmail} />
+                                </span>
+                                <span style={{ color: 'var(--text-muted)' }}>
+                                  {' '}· {format(new Date(a.createdAt), 'MMM d, yyyy HH:mm')}
+                                </span>
+                                {a.comment && (
+                                  <span className="block mt-0.5">&ldquo;{a.comment}&rdquo;</span>
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           </div>
-        ))}
+          );
+        })}
 
-        {/* The "all work items resolved" gate condition — shown when the policy requires every
-           work item signed off, so the approver can see whether that condition is fulfilled. */}
-        {workItemGate && (
+        {/* Decisions that belong to no gate above: a rejection (a veto on the whole promotion, so it
+            was never recorded against one), or an approval recorded before gates were tracked or
+            against a requirement the policy no longer has. Shown so the history stays complete. */}
+        {otherDecisions.length > 0 && (
           <div>
             <div className="flex items-center gap-1.5 mb-2">
-              {workItemGate.satisfied ? (
-                <CheckCircle size={13} style={{ color: 'var(--success)' }} />
-              ) : (
-                <Clock size={13} style={{ color: 'var(--warning)' }} />
-              )}
               <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                Work items
+                Other decisions
               </span>
             </div>
-            <div
-              className="flex items-start justify-between gap-3 p-2.5 rounded-lg border"
-              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
-            >
-              <div className="min-w-0">
-                <span
-                  className="inline-flex items-center gap-2 text-[13px] min-w-0"
-                  style={{ color: 'var(--text-primary)' }}
-                >
-                  {workItemGate.satisfied ? (
-                    <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0 }} />
-                  ) : (
-                    <Clock size={14} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-                  )}
-                  <span className="truncate">All work items resolved</span>
-                </span>
-                {workItemGate.autoApprove && (
-                  <p className="text-[11px] mt-0.5 ml-6" style={{ color: 'var(--text-muted)' }}>
-                    {workItemGate.satisfied
-                      ? 'Auto-approved the promotion'
-                      : 'Resolving all work items auto-approves this promotion'}
-                  </p>
-                )}
-              </div>
-              <span
-                className="text-[12px] font-medium whitespace-nowrap"
-                style={{ color: workItemGate.satisfied ? 'var(--success)' : 'var(--text-secondary)' }}
-              >
-                {workItemGate.approved} of {workItemGate.total} approved
-              </span>
+            <div className="space-y-1.5">
+              {otherDecisions.map((a) => {
+                const isApproved = a.decision === 'Approved';
+                const what = !isApproved
+                  ? 'Rejected — a veto that turned the whole promotion down'
+                  : a.requirementName
+                    ? `Approved as ‘${a.requirementName}’ — a gate this policy no longer has`
+                    : 'Approved — recorded before approvals were tracked per gate';
+                return (
+                  <div
+                    key={a.id}
+                    className="flex items-start gap-3 p-2.5 rounded-lg border"
+                    style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+                  >
+                    {isApproved ? (
+                      <CheckCircle size={14} style={{ color: 'var(--success)', flexShrink: 0, marginTop: 2 }} />
+                    ) : (
+                      <XCircle size={14} style={{ color: 'var(--danger)', flexShrink: 0, marginTop: 2 }} />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className="inline-flex items-center gap-1.5 text-[13px] font-medium"
+                          style={{ color: 'var(--text-primary)' }}
+                        >
+                          {a.approverName}
+                          <CopyEmailButton email={a.approverEmail} />
+                        </span>
+                        <span className="text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                          {format(new Date(a.createdAt), 'MMM d, yyyy HH:mm')}
+                        </span>
+                      </div>
+                      <p
+                        className="text-[11px] mt-0.5"
+                        style={{ color: isApproved ? 'var(--text-muted)' : 'var(--danger)' }}
+                      >
+                        {what}
+                      </p>
+                      {a.comment && (
+                        <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+                          &ldquo;{a.comment}&rdquo;
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
+
       </div>
     </div>
   );
@@ -1618,10 +2338,10 @@ function ApprovalProgressBody({ progress }: { progress: PromotionApprovalProgres
 // Work items card
 //
 // Lists every work-item in the candidate's bundle (the candidate's own
-// source-event refs, deduped on key). Per-row buttons
-// drive POST /api/work-items/{key}/approvals|rejections. Authority is decided
-// by GET /api/work-items/{key}?product=&targetEnv= so we surface the same
-// blockedReason wording the API would return on a failed POST.
+// references, deduped on key). Rows are navigational: the key opens the
+// work-item detail page, which owns sign-off and discussion. Here we show the
+// current sign-off state — from GET /api/work-items/{key}?product=&targetEnv=
+// — and let an operator assign the people responsible.
 //
 // Empty bundle: explicit message.
 // ─────────────────────────────────────────────────────────────────────────
@@ -1631,22 +2351,85 @@ function WorkItemsCard({
   onChanged,
 }: {
   candidate: PromotionCandidate;
-  workItems: BundleWorkItem[];
+  workItems: PromotionSourceEventReference[];
   onChanged: () => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
+  const canManageWorkItems = useAuthStore((s) => !!(s.user?.isQA || s.user?.isAdmin));
+  // Which work items have nobody in a role the policy requires, and which roles those are. Derived
+  // server-side onto the candidate, so it is already right for items attached after the promotion was
+  // created and after a policy edit re-gated it.
+  const roleGaps = candidate.workItemRoleGaps ?? [];
+  const missingRolesByKey = new Map(roleGaps.map((g) => [g.workItemKey, g.missingRoles]));
+  const distinctMissingRoles = Array.from(new Set(roleGaps.flatMap((g) => g.missingRoles)));
+
+  // A dev-only edge whose policy creates no work items. The rows below would be sign-off surfaces for
+  // records that don't exist — every one of them would fetch nothing and link to a 404 — so the card
+  // collapses to a one-liner. What shipped is still on the page: the References card lists the same
+  // work-item entries as change-set history, which is all they are here.
+  if (candidate.tracksWorkItems === false) {
+    return (
+      <div
+        className="rounded-xl border p-5"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+      >
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 mb-3"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Ticket size={12} /> Work items
+        </h2>
+        <div
+          className="p-3 rounded-lg text-[12px]"
+          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
+        >
+          Work items aren&rsquo;t tracked on this edge — its promotion policy doesn&rsquo;t create
+          them, so nothing here needs a sign-off. The{' '}
+          {workItems.length === 1 ? 'work item' : `${workItems.length} work items`} this promotion
+          carries {workItems.length === 1 ? 'is' : 'are'} listed under References.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="rounded-xl border p-5"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
     >
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between gap-3 mb-4">
         <h2
           className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5"
           style={{ color: 'var(--text-muted)' }}
         >
           <Ticket size={12} /> Work items ({workItems.length})
         </h2>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
+          {/* One person into a role on every work item at once — the per-row Assign, for the bundle. */}
+          <AssignToAllWorkItems
+            candidate={candidate}
+            workItems={workItems}
+            readOnly={readOnly}
+            onChanged={onChanged}
+          />
+        </div>
       </div>
+
+      {/* Card-level notice: names the roles nobody is in, so the ask is legible without reading every
+         row. The per-row badges below say which items are affected. */}
+      {roleGaps.length > 0 && (
+        <div className="mb-3">
+          <MissingRolesNotice
+            roles={distinctMissingRoles}
+            action={
+              canManageWorkItems && !readOnly
+                ? 'Assign someone on the affected work items below, or use Assign to all.'
+                : 'Assign someone on the affected work items below.'
+            }
+          />
+        </div>
+      )}
 
       {workItems.length === 0 ? (
         <div
@@ -1656,42 +2439,65 @@ function WorkItemsCard({
           No work-items on this candidate.
         </div>
       ) : (
-        <div className="space-y-2">
-          {workItems.map((wi, i) => (
+        // The work items are what a reviewer moves through on this page, so the arrow keys iterate
+        // them. Not auto-focused: the approval card above is the point of the page, and stealing the
+        // caret down here on arrival would bury it.
+        <KeyboardList
+          className="space-y-2"
+          count={workItems.length}
+          ariaLabel="Work items on this promotion"
+          autoFocus={false}
+        >
+          {workItems.map((reference, i) => (
             <TicketRow
-              key={wi.reference.key ?? wi.reference.url ?? `wi-${i}`}
+              key={reference.key ?? reference.url ?? `wi-${i}`}
+              index={i}
               candidate={candidate}
-              reference={wi.reference}
-              deployEventId={wi.deployEventId}
+              reference={reference}
+              missingRoles={missingRolesByKey.get(reference.key ?? '')}
               onChanged={onChanged}
             />
           ))}
-        </div>
+        </KeyboardList>
       )}
     </div>
   );
 }
 
+/**
+ * One work-item row.
+ *
+ * The whole tile opens the work-item detail page, matching the queue and the promotions list;
+ * regions with their own behaviour (the tracker link, the participant controls) swallow the click
+ * rather than every leaf control having to know about the tile.
+ *
+ * Layout note: the state badge lives in its own flex column rather than being pushed right with
+ * `ml-auto` inside the title row — in the wrapping version it dropped onto a line of its own as
+ * soon as the title got long. The title truncates on a single line for the same reason, and the
+ * participant chips get the full content width so a long assignee list stays readable instead of
+ * being clipped.
+ */
 function TicketRow({
+  index,
   candidate,
   reference,
-  deployEventId,
+  missingRoles,
   onChanged,
 }: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
   candidate: PromotionCandidate;
   reference: PromotionSourceEventReference;
-  /** Source deploy event id this reference belongs to. PATCH targets `/deployments/{eventId}/...`.
-   *  Null when the reference can't be traced back (legacy data) — assign controls hidden. */
-  deployEventId: string | null;
+  /** Policy-required roles nobody holds on this work item. Undefined/empty ⇒ nothing to flag. */
+  missingRoles?: string[];
   onChanged: () => void;
 }) {
+  const readOnly = useContext(PromoReadOnlyCtx);
+  const navigate = useNavigate();
   const key = reference.key ?? '';
   const [ctx, setCtx] = useState<WorkItemContext | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState('');
-  const [showCommentBox, setShowCommentBox] = useState(false);
 
   const refresh = async () => {
     if (!key) {
@@ -1699,7 +2505,12 @@ function TicketRow({
       return;
     }
     try {
-      const next = await api.getWorkItemContext(key, candidate.product, candidate.targetEnv);
+      const next = await api.getWorkItemContext(
+        key,
+        candidate.product,
+        candidate.service,
+        candidate.targetEnv,
+      );
       setCtx(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load work item state');
@@ -1708,34 +2519,17 @@ function TicketRow({
     }
   };
 
+  // Each row owns its work-item context, so it also owns reacting to that work item changing. The
+  // same ticket on a sibling service is a different work item, so its events are not this row's.
+  const workItemTick = useEntityRefresh(['work-item'], {
+    filter: (evt) =>
+      (!evt.key || evt.key === key) && (!evt.service || evt.service === candidate.service),
+  });
+
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, candidate.product, candidate.targetEnv, candidate.id]);
-
-  const decide = async (decision: 'approve' | 'reject') => {
-    if (!key) return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (decision === 'approve') {
-        await api.approveWorkItem(key, candidate.product, candidate.targetEnv, comment || undefined);
-      } else {
-        await api.rejectWorkItem(key, candidate.product, candidate.targetEnv, comment || undefined);
-      }
-      setComment('');
-      setShowCommentBox(false);
-      // Refetch this row's context AND the parent candidate (the latter so the
-      // promotion-level card mirrors any cascade — auto-promote on full approve,
-      // veto-cascade on reject).
-      await refresh();
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed');
-    } finally {
-      setBusy(false);
-    }
-  };
+  }, [key, candidate.product, candidate.service, candidate.targetEnv, candidate.id, workItemTick]);
 
   const Icon = REFERENCE_ICONS[reference.type] ?? Ticket;
   const href = resolveReferenceHref({
@@ -1745,82 +2539,132 @@ function TicketRow({
     revision: reference.revision ?? undefined,
   });
 
-  // Pick a single decision (Approved / Rejected) to render — first decision wins.
-  // The unique index in the API guarantees one row per (key, product, env, approver),
-  // and the blocked-reason path guarantees no second user can decide if any decision
-  // is already present. So the first row is canonical.
+  // Pick a single decision (Approved / Issue / Blocked) to render — first row wins. The API
+  // keeps one row per approver and the detail page shows the full trail, so the summary badge only
+  // needs the canonical outcome.
   const decided = ctx?.approvals[0] ?? null;
-  const stateLabel = decided
-    ? decided.decision
-    : ctx?.canApprove
-      ? 'Pending — your turn'
-      : 'Pending';
-  const stateColor = decided
-    ? decided.decision === 'Approved'
-      ? 'var(--success)'
-      : 'var(--danger)'
-    : 'var(--warning)';
-  const stateBg = decided
-    ? decided.decision === 'Approved'
-      ? 'var(--success-bg)'
-      : 'var(--danger-bg)'
-    : 'var(--warning-bg)';
+  const decidedStyle = decided ? decisionStyle(decided.decision) : null;
+  // Undecided is "Pending" regardless of whose turn it is. The badge reports the work item's state;
+  // whether the reader can act on it is already answered by the "Sign off & discuss" link below.
+  const stateLabel = decidedStyle ? decidedStyle.label : 'Pending';
+  const stateColor = decidedStyle?.color ?? 'var(--warning)';
+  const stateBg = decidedStyle?.bg ?? 'var(--warning-bg)';
+
+  // Carry this candidate as the referrer so the work-item page can offer a way back here.
+  const detailPath = key
+    ? workItemDetailPath(key, candidate.product, candidate.service, candidate.targetEnv, candidate.id)
+    : null;
+
+  const rowProps = useKeyboardListRow(index, () => detailPath && navigate(detailPath), {
+    disabled: !detailPath,
+    label: `${key || 'Work item'} — ${stateLabel}${detailPath ? '. Open work item.' : ''}`,
+  });
+
+  // The second line, back in its parts — one per commit. The server already drops a subtitle that
+  // repeats the title; the guard here is for a candidate stored before it did.
+  const commitLines =
+    reference.subTitle && reference.subTitle !== reference.title
+      ? commitMessageLines(reference.subTitle)
+      : [];
 
   return (
     <div
-      className="p-3 rounded-lg border"
+      {...rowProps}
+      className={`p-3 rounded-lg border ${detailPath ? 'card-hover cursor-pointer' : ''}`}
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
     >
       <div className="flex items-start gap-3">
-        <Icon size={14} style={{ color: 'var(--text-muted)', marginTop: 2 }} />
+        <Icon size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: 2 }} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            {href ? (
+          <div className="flex items-baseline gap-2 min-w-0">
+            {detailPath ? (
+              <Link
+                to={detailPath}
+                className="text-[13px] font-medium hover:underline shrink-0"
+                style={{ color: 'var(--accent)' }}
+                title={`Open ${key} details`}
+              >
+                {key}
+              </Link>
+            ) : (
+              <span className="text-[13px] font-medium shrink-0" style={{ color: 'var(--text-primary)' }}>
+                work-item
+              </span>
+            )}
+            {/* External tracker link is a bare icon — the label itself now goes to the in-app
+                detail page, which is the primary destination. */}
+            {href && (
               <a
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[13px] font-medium hover:underline"
-                style={{ color: 'var(--accent)' }}
-                title={reference.title ?? undefined}
+                onClick={(e) => e.stopPropagation()}
+                className="shrink-0 transition-opacity hover:opacity-70"
+                style={{ color: 'var(--text-muted)' }}
+                title={`Open ${key || 'work item'} in ${reference.provider ?? 'the tracker'}`}
+                aria-label={`Open ${key || 'work item'} in ${reference.provider ?? 'the tracker'}`}
               >
-                {key || 'work-item'}
+                <ExternalLink size={11} />
               </a>
-            ) : (
-              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                {key || 'work-item'}
-              </span>
             )}
             {reference.title && (
-              <span className="text-[12px] truncate" style={{ color: 'var(--text-secondary)' }}>
+              <span
+                className="text-[12px] truncate"
+                style={{ color: 'var(--text-secondary)' }}
+                title={reference.title}
+              >
                 {reference.title}
               </span>
             )}
-            <span
-              className="badge ml-auto"
-              style={{ backgroundColor: stateBg, color: stateColor }}
-            >
-              {stateLabel}
-            </span>
+            {/* Issue type and priority from the tracker, so a reviewer scanning the bundle can spot
+                the Bug among the Stories and the Highest among the Lows without opening each one. */}
+            <WorkItemTraits workItemType={reference.workItemType} priority={reference.priority} />
+            {/* Nobody in a role the policy requires. Sits on the title line, next to the state badge's
+                column, so a reviewer scanning the bundle sees which item is missing an owner. */}
+            <MissingRolesBadge roles={missingRoles} />
           </div>
 
-          {/* Reference-level participants (e.g. QA on a ticket, author on a PR).
-              Now interactive: each chip can be reassigned or cleared, and an empty slot
-              for any role attached to a sibling reference can be filled. Operator
-              overrides surface via PATCH /api/deployments/{eventId}/references/{key}/participants. */}
-          <ParticipantChips
-            participants={reference.participants ?? []}
-            deployEventId={deployEventId}
-            referenceKey={key}
-            onChanged={onChanged}
-          />
+          {/* Every commit message behind the ticket, one per line. The line above is the ticket's
+              own name; these are what actually changed under it — a list whenever it rode in on
+              more than one commit, so they get a line each rather than one running sentence. Each
+              line truncates on its own, with the full message in its tooltip, so a verbose commit
+              subject can't widen the row. */}
+          {commitLines.length > 0 && (
+            <div className="min-w-0">
+              {commitLines.map((line, i) => (
+                <p
+                  key={i}
+                  className="text-[11px] truncate"
+                  style={{ color: 'var(--text-muted)' }}
+                  title={line}
+                >
+                  {/* Marker only when there is more than one: a lone message is a sentence, not a
+                      list of one. */}
+                  {commitLines.length > 1 ? `• ${line}` : line}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {/* Reference-level participants (e.g. QA on a ticket). Editable in place: writes go to
+              PATCH /api/promotions/{id}/references/{key}/participants. The wrapper keeps assignment
+              clicks from being read as "open the work item". */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <WorkItemParticipants
+              candidateId={candidate.id}
+              referenceKey={key}
+              participants={reference.participants ?? []}
+              onChanged={onChanged}
+              readOnly={readOnly}
+            />
+          </div>
 
           {decided && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {decided.decision} by{' '}
+              {decidedStyle?.label} by{' '}
               <span style={{ color: 'var(--text-secondary)' }}>{decided.approverEmail}</span>
               {' · '}
-              {format(new Date(decided.createdAt), 'MMM d, HH:mm')}
+              {format(new Date(decided.updatedAt ?? decided.createdAt), 'MMM d, HH:mm')}
               {decided.comment && (
                 <span
                   className="block mt-1 italic"
@@ -1851,416 +2695,23 @@ function TicketRow({
             </p>
           )}
 
-          {!decided && ctx?.canApprove && (
-            <div className="mt-2">
-              {showCommentBox && (
-                <textarea
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  placeholder="Optional comment..."
-                  rows={2}
-                  className="w-full rounded-lg border px-2 py-1.5 text-[12px] resize-none mb-2"
-                  style={{
-                    borderColor: 'var(--border-color)',
-                    backgroundColor: 'var(--bg-primary)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => decide('approve')}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-opacity"
-                  style={{
-                    backgroundColor: 'var(--success)',
-                    color: '#fff',
-                    opacity: busy ? 0.6 : 1,
-                  }}
-                >
-                  <CheckCircle size={11} />
-                  Approve
-                </button>
-                <button
-                  onClick={() => decide('reject')}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-opacity"
-                  style={{
-                    backgroundColor: 'var(--danger)',
-                    color: '#fff',
-                    opacity: busy ? 0.6 : 1,
-                  }}
-                >
-                  <XCircle size={11} />
-                  Reject
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowCommentBox((v) => !v)}
-                  className="text-[11px] transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  {showCommentBox ? 'Hide comment' : 'Add comment'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// One row of role chips for a single reference. Each chip is a participant slot:
-//  - filled  → "Role: Display <email>" with a popover containing Reassign / Clear.
-// A single "+ Assign" button at the end opens a picker where the operator chooses
-// both the role (free-form, with directory-suggested values) and the person —
-// mirroring PeopleCard's add-form so the two flows feel like one thing.
-function ParticipantChips({
-  participants,
-  deployEventId,
-  referenceKey,
-  onChanged,
-}: {
-  participants: PromotionSourceEventParticipant[];
-  deployEventId: string | null;
-  referenceKey: string;
-  onChanged: () => void;
-}) {
-  const readOnly = useContext(PromoReadOnlyCtx);
-  // editingRole === '' means "new assign" (role chosen inside picker).
-  // editingRole === <role> means reassigning that specific chip.
-  const [editingRole, setEditingRole] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // No event id or read-only → can't PATCH. Render the read-only text fallback.
-  if (!deployEventId || !referenceKey || readOnly) {
-    if (participants.length === 0) return null;
-    return (
-      <div
-        className="mt-0.5 text-[11px] truncate"
-        style={{ color: 'var(--text-muted)' }}
-        title={participants.map((p) => formatReferenceParticipant(p)).join(', ')}
-      >
-        {participants.map((p) => formatReferenceParticipant(p)).join(', ')}
-      </div>
-    );
-  }
-
-  const submit = async (role: string, assignee: { email: string; displayName: string } | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.assignReferenceParticipant(deployEventId, referenceKey, role, assignee);
-      setEditingRole(null);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update participant');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const newAssignOpen = editingRole === '';
-
-  return (
-    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-      {participants.map((p) => (
-        <ParticipantChip
-          key={`${p.role}-${p.email ?? ''}`}
-          participant={p}
-          onReassign={() => setEditingRole(p.role)}
-          onClear={() => submit(p.role, null)}
-          editing={editingRole === p.role}
-          onCancelEdit={() => setEditingRole(null)}
-          onPick={(picked) => submit(p.role, picked)}
-          busy={busy}
-        />
-      ))}
-      <span className="inline-flex items-center relative">
-        <button
-          type="button"
-          onClick={() => setEditingRole(newAssignOpen ? null : '')}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
-          style={{
-            borderColor: 'var(--border-color)',
-            color: 'var(--text-muted)',
-            border: '1px dashed var(--border-color)',
-          }}
-          disabled={busy}
-          title="Assign a person to this reference"
-        >
-          <Plus size={10} /> Assign
-        </button>
-        {newAssignOpen && (
-          <InlineUserPicker
-            role={null}
-            onPick={(picked) => submit(picked.role, { email: picked.email, displayName: picked.displayName })}
-            onCancel={() => setEditingRole(null)}
-            busy={busy}
-          />
-        )}
-      </span>
-      {error && (
-        <span className="text-[10px]" style={{ color: 'var(--danger)' }}>
-          {error}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function ParticipantChip({
-  participant,
-  onReassign,
-  onClear,
-  editing,
-  onCancelEdit,
-  onPick,
-  busy,
-}: {
-  participant: PromotionSourceEventParticipant;
-  onReassign: () => void;
-  onClear: () => void;
-  editing: boolean;
-  onCancelEdit: () => void;
-  onPick: (picked: { email: string; displayName: string }) => void;
-  busy: boolean;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const overridden = participant.isOverride === true;
-  const tooltip = overridden && participant.assignedBy
-    ? `${formatReferenceParticipant(participant)} (overridden by ${participant.assignedBy})`
-    : formatReferenceParticipant(participant);
-
-  return (
-    <span className="inline-flex items-center relative">
-      <button
-        type="button"
-        onClick={() => setMenuOpen((v) => !v)}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
-        style={{
-          backgroundColor: overridden ? 'var(--accent-bg)' : 'var(--bg-tertiary, var(--bg-primary))',
-          color: overridden ? 'var(--accent)' : 'var(--text-secondary)',
-          border: '1px solid var(--border-color)',
-        }}
-        title={tooltip}
-        disabled={busy}
-      >
-        <Users size={10} />
-        <span className="truncate max-w-[160px]">
-          {roleDisplay(participant)}: {participant.displayName ?? participant.email ?? '—'}
-        </span>
-        {overridden && <span style={{ color: 'var(--accent)' }}>•</span>}
-      </button>
-      {menuOpen && !editing && (
-        <div
-          className="absolute z-10 mt-1 top-full left-0 rounded-lg border shadow-lg"
-          style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
-        >
-          <button
-            type="button"
-            onClick={() => { setMenuOpen(false); onReassign(); }}
-            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            Reassign…
-          </button>
-          <button
-            type="button"
-            onClick={() => { setMenuOpen(false); onClear(); }}
-            className="block w-full text-left px-3 py-1.5 text-[11px] hover:opacity-80"
-            style={{ color: 'var(--danger)' }}
-          >
-            Clear (tombstone)
-          </button>
-        </div>
-      )}
-      {editing && (
-        <InlineUserPicker
-          role={participant.role}
-          onPick={(picked) => onPick({ email: picked.email, displayName: picked.displayName })}
-          onCancel={onCancelEdit}
-          busy={busy}
-        />
-      )}
-    </span>
-  );
-}
-
-// Inline user picker — debounced search against /promotions/users/search. Mirrors the
-// look-and-feel of PeopleCard's add-participant dropdown so the two flows feel like one
-// thing. Anchored absolutely to its parent (which must be `position: relative`); pops
-// out below the chip with a fixed width so the chip itself stays narrow.
-//
-// Two modes via the `role` prop:
-//   - role = string  → reassigning a known role; only the user is selected.
-//   - role = null    → new assignment; operator types/picks the role too. Suggested
-//                      roles come from /api/promotions/roles via a <datalist> (same
-//                      pattern as PeopleCard).
-//
-// Falls back to manual email entry when the directory returns no hits (local-auth dev).
-function InlineUserPicker({
-  role,
-  onPick,
-  onCancel,
-  busy,
-}: {
-  role: string | null;
-  onPick: (picked: { role: string; email: string; displayName: string }) => void;
-  onCancel: () => void;
-  busy: boolean;
-}) {
-  const roleEditable = role === null;
-  const [roleInput, setRoleInput] = useState('');
-  const [knownRoles, setKnownRoles] = useState<string[]>([]);
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
-  const [searching, setSearching] = useState(false);
-  const datalistId = useMemo(() => `assign-roles-${Math.random().toString(36).slice(2, 8)}`, []);
-
-  // Pre-fetch role suggestions when in role-editable mode.
-  useEffect(() => {
-    if (!roleEditable) return;
-    let cancelled = false;
-    api
-      .listPromotionRoles()
-      .then((d) => { if (!cancelled) setKnownRoles(d.roles || []); })
-      .catch(() => { if (!cancelled) setKnownRoles([]); });
-    return () => { cancelled = true; };
-  }, [roleEditable]);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) { setResults([]); return; }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [query]);
-
-  // Resolve the role to send: either the locked prop or whatever the operator typed.
-  const effectiveRole = (role ?? roleInput).trim();
-  const canSubmit = effectiveRole.length > 0;
-
-  const submitWithUser = (u: { email: string; displayName: string }) => {
-    if (!canSubmit) return;
-    onPick({ role: effectiveRole, email: u.email, displayName: u.displayName });
-  };
-
-  const submitManual = () => {
-    const q = query.trim();
-    // Cheap email-shape check. Server validates again with the same rule.
-    if (!q.includes('@') || !q.includes('.')) return;
-    submitWithUser({ email: q, displayName: q });
-  };
-
-  return (
-    <div
-      className="absolute z-20 mt-1 top-full left-0 rounded-lg border shadow-lg p-2 w-72"
-      style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
-    >
-      <div className="text-[11px] mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
-        {roleEditable ? 'Assign person' : `Assign ${roleDisplay({ role: role! })}`}
-      </div>
-      {roleEditable && (
-        <>
-          <input
-            autoFocus
-            list={datalistId}
-            value={roleInput}
-            onChange={(e) => setRoleInput(e.target.value)}
-            placeholder="Role (e.g. QA, reviewer)"
-            className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none mb-1.5"
-            style={{
-              borderColor: 'var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-            }}
-            disabled={busy}
-            onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
-          />
-          <datalist id={datalistId}>
-            {knownRoles.map((r) => (
-              <option key={r} value={roleDisplay({ role: r })} />
-            ))}
-          </datalist>
-        </>
-      )}
-      <input
-        autoFocus={!roleEditable}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search directory (name or email)..."
-        className="w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none"
-        style={{
-          borderColor: 'var(--border-color)',
-          backgroundColor: 'var(--bg-secondary)',
-          color: 'var(--text-primary)',
-        }}
-        disabled={busy}
-        onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); if (e.key === 'Enter' && results.length === 0) submitManual(); }}
-      />
-      {query.trim().length >= 2 && (
-        <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: 'var(--border-color)' }}>
-          {searching && (
-            <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-              Searching...
-            </div>
-          )}
-          {!searching && results.length === 0 && (
-            <button
-              type="button"
-              onClick={submitManual}
-              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
-              disabled={busy || !canSubmit}
-              title={!canSubmit ? 'Pick a role first' : undefined}
+          {detailPath && (
+            <Link
+              to={detailPath}
+              className="inline-flex items-center gap-1 mt-1.5 text-[11px] font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--accent)' }}
             >
-              <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                No directory matches — sent as-is.
-              </span>
-            </button>
+              Sign off &amp; discuss
+              <ArrowRight size={11} />
+            </Link>
           )}
-          {!searching && results.map((u) => (
-            <button
-              key={u.id}
-              type="button"
-              onClick={() => submitWithUser({ email: u.email, displayName: u.displayName })}
-              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
-              disabled={busy || !canSubmit}
-              title={!canSubmit ? 'Pick a role first' : undefined}
-            >
-              <span className="font-medium truncate">{u.displayName}</span>
-              <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-                {u.email}
-              </span>
-            </button>
-          ))}
         </div>
-      )}
-      <div className="mt-2 flex justify-end">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity hover:opacity-80"
-          style={{ color: 'var(--text-muted)' }}
-          disabled={busy}
+        <span
+          className="badge shrink-0 self-start"
+          style={{ backgroundColor: stateBg, color: stateColor }}
         >
-          Cancel
-        </button>
+          {stateLabel}
+        </span>
       </div>
     </div>
   );

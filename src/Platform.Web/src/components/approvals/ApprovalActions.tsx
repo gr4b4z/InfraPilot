@@ -66,7 +66,7 @@ export function ApprovalActions({ onApprove, onReject, onRequestChanges, loading
           onClick={handleApprove}
           disabled={loading}
           className="flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium rounded-lg text-white transition-all hover:opacity-90 disabled:opacity-50"
-          style={{ backgroundColor: 'var(--success)' }}
+          style={{ backgroundColor: 'var(--success-solid)' }}
         >
           {loading ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
           Approve
@@ -76,7 +76,7 @@ export function ApprovalActions({ onApprove, onReject, onRequestChanges, loading
           onClick={handleReject}
           disabled={loading}
           className="flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium rounded-lg text-white transition-all hover:opacity-90 disabled:opacity-50"
-          style={{ backgroundColor: 'var(--danger)' }}
+          style={{ backgroundColor: 'var(--danger-solid)' }}
         >
           {loading ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
           Reject

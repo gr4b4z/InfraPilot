@@ -36,6 +36,96 @@ If you also want to remove the local Postgres volume:
 docker compose down -v
 ```
 
+### Developing Against A Local Stack (Windows, PowerShell)
+
+`docker compose up` runs everything in containers, which is fine for a look around but slow to
+iterate on. For development there are three scripts that keep Postgres in Docker and run the API and
+the web dev server natively, so both reload on save:
+
+```bash
+./scripts/start.ps1
+```
+
+Starts Postgres, applies migrations, seeds demo data into an empty database, and prints the URLs and
+the dev sign-in accounts. Safe to re-run — anything already listening on its port is left alone.
+`-DbOnly` starts just the database, for when the servers are launched from an IDE.
+
+```bash
+./scripts/reseed.ps1
+```
+
+Drops the local database and rebuilds it: migrate, re-seed, then report the row counts. Seeding only
+happens on an empty database, so this is the way back to a clean demo dataset. Destructive — it
+prompts unless given `-Force`.
+
+```bash
+./scripts/stop.ps1
+```
+
+Stops the servers and the database, keeping the volume. `-KeepDb` leaves Postgres up; `-RemoveData`
+deletes the volume as well.
+
+Logs and pid files go to `.local/` (gitignored).
+
+### Tutorial Environment (A Copy Of A Live Instance)
+
+```bash
+./scripts/tutorial/seed-tutorial.ps1
+```
+
+Builds the environment used for presentations and training: the local database is dropped and
+refilled with a copy of a real instance's *active* data — the current version of every service in
+every environment, the last week of deploys, the registered builds and every open promotion — and
+then a scripted storyline is staged on top (a promotion signed off and waiting for its release
+approval, one with an issue raised, one rejected, one approved and waiting for its deploy, a failed
+deploy with pipeline logs, a rollback request, a release note, a webhook subscription). Three
+accounts come with it: `admin@localhost` / `admin123` (Admin), `qa@localhost` / `qa123`
+(QA) and `user@localhost` / `user123` (plain User).
+
+The copy is taken by `scripts/tutorial/export-snapshot.ps1` through the public API, so it needs
+`DEPLOYMENTS_URL` and `DEPLOYMENTS_API_KEY` for the source instance; the result lands in the gitignored
+`scripts/tutorial/snapshot/` and is reused by later runs (`-RefreshSnapshot` pulls again). Everything
+else is written through the local API the way pipelines and users write it, so the data is exactly
+what the product does with real payloads. The run ends with `.local/tutorial-cheatsheet.md` — the
+promotion ids, links and curl commands the live parts of a demo need — and
+[docs/tutorial/presentation-guide.md](docs/tutorial/presentation-guide.md) is the matching
+presenter's script. `scripts/tutorial/webhook-listener.ps1` is a terminal that shows the seeded
+webhook's deliveries arriving.
+
+`scripts/tutorial/capture` (Node + Playwright) produces the offline version of the presentation: an
+annotated screenshot walkthrough of every part, as PDF and HTML, from each actor's point of view, with
+the terminal output of the live steps. `npm run all` there, after a fresh seed; output lands in
+`.local/tutorial-walkthrough/`.
+
+The script also writes `src/Platform.Api/appsettings.Development.json` (backing up an existing one):
+the demo deployment seeder is switched off there (`Seed:DemoDeployments`), a `tutorial-pipeline-key`
+API key is added for the curl commands, and the ingest rate limit is lifted. `reseed.ps1` afterwards
+gives a database with only the catalog and the users; delete the `Seed` block to get the built-in
+demo dataset back.
+
+### Syncing MPT Versions
+
+```bash
+./scripts/sync-mpt-versions.ps1 -WhatIf
+```
+
+Catches InfraPortal up after an outage or a restore. Reads the version manifests MPT publishes for
+[staging](https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json) and
+[production](https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json), confirms
+each version against the AKS cluster behind the environment (`mpt-staging-r1-aks`,
+`mpt-prod-r1-aks`), and records a manual deployment for every component whose version has moved
+forward. It never creates services, never records an older version, and never writes a version the
+cluster disagrees with; each of those is reported instead. Services are updated under the product
+InfraPortal already files them under (`mpt`, or whatever an admin's service product override says),
+never under the manifest's obsolete `marketplace`.
+
+Only the drift is written, so re-running it changes nothing. Unlike the scripts above this one talks
+to a real instance: connection comes from `DEPLOYMENTS_URL` and `DEPLOYMENTS_API_KEY` (or
+`-ApiBaseUrl` / `-ApiKey`), and the cluster check needs kubectl credentials for both clusters
+(`az aks get-credentials`) or `-NoClusterCheck`. `-WhatIf` prints what it would record, `-Target
+staging|production` limits it to one environment, and `-Service 'mpt-web-*'` to a subset of
+components. `Get-Help ./scripts/sync-mpt-versions.ps1 -Full` has the rest.
+
 ## What Runs Locally
 
 `docker compose` starts three services:
@@ -266,7 +356,7 @@ A separate app registration used by the backend to call Microsoft Graph with cli
 1. Go to **API permissions > Add a permission > Microsoft Graph > Application permissions**
 2. Add:
    - `GroupMember.Read.All` — read group memberships
-   - `User.Read.All` — read user profiles
+   - `User.Read.All` — read user profiles, and whether an account is enabled (personal access tokens stop working once their owner is disabled or deleted)
 3. Click **Grant admin consent**
 
 #### Create a client secret
@@ -535,11 +625,64 @@ src/
   Platform.Api/
   Platform.Web/
 catalog/
+guides/        assistant walkthroughs  (GUIDES_PATH)
+knowledge/     assistant reference topics (KNOWLEDGE_PATH)
+playbooks/     assistant failure causes  (PLAYBOOKS_PATH)
 infra/
 docs/
 Dockerfile
 docker-compose.yml
 ```
+
+## Assistant Content
+
+Three YAML corpora feed the in-app assistant. All are loaded once at startup, ship in the image, and
+are validated by tests — a broken reference fails the build rather than degrading an answer silently.
+
+| Directory | Answers | Shape |
+|---|---|---|
+| `guides/` | "How do I roll back?" | Ordered steps, each optionally naming a `data-guide-anchor` the UI spotlights |
+| `knowledge/` | "What does this webhook do?", "Why does prod need sign-off?" | Markdown prose with `source` and `as_of` attribution |
+| `playbooks/` | "Why is this promotion stuck?" | Causes selected by observation flags the diagnostics compute from live state |
+
+### Adding a guide
+
+Write a YAML file in `guides/` with `id`, `title`, `route`, and `steps`. To point at a control, add
+`data-guide-anchor="some-name"` to the element and name it in the step's `anchor`. Nav items are
+anchored automatically as `nav-<route>`. `GuideCorpusTests` fails if an anchor, route or `related`
+id does not exist.
+
+### How the assistant sees the screen
+
+Every chat turn carries the page the user has open: its name and state (published by the page's
+`HelpButton`, or by calling `usePageContext` directly), and the list of every `data-guide-anchor`
+in the DOM. The assistant is instructed to treat that as the primary referent — "how do I approve
+that?" means the record on screen, not the one the conversation was about — and to ring what it
+talks about with its `highlight` tool, which only accepts anchors from that list.
+
+To make something pointable, give it a `data-guide-anchor`. Fixed controls take a fixed name
+(`promotion-approve-button`); elements whose identity is data follow a pattern the server also
+knows (`PortalAnchors`): `service-row:<service>`, `env-cell:<service>:<environment>`,
+`env-column:<environment>`, `promotion-row:<id>`. Asking for a service's version navigates to its
+page and rings those cells without the model having to ask.
+
+### Adding a knowledge topic
+
+Write a YAML file in `knowledge/` with `id`, `title`, `summary`, `body` (Markdown), plus `source` and
+`as_of`. Those last two are required: these topics describe pipelines in other repositories
+(`mpt-release`, `marketplace`, `ops-build-templates-aks-releases`), so every claim has to be
+traceable and dated. Add `aliases` for how people actually phrase the question — that is what the
+keyword search ranks on.
+
+### Adding a failure cause
+
+Write a cause under the relevant `playbooks/` file with `matches_when` listing observation flags from
+`Observations`. The diagnostics compute those flags from live state and only offer causes whose flags
+hold, so the assistant cannot invent an explanation. A cause keyed on a flag nothing emits is dead —
+`DiagnosticsCorpusTests` fails the build for exactly that.
+
+To make a new condition diagnosable: add the flag to `Observations`, emit it in `DiagnosticsService`,
+and write the cause that uses it.
 
 ## Troubleshooting
 

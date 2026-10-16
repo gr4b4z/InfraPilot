@@ -2,36 +2,75 @@ import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ChatSidebar } from './ChatSidebar';
-import { useSseEvents } from '@/hooks/useSseEvents';
+import { GuideSpotlight } from '@/components/guide/GuideSpotlight';
+import { HighlightLayer } from '@/components/guide/HighlightLayer';
+import { KeyboardLayer } from './KeyboardLayer';
+import { StatusBanners } from './StatusBanners';
+import { PageErrorBoundary } from '@/components/system/ErrorBoundary';
+import { useReloadIntoUpdateOnNavigate } from '@/lib/appUpdate';
+import { useRealtimeEvents } from '@/hooks/useRealtimeEvents';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { useConversationStore } from '@/stores/conversationStore';
+import { useMyTasksPolling } from '@/stores/myTasksStore';
 
 export function Layout() {
-  useSseEvents();
+  useRealtimeEvents();
+  // Feeds the sidebar counters, the topbar bell badge and the My Tasks page from one fetch.
+  useMyTasksPolling();
+  // A newer release went out while this tab was open: load it on the next page change.
+  useReloadIntoUpdateOnNavigate();
   const { sidebarOpen, sidebarExpanded } = useConversationStore();
-  const chatTakesOver = sidebarOpen && sidebarExpanded;
+  const isDesktop = useIsDesktop();
+  // Below `lg` there isn't room for a conversation and a table side by side, so an open chat always
+  // takes the content area over — the expanded/docked distinction only exists on wide viewports.
+  const chatTakesOver = sidebarOpen && (sidebarExpanded || !isDesktop);
 
   return (
     <div
       className="flex h-screen overflow-hidden"
-      style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+      // `--bg-shell` exists only in the hidden themes, where it is transparent so their animated
+      // backdrop shows through the translucent page canvas. Everywhere else this is --bg-primary.
+      style={{ backgroundColor: 'var(--bg-shell, var(--bg-primary))', color: 'var(--text-primary)' }}
     >
+      {/* First tab stop on the page: without it, reaching the content means tabbing through the
+          whole sidebar on every navigation. Off-screen until focused. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[1200] focus:px-3 focus:py-2 focus:rounded-lg focus:text-[13px] focus:font-medium"
+        style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
+      >
+        Skip to main content
+      </a>
+      <KeyboardLayer />
       <Sidebar />
       <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+        <StatusBanners />
         <Topbar />
         <div className="flex flex-1 overflow-hidden">
           {!chatTakesOver && (
             <main
+              id="main-content"
+              // Focusable so the skip link actually lands here; not a tab stop itself.
+              tabIndex={-1}
               className="flex-1 overflow-y-auto"
               style={{ backgroundColor: 'var(--bg-secondary)' }}
             >
-              <div className="p-6 lg:p-8 max-w-[1400px]">
-                <Outlet />
+              {/* No width cap here: these are dense operational tables that should use the
+                  whole viewport. Long-form pages set their own reading width instead. */}
+              <div className="p-4 sm:p-6 lg:p-8">
+                <PageErrorBoundary>
+                  <Outlet />
+                </PageErrorBoundary>
               </div>
             </main>
           )}
           <ChatSidebar />
         </div>
       </div>
+      {/* Above the shell so they can ring controls anywhere on the page, including the nav itself.
+          The rings are the assistant pointing at what it just said; the spotlight is a walkthrough. */}
+      <HighlightLayer />
+      <GuideSpotlight />
     </div>
   );
 }

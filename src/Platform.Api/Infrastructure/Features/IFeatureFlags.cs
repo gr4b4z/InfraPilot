@@ -29,4 +29,5 @@ public static class FeatureFlagKeys
     public const string ServiceCatalog = "features.serviceCatalog";
     public const string Approvals = "features.approvals";
     public const string ReleaseNotes = "features.releaseNotes";
+    public const string Analytics = "features.analytics";
 }

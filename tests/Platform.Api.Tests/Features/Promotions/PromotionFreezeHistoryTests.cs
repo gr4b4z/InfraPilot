@@ -44,7 +44,8 @@ public class PromotionFreezeHistoryTests : IDisposable
         var promotions = new PromotionService(
             _db, new PromotionPolicyResolver(_db), auth, _currentUser, audit,
             Substitute.For<ILogger<PromotionService>>(), Substitute.For<IWebhookDispatcher>(),
-            TestOptions.Normalization());
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db), TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db), TestRoleCatalog.For(_db));
         _sut = new PromotionFreezeService(
             _db, promotions, _currentUser, audit, Substitute.For<IWebhookDispatcher>(),
             Substitute.For<ILogger<PromotionFreezeService>>());

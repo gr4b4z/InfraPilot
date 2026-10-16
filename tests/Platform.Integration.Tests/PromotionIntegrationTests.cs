@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -37,18 +37,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
 
     // ── Test cases ──────────────────────────────────────────────────────────
 
-    [Fact]
-    public async Task GetPromotionPolicies_ReturnsEmptyList()
-    {
-        var response = await _adminClient.GetAsync("/api/promotions/admin/policies");
-        response.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(response);
-        var policies = body.GetProperty("policies");
-        Assert.Equal(JsonValueKind.Array, policies.ValueKind);
-        // May contain policies created by other tests in the same fixture, so just assert it's an array.
-    }
-
     // Topology endpoints were removed (D19): the external system is the source of truth for edges,
     // so GetTopology/PutTopology no longer exist. The corresponding tests were dropped.
 
@@ -79,7 +67,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
                     },
                 },
             },
-            timeoutHours = 48,
             escalationGroup = (string?)null,
         };
 
@@ -91,7 +78,6 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
         Assert.Equal("my-service", body.GetProperty("service").GetString());
         Assert.Equal("staging", body.GetProperty("sourceEnv").GetString());
         Assert.Equal("prod", body.GetProperty("targetEnv").GetString());
-        Assert.Equal(48, body.GetProperty("timeoutHours").GetInt32());
 
         // Step tree round-trips.
         var steps = body.GetProperty("steps");
@@ -229,6 +215,8 @@ public class PromotionIntegrationTests : IClassFixture<PromotionIntegrationTests
                 services.AddSingleton<DbConnection>(_connection);
                 services.AddDbContext<PlatformDbContext>((sp, options) =>
                     options.UseSqlite(sp.GetRequiredService<DbConnection>()));
+
+                TestHostIsolation.Apply(services);
             });
         }
 

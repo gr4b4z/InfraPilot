@@ -45,20 +45,83 @@ public class PromotionPolicy
         set => ApprovalStepsJson = JsonSerializer.Serialize(value, JsonOpts);
     }
 
-    // ── Work-item-gate options ─────────────────────────────────────────────────
-    // These three flags are independent and can be combined freely.
+    // ── Work-item completeness ────────────────────────────────────────────────
 
     /// <summary>
-    /// When <c>true</c>, a human approver cannot approve the promotion until every work item
-    /// in the bundle has at least one Approved WorkItemApproval row. Has no effect when the bundle
-    /// contains no work items (nothing to wait for).
+    /// When <c>false</c>, promotions on this edge carry no work items at all: no
+    /// <see cref="PromotionWorkItem"/> rows are created, so the tickets never reach the work-items
+    /// queue, never need a sign-off, and are never flagged for a missing
+    /// <see cref="RequiredWorkItemRoles"/> entry. The change set itself is untouched — the candidate
+    /// still records its work-item references, so the promotion page and downstream integrations keep
+    /// showing what shipped.
+    ///
+    /// <para>For edges whose target isn't ready for QA — a developer integration environment, a CI
+    /// test ring — where a work item arriving in the queue is noise, not work. Defaults to <c>true</c>
+    /// so existing edges keep tracking.</para>
+    ///
+    /// <para>Every other work-item setting on this policy (the required roles and the three gate
+    /// flags) is inert while this is off: they all describe work items, and there are none.</para>
+    /// </summary>
+    public bool TracksWorkItems { get; set; } = true;
+
+    /// <summary>
+    /// JSON-serialised <see cref="RequiredWorkItemRoles"/>. Persisted as a plain string column,
+    /// mirroring <see cref="ApprovalStepsJson"/>. Empty array (<c>"[]"</c>) ⇒ no role requirement.
+    /// </summary>
+    public string RequiredWorkItemRolesJson { get; set; } = "[]";
+
+    /// <summary>
+    /// Participant roles every work item on a candidate gated by this policy must have somebody in —
+    /// e.g. <c>qa-owner</c>. A work item with no named person in one of these roles is
+    /// <b>incomplete</b>: the platform flags it everywhere it renders and asks for someone to be put
+    /// on the role. Stored canonicalised (<see cref="Infrastructure.RoleNormalizer"/>).
+    ///
+    /// <para>Deliberately not part of the approval gate: this records who is <i>answerable</i> for a
+    /// work item, which is a data-completeness question, not an authorisation one. The blocking
+    /// condition remains <see cref="RequireAllWorkItemsApproved"/>.</para>
+    /// </summary>
+    public List<string> RequiredWorkItemRoles
+    {
+        get => string.IsNullOrEmpty(RequiredWorkItemRolesJson)
+            ? new()
+            : JsonSerializer.Deserialize<List<string>>(RequiredWorkItemRolesJson, JsonOpts) ?? new();
+        set => RequiredWorkItemRolesJson = JsonSerializer.Serialize(value, JsonOpts);
+    }
+
+    // ── Work-item-gate options ─────────────────────────────────────────────────
+    // These flags are independent and can be combined freely.
+
+    /// <summary>
+    /// When <c>true</c>, a human approver cannot approve the promotion until every work item in the
+    /// bundle has been <b>cleared</b>: somebody recorded a decision on it and nobody blocked it. An
+    /// <see cref="WorkItemDecision.Issue"/> clears the item like an approval does — it flags a problem
+    /// on a change that is still going out — so <see cref="WorkItemDecision.Blocked"/> is the only
+    /// verdict that holds the promotion. Has no effect when the bundle contains no work items
+    /// (nothing to wait for).
     /// </summary>
     public bool RequireAllWorkItemsApproved { get; set; } = false;
 
     /// <summary>
-    /// When <c>true</c>, the candidate is automatically promoted the moment all work items
-    /// in the bundle have been approved, regardless of any human approver requirements — the
-    /// first path that satisfies the gate wins.
+    /// What "approved" means for a work item on this edge's gate. A work item is per service
+    /// (<c>mpt-helpdesk/MPT-1</c> and <c>mpt-platform/MPT-1</c> are two work items), so by default a
+    /// promotion of <c>mpt-helpdesk</c> waits only for <i>its</i> instance of the ticket. When
+    /// <c>true</c> it waits for the ticket's <b>overall</b> status instead — every service's instance
+    /// in the target environment decided, none holding a block (see
+    /// <see cref="WorkItemOverallStatus.ClearsGateEverywhere"/>). For a team that reads a ticket as
+    /// done-or-not rather than done-per-service.
+    ///
+    /// <para>Qualifies <see cref="RequireAllWorkItemsApproved"/> and
+    /// <see cref="AutoApproveOnAllWorkItemsApproved"/>; on its own it changes nothing, because
+    /// without either of those the gate never looks at work items.</para>
+    /// </summary>
+    public bool RequireAllWorkItemInstancesApproved { get; set; } = false;
+
+    /// <summary>
+    /// When <c>true</c>, the candidate is automatically promoted the moment all work items in the
+    /// bundle are cleared (same bar as <see cref="RequireAllWorkItemsApproved"/>: decided, none
+    /// blocked), regardless of any human approver requirements — the first path that satisfies the
+    /// gate wins. Note that raising an issue on the last outstanding item clears it, so it promotes
+    /// the candidate: an issue is a note about what ships, not a hold.
     /// </summary>
     public bool AutoApproveOnAllWorkItemsApproved { get; set; } = false;
 
@@ -69,8 +132,72 @@ public class PromotionPolicy
     /// </summary>
     public bool AutoApproveWhenNoWorkItems { get; set; } = false;
 
-    // Timeouts / escalation
-    public int TimeoutHours { get; set; } = 24;
+    /// <summary>
+    /// When <c>true</c> (the default), an external candidate is rejected unless the exact version
+    /// has a succeeded deploy event in <see cref="SourceEnv"/>. Set to <c>false</c> for edges whose
+    /// source is not a real runtime environment — e.g. a CI landing zone / release track directory
+    /// ("stable") that versions pass through without ever being deployed there. Disabling it also
+    /// disables the source-drift gate check, which is meaningless without source deploy history.
+    /// </summary>
+    public bool SourceRequiresDeploy { get; set; } = true;
+
+    // ── What an approval releases ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether an approval on this edge is the <b>last</b> gate before the version goes live.
+    ///
+    /// <para><c>true</c> (the default): the release automation acts on the approval and deploys —
+    /// nobody else has to say yes. This is the mpt-release path, where <c>promotion.approved</c>
+    /// leads straight to a deploy, so pressing Approve is effectively pressing Deploy.</para>
+    ///
+    /// <para><c>false</c>: approving hands the release to a pipeline that stops at an approval of
+    /// its own, outside InfraPortal. This is the SDP path (the marketplace repo): the approval cuts
+    /// a release branch and queues a deployment run whose staging and prod stages each wait on an
+    /// Azure DevOps environment check, so the target environment does not change until somebody
+    /// signs off there too.</para>
+    ///
+    /// <para>Display only — nothing in gate evaluation, dispatch or webhook delivery reads it. It
+    /// exists so an approver can be told which of the two they are about to do: "records my
+    /// sign-off" and "ships to production now" are very different questions to be answering, and
+    /// the promotion page could not previously tell them apart.</para>
+    /// </summary>
+    public bool DeploysOnApproval { get; set; } = true;
+
+    // ── Build-registry auto-create ────────────────────────────────────────────
+
+    /// <summary>
+    /// JSON-serialised <see cref="AutoCreateFromBranches"/>. Persisted as a plain string column,
+    /// mirroring <see cref="ApprovalStepsJson"/>. Null/empty ⇒ no auto-create.
+    /// </summary>
+    public string? AutoCreateFromBranchesJson { get; set; }
+
+    /// <summary>
+    /// Branch patterns (full git refs, <c>*</c> wildcards allowed — e.g.
+    /// <c>refs/heads/main</c>, <c>refs/heads/release/*</c>) for which a registered build
+    /// automatically opens a candidate on this edge. Meaningful only on edges whose
+    /// <see cref="SourceEnv"/> is the synthetic <c>build</c> source; inert elsewhere — the
+    /// <c>BuildIngestHook</c> is the only reader. Empty ⇒ builds never auto-create here; a person
+    /// (or the promotions API) has to ask. This is what makes main → dev automatic while feature
+    /// branches stay strictly on-demand (plan: feature-branch-builds D5).
+    /// </summary>
+    public List<string> AutoCreateFromBranches
+    {
+        get => string.IsNullOrEmpty(AutoCreateFromBranchesJson)
+            ? new()
+            : JsonSerializer.Deserialize<List<string>>(AutoCreateFromBranchesJson, JsonOpts) ?? new();
+        set => AutoCreateFromBranchesJson = value.Count == 0 ? null : JsonSerializer.Serialize(value, JsonOpts);
+    }
+
+    /// <summary>
+    /// Per-edge override of the pause between an approval and the <c>promotion.approved</c>
+    /// delivery (the "undo window"). Null ⇒ the global default
+    /// (<see cref="PromotionService.ApprovedWebhookDelay"/>). Set to 0 on auto-approved edges like
+    /// <c>build → dev</c>, where a cancellation window on an automatic deploy is pure latency
+    /// (plan: feature-branch-builds D12).
+    /// </summary>
+    public int? ApprovedWebhookDelaySeconds { get; set; }
+
+    // Escalation
     public string? EscalationGroup { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

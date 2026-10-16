@@ -1,0 +1,16 @@
+{
+  "name": "infraportal-tutorial-capture",
+  "private": true,
+  "type": "module",
+  "description": "Screenshots and the walkthrough document for the InfraPortal tutorial (see ../seed-tutorial.ps1).",
+  "scripts": {
+    "install-browser": "playwright install chromium",
+    "capture": "node capture.mjs",
+    "build": "node build-doc.mjs",
+    "all": "node capture.mjs && node build-doc.mjs"
+  },
+  "devDependencies": {
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.50.0"
+  }
+}

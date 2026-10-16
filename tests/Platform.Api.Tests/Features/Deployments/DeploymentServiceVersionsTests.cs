@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -25,7 +25,10 @@ public class DeploymentServiceVersionsTests : IDisposable
             _db,
             Substitute.For<IWebhookDispatcher>(),
             Substitute.For<IPromotionIngestHook>(),
-            TestOptions.Normalization(),
+            TestOptions.Normalization(), TestEnvironmentAliases.For(_db),
+            TestUserPreferences.For(_db),
+            TestServiceDeletions.For(_db),
+            TestProductOverrides.For(_db),
             Substitute.For<ILogger<DeploymentService>>());
     }
 

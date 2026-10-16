@@ -37,6 +37,24 @@ public class StubIdentityService : IIdentityService
         return new UserInfo(userId, "Dev User", "dev@localhost");
     }
 
+    /// <summary>
+    /// A local user's <see cref="Platform.Api.Infrastructure.Auth.LocalUser.IsActive"/> — the flag
+    /// that already stops them signing in. Any other id is <see cref="AccountStatus.Unknown"/>, not
+    /// Missing: this stub also stands in for Graph when Msal mode runs without a Graph app, and an
+    /// Entra object id is a GUID that no local row will ever match.
+    /// </summary>
+    public async Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(userId, out var guid)) return AccountStatus.Unknown;
+        var active = await _db.LocalUsers.Where(u => u.Id == guid).Select(u => (bool?)u.IsActive).FirstOrDefaultAsync(ct);
+        return active switch
+        {
+            true => AccountStatus.Active,
+            false => AccountStatus.Disabled,
+            null => AccountStatus.Unknown,
+        };
+    }
+
     public async Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
     {
         var users = await _db.LocalUsers
@@ -46,6 +64,30 @@ public class StubIdentityService : IIdentityService
         return users.Count > 0
             ? users
             : [new UserInfo("user-1", "Dev User", "dev@localhost")];
+    }
+
+    /// <summary>
+    /// Local users whose roles include one of the groups, by id or name — the same "a group is a
+    /// role name" rule local mode applies at approval time — and whose name or email contains the
+    /// query. No dev-user fallback: an empty result is the answer when nobody in the group matches,
+    /// and the picker says so.
+    /// </summary>
+    public async Task<IReadOnlyList<UserInfo>> SearchUsersInGroups(
+        string query, IReadOnlyList<GroupInfo> groups, CancellationToken ct = default)
+    {
+        var names = groups
+            .SelectMany(g => new[] { g.Id, g.DisplayName })
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var candidates = await _db.LocalUsers
+            .Where(u => u.IsActive && (u.Name.Contains(query) || u.Email.Contains(query)))
+            .ToListAsync(ct);
+
+        return candidates
+            .Where(u => u.Roles.Any(names.Contains))
+            .Select(u => new UserInfo(u.Id.ToString(), u.Name, u.Email))
+            .ToList();
     }
 
     // Static dev groups so the policy editor's group picker is usable under local auth. In local

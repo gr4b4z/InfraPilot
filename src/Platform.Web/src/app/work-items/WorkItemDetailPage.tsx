@@ -1,0 +1,1439 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom';
+import { api } from '@/lib/api';
+import type {
+  PromotionSourceEventParticipant,
+  PromotionStatus,
+  WorkItemComment,
+  WorkItemDecision,
+  WorkItemDetail,
+  WorkItemInstance,
+  WorkItemOverallStatus,
+} from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import {
+  commitMessageLines,
+  decisionStyle,
+  instanceStateStyle,
+  overallSummaryLabel,
+  providerLabel,
+  referringCandidateId,
+  shortHash,
+  workItemDetailPath,
+} from '@/lib/workItem';
+import { useDocumentTitle, scopeTitle } from '@/lib/pageTitle';
+import { HelpButton } from '@/components/guide/HelpButton';
+import { Linkified } from '@/lib/linkify';
+import { ROW_ACTION_ATTR } from '@/lib/keys';
+import { refreshMyTasks } from '@/stores/myTasksStore';
+import { useEntityRefresh } from '@/hooks/useEntityEvents';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
+import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
+import { MissingRolesBadge, MissingRolesNotice } from '@/components/promotions/MissingRoles';
+import { WorkItemEnvironments } from '@/components/promotions/WorkItemEnvironments';
+import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
+import { format, formatDistanceToNow } from 'date-fns';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  Ban,
+  CheckCircle,
+  ExternalLink,
+  FileText,
+  GitCommitHorizontal,
+  GitPullRequest,
+  MessageSquare,
+  Ticket,
+  Users,
+  XCircle,
+  Edit2,
+  Trash2,
+} from 'lucide-react';
+
+/**
+ * Work-item detail page — the one place a work item is managed end to end: sign it off (Approve /
+ * Issue / Block), discuss it, and assign the people responsible for it.
+ *
+ * Identity is `(key, product, service, targetEnv)` — the grain decisions and comments key on. The
+ * service is a path segment and product / target env are query params. The same ticket carried by a
+ * sibling service is a *different* work item with its own page; the header lists those siblings so a
+ * tester can hop between them. Everything renders from a single `GET /api/work-items/{key}/detail`
+ * call; every mutation refetches it, because an approval can cascade (it may satisfy a gate and
+ * auto-promote the candidate) and the page must show the new truth rather than a guess at it.
+ */
+
+const CANDIDATE_STATUS_COLOR: Record<PromotionStatus, string> = {
+  Pending: 'var(--warning)',
+  Approved: 'var(--info)',
+  Deploying: 'var(--accent)',
+  Deployed: 'var(--success)',
+  Superseded: 'var(--text-muted)',
+  Rejected: 'var(--danger)',
+};
+
+/**
+ * Target of the pre-service link shape, `/work-items/{key}?product=&targetEnv=` — bookmarks, chat
+ * messages and webhook consumers minted before the service was part of a work item's identity. Asks
+ * the server which services carry the ticket: one → redirect straight to it; several → a picker,
+ * because the choice is exactly the information the old link lacked; none → the same not-found the
+ * detail page would show.
+ */
+export function LegacyWorkItemRedirect() {
+  const { key: rawKey } = useParams<{ key: string }>();
+  const [searchParams] = useSearchParams();
+  const workItemKey = rawKey ?? '';
+  const product = searchParams.get('product') ?? '';
+  const targetEnv = searchParams.get('targetEnv') ?? '';
+  const fromCandidateId = referringCandidateId(searchParams.get('from'));
+
+  const [instances, setInstances] = useState<WorkItemInstance[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const incomplete = !workItemKey || !product || !targetEnv;
+  const error = incomplete ? 'This link is missing the product or target environment.' : loadError;
+
+  useEffect(() => {
+    if (incomplete) return;
+    let cancelled = false;
+    api
+      .getWorkItemInstances(workItemKey, product, targetEnv)
+      .then((res) => {
+        if (!cancelled) setInstances(res.instances);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Failed to resolve work item');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [incomplete, workItemKey, product, targetEnv]);
+
+  useDocumentTitle([workItemKey, scopeTitle({ product, targetEnv }), 'Work item']);
+
+  if (instances && instances.length === 1) {
+    return (
+      <Navigate
+        to={workItemDetailPath(workItemKey, product, instances[0].service, targetEnv, fromCandidateId)}
+        replace
+      />
+    );
+  }
+
+  if (!instances && !error) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="skeleton h-64" />
+      </div>
+    );
+  }
+
+  if (error || !instances || instances.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-2">
+        <XCircle size={24} style={{ color: 'var(--danger)' }} />
+        <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
+          {error ?? `Work item ${workItemKey} is not known for ${product} → ${targetEnv}`}
+        </p>
+        <Link
+          to={fromCandidateId ? `/promotions/${fromCandidateId}` : '/me/work-items'}
+          className="text-[13px] font-medium"
+          style={{ color: 'var(--accent)' }}
+        >
+          {fromCandidateId ? 'Back to promotion' : 'Back to work items'}
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      <div className="flex items-center gap-2">
+        <Ticket size={16} style={{ color: 'var(--text-muted)' }} />
+        <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+          {workItemKey}
+        </h1>
+      </div>
+      <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+        This ticket is carried by {instances.length} services in{' '}
+        <span className="font-medium">{product}</span> → <EnvBadge env={targetEnv} size="xs" />.
+        Each is signed off, discussed and assigned on its own — pick the one you mean.
+      </p>
+      <div className="space-y-2">
+        {instances.map((i) => (
+          <Link
+            key={i.service}
+            to={workItemDetailPath(workItemKey, product, i.service, targetEnv, fromCandidateId)}
+            className="block p-3 rounded-lg border transition-opacity hover:opacity-80"
+            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                {i.service}
+                <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+                  {' '}/ {workItemKey}
+                </span>
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <span
+                  className="badge"
+                  style={{ backgroundColor: instanceStateStyle(i.state).bg, color: instanceStateStyle(i.state).color }}
+                >
+                  {instanceStateStyle(i.state).label}
+                </span>
+                <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />
+              </span>
+            </div>
+            {i.title && (
+              <p className="text-[12px] mt-1 truncate" style={{ color: 'var(--text-secondary)' }}>
+                {i.title}
+              </p>
+            )}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function WorkItemDetailPage() {
+  const { service: rawService, key: rawKey } = useParams<{ service: string; key: string }>();
+  const [searchParams] = useSearchParams();
+  const workItemKey = rawKey ?? '';
+  const service = rawService ?? '';
+  const product = searchParams.get('product') ?? '';
+  const targetEnv = searchParams.get('targetEnv') ?? '';
+  // Set when we were opened from a promotion — drives the breadcrumb back to it.
+  const fromCandidateId = referringCandidateId(searchParams.get('from'));
+  const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
+
+  const [detail, setDetail] = useState<WorkItemDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!workItemKey || !service || !product || !targetEnv) {
+      setError('This link is missing the service, product or target environment.');
+      setLoading(false);
+      return;
+    }
+    try {
+      const next = await api.getWorkItemDetail(workItemKey, product, service, targetEnv);
+      setDetail(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load work item');
+    } finally {
+      setLoading(false);
+    }
+  }, [workItemKey, service, product, targetEnv]);
+
+  // Sign-offs, comments and promotion changes from other sessions land here live. Promotion
+  // events don't carry the work-item key, so only work-item events are narrowed by it. Deliberately
+  // NOT narrowed by service: a sign-off on a sibling instance changes this page's overall status,
+  // which rides in the same detail payload, so the whole page reloads rather than a row of it.
+  const realtimeTick = useEntityRefresh(['work-item', 'promotion'], {
+    filter: (evt) => evt.entity === 'promotion' || !evt.key || evt.key === workItemKey,
+  });
+
+  useEffect(() => {
+    void load();
+  }, [load, realtimeTick]);
+
+  // Above the early returns, so the hook order is stable. The (product, service, targetEnv) scope is
+  // in the title for the same reason it's in the URL: it's part of this page's identity, and the
+  // same work item key is a different page for a different service or promotion edge. The key alone
+  // is enough while the detail loads — it's the one thing a link always carries.
+  useDocumentTitle([
+    detail?.title ? `${workItemKey} — ${detail.title}` : workItemKey,
+    scopeTitle({ product, service, targetEnv }),
+    'Work item',
+  ]);
+
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="skeleton h-64" />
+      </div>
+    );
+  }
+
+  if (!detail) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-2">
+        <XCircle size={24} style={{ color: 'var(--danger)' }} />
+        <p className="text-[14px] font-medium" style={{ color: 'var(--danger)' }}>
+          {error ?? 'Work item not found'}
+        </p>
+        <Link
+          to={fromCandidateId ? `/promotions/${fromCandidateId}` : '/me/work-items'}
+          className="text-[13px] font-medium"
+          style={{ color: 'var(--accent)' }}
+        >
+          {fromCandidateId ? 'Back to promotion' : 'Back to work items'}
+        </Link>
+      </div>
+    );
+  }
+
+  // First decision wins for the headline state: the API keeps one row per approver and the trail
+  // below shows every one of them, so the summary badge only needs the canonical outcome.
+  const headline = detail.approvals[0] ?? null;
+  const headlineStyle = headline ? decisionStyle(headline.decision) : null;
+  // The promotion we were opened from, when it's one this work item still lists. A superseded
+  // referrer won't resolve (the API omits those), so the breadcrumb still links back by id but
+  // without the service/edge suffix.
+  const referrer = fromCandidateId
+    ? (detail.candidates.find((c) => c.id === fromCandidateId) ?? null)
+    : null;
+  // The second line, back in its parts. The server already drops a subtitle that repeats the title;
+  // the guard here is for a payload projected before it did.
+  const commitLines =
+    detail.subTitle && detail.subTitle !== detail.title ? commitMessageLines(detail.subTitle) : [];
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      {fromCandidateId ? (
+        <Link
+          to={`/promotions/${fromCandidateId}`}
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <ArrowLeft size={14} /> Back to promotion
+          {referrer && (
+            <span style={{ color: 'var(--text-muted)', opacity: 0.8 }}>
+              · {referrer.service} {referrer.sourceEnv} → {referrer.targetEnv}
+            </span>
+          )}
+        </Link>
+      ) : (
+        <Link
+          to="/me/work-items"
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <ArrowLeft size={14} /> Back to work items
+        </Link>
+      )}
+
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-3 min-w-0 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <Ticket size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              <h1
+                className="text-xl font-semibold tracking-tight"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {/* The service is half the name: this page is about the ticket's change in ONE
+                    service, and the same ticket on a sibling is a different work item. */}
+                <span style={{ color: 'var(--text-secondary)' }}>{detail.service}</span>
+                <span style={{ color: 'var(--text-muted)' }}> / </span>
+                {detail.workItemKey}
+              </h1>
+              {/* Tells the assistant which work item is open and whether this user can sign it off,
+                  so "how do I approve that?" is answered for this ticket — not for the promotion the
+                  conversation may have been about a moment earlier. */}
+              <HelpButton
+                page="Work item"
+                context={{
+                  workItem: detail.workItemKey,
+                  service: detail.service,
+                  product: detail.product,
+                  targetEnv: detail.targetEnv,
+                  title: detail.title,
+                  signOff: headlineStyle?.label,
+                  myDecision: detail.myDecision,
+                  canSignOff: detail.canApprove,
+                  blockedReason: detail.canApprove ? undefined : detail.blockedReason,
+                }}
+                question="What do I need to do with this work item?"
+              />
+            </div>
+            {/* What kind of ticket this is and how urgent, in the tracker's own words. Beside the
+                name because they change how everything below is read: a Highest-priority Bug and a
+                Low Task get different scrutiny. Absent when the producer sent neither. */}
+            <WorkItemTraits workItemType={detail.workItemType} priority={detail.priority} />
+            {/* The tracker link is the most-used control on this page — someone reviewing a ticket
+                goes to read it. It was a 14px bare icon next to the title; now it's a labelled
+                button so it's findable without hunting. */}
+            {detail.url && (
+              <a
+                href={detail.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-guide-anchor="work-item-tracker-link"
+                {...{ [ROW_ACTION_ATTR]: 'open-external' }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] font-semibold shrink-0 transition-colors hover:bg-[var(--accent-bg)]"
+                style={{
+                  borderColor: 'var(--accent)',
+                  color: 'var(--accent)',
+                  backgroundColor: 'var(--accent-muted)',
+                }}
+                title={`Open ${detail.workItemKey} in ${providerLabel(detail.provider)}`}
+              >
+                View in {providerLabel(detail.provider)}
+                <ExternalLink size={12} />
+              </a>
+            )}
+          </div>
+          {detail.title && (
+            <p className="text-[14px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+              {detail.title}
+            </p>
+          )}
+          {/* The messages of the commits this item was carried by — one per line. Quieter than the
+              title: the title names the ticket, these say what changed under it. Separate lines
+              because they are separate commits; run together they read as one long sentence. */}
+          {commitLines.length > 0 && (
+            <div className="mt-0.5 space-y-0.5">
+              {commitLines.map((line, i) => (
+                <p
+                  key={i}
+                  className="text-[13px] flex gap-1.5"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {/* Marker only when there is more than one: a lone message is a sentence, not a
+                      list of one. */}
+                  {commitLines.length > 1 && <span aria-hidden="true">&bull;</span>}
+                  <span>{line}</span>
+                </p>
+              ))}
+            </div>
+          )}
+          <div
+            className="flex items-center gap-2 flex-wrap mt-2 text-[12px]"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            <span>
+              <span style={{ color: 'var(--text-muted)' }}>Product:</span>{' '}
+              <span className="font-medium">{detail.product}</span>
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <span>
+              <span style={{ color: 'var(--text-muted)' }}>Service:</span>{' '}
+              <span className="font-medium">{detail.service}</span>
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            {/* Where the change can be exercised — not where the promotion is headed. The promotion
+                edges themselves are in the Promotions card, which is where they belong. */}
+            <WorkItemEnvironments environments={detail.environments ?? []} />
+          </div>
+          <InstancesRow
+            workItemKey={workItemKey}
+            product={product}
+            service={service}
+            targetEnv={targetEnv}
+            fromCandidateId={fromCandidateId}
+            overall={detail.overall}
+            gateRequiresAllInstances={detail.gateRequiresAllInstances}
+          />
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {/* Incompleteness reads alongside the sign-off state, not instead of it: an item can be
+             approved and still have nobody recorded as its owner. */}
+          <MissingRolesBadge roles={detail.missingRoles} />
+          {headline && headlineStyle && (
+            <span
+              className="badge shrink-0"
+              data-guide-anchor="work-item-status"
+              style={{ backgroundColor: headlineStyle.bg, color: headlineStyle.color }}
+              title={`${detail.service} / ${detail.workItemKey} — this service's instance`}
+            >
+              <DecisionIcon decision={headline.decision} size={10} />
+              {headlineStyle.label}
+            </span>
+          )}
+          {/* The ticket as a whole, when it ships in more than one service. This instance's badge
+             says what QA found here; this one says whether the ticket is done. */}
+          {detail.overall && detail.overall.instances > 1 && (
+            <span
+              className="badge shrink-0"
+              style={{
+                backgroundColor: instanceStateStyle(detail.overall.state).bg,
+                color: instanceStateStyle(detail.overall.state).color,
+              }}
+              title={`${detail.workItemKey} across all services: ${overallSummaryLabel(detail.overall)}`}
+            >
+              Overall: {instanceStateStyle(detail.overall.state).label}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div
+          className="flex items-center gap-3 p-4 rounded-xl border"
+          style={{ backgroundColor: 'var(--danger-bg)', borderColor: 'var(--danger)', color: 'var(--danger)' }}
+        >
+          <XCircle size={18} />
+          <span className="text-[13px] font-medium">{error}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-4">
+          {/* Who's on this work item, up front — it's read constantly (who do I ask, who already
+             signed off elsewhere) but assigning someone isn't an action worth a whole card, so it's
+             a compact chip row rather than the stacked per-role blocks used elsewhere. */}
+          <PeopleCard detail={detail} onChanged={load} />
+          {/* The ticket/PR/commit body, when the producer sent one. Between People and Sign-off
+             because it's the substance of what's being signed off — read after "who owns this",
+             before deciding. Absent entirely when there's no content: an empty card would imply
+             the description is blank upstream when it more likely just wasn't ingested. */}
+          {detail.content && <ContentCard content={detail.content} />}
+          <DecisionCard detail={detail} onChanged={load} onError={setError} />
+          <DecisionTrail detail={detail} />
+          <CommentsCard
+            detail={detail}
+            currentUserEmail={currentUserEmail}
+            onChange={(comments) => setDetail({ ...detail, comments })}
+          />
+        </div>
+
+        <div className="space-y-4">
+          {/* First in the column: for a reviewer who arrived from the queue rather than from a
+             promotion, this is the only route to the promotion this sign-off is holding up, so it
+             has to be reachable without scrolling past the change set. */}
+          <PromotionsCard detail={detail} />
+
+          <ChangeSetCard detail={detail} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The ticket across every service carrying it in this product/env: one chip per instance with that
+ * instance's own sign-off state, the current one marked, and the roll-up in words. A tester working
+ * through MPT-1 reaches every copy from here; a manager reads whether the ticket is done without
+ * caring which service is which.
+ *
+ * Rendered straight from the detail payload — no state of its own. It used to seed a local copy
+ * once and refetch on its own, which went stale in two ways: moving between sibling instances keeps
+ * this component mounted with the same key/product/env, so its effect never re-ran and the old
+ * copy stayed on screen; and the page's own reload after a sign-off never reached it. The detail is
+ * reloaded on navigation, after every mutation and on any work-item event for this key, and the
+ * roll-up comes with it, so deriving from props is both simpler and always current.
+ */
+function InstancesRow({
+  workItemKey,
+  product,
+  service,
+  targetEnv,
+  fromCandidateId,
+  overall,
+  gateRequiresAllInstances,
+}: {
+  workItemKey: string;
+  product: string;
+  service: string;
+  targetEnv: string;
+  fromCandidateId: string | null;
+  overall: WorkItemOverallStatus | null;
+  gateRequiresAllInstances: boolean;
+}) {
+  const instances = overall?.instanceStatuses ?? [];
+  if (instances.length <= 1) return null;
+
+  return (
+    <div className="mt-1.5 space-y-1">
+      <div
+        className="flex items-center gap-1.5 flex-wrap text-[12px]"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        <span style={{ color: 'var(--text-muted)' }}>All services:</span>
+        {instances.map((i) => {
+          const style = instanceStateStyle(i.state);
+          const current = i.service === service;
+          const label = `${i.service} / ${workItemKey}`;
+          const body = (
+            <>
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ backgroundColor: style.color }}
+                aria-hidden="true"
+              />
+              {i.service}
+              <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+                · {style.label}
+              </span>
+            </>
+          );
+          if (current) {
+            return (
+              <span
+                key={i.service}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium"
+                style={{
+                  borderColor: 'var(--accent)',
+                  color: 'var(--text-primary)',
+                  backgroundColor: 'var(--accent-muted)',
+                }}
+                title={`${label} — this page`}
+                aria-current="page"
+              >
+                {body}
+              </span>
+            );
+          }
+          return (
+            <Link
+              key={i.service}
+              to={workItemDetailPath(workItemKey, product, i.service, targetEnv, fromCandidateId)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-medium transition-opacity hover:opacity-80"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--accent)' }}
+              title={i.title ? `${label} — ${i.title}` : label}
+            >
+              {body}
+            </Link>
+          );
+        })}
+        <span style={{ color: 'var(--text-muted)' }}>·</span>
+        <span style={{ color: instanceStateStyle(overall!.state).color }}>
+          {overallSummaryLabel(overall)}
+        </span>
+      </div>
+      {/* Only said when it is true: by default a promotion waits for its own service's instance, and
+          a reviewer who signs this off expects it to release the gate. Under the all-instances policy
+          it will not until the siblings are approved too, and that has to be visible here. */}
+      {gateRequiresAllInstances && (
+        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          The promotion&rsquo;s policy waits for the ticket to be approved on{' '}
+          <span className="font-medium">every</span> service above, not only on {service}.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * People assigned to this work item, as a single wrapping chip row rather than the stacked
+ * one-line-per-role blocks the promotion detail page uses for the same data — that layout was built
+ * to sit quietly in a sidebar; here People is core context for the sign-off decision, so it lives at
+ * the top of the main column but shouldn't cost more height than the header line it replaces.
+ *
+ * Assignments write to the primary candidate's copy of this work-item reference, which is where
+ * participants actually live.
+ */
+function PeopleCard({ detail, onChanged }: { detail: WorkItemDetail; onChanged: () => void }) {
+  // Roles the carrying promotion's policy requires that nobody is in. The notice goes inside this card
+  // rather than at the top of the page: the thing it asks for is the Assign control right beside it.
+  const missingRoles = detail.missingRoles ?? [];
+  return (
+    <div
+      className="rounded-xl border px-5 py-3 space-y-2"
+      style={{
+        borderColor: missingRoles.length > 0 ? 'var(--warning)' : 'var(--border-color)',
+        backgroundColor: 'var(--bg-primary)',
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <h2
+          className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Users size={12} /> People
+        </h2>
+        <WorkItemParticipants
+          candidateId={detail.primaryCandidateId}
+          referenceKey={detail.workItemKey}
+          participants={detail.participants}
+          onChanged={onChanged}
+          readOnly={!detail.canManage}
+          layout="chips"
+        />
+        {!detail.canManage && detail.participants.length === 0 && (
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Nobody assigned.
+          </span>
+        )}
+        {!detail.canManage && detail.participants.length > 0 && (
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Assigning requires the QA or Admin role.
+          </span>
+        )}
+      </div>
+      <MissingRolesNotice
+        roles={missingRoles}
+        action={
+          detail.canManage
+            ? 'Use Assign above to put someone on it.'
+            : 'Ask a QA or Admin user to assign someone.'
+        }
+      />
+    </div>
+  );
+}
+
+// A body past either of these collapses behind "Show more". Both matter: a wall of one long
+// paragraph and a fifty-line bullet list are each too tall to sit above the sign-off buttons.
+const CONTENT_COLLAPSE_CHARS = 800;
+const CONTENT_COLLAPSE_LINES = 12;
+
+/**
+ * The work item's body — the Jira description, PR description, or commit message body the producer
+ * copied onto the reference. Rendered as plain text with line breaks preserved, deliberately *not*
+ * as markdown: this string arrives from an ingest payload rather than from someone typing into this
+ * app, so interpreting it as markup would let a producer inject HTML into a reviewer's page. The
+ * release-note pages do run `marked`, but their input is authored in-product.
+ *
+ * Long bodies collapse, because the sign-off buttons below shouldn't be pushed off-screen by a
+ * ticket description.
+ */
+function ContentCard({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Decided from the text rather than by measuring the rendered box: it's plain text at a fixed
+  // type size, so length and line count predict height closely enough, and it avoids a measuring
+  // effect that would flash the expanded state on first paint.
+  const isLong = useMemo(
+    () =>
+      content.length > CONTENT_COLLAPSE_CHARS ||
+      content.split('\n').length > CONTENT_COLLAPSE_LINES,
+    [content],
+  );
+  const collapsed = isLong && !expanded;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <FileText size={12} /> Content
+      </h2>
+      <div className="relative">
+        <p
+          className="text-[13px] whitespace-pre-wrap break-words"
+          style={{
+            color: 'var(--text-secondary)',
+            maxHeight: collapsed ? '15rem' : undefined,
+            overflow: collapsed ? 'hidden' : undefined,
+          }}
+        >
+          <Linkified text={content} />
+        </p>
+        {/* Fades the clipped last line so it reads as "continues below" rather than as text that
+           happens to end mid-sentence. */}
+        {collapsed && (
+          <div
+            className="absolute inset-x-0 bottom-0 h-10 pointer-events-none"
+            style={{ background: 'linear-gradient(to bottom, transparent, var(--bg-primary))' }}
+          />
+        )}
+      </div>
+      {isLong && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-3 text-[11px] font-medium transition-opacity hover:opacity-80"
+          style={{ color: 'var(--accent)' }}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The promotions carrying this work item, each linking to its detail page. This is the return path
+ * out of a work item: a reviewer opens a ticket to sign it off, and the thing they were actually
+ * working on is the promotion waiting on that sign-off.
+ *
+ * Superseded builds are omitted by the API, so the count here is "live promotions", not history.
+ */
+function PromotionsCard({ detail }: { detail: WorkItemDetail }) {
+  const primary = detail.candidates.find((c) => c.isPrimary) ?? null;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <GitPullRequest size={12} /> Promotions ({detail.candidates.length})
+      </h2>
+      {detail.candidates.length === 0 && (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          No live promotion carries this work item — it still needs signing off so it stops sitting
+          in the queue.
+        </p>
+      )}
+      <div className="space-y-2">
+        {detail.candidates.map((c) => (
+          <Link
+            key={c.id}
+            to={`/promotions/${c.id}`}
+            className="block p-3 rounded-lg border transition-opacity hover:opacity-80"
+            style={{
+              borderColor: c.isPrimary ? 'var(--accent)' : 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+            }}
+            title={`Open the ${c.service} promotion ${c.sourceEnv} → ${c.targetEnv}`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className="text-[13px] font-medium truncate"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {c.service}
+              </span>
+              <span
+                className="text-[11px] font-medium shrink-0"
+                style={{ color: CANDIDATE_STATUS_COLOR[c.status] ?? 'var(--text-muted)' }}
+              >
+                {c.status}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 mt-1.5 text-[11px]">
+              <EnvBadge env={c.sourceEnv} size="xs" />
+              <ArrowRight size={10} style={{ color: 'var(--text-muted)' }} />
+              <EnvBadge env={c.targetEnv} size="xs" />
+              <span className="font-mono ml-1" style={{ color: 'var(--text-muted)' }}>
+                {c.version}
+              </span>
+            </div>
+            <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+            </p>
+          </Link>
+        ))}
+      </div>
+      {primary && detail.candidates.length > 1 && (
+        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          A sign-off here counts for every <span className="font-medium">{primary.service}</span>{' '}
+          promotion above. People are assigned on the newest one. Superseded builds aren&rsquo;t
+          listed.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The change that carried this work item: the commits whose messages referenced it, and the pull
+ * requests those commits merged. Both come from the promotion payload — the producer declares the
+ * commit hashes on the work-item reference and the server resolves them against the `commit` and
+ * `pull-request` references — so a reviewer can get from "what am I signing off?" to the actual diff
+ * without going hunting in the promotion.
+ *
+ * Renders nothing when the producer declared no commits, which is the case for every payload written
+ * before `commits` existed.
+ */
+function ChangeSetCard({ detail }: { detail: WorkItemDetail }) {
+  const { commits, pullRequests } = detail;
+  if (commits.length === 0 && pullRequests.length === 0) return null;
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <GitCommitHorizontal size={12} /> Change
+      </h2>
+
+      {pullRequests.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[11px] font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
+            Pull requests ({pullRequests.length})
+          </p>
+          <div className="space-y-2">
+            {pullRequests.map((pr) => (
+              <ChangeRow
+                key={pr.key || pr.url || pr.revision || ''}
+                icon={<GitPullRequest size={12} />}
+                label={pr.key ? `!${pr.key}` : 'Pull request'}
+                title={pr.title}
+                url={pr.url}
+                provider={pr.provider}
+                participants={pr.participants}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {commits.length > 0 && (
+        <div>
+          <p className="text-[11px] font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
+            Commits ({commits.length})
+          </p>
+          <div className="space-y-2">
+            {commits.map((c) => (
+              <ChangeRow
+                key={c.hash}
+                icon={<GitCommitHorizontal size={12} />}
+                label={shortHash(c.hash)}
+                labelTitle={c.hash}
+                title={c.title}
+                url={c.url}
+                provider={c.provider}
+                participants={c.participants}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One commit or pull-request row. The whole row is the link when the reference carried a URL;
+ * otherwise it's inert text — a hash the producer declared but supplied no `commit` reference for is
+ * still worth showing, just not clickable.
+ */
+function ChangeRow({
+  icon,
+  label,
+  labelTitle,
+  title,
+  url,
+  provider,
+  participants,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  labelTitle?: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  participants: PromotionSourceEventParticipant[];
+}) {
+  const author = participants.find((p) => (p.role ?? '').toLowerCase() === 'author') ?? participants[0];
+
+  const body = (
+    <>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{icon}</span>
+        <span
+          className="font-mono text-[11px] font-semibold shrink-0"
+          style={{ color: 'var(--accent)' }}
+          title={labelTitle}
+        >
+          {label}
+        </span>
+        {url && <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />}
+      </div>
+      {title && (
+        <p className="text-[12px] mt-1 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
+          {title}
+        </p>
+      )}
+      {author && (
+        <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--text-muted)' }}>
+          {author.displayName ?? author.email}
+        </p>
+      )}
+    </>
+  );
+
+  const style = {
+    borderColor: 'var(--border-color)',
+    backgroundColor: 'var(--bg-secondary)',
+  };
+
+  if (!url) {
+    return (
+      <div className="block p-2.5 rounded-lg border" style={style}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block p-2.5 rounded-lg border transition-opacity hover:opacity-80"
+      style={style}
+      title={`Open ${label} in ${providerLabel(provider, 'the source repository')}`}
+    >
+      {body}
+    </a>
+  );
+}
+
+function DecisionIcon({ decision, size }: { decision: WorkItemDecision; size: number }) {
+  if (decision === 'Approved') return <CheckCircle size={size} />;
+  if (decision === 'Issue') return <AlertTriangle size={size} />;
+  return <Ban size={size} />;
+}
+
+/**
+ * Sign-off controls. Approve / Issue / Block each POST to their own endpoint; the option matching the
+ * user's current decision is hidden (re-recording the same one is a no-op the API refuses), so what's
+ * left are the states they can actually move to.
+ *
+ * The three are not three degrees of the same thing: Approve and Issue both clear the item for the
+ * promotion gate, Block is the only one that holds it. The note under the buttons says so, because
+ * the colours (green / amber / red) suggest a severity ramp that the gate does not follow.
+ */
+function DecisionCard({
+  detail,
+  onChanged,
+  onError,
+}: {
+  detail: WorkItemDetail;
+  onChanged: () => Promise<void>;
+  onError: (message: string | null) => void;
+}) {
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState<WorkItemDecision | null>(null);
+
+  const decide = async (decision: WorkItemDecision) => {
+    setBusy(decision);
+    onError(null);
+    try {
+      const args = [
+        detail.workItemKey,
+        detail.product,
+        detail.service,
+        detail.targetEnv,
+        comment || undefined,
+      ] as const;
+      if (decision === 'Approved') await api.approveWorkItem(...args);
+      else if (decision === 'Issue') await api.raiseWorkItemIssue(...args);
+      else await api.blockWorkItem(...args);
+      setComment('');
+      await onChanged();
+      // A signed-off item drops out of the pending queue the counters and bell badge count.
+      refreshMyTasks();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mine = detail.myDecision;
+  const mineStyle = mine ? decisionStyle(mine) : null;
+
+  return (
+    <div
+      data-guide-anchor="work-item-signoff"
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <CheckCircle size={12} /> Sign-off
+      </h2>
+
+      {mine && mineStyle && (
+        <div
+          className="flex items-center gap-2 px-3 py-2 rounded-lg border text-[12px] mb-3"
+          style={{ borderColor: mineStyle.color, backgroundColor: mineStyle.bg, color: mineStyle.color }}
+        >
+          <DecisionIcon decision={mine} size={13} />
+          <span className="font-medium">You {mineStyle.youDid}.</span>
+          {detail.canApprove && (
+            <span style={{ color: 'var(--text-muted)' }}>You can still change it below.</span>
+          )}
+        </div>
+      )}
+
+      {!detail.canApprove ? (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          {detail.blockedReason ?? 'You cannot sign off on this work item.'}
+        </p>
+      ) : (
+        <>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Optional comment — recorded with the decision..."
+            rows={2}
+            className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none mb-3"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            {mine !== 'Approved' && (
+              <button
+                onClick={() => decide('Approved')}
+                data-guide-anchor="work-item-approve-button"
+                {...{ [ROW_ACTION_ATTR]: 'approve' }}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--success-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+              >
+                <CheckCircle size={12} />
+                {busy === 'Approved' ? 'Approving…' : 'Approve'}
+              </button>
+            )}
+            {mine !== 'Issue' && (
+              <button
+                onClick={() => decide('Issue')}
+                data-guide-anchor="work-item-issue-button"
+                {...{ [ROW_ACTION_ATTR]: 'issue' }}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--warning-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                title="Flag a problem on this work item — it does not hold the promotion"
+              >
+                <AlertTriangle size={12} />
+                {busy === 'Issue' ? 'Raising…' : 'Issue'}
+              </button>
+            )}
+            {mine !== 'Blocked' && (
+              <button
+                onClick={() => decide('Blocked')}
+                data-guide-anchor="work-item-block-button"
+                {...{ [ROW_ACTION_ATTR]: 'block' }}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+                style={{ backgroundColor: 'var(--danger-solid)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+                title="Hold this work item back — the promotion cannot be approved"
+              >
+                <Ban size={12} />
+                {busy === 'Blocked' ? 'Blocking…' : 'Block'}
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] mt-2.5" style={{ color: 'var(--text-muted)' }}>
+            Only <span className="font-medium">Block</span> (&ldquo;not going out&rdquo;) holds the
+            promotion: it leaves the item unresolved, which keeps the promotion pending without
+            cancelling it. <span className="font-medium">Issue</span>
+            (&ldquo;something&rsquo;s wrong&rdquo;) records the problem against a change that still
+            ships, so it releases the promotion just as{' '}
+            <span className="font-medium">Approve</span> does. Every decision is reversible, and a
+            new version of the promotion clears the holds and asks again.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DecisionTrail({ detail }: { detail: WorkItemDetail }) {
+  if (detail.approvals.length === 0) return null;
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        Decision trail ({detail.approvals.length})
+      </h2>
+      <div className="space-y-2">
+        {detail.approvals.map((a) => {
+          const s = decisionStyle(a.decision);
+          return (
+            <div
+              key={a.id}
+              className="flex items-start gap-3 p-3 rounded-lg border"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+            >
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+                style={{ backgroundColor: s.bg, color: s.color }}
+              >
+                <DecisionIcon decision={a.decision} size={14} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className="inline-flex items-center gap-1.5 text-[13px] font-medium min-w-0"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    <span className="truncate">{a.approverName || a.approverEmail}</span>
+                    <CopyEmailButton email={a.approverEmail} />
+                  </span>
+                  <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                    {format(new Date(a.updatedAt ?? a.createdAt), 'MMM d, HH:mm')}
+                    {a.updatedAt && (
+                      <span
+                        className="ml-1"
+                        title={`Originally ${format(new Date(a.createdAt), 'MMM d, HH:mm')}`}
+                      >
+                        (changed)
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="mt-1">
+                  <span className="badge" style={{ backgroundColor: s.bg, color: s.color }}>
+                    {s.label}
+                  </span>
+                </div>
+                {a.comment && (
+                  <p
+                    className="text-[12px] mt-1.5 whitespace-pre-wrap break-words"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    &ldquo;<Linkified text={a.comment} />&rdquo;
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The work item's thread: free-text discussion interleaved with the decision entries the API writes
+ * on every Approve / Issue / Block (and the system entry when a new version resets one). Everything
+ * keys on (workItemKey, product, service, targetEnv), so the thread outlives the candidate that was
+ * live when it started.
+ *
+ * Decision and system entries are tinted by outcome and carry no edit/delete — they are the record of
+ * what happened, not someone's remark about it. Only a human comment the caller authored is editable.
+ */
+function CommentsCard({
+  detail,
+  currentUserEmail,
+  onChange,
+}: {
+  detail: WorkItemDetail;
+  currentUserEmail: string;
+  onChange: (next: WorkItemComment[]) => void;
+}) {
+  const [body, setBody] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState('');
+
+  const comments = detail.comments;
+  const sorted = useMemo(
+    () =>
+      [...comments].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+    [comments],
+  );
+
+  const post = async () => {
+    const text = body.trim();
+    if (!text) return;
+    setPosting(true);
+    setErr(null);
+    try {
+      const created = await api.addWorkItemComment(
+        detail.workItemKey,
+        detail.product,
+        detail.service,
+        detail.targetEnv,
+        text,
+      );
+      onChange([...comments, created]);
+      setBody('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to post');
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const saveEdit = async (commentId: string) => {
+    const text = editBody.trim();
+    if (!text) return;
+    try {
+      const updated = await api.updateWorkItemComment(commentId, text);
+      onChange(comments.map((c) => (c.id === commentId ? updated : c)));
+      setEditingId(null);
+      setEditBody('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to update');
+    }
+  };
+
+  const remove = async (commentId: string) => {
+    try {
+      await api.deleteWorkItemComment(commentId);
+      onChange(comments.filter((c) => c.id !== commentId));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to delete');
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border p-5"
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
+    >
+      <h2
+        className="text-[11px] font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <MessageSquare size={12} /> Comments ({sorted.length})
+      </h2>
+
+      <div className="space-y-3 mb-4">
+        {sorted.length === 0 && (
+          <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            No comments yet.
+          </p>
+        )}
+        {sorted.map((c) => {
+          // An entry the platform wrote — a sign-off, or the system note when a new version reset
+          // one. Immutable server-side, so the UI offers no controls for it either.
+          const record = c.decision ?? (c.authorEmail.toLowerCase() === 'system' ? 'system' : null);
+          const style = c.decision ? decisionStyle(c.decision) : null;
+          const isMine =
+            !record &&
+            !!currentUserEmail &&
+            c.authorEmail.toLowerCase() === currentUserEmail.toLowerCase();
+          const isEditing = editingId === c.id;
+          return (
+            <div
+              key={c.id}
+              className="p-3 rounded-lg border"
+              style={{
+                borderColor: style?.color ?? 'var(--border-color)',
+                backgroundColor: style?.bg ?? 'var(--bg-secondary)',
+              }}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span
+                  className="text-[13px] font-medium truncate inline-flex items-center gap-1.5"
+                  style={{ color: style?.color ?? 'var(--text-primary)' }}
+                >
+                  {c.decision && <DecisionIcon decision={c.decision} size={12} />}
+                  {record === 'system' ? 'System' : c.authorName || c.authorEmail}
+                </span>
+                <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {format(new Date(c.createdAt), 'MMM d, HH:mm')}
+                  {c.updatedAt && (
+                    <span
+                      className="ml-1"
+                      title={`Edited ${format(new Date(c.updatedAt), 'MMM d, HH:mm')}`}
+                    >
+                      (edited)
+                    </span>
+                  )}
+                </span>
+              </div>
+              {isEditing ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={editBody}
+                    onChange={(e) => setEditBody(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border px-2 py-1.5 text-[13px] resize-none"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => saveEdit(c.id)}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                      style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingId(null);
+                        setEditBody('');
+                      }}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p
+                    className="text-[13px] whitespace-pre-wrap break-words"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    <Linkified text={c.body} />
+                  </p>
+                  {isMine && (
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => {
+                          setEditingId(c.id);
+                          setEditBody(c.body);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] transition-opacity hover:opacity-80"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        <Edit2 size={10} /> Edit
+                      </button>
+                      <button
+                        onClick={() => remove(c.id)}
+                        className="inline-flex items-center gap-1 text-[11px] transition-opacity hover:opacity-80"
+                        style={{ color: 'var(--danger)' }}
+                      >
+                        <Trash2 size={10} /> Delete
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="space-y-2">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="Add a comment..."
+          rows={2}
+          className="w-full rounded-lg border px-3 py-2 text-[13px] resize-none"
+          style={{
+            borderColor: 'var(--border-color)',
+            backgroundColor: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {err && (
+          <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
+            {err}
+          </p>
+        )}
+        <div className="flex items-center justify-end">
+          <button
+            onClick={post}
+            disabled={posting || !body.trim()}
+            className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-opacity"
+            style={{
+              backgroundColor: 'var(--accent)',
+              color: 'var(--accent-fg)',
+              opacity: posting || !body.trim() ? 0.6 : 1,
+            }}
+          >
+            {posting ? 'Posting...' : 'Post'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

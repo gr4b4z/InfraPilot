@@ -1,12 +1,14 @@
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals.Models;
+using Platform.Api.Features.Builds.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.Users.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Audit;
@@ -30,13 +32,19 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
+    public DbSet<Build> Builds => Set<Build>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
+    public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
     public DbSet<ReferenceParticipantOverride> ReferenceParticipantOverrides => Set<ReferenceParticipantOverride>();
+    public DbSet<DeletedService> DeletedServices => Set<DeletedService>();
+    public DbSet<ServiceProductOverride> ServiceProductOverrides => Set<ServiceProductOverride>();
     public DbSet<WebhookSubscription> WebhookSubscriptions => Set<WebhookSubscription>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<LocalUser> LocalUsers => Set<LocalUser>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+    public DbSet<UserPreference> UserPreferences => Set<UserPreference>();
+    public DbSet<PersonalAccessToken> PersonalAccessTokens => Set<PersonalAccessToken>();
     public DbSet<PromotionPolicy> PromotionPolicies => Set<PromotionPolicy>();
     public DbSet<PromotionCandidate> PromotionCandidates => Set<PromotionCandidate>();
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
@@ -44,9 +52,11 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
     public DbSet<PromotionFreeze> PromotionFreezes => Set<PromotionFreeze>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
+    public DbSet<WorkItemComment> WorkItemComments => Set<WorkItemComment>();
     public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
     public DbSet<RollbackItem> RollbackItems => Set<RollbackItem>();
     public DbSet<RollbackApproval> RollbackApprovals => Set<RollbackApproval>();
+    public DbSet<RollbackPolicy> RollbackPolicies => Set<RollbackPolicy>();
     public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
@@ -196,6 +206,40 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.EntityType, x.EntityId });
             e.HasIndex(x => x.ActorId);
             e.HasIndex(x => new { x.Module, x.Action });
+            // One module's rows, newest first, over a date window — the promotions activity feed
+            // (/api/promotions/audit) and any other "what happened lately in X" query. The
+            // (Module, Action) index above can satisfy the module predicate but leaves the ordering
+            // to a sort over every row it matches, which is the whole table for the busiest module.
+            e.HasIndex(x => new { x.Module, x.Timestamp });
+        });
+
+        // Build registry — every published build (main, release, feature), one row per
+        // (product, service, version). Registered by publish pipelines via POST /api/builds.
+        modelBuilder.Entity<Build>(e =>
+        {
+            e.ToTable("builds");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            // Full git refs; feature branch names can run long.
+            e.Property(x => x.Branch).HasMaxLength(400).IsRequired();
+            e.Property(x => x.CommitSha).HasMaxLength(100);
+            e.Property(x => x.BuildId).HasMaxLength(100);
+            e.Property(x => x.BuildUrl).HasMaxLength(2000);
+            // Unbounded: the whole BuildMetadata document lives inline.
+            var buildManifestJson = e.Property(x => x.ManifestJson);
+            if (jsonType != null) buildManifestJson.HasColumnType(jsonType);
+            e.Property(x => x.ArtifactRef).HasMaxLength(500);
+            e.Property(x => x.ArtifactDigest).HasMaxLength(200);
+            // The replay-safe upsert key: a pipeline retry re-POSTs the same
+            // (product, service, version) and updates in place instead of duplicating.
+            e.HasIndex(x => new { x.Product, x.Service, x.Version }).IsUnique();
+            // The list/picker query: builds of a service, newest first.
+            e.HasIndex(x => new { x.Product, x.Service, x.CreatedAt })
+                .IsDescending(false, false, true);
+            // "Which builds came from this branch?" — the question the registry exists to answer.
+            e.HasIndex(x => x.Branch);
         });
 
         // Deploy Events
@@ -215,12 +259,14 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
             var enrichmentJson = e.Property(x => x.EnrichmentJson);
             var metadataJson = e.Property(x => x.MetadataJson).HasDefaultValue("{}");
+            var runJson = e.Property(x => x.RunJson);
             if (jsonType != null)
             {
                 referencesJson.HasColumnType(jsonType);
                 participantsJson.HasColumnType(jsonType);
                 enrichmentJson.HasColumnType(jsonType);
                 metadataJson.HasColumnType(jsonType);
+                runJson.HasColumnType(jsonType);
             }
             e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.DeployedAt })
                 .IsDescending(false, false, false, true);
@@ -231,6 +277,28 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Ignore(x => x.Participants);
             e.Ignore(x => x.Enrichment);
             e.Ignore(x => x.Metadata);
+            e.Ignore(x => x.Run);
+        });
+
+        // Captured pipeline output, one row per block. Deliberately a separate table: the list and
+        // history queries materialise whole DeployEvent rows, and a Helm printout is large enough
+        // that carrying it on the event would tax every one of them.
+        modelBuilder.Entity<DeployEventLog>(e =>
+        {
+            e.ToTable("deploy_event_logs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(50);
+            // No length cap: this is a log, and the ingest path caps it by byte count instead.
+            e.Property(x => x.Content).IsRequired();
+            e.Property(x => x.Truncated).HasDefaultValue(false);
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Unique per (event, name) so a retrying sender replaces its block instead of appending.
+            e.HasIndex(x => new { x.DeployEventId, x.Name }).IsUnique();
+            e.HasIndex(x => x.DeployEventId);
         });
 
         modelBuilder.Entity<DeployEventWorkItem>(e =>
@@ -242,6 +310,12 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Provider).HasMaxLength(50);
             e.Property(x => x.Url).HasMaxLength(2000);
             e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.SubTitle).HasMaxLength(500);
+            // No length cap: this is the ticket/PR/commit body, not a label.
+            e.Property(x => x.Content);
+            // Tracker labels — Jira's longest built-in names are well under this.
+            e.Property(x => x.Priority).HasMaxLength(100);
+            e.Property(x => x.WorkItemType).HasMaxLength(100);
             e.Property(x => x.Revision).HasMaxLength(200);
             e.HasOne<DeployEvent>()
                 .WithMany()
@@ -276,6 +350,46 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => x.DeployEventId);
         });
 
+        // Retired services. Deliberately keyed on the (product, service) names rather than joined to
+        // deploy_events: the pair is the identity of a service here, and a retirement has to outlive
+        // any individual event — including one an admin later purges as a duplicate.
+        modelBuilder.Entity<DeletedService>(e =>
+        {
+            e.ToTable("deleted_services");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.DeletedById).HasMaxLength(100).IsRequired();
+            e.Property(x => x.DeletedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(500);
+            // One tombstone per service: retiring an already-retired service updates in place rather
+            // than stacking rows, and the list queries can rely on a single match.
+            e.HasIndex(x => new { x.Product, x.Service }).IsUnique();
+        });
+
+        // Service→product overrides. Keyed on the service name (plus the optional sending product)
+        // for the same reason retirements are: the names ARE the identity of a service here, and the
+        // mapping has to apply to entities that do not exist yet.
+        modelBuilder.Entity<ServiceProductOverride>(e =>
+        {
+            e.ToTable("service_product_overrides");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.FromProduct).HasMaxLength(200);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(500);
+            e.Property(x => x.UpdatedById).HasMaxLength(100).IsRequired();
+            e.Property(x => x.UpdatedByName).HasMaxLength(300).IsRequired();
+            // Lookup index only — NOT unique, even though (Service, FromProduct) is the natural key.
+            // Two provider differences make a unique index the wrong place for that invariant: SQL
+            // Server treats NULLs as equal in a unique index while Postgres treats them as distinct
+            // (so the "one catch-all per service" rule would hold on one provider and not the other),
+            // and matching here is case-insensitive while collation is not something both providers
+            // agree on. ServiceProductOverrideService.UpsertAsync enforces the key instead, the same
+            // way for both.
+            e.HasIndex(x => x.Service);
+        });
+
         // Webhook Subscriptions
         modelBuilder.Entity<WebhookSubscription>(e =>
         {
@@ -286,8 +400,28 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.EncryptedSecret).IsRequired();
             var eventsJson = e.Property(x => x.EventsJson).HasDefaultValue("[]");
             if (jsonType != null) eventsJson.HasColumnType(jsonType);
-            e.Property(x => x.FilterProduct).HasMaxLength(200);
-            e.Property(x => x.FilterEnvironment).HasMaxLength(100);
+            // Filter dimensions are sets, stored the same way the event list is. "[]" is the stored
+            // default as well as the CLR one so a row written before a dimension existed reads back
+            // as "any" rather than null.
+            var filterProducts = e.Property(x => x.FilterProductsJson).HasDefaultValue("[]");
+            var filterServices = e.Property(x => x.FilterServicesJson).HasDefaultValue("[]");
+            var filterEnvironments = e.Property(x => x.FilterEnvironmentsJson).HasDefaultValue("[]");
+            if (jsonType != null)
+            {
+                filterProducts.HasColumnType(jsonType);
+                filterServices.HasColumnType(jsonType);
+                filterEnvironments.HasColumnType(jsonType);
+            }
+            // Store default (not just a CLR default) so subscriptions created before target types
+            // existed read back as "generic" — that is what keeps their delivery shape unchanged.
+            e.Property(x => x.TargetType).HasMaxLength(30).IsRequired()
+                .HasDefaultValue(WebhookTargetTypes.Generic);
+            e.Property(x => x.SignatureHeader).HasMaxLength(100);
+            e.Property(x => x.GitHubEventType).HasMaxLength(100);
+            // Generous but bounded: a chat message template is a handful of lines, not a document,
+            // and the cap is what stops a paste of an entire release-note template landing here.
+            e.Property(x => x.MessageTemplate).HasMaxLength(8000);
+            e.Property(x => x.MessageTitle).HasMaxLength(200);
             e.HasIndex(x => x.Active);
         });
 
@@ -302,12 +436,15 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Status).HasMaxLength(20).IsRequired();
             e.Property(x => x.ResponseBody).HasMaxLength(4000);
             e.Property(x => x.ErrorMessage).HasMaxLength(2000);
+            e.Property(x => x.CancelKey).HasMaxLength(200);
             e.HasOne(x => x.Subscription)
                 .WithMany(x => x.Deliveries)
                 .HasForeignKey(x => x.SubscriptionId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.Status, x.NextRetryAt });
             e.HasIndex(x => x.SubscriptionId);
+            // Cancellation looks up by key alone; the vast majority of rows carry no key at all.
+            e.HasIndex(x => x.CancelKey);
         });
 
         // Local Users (dev/test authentication)
@@ -334,6 +471,37 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.UpdatedBy).HasMaxLength(200).IsRequired();
         });
 
+        // User Preferences — the per-person counterpart to platform_settings.
+        modelBuilder.Entity<UserPreference>(e =>
+        {
+            e.ToTable("user_preferences");
+            e.HasKey(x => x.Id);
+            // 300 to match every other email column in the schema (ApproverEmail, AuthorEmail, …).
+            e.Property(x => x.UserEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Key).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Value).HasMaxLength(4000).IsRequired();
+            // One row per (user, key) — the upsert relies on it, and it is also the read path.
+            e.HasIndex(x => new { x.UserEmail, x.Key }).IsUnique();
+        });
+
+        // Personal access tokens — self-service credentials for agents (see PersonalAccessToken).
+        modelBuilder.Entity<PersonalAccessToken>(e =>
+        {
+            e.ToTable("personal_access_tokens");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.UserEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UserName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UserId).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+            e.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            e.Property(x => x.Prefix).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Roles).HasMaxLength(1000).IsRequired();
+            e.Ignore(x => x.RoleList);
+            // Every authenticated request with a token looks it up by hash.
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.UserEmail);
+        });
+
         // Promotion Policies
         modelBuilder.Entity<PromotionPolicy>(e =>
         {
@@ -348,9 +516,28 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             var approvalStepsJson = e.Property(x => x.ApprovalStepsJson).HasDefaultValue("[]");
             if (jsonType != null) approvalStepsJson.HasColumnType(jsonType);
             e.Ignore(x => x.ApprovalSteps);
+            // Default TRUE: pre-existing edges keep creating work items.
+            e.Property(x => x.TracksWorkItems).IsRequired().HasDefaultValue(true);
+            // Required work-item participant roles, same JSON-string-column treatment ("[]" ⇒ no
+            // requirement). The computed RequiredWorkItemRoles property is not mapped.
+            var requiredRolesJson = e.Property(x => x.RequiredWorkItemRolesJson).HasDefaultValue("[]");
+            if (jsonType != null) requiredRolesJson.HasColumnType(jsonType);
+            e.Ignore(x => x.RequiredWorkItemRoles);
             e.Property(x => x.RequireAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
+            e.Property(x => x.RequireAllWorkItemInstancesApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveOnAllWorkItemsApproved).IsRequired().HasDefaultValue(false);
             e.Property(x => x.AutoApproveWhenNoWorkItems).IsRequired().HasDefaultValue(false);
+            // Default TRUE: pre-existing edges keep requiring a source deploy event.
+            e.Property(x => x.SourceRequiresDeploy).IsRequired().HasDefaultValue(true);
+            // Default TRUE: an approval releases the deploy on its own unless an edge says an
+            // external pipeline approval still stands between it and the target environment.
+            e.Property(x => x.DeploysOnApproval).IsRequired().HasDefaultValue(true);
+            // Branch patterns that auto-create candidates from registered builds. Null ⇒ never.
+            // Same JSON-string-column treatment as the other list fields; the computed
+            // AutoCreateFromBranches property is not mapped.
+            var autoCreateJson = e.Property(x => x.AutoCreateFromBranchesJson);
+            if (jsonType != null) autoCreateJson.HasColumnType(jsonType);
+            e.Ignore(x => x.AutoCreateFromBranches);
             e.Property(x => x.EscalationGroup).HasMaxLength(400);
             // Unique per (product, service?, source_env, target_env). SQL Server and Postgres both
             // treat NULL as distinct from NULL in unique indexes, which is the semantics we want:
@@ -376,6 +563,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
 
             e.Property(x => x.FromRevision).HasMaxLength(200);
             e.Property(x => x.ToRevision).HasMaxLength(200);
+            e.Property(x => x.FromVersion).HasMaxLength(200);
 
             var participantsJson = e.Property(x => x.ParticipantsJson).HasDefaultValue("[]");
             if (jsonType != null) participantsJson.HasColumnType(jsonType);
@@ -402,10 +590,20 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasKey(x => x.Id);
             e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            // Denormalised from the parent candidate: the work item's identity is
+            // (key, product, service, targetEnv). Defaulted so rows written before the column existed
+            // load; the AddWorkItemService migration backfills it from the candidate.
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.Provider).HasMaxLength(50);
             e.Property(x => x.Url).HasMaxLength(2000);
             e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.SubTitle).HasMaxLength(500);
+            // No length cap: this is the ticket/PR/commit body, not a label.
+            e.Property(x => x.Content);
+            // Tracker labels — Jira's longest built-in names are well under this.
+            e.Property(x => x.Priority).HasMaxLength(100);
+            e.Property(x => x.WorkItemType).HasMaxLength(100);
             e.Property(x => x.Revision).HasMaxLength(200);
             e.HasOne<PromotionCandidate>()
                 .WithMany()
@@ -413,8 +611,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .OnDelete(DeleteBehavior.Cascade);
             // Lookup: "all tickets on candidate X" for the gate evaluator.
             e.HasIndex(x => x.CandidateId);
-            // Lookup: "candidates carrying ticket X for (product, env)" for the approval surface.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
+            // Lookup: "candidates carrying ticket X for (product, service, env)" for the approval
+            // surface. Also serves the (key, product, env) prefix, which the legacy-link resolver uses
+            // to list the services carrying a ticket.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.Service });
         });
 
         // Promotion Approvals
@@ -429,8 +629,12 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             // Optional attribution to the step/requirement the approval was recorded against.
             e.Property(x => x.StepName).HasMaxLength(200);
             e.Property(x => x.RequirementName).HasMaxLength(200);
-            // DB-level guard against double approval from the same user.
-            e.HasIndex(x => new { x.CandidateId, x.ApproverEmail }).IsUnique();
+            // DB-level guard against the same user approving the same gate twice. One person may
+            // hold several rows on a candidate — one per requirement they approved as — which is what
+            // lets somebody sitting in two gates clear both. Rows with no attribution (rejections,
+            // legacy approvals) fall outside the index — Postgres never collides NULLs, SQL Server
+            // gets a NOT NULL filter — so those are guarded per user at the application level.
+            e.HasIndex(x => new { x.CandidateId, x.ApproverEmail, x.StepName, x.RequirementName }).IsUnique();
             e.HasOne<PromotionCandidate>()
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)
@@ -456,17 +660,40 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasKey(x => x.Id);
             e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.ApproverEmail).HasMaxLength(300).IsRequired();
             e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Property(x => x.Comment).HasMaxLength(2000);
-            // One decision per (ticket, product, env, approver). DB-level guard against double-decision.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv, x.ApproverEmail }).IsUnique();
-            // Lookup: "all decisions on FOO-123 for product X in env stage" — for the gate evaluator.
-            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.TargetEnv });
+            // One decision per (ticket, product, service, env, approver). DB-level guard against
+            // double-decision.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.Service, x.TargetEnv, x.ApproverEmail }).IsUnique();
+            // Lookup: "all decisions on FOO-123 for product X / service Y in env stage" — for the
+            // gate evaluator.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.Service, x.TargetEnv });
             // Lookup: "any decisions in this product+env" — admin queries.
             e.HasIndex(x => new { x.Product, x.TargetEnv });
+        });
+
+        // Work-item comments — the discussion thread on a ticket's sign-off, keyed the same way
+        // as WorkItemApproval (key, product, service, targetEnv) so it survives candidate supersession. No FK: there is no single
+        // owning candidate (one ticket can back several).
+        modelBuilder.Entity<WorkItemComment>(e =>
+        {
+            e.ToTable("work_item_comments");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.WorkItemKey).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.AuthorEmail).HasMaxLength(300).IsRequired();
+            e.Property(x => x.AuthorName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Body).HasMaxLength(4000).IsRequired();
+            // Null for human comments; set on the auto-written entries that record a sign-off.
+            e.Property(x => x.Decision).HasMaxLength(20).HasConversion<string>();
+            // Lookup: "the thread for FOO-123 in product X / service Y / env stage", oldest first.
+            e.HasIndex(x => new { x.WorkItemKey, x.Product, x.Service, x.TargetEnv, x.CreatedAt });
         });
 
         // Release Notes
@@ -499,6 +726,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.Reason).HasMaxLength(1000);
             e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
             e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.ApprovalOverridden).HasDefaultValue(false);
+            e.Property(x => x.CancelledBy).HasMaxLength(300);
+            e.Property(x => x.CancelledByName).HasMaxLength(300);
+            e.Property(x => x.CancelReason).HasMaxLength(1000);
             var exclusionsJson = e.Property(x => x.ExclusionsJson).HasDefaultValue("[]");
             var rbResolvedPolicyJson = e.Property(x => x.ResolvedPolicyJson);
             if (jsonType != null)
@@ -524,6 +755,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.ToVersion).HasMaxLength(200).IsRequired();
             e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Property(x => x.ExternalRunUrl).HasMaxLength(2000);
+            e.Property(x => x.Note).HasMaxLength(1000);
             e.HasIndex(x => x.RequestId);
             // Lookup for completion matching: open items by service in a product/env.
             e.HasIndex(x => new { x.Service, x.Status });
@@ -537,11 +769,37 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.ApproverName).HasMaxLength(300).IsRequired();
             e.Property(x => x.Comment).HasMaxLength(2000);
             e.Property(x => x.Decision).HasMaxLength(20).IsRequired().HasConversion<string>();
+            e.Property(x => x.IsOverride).HasDefaultValue(false);
             e.HasIndex(x => new { x.RequestId, x.ApproverEmail }).IsUnique();
             e.HasOne<RollbackRequest>()
                 .WithMany()
                 .HasForeignKey(x => x.RequestId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Per-product rollback policy: who may create, who must approve. One row per
+        // (product, target env); TargetEnv NULL is the product default.
+        modelBuilder.Entity<RollbackPolicy>(e =>
+        {
+            e.ToTable("rollback_policies");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TargetEnv).HasMaxLength(100);
+            e.Property(x => x.EscalationGroup).HasMaxLength(300);
+            e.Property(x => x.UpdatedBy).HasMaxLength(300);
+            var creatorsJson = e.Property(x => x.CreatorsJson).HasDefaultValue("{}").IsRequired();
+            var rbStepsJson = e.Property(x => x.ApprovalStepsJson).HasDefaultValue("[]").IsRequired();
+            if (jsonType != null)
+            {
+                creatorsJson.HasColumnType(jsonType);
+                rbStepsJson.HasColumnType(jsonType);
+            }
+            e.Ignore(x => x.Creators);
+            e.Ignore(x => x.ApprovalSteps);
+            // One policy per scope. NULL TargetEnv rows are not covered by a unique index on either
+            // provider (NULLs compare distinct), so the product-default row is de-duplicated by the
+            // pre-check in the admin endpoints rather than by the DB.
+            e.HasIndex(x => new { x.Product, x.TargetEnv }).IsUnique();
         });
 
         // Promotion Comments

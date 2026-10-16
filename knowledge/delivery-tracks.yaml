@@ -1,0 +1,111 @@
+id: delivery-tracks
+title: How a change reaches production — the three delivery tracks
+group: Process
+summary: >-
+  There is no single release pipeline. Three tracks deliver different parts of the product, sharing
+  InfraPortal as their control plane.
+aliases:
+  - how does deployment work
+  - how does the release process work
+  - how does a change get to production
+  - what is the deployment pipeline
+  - sdp track
+  - gitops track
+  - build registry track
+  - how does mpt-release work
+tags:
+  - marketplace
+  - mpt-release
+  - sdp
+  - reconcile
+  - track
+  - pipeline
+source: mpt-release/docs/release-pipelines.md §1–4
+as_of: 2026-10-15
+body: |
+  Most confusion comes from calling all of these "the deployment pipeline". There are **three
+  delivery tracks** plus **one shared control plane**.
+
+  | Track | Delivers | Engine |
+  |---|---|---|
+  | **A — Marketplace Monorepo ("SDP")** | The core Marketplace product (`mpt`) components not yet moved to mpt-release, listed in `marketplace/manifest.json` | ADO `marketplace-sdp` / `marketplace-sdp-prod` |
+  | **B — Release-Metadata (GitOps)** | Extensions and satellite services — anything with a directory in `mpt-release` | GitHub Actions `Reconcile <env>` |
+  | **C — Build Registry** | The front door for both: every release/main build registers and reaches dev / staging as a `build → env` promotion | InfraPortal → Deploy Registered Build (B) or the marketplace staging pipeline (A) |
+  | **∗ InfraPortal** | Not a track. System of record for builds, deploy events, promotions and approvals | — |
+
+  The direction is one track: every service eventually deploys through mpt-release. Services move
+  across one at a time (excluded from marketplace's SDP via `sdp.exclude`, given an mpt-release
+  directory, wired in InfraPortal); until then Track A keeps the rest.
+
+  ## Track A — the monorepo
+
+  `marketplace` is a super-repo of ~50 git submodules plus a `manifest.json` naming the exact
+  version of every component. **A release is a state of that manifest**, deployed as a set.
+
+  - One release branch per day (`staging/5.0806`, `prod/5.0828`). Later approvals the same day land
+    as further commits on the same branch, each restating the *whole* approved set — so the branch
+    always describes what is approved right now.
+  - **Two gates, not one.** InfraPortal approval decides *what goes in the branch*; the ADO
+    Environment approval on the SDP stage decides *when it deploys*.
+  - **Bursts collapse.** Approving six promotions raises six events and starts six runs;
+    `yield-to-newer-run.ps1` elects the newest and `queue-deployment.ps1` cancels the earlier
+    in-flight one. Net result: one release, one deployment.
+  - **What goes in the staging branch** is every approved `mpt` staging promotion, whatever its
+    source — since 2026-10-14 those are `build → staging` promotions of registered release builds.
+    Dev and test still deploy straight from `manifest.json` on every master bump (5399 → 5462).
+
+  ## Track B — desired state in git
+
+  `mpt-release` holds one directory per environment, one sub-directory per component, containing
+  `build-metadata.yaml` (desired version), `instance.yaml` (identity and placement) and
+  `deployment-status.yaml` (actual outcome).
+
+  **Writing a `build-metadata.yaml` into an environment directory is the declaration of intent; the
+  reconcile workflow makes it true.**
+
+      approved build → env promotion → Deploy Registered Build commits <env>/<svc>/build-metadata.yaml
+        → Reconcile <env> → helm/web deploy → deploy event closes the promotion
+      approved dev → test / test → staging / staging → prod
+        → Promote Single Build Manifest copies between environment directories → Reconcile <env>
+
+  Git is the ledger: every deployment, promotion and rollback is a commit traceable to build ID,
+  Jira ticket and originator, with commit messages produced only by `Invoke-GitCommit`.
+
+  Until 2026-10-14 Track B had its own front half — the `mpt-release.import-build` pipeline (ADO
+  5617) copied every build into a `main/` or `stable/` landing zone, `main/` was copied into dev
+  automatically and `stable/` produced "Staging Candidate" promotions. That front half is retired;
+  Track C is the only way in.
+
+  ## Track C — the build registry
+
+  Every published build — `main`, `release/*` **and feature branches** — is registered as a
+  first-class Build. Deploying is then a promotion from the synthetic source environment `build`,
+  governed by the same policy engine as every other edge.
+
+  - **Commit-on-deploy.** A build that is never promoted never reaches `mpt-release`, so that
+    repository's history stays a deployment ledger rather than a log of everything that compiled.
+  - `main` builds match `build → dev` and auto-approve; `release/*` builds match `build → staging`
+    and wait for QA and release approval. **Feature builds register and stop** until someone picks
+    them in the UI or posts to `/api/promotions/from-build`.
+  - Registration is idempotent on `(product, service, version)`; a replay re-runs the auto-create, so
+    re-registering a build re-opens its promotion.
+
+  Tracks B and C **share the entire back half**: C replaced the front half of B.
+
+  ## What is not true
+
+  - There is **no "Staging Candidate" step any more**. The `stable` environment is retired (hidden
+    from current-state views, history kept), and nothing posts `release-track` markers.
+  - A test-verified master build does not graduate to staging (except `mpt-support-tools`' explicit
+    `test → staging` edge). Staging takes release builds, through `build → staging`.
+  - InfraPortal never fetches from ACR. The build manifest is POSTed inline; the OCI reference is
+    stored so `mpt-release` can `oras pull` it later.
+related:
+  - promotion-policies
+  - webhook-catalogue
+  - service-topology
+  - environments-and-tracks
+  - reconcile-and-rollback
+related_guides:
+  - check-deployed-version
+  - approve-promotion

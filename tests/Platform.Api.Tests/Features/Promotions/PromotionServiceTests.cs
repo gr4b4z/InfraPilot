@@ -19,6 +19,7 @@ public class PromotionServiceTests : IDisposable
     private readonly IIdentityService _identity = Substitute.For<IIdentityService>();
     private readonly ICurrentUser _currentUser = Substitute.For<ICurrentUser>();
     private readonly IAuditLogger _audit = Substitute.For<IAuditLogger>();
+    private readonly IWebhookDispatcher _webhooks = Substitute.For<IWebhookDispatcher>();
     private readonly PromotionService _sut;
 
     public PromotionServiceTests()
@@ -49,8 +50,12 @@ public class PromotionServiceTests : IDisposable
         _sut = new PromotionService(
             _db, resolver, auth, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
-            Substitute.For<IWebhookDispatcher>(),
-            TestOptions.Normalization());
+            _webhooks,
+            TestOptions.Normalization(),
+            TestEnvironmentAliases.For(_db),
+            TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db),
+            TestRoleCatalog.For(_db));
     }
 
     public void Dispose() => _db.Dispose();
@@ -310,6 +315,401 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_RecordsTheTargetVersionItIsReplacing()
+    {
+        // The "from" side of the promotion, captured at creation because the target env moves on:
+        // once this candidate lands, prod's current version IS v1.2.3 and the promotion would have
+        // no record of coming from v1.0.0.
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.Equal("v1.0.0", c!.FromVersion);
+    }
+
+    [Fact]
+    public async Task Create_FirstDeployIntoTarget_HasNoFromVersion()
+    {
+        // Nothing has ever run in prod, so there is no version to replace — null, not "".
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.Null(c!.FromVersion);
+    }
+
+    [Fact]
+    public async Task Create_RepeatForSameVersion_RefreshesFromVersion()
+    {
+        // The source system re-pushes the same candidate after prod took a hotfix. The change set it
+        // just computed is relative to the hotfix, so the recorded baseline has to move with it.
+        var t0 = DateTimeOffset.UtcNow.AddHours(-2);
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.2.3", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", deployedAt: t0);
+
+        var first = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+        Assert.Equal("v1.0.0", first!.FromVersion);
+
+        SeedDeploy(env: "prod", version: "v1.0.1", service: "api", status: "succeeded",
+            deployedAt: t0.AddHours(1));
+
+        var second = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.Equal(first.Id, second!.Id);
+        Assert.Equal("v1.0.1", second.FromVersion);
+    }
+
+    [Fact]
+    public async Task Create_VersionAlreadyDeployedAndTargetMovedOn_ClosesAsDeployed()
+    {
+        // The stranded-promotion case, and the reason completion can't only live on the ingest path.
+        // v1.0.0 went to prod, prod later moved to v2.0.0, and only then is v1.0.0 promoted. No further
+        // deploy of v1.0.0 is ever going to arrive, so nothing would close this promotion — it sat in
+        // "approved, awaiting deploy" forever. 53 real promotions were in this state.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.0.0", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0.AddDays(2));
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.0.0", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.NotNull(c);
+        var reloaded = await _db.PromotionCandidates.FindAsync(c!.Id);
+        Assert.Equal(PromotionStatus.Deployed, reloaded!.Status);
+        // The date the version actually went live, not the moment we noticed.
+        Assert.Equal(t0, reloaded.DeployedAt);
+    }
+
+    [Fact]
+    public async Task Create_VersionOnlyFailedInTarget_StaysOpen()
+    {
+        // A failed attempt did not put the version live. The promotion is right to keep waiting, and
+        // this is the guard that keeps the repair pass honest — 2 real promotions look like the
+        // stranded ones but only ever had a failed deploy behind them.
+        SeedPolicy();
+        SeedDeploy(env: "staging", version: "v1.0.0", service: "api", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "failed");
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded");
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.0.0", FromRevision: null, ToRevision: null,
+            References: null, Participants: null));
+
+        Assert.NotNull(c);
+        Assert.NotEqual(PromotionStatus.Deployed, c!.Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_ClosesTheDeployedOnesAndLeavesTheRestAlone()
+    {
+        // The repair pass over promotions stranded before the create-time check existed. Three
+        // promotions, one of which shipped — only that one may move.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        SeedPolicy(approverGroup: null); // auto-approve, so candidates land in Approved like the real ones
+        SeedDeploy(env: "staging", version: "v1.0.0", service: "shipped", status: "succeeded");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "shipped", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v3.0.0", service: "shipped", status: "succeeded", deployedAt: t0.AddDays(1));
+
+        var shipped = SeedStrandedCandidate("shipped", "v1.0.0");
+        var neverDeployed = SeedStrandedCandidate("never", "v1.0.0");
+        var failedOnly = SeedStrandedCandidate("failed", "v1.0.0");
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "failed", status: "failed");
+        await _db.SaveChangesAsync();
+
+        var dry = await _sut.ReconcileCompletionsAsync(dryRun: true);
+        Assert.Equal(3, dry.Examined);
+        Assert.Equal(1, dry.Closed);
+        Assert.Equal(0, dry.Superseded); // the other two have no newer version in prod to overtake them
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(shipped.Id))!.Status);
+
+        var run = await _sut.ReconcileCompletionsAsync();
+        Assert.Equal(1, run.Closed);
+        var settled = Assert.Single(run.Candidates);
+        Assert.Equal(shipped.Id, settled.Id);
+        Assert.Equal("closed", settled.Action);
+
+        Assert.Equal(PromotionStatus.Deployed, (await _db.PromotionCandidates.FindAsync(shipped.Id))!.Status);
+        Assert.Equal(t0, (await _db.PromotionCandidates.FindAsync(shipped.Id))!.DeployedAt);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(neverDeployed.Id))!.Status);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(failedOnly.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_SupersedesTheOnesTheEnvironmentOvertook()
+    {
+        // The other stranded group: approved, then never deployed because a later version went instead.
+        // 58 real promotions. Nothing retires them today, so they sit in "awaiting deploy" indefinitely.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        var overtaken = SeedStrandedCandidate("api", "v1.0.0", createdAt: t0);
+        var rolledBackTarget = SeedStrandedCandidate("rolled", "v2.0.0", createdAt: t0);
+        await _db.SaveChangesAsync();
+
+        // prod moved past v1.0.0 without ever deploying it.
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0.AddDays(1));
+        // The rolled-back service is on an OLDER version than its promotion carries — a live intent.
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "rolled", status: "succeeded", deployedAt: t0.AddDays(1));
+        await _db.SaveChangesAsync();
+
+        var result = await _sut.ReconcileCompletionsAsync();
+
+        Assert.Equal(1, result.Superseded);
+        Assert.Equal(0, result.Closed);
+        var settled = Assert.Single(result.Candidates);
+        Assert.Equal("superseded", settled.Action);
+        Assert.Equal("v2.0.0", settled.LandedVersion);
+        Assert.Equal(PromotionStatus.Superseded, (await _db.PromotionCandidates.FindAsync(overtaken.Id))!.Status);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(rolledBackTarget.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_TargetAlreadyAheadWhenPromotionWasCreated_LeavesItAlone()
+    {
+        // Promoting an older version into an environment that is already ahead is a deliberate act, not
+        // a stranded promotion. Nothing here is ours to retire.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0);
+        var deliberate = SeedStrandedCandidate("api", "v1.0.0", createdAt: t0.AddDays(1));
+        await _db.SaveChangesAsync();
+
+        var result = await _sut.ReconcileCompletionsAsync();
+
+        Assert.Equal(0, result.Closed);
+        Assert.Equal(0, result.Superseded);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(deliberate.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task SupersedeOvertaken_ClosesApprovedPromotionsTheEnvironmentPassed()
+    {
+        // The 58 real promotions that were approved and then never went, because a later version went
+        // instead. Nothing used to move them: the existing supersede rule only touches Pending.
+        var landedAt = DateTimeOffset.UtcNow;
+        var overtaken = SeedStrandedCandidate("api", "v1.0.0", createdAt: landedAt.AddDays(-1));
+        var newerIntent = SeedStrandedCandidate("api", "v9.0.0", createdAt: landedAt.AddDays(-1));
+        var createdAfter = SeedStrandedCandidate("api", "v1.5.0", createdAt: landedAt.AddHours(1));
+        var unorderable = SeedStrandedCandidate("api", "release-candidate", createdAt: landedAt.AddDays(-1));
+        await _db.SaveChangesAsync();
+
+        var count = await _sut.SupersedeOvertakenByDeployAsync(
+            "acme", "api", "prod", "v2.0.0", landedAt);
+
+        Assert.Equal(1, count);
+        Assert.Equal(PromotionStatus.Superseded, (await _db.PromotionCandidates.FindAsync(overtaken.Id))!.Status);
+        // Newer than what landed — still a live intention.
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(newerIntent.Id))!.Status);
+        // Created after the deploy landed, so this deploy did not overtake it.
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(createdAfter.Id))!.Status);
+        // Unorderable version: leave it alone rather than guess.
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(unorderable.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task SupersedeOvertaken_CountedBuildsOfOneReleaseAreOrderedByTheirCounter()
+    {
+        // The GitHub-built extensions version every build of a release as <release>-<run>.<sha>, so the
+        // release prefix never moves between builds. Approved build -> dev promotions a later build
+        // overtook used to compare as equal to it and stay Approved forever.
+        var landedAt = DateTimeOffset.UtcNow;
+        var overtaken = SeedStrandedCandidate("api", "6.0.0-9.1600d316", createdAt: landedAt.AddDays(-1));
+        var newerIntent = SeedStrandedCandidate("api", "6.0.0-60.aaaaaaaa", createdAt: landedAt.AddDays(-1));
+        await _db.SaveChangesAsync();
+
+        var count = await _sut.SupersedeOvertakenByDeployAsync(
+            "acme", "api", "prod", "6.0.0-52.9f6eae03", landedAt);
+
+        Assert.Equal(1, count);
+        Assert.Equal(PromotionStatus.Superseded, (await _db.PromotionCandidates.FindAsync(overtaken.Id))!.Status);
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(newerIntent.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task SupersedeOvertaken_PromotionThatDidShipIsDeployedNotSuperseded()
+    {
+        // Being replaced later is the normal end of a promotion's life, not a supersede: if its own
+        // version did land, the honest status is Deployed.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-2);
+        SeedDeploy(env: "prod", version: "v1.0.0", service: "api", status: "succeeded", deployedAt: t0);
+        SeedDeploy(env: "prod", version: "v2.0.0", service: "api", status: "succeeded", deployedAt: t0.AddDays(1));
+        var shipped = SeedStrandedCandidate("api", "v1.0.0", createdAt: t0.AddHours(-1));
+        await _db.SaveChangesAsync();
+
+        var count = await _sut.SupersedeOvertakenByDeployAsync(
+            "acme", "api", "prod", "v2.0.0", t0.AddDays(1));
+
+        Assert.Equal(0, count);
+        var reloaded = await _db.PromotionCandidates.FindAsync(shipped.Id);
+        Assert.Equal(PromotionStatus.Deployed, reloaded!.Status);
+    }
+
+    /// <summary>
+    /// An Approved candidate written straight to the database — the shape the stranded production rows
+    /// are in, without going through the create path that would now close or reject them.
+    /// </summary>
+    private PromotionCandidate SeedStrandedCandidate(
+        string service, string version, DateTimeOffset? createdAt = null)
+    {
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = service,
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = version,
+            Status = PromotionStatus.Approved,
+            CreatedAt = createdAt ?? DateTimeOffset.UtcNow.AddDays(-1),
+            ApprovedAt = createdAt ?? DateTimeOffset.UtcNow.AddDays(-1),
+        };
+        _db.PromotionCandidates.Add(candidate);
+        return candidate;
+    }
+
+    // ---------------------------------------------------------------------
+    // Duplicate-candidate maintenance
+    // ---------------------------------------------------------------------
+
+    private PromotionCandidate SeedCandidateRow(
+        string service, string version, PromotionStatus status,
+        DateTimeOffset createdAt, DateTimeOffset? deployedAt = null, Guid? supersededById = null)
+    {
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = service,
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = version,
+            Status = status,
+            CreatedAt = createdAt,
+            DeployedAt = deployedAt,
+            SupersededById = supersededById,
+        };
+        _db.PromotionCandidates.Add(candidate);
+        return candidate;
+    }
+
+    [Fact]
+    public async Task Dedup_RemovesCopiesKeepsEarliestAndItsChildren()
+    {
+        // The production residue: several same-key Approved rows minted by the pre-D15 create path.
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+        var keeper = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Approved, t0);
+        var copy1 = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Approved, t0.AddMinutes(7));
+        var copy2 = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Approved, t0.AddDays(3));
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(), CandidateId = keeper.Id,
+            AuthorEmail = "system", AuthorName = "System", Body = "kept", CreatedAt = t0,
+        });
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(), CandidateId = copy1.Id,
+            AuthorEmail = "system", AuthorName = "System", Body = "removed with its row", CreatedAt = t0,
+        });
+        await _db.SaveChangesAsync();
+
+        var (previewGroups, previewRows) = await _sut.CountDuplicateCandidatesAsync();
+        Assert.Equal(1, previewGroups);
+        Assert.Equal(2, previewRows);
+
+        var (groups, rows) = await _sut.RemoveDuplicateCandidatesAsync();
+        Assert.Equal(1, groups);
+        Assert.Equal(2, rows);
+
+        var remaining = await _db.PromotionCandidates.Select(c => c.Id).ToListAsync();
+        Assert.Equal([keeper.Id], remaining);
+        Assert.Null(await _db.PromotionCandidates.FindAsync(copy2.Id));
+        // The keeper's thread survives; the copies' rows go with them.
+        var comments = await _db.PromotionComments.ToListAsync();
+        Assert.Equal("kept", Assert.Single(comments).Body);
+    }
+
+    [Fact]
+    public async Task Dedup_RepointsSupersededByToTheKeeper()
+    {
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+        var keeper = SeedCandidateRow("api", "v2.0.0", PromotionStatus.Pending, t0);
+        var copy = SeedCandidateRow("api", "v2.0.0", PromotionStatus.Pending, t0.AddMinutes(1));
+        // An older promotion that the COPY superseded — its pointer must not dangle.
+        var older = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Superseded, t0.AddDays(-1),
+            supersededById: copy.Id);
+        await _db.SaveChangesAsync();
+
+        await _sut.RemoveDuplicateCandidatesAsync();
+
+        var reloaded = await _db.PromotionCandidates.FindAsync(older.Id);
+        Assert.Equal(keeper.Id, reloaded!.SupersededById);
+    }
+
+    [Fact]
+    public async Task Dedup_LeavesLegitimateHistoryAlone()
+    {
+        var t0 = DateTimeOffset.UtcNow.AddDays(-30);
+
+        // Deployed, rolled back, re-promoted, deployed again: same key, two distinct landings.
+        SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0, deployedAt: t0.AddHours(1));
+        SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0.AddDays(10), deployedAt: t0.AddDays(10).AddHours(1));
+
+        // Superseded twice, each time by a different newer candidate.
+        var winnerA = SeedCandidateRow("web", "v2.0.0", PromotionStatus.Deployed, t0, deployedAt: t0.AddHours(1));
+        var winnerB = SeedCandidateRow("web", "v3.0.0", PromotionStatus.Pending, t0.AddDays(10));
+        SeedCandidateRow("web", "v1.0.0", PromotionStatus.Superseded, t0, supersededById: winnerA.Id);
+        SeedCandidateRow("web", "v1.0.0", PromotionStatus.Superseded, t0.AddDays(9), supersededById: winnerB.Id);
+
+        // Rejected twice — nothing on the row distinguishes the rejections, so Rejected is excluded.
+        SeedCandidateRow("job", "v1.0.0", PromotionStatus.Rejected, t0);
+        SeedCandidateRow("job", "v1.0.0", PromotionStatus.Rejected, t0.AddDays(5));
+        await _db.SaveChangesAsync();
+
+        var before = await _db.PromotionCandidates.CountAsync();
+        var (groups, rows) = await _sut.RemoveDuplicateCandidatesAsync();
+
+        Assert.Equal(0, groups);
+        Assert.Equal(0, rows);
+        Assert.Equal(before, await _db.PromotionCandidates.CountAsync());
+    }
+
+    [Fact]
+    public async Task Dedup_DeployedCopiesOfTheSameLanding_AreRemoved()
+    {
+        // The post-reconcile shape of the residue: every copy was closed against the same deploy
+        // event, so they share DeployedAt — unlike a genuine re-promote (previous test).
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+        var landing = t0.AddHours(2);
+        var keeper = SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0, deployedAt: landing);
+        SeedCandidateRow("api", "v1.0.0", PromotionStatus.Deployed, t0.AddMinutes(9), deployedAt: landing);
+        await _db.SaveChangesAsync();
+
+        var (groups, rows) = await _sut.RemoveDuplicateCandidatesAsync();
+
+        Assert.Equal(1, groups);
+        Assert.Equal(1, rows);
+        Assert.Equal([keeper.Id], await _db.PromotionCandidates.Select(c => c.Id).ToListAsync());
+    }
+
+    [Fact]
     public async Task Create_SecondCandidateSupersedesFirst()
     {
         SeedPolicy();
@@ -397,6 +797,78 @@ public class PromotionServiceTests : IDisposable
         Assert.Equal("alice@example.com", row.ApproverEmail);
     }
 
+    // ---------------------------------------------------------------------
+    // UpsertReferenceParticipantAsync — the work-items queue "Assign" write path
+    // ---------------------------------------------------------------------
+
+    private PromotionCandidate SeedCandidateWithWorkItem(string key = "OBS-1")
+    {
+        var candidate = new PromotionCandidate
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = "api",
+            SourceEnv = "staging",
+            TargetEnv = "prod",
+            Version = "v1",
+            Status = PromotionStatus.Pending,
+            ResolvedPolicyJson = "{}",
+            References = new List<ReferenceDto> { new("work-item", Key: key, Title: "Some ticket") },
+        };
+        _db.PromotionCandidates.Add(candidate);
+        _db.SaveChanges();
+        return candidate;
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_AssignsOnTheWorkItemReference()
+    {
+        _currentUser.IsQA.Returns(true); // work-item assignment is the QA role's jurisdiction
+        var c = SeedCandidateWithWorkItem("OBS-1");
+
+        var participants = await _sut.UpsertReferenceParticipantAsync(
+            c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "Sylwester Grabowski", "syl@softwareone.com"));
+
+        Assert.Contains(participants, p => p.Role == "reviewer" && p.Email == "syl@softwareone.com");
+        // Persisted onto the candidate's work-item reference (what GetWorkItemParticipants reads).
+        var stored = _db.PromotionCandidates.Single(x => x.Id == c.Id)
+            .References.Single(r => r.Key == "OBS-1").Participants;
+        Assert.Contains(stored!, p => p.Role == "reviewer" && p.Email == "syl@softwareone.com");
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_NullAssignee_ClearsTheRole()
+    {
+        _currentUser.IsQA.Returns(true);
+        var c = SeedCandidateWithWorkItem("OBS-1");
+        await _sut.UpsertReferenceParticipantAsync(
+            c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com"));
+
+        var after = await _sut.UpsertReferenceParticipantAsync(c.Id, "OBS-1", "reviewer", assignee: null);
+
+        Assert.DoesNotContain(after, p => p.Role == "reviewer");
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_UnknownReference_Throws()
+    {
+        _currentUser.IsQA.Returns(true);
+        var c = SeedCandidateWithWorkItem("OBS-1");
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => _sut.UpsertReferenceParticipantAsync(
+                c.Id, "DOES-NOT-EXIST", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com")));
+    }
+
+    [Fact]
+    public async Task UpsertReferenceParticipant_NonQaNonAdmin_Unauthorized()
+    {
+        // Default alice is neither QA nor Admin — work-item assignment must be refused.
+        var c = SeedCandidateWithWorkItem("OBS-1");
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => _sut.UpsertReferenceParticipantAsync(
+                c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "X", "x@acme.com")));
+    }
+
     [Fact]
     public async Task Approve_AdminAlwaysQualifies()
     {
@@ -455,6 +927,108 @@ public class PromotionServiceTests : IDisposable
         Assert.Equal(PromotionStatus.Pending, updated.Status);
     }
 
+    /// <summary>
+    /// The stuck-promotion bug: Alice is in the group behind both requirements. Under the old global
+    /// distinct-person rule her first approval consumed her, and nobody else existed to clear the
+    /// second gate. Each gate now takes its own approval from her and the promotion goes through.
+    /// </summary>
+    [Fact]
+    public async Task Approve_SameUser_TwoGates_ApprovesEachSeparately()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+
+        var afterQa = await _sut.ApproveAsync(c!.Id, "as qa", stepName: "Signoff", requirementName: "QA");
+        Assert.Equal(PromotionStatus.Pending, afterQa.Status);
+
+        // The other gate is still on offer to her.
+        var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
+        var eligible = await _sut.GetEligibleRequirementsAsync(reloaded!);
+        var remaining = Assert.Single(eligible);
+        Assert.Equal("ReleaseManager", remaining.RequirementName);
+        Assert.True(await _sut.CanUserApproveAsync(reloaded!));
+
+        var afterRm = await _sut.ApproveAsync(c.Id, "as rm", stepName: "Signoff", requirementName: "ReleaseManager");
+        Assert.Equal(PromotionStatus.Approved, afterRm.Status);
+
+        var rows = _db.PromotionApprovals.OrderBy(a => a.CreatedAt).ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal("alice@example.com", r.ApproverEmail));
+        Assert.Equal(new[] { "QA", "ReleaseManager" }, rows.Select(r => r.RequirementName));
+    }
+
+    [Fact]
+    public async Task Approve_AfterOneGate_WithoutChoice_AutoPicksTheRemainingGate()
+    {
+        // Once QA carries her approval only ReleaseManager is open for her, so no choice is needed.
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+
+        var updated = await _sut.ApproveAsync(c.Id, null);
+
+        Assert.Equal(PromotionStatus.Approved, updated.Status);
+        Assert.Contains(_db.PromotionApprovals, r => r.RequirementName == "ReleaseManager");
+    }
+
+    [Fact]
+    public async Task Approve_SameUser_SameGateTwice_Throws()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.ApproveAsync(c.Id, null, stepName: "Signoff", requirementName: "QA"));
+
+        Assert.Contains("already approved", ex.Message);
+        Assert.Single(_db.PromotionApprovals);
+    }
+
+    [Fact]
+    public async Task Approve_AllMyGatesDone_Throws_NothingLeftToApprove()
+    {
+        // Both gates approved by Alice → the candidate is Approved and no longer Pending, so the guard
+        // that fires is the Pending one. Use a 2-of-M gate instead so it stays Pending after her row.
+        SeedPolicy(approverGroup: "ops", minApprovers: 2);
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.ApproveAsync(c.Id, null));
+
+        Assert.Contains("already approved", ex.Message);
+        Assert.Single(_db.PromotionApprovals);
+    }
+
+    [Fact]
+    public async Task Progress_SameUserOnTwoGates_CountsOnBoth()
+    {
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+        await _sut.ApproveAsync(c.Id, null, stepName: "Signoff", requirementName: "ReleaseManager");
+        var reloaded = await _db.PromotionCandidates.FindAsync(c.Id);
+
+        var progress = await _sut.GetApprovalProgressAsync(reloaded!);
+
+        Assert.True(progress.AllSatisfied);
+        Assert.Equal(2, progress.TotalApproved);
+        Assert.All(Assert.Single(progress.Steps).Requirements, r => Assert.Equal(1, r.Approved));
+    }
+
+    [Fact]
+    public async Task Reject_AfterApprovingOneGate_StillVetoes()
+    {
+        // Signing off QA does not forfeit the release manager's veto.
+        SeedMultiReqPolicy();
+        var c = await CreateAsync();
+        await _sut.ApproveAsync(c!.Id, null, stepName: "Signoff", requirementName: "QA");
+
+        var updated = await _sut.RejectAsync(c.Id, "not this one");
+
+        Assert.Equal(PromotionStatus.Rejected, updated.Status);
+    }
+
     [Fact]
     public async Task Approve_ChoiceNotEligible_Throws()
     {
@@ -477,6 +1051,133 @@ public class PromotionServiceTests : IDisposable
 
         var updated = await _sut.RejectAsync(c!.Id, "no thanks");
         Assert.Equal(PromotionStatus.Rejected, updated.Status);
+    }
+
+    // ---------------------------------------------------------------------
+    // AdminRejectAsync
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task AdminReject_RejectsAPendingPromotionTheCallerCannotApprove()
+    {
+        // Alice is in "ops", not "release-managers": the approver path refuses her outright.
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => _sut.RejectAsync(c!.Id, "no"));
+
+        var updated = await _sut.AdminRejectAsync(c!.Id, "  stale after the release-track migration  ");
+
+        Assert.Equal(PromotionStatus.Rejected, updated.Status);
+        Assert.Equal(PromotionStatus.Rejected, (await _db.PromotionCandidates.FindAsync(c.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task AdminReject_RecordsTheDecisionRowAndASystemComment()
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+
+        await _sut.AdminRejectAsync(c!.Id, "  stale after the release-track migration  ");
+
+        // Attributed to the caller, reason trimmed, so "Other decisions" shows who and why.
+        var decision = Assert.Single(await _sut.GetApprovalsAsync(c.Id));
+        Assert.Equal(PromotionDecision.Rejected, decision.Decision);
+        Assert.Equal("alice@example.com", decision.ApproverEmail);
+        Assert.Equal("Alice", decision.ApproverName);
+        Assert.Equal("stale after the release-track migration", decision.Comment);
+        Assert.Null(decision.StepName);
+        Assert.Null(decision.RequirementName);
+
+        var bodies = (await _sut.GetCommentsAsync(c.Id)).Select(x => x.Body).ToList();
+        Assert.Contains(bodies, b => b.Contains("Alice") && b.Contains("rejected this promotion as an administrator")
+                                     && b.Contains("stale after the release-track migration"));
+    }
+
+    [Fact]
+    public async Task AdminReject_FiresPromotionRejected_AndAuditsTheAdminMarker()
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+
+        await _sut.AdminRejectAsync(c!.Id, "stale");
+
+        // Same webhook a normal reject fires, with the override marked on `change`.
+        await _webhooks.Received(1).DispatchAsync(
+            "promotion.rejected",
+            Arg.Is<object>(o => JsonSerializer.Serialize(o, (JsonSerializerOptions?)null)
+                .Contains("\"change\":{\"trigger\":\"administrator-reject\",\"reason\":\"stale\"}")),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+        // Still a promotion.rejected audit row — it is a rejection — but told apart by its trigger.
+        await _audit.Received(1).Log(
+            "promotions", "promotion.rejected",
+            "alice-id", "Alice", "user",
+            "PromotionCandidate", c.Id, Arg.Is<object?>(before => before == null),
+            Arg.Is<object>(o => JsonSerializer.Serialize(o, (JsonSerializerOptions?)null)
+                == "{\"trigger\":\"administrator-reject\",\"reason\":\"stale\"}"),
+            Arg.Any<object?>());
+    }
+
+    [Fact]
+    public async Task Reject_ByAnApprover_CarriesNoAdminMarker()
+    {
+        SeedPolicy(approverGroup: "ops");
+        var c = await CreateAsync();
+
+        await _sut.RejectAsync(c!.Id, "not ready");
+
+        await _audit.Received(1).Log(
+            "promotions", "promotion.rejected",
+            "alice-id", "Alice", "user",
+            "PromotionCandidate", c.Id, Arg.Is<object?>(before => before == null),
+            Arg.Is<object>(o => !JsonSerializer.Serialize(o, (JsonSerializerOptions?)null).Contains("trigger")),
+            Arg.Any<object?>());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task AdminReject_RequiresAReason(string reason)
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _sut.AdminRejectAsync(c!.Id, reason));
+
+        Assert.Equal(PromotionStatus.Pending, (await _db.PromotionCandidates.FindAsync(c!.Id))!.Status);
+        Assert.Empty(await _sut.GetApprovalsAsync(c.Id));
+        await _webhooks.DidNotReceive().DispatchAsync(
+            "promotion.rejected", Arg.Any<object>(), Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    [Fact]
+    public async Task AdminReject_RefusesANonPendingPromotion()
+    {
+        SeedPolicy(approverGroup: null); // auto-approve ⇒ born Approved
+        var c = await CreateAsync();
+        Assert.Equal(PromotionStatus.Approved, c!.Status);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.AdminRejectAsync(c.Id, "too late"));
+
+        Assert.Equal(PromotionStatus.Approved, (await _db.PromotionCandidates.FindAsync(c.Id))!.Status);
+        Assert.DoesNotContain(await _sut.GetApprovalsAsync(c.Id), a => a.Decision == PromotionDecision.Rejected);
+    }
+
+    [Fact]
+    public async Task AdminReject_RefusesAnAlreadyRejectedPromotion()
+    {
+        SeedPolicy(approverGroup: "release-managers");
+        var c = await CreateAsync();
+        await _sut.AdminRejectAsync(c!.Id, "stale");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.AdminRejectAsync(c.Id, "again"));
+        Assert.Single(await _sut.GetApprovalsAsync(c.Id));
+    }
+
+    [Fact]
+    public async Task AdminReject_UnknownPromotion_Throws()
+    {
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => _sut.AdminRejectAsync(Guid.NewGuid(), "stale"));
     }
 
     // ---------------------------------------------------------------------
@@ -574,6 +1275,102 @@ public class PromotionServiceTests : IDisposable
         var updated = await _sut.MarkDeployedAsync(c.Id);
         Assert.Equal(PromotionStatus.Deployed, updated.Status);
         Assert.NotNull(updated.DeployedAt);
+    }
+
+    [Fact]
+    public async Task MarkDeployed_FromPending_Works_WithExplanatoryComment()
+    {
+        // Nobody approved it, but the version landed in prod anyway — the change is live, so the
+        // candidate has to say Deployed.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        var updated = await _sut.MarkDeployedAsync(c!.Id, "shipped out-of-band");
+
+        Assert.Equal(PromotionStatus.Deployed, updated.Status);
+        Assert.NotNull(updated.DeployedAt);
+        Assert.Contains(await _sut.GetCommentsAsync(c.Id), x => x.Body == "shipped out-of-band");
+    }
+
+    [Fact]
+    public async Task MarkDeployed_FromRejected_Works()
+    {
+        // A rejection is a decision about whether the version SHOULD ship. Once it has shipped, the
+        // candidate records that fact; the rejection stays in the approval trail.
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+        await _sut.RejectAsync(c!.Id, "not ready");
+
+        var updated = await _sut.MarkDeployedAsync(c.Id, "shipped anyway");
+
+        Assert.Equal(PromotionStatus.Deployed, updated.Status);
+        var approvals = await _sut.GetApprovalsAsync(c.Id);
+        Assert.Contains(approvals, a => a.Decision == PromotionDecision.Rejected);
+    }
+
+    [Fact]
+    public async Task MarkDeployed_FromDeployed_Throws()
+    {
+        SeedPolicy(approverGroup: null);
+        var c = await CreateAsync();
+        await _sut.MarkDeployedAsync(c!.Id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.MarkDeployedAsync(c.Id));
+    }
+
+    // ---------------------------------------------------------------------
+    // Action comment trail
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task EveryAction_LeavesASystemComment()
+    {
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        // Creation alone already writes one.
+        var afterCreate = await _sut.GetCommentsAsync(c!.Id);
+        Assert.Single(afterCreate);
+        Assert.All(afterCreate, x => Assert.Equal(PromotionComment.SystemAuthor, x.AuthorEmail));
+
+        await _sut.UpsertParticipantAsync(c.Id, new PromotionParticipant("qa", "Quinn", "quinn@example.com"));
+        await _sut.ApproveAsync(c.Id, "looks good");   // satisfies the gate → also logs the approval
+        await _sut.MarkDeployingAsync(c.Id, "https://ci/run/9");
+        await _sut.MarkDeployedAsync(c.Id);
+
+        var bodies = (await _sut.GetCommentsAsync(c.Id)).Select(x => x.Body).ToList();
+        Assert.Contains(bodies, b => b.Contains("Promotion created"));
+        Assert.Contains(bodies, b => b.Contains("Quinn") && b.Contains("qa"));
+        Assert.Contains(bodies, b => b.Contains("Alice") && b.Contains("approved") && b.Contains("looks good"));
+        Assert.Contains(bodies, b => b.Contains("Approval gate satisfied"));
+        Assert.Contains(bodies, b => b.Contains("Dispatched to the executor"));
+        Assert.Contains(bodies, b => b.Contains("Deployed to prod"));
+    }
+
+    [Fact]
+    public async Task Reject_LeavesASystemComment()
+    {
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+
+        await _sut.RejectAsync(c!.Id, "not ready");
+
+        var bodies = (await _sut.GetCommentsAsync(c.Id)).Select(x => x.Body).ToList();
+        Assert.Contains(bodies, b => b.Contains("Alice") && b.Contains("rejected") && b.Contains("not ready"));
+    }
+
+    [Fact]
+    public async Task SystemComment_CannotBeEditedOrDeleted_EvenByAdmin()
+    {
+        _currentUser.IsAdmin.Returns(true);
+        SeedPolicy(approverGroup: "ops", minApprovers: 1);
+        var c = await CreateAsync();
+        var comment = Assert.Single(await _sut.GetCommentsAsync(c!.Id));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.UpdateCommentAsync(comment.Id, "rewritten"));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.DeleteCommentAsync(comment.Id));
     }
 
     // ---------------------------------------------------------------------

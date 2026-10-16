@@ -5,6 +5,7 @@ import { A2UIRenderer } from '@/components/a2ui/A2UIRenderer';
 import type { A2UIComponent } from '@/lib/types';
 import { useConversationStore } from '@/stores/conversationStore';
 import { buildAgentUrl } from '@/lib/runtimeConfig';
+import { authHeaders } from '@/lib/authHeaders';
 
 interface Surface {
   slug?: string;
@@ -92,7 +93,7 @@ export function ChatInlineForm({ surfaceJson, initialValues }: Props) {
     try {
       const res = await fetch(buildAgentUrl('/catalog/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(),
         body: JSON.stringify({
           threadId,
           catalogSlug: surface.slug,

@@ -1,0 +1,86 @@
+id: environments-and-tracks
+title: The environments, and how a build reaches each one
+group: Topology
+summary: >-
+  What each environment is for, how a registered build enters dev and staging, the stage-to-stage
+  edges after that, and what happened to the retired `stable` ("Staging Candidate") environment.
+aliases:
+  - what environments are there
+  - what is stable
+  - what is staging candidate
+  - where did staging candidate go
+  - difference between test and staging
+  - how do I get to production
+  - why can't I promote test to staging
+  - promotion map
+tags:
+  - environment
+  - dev
+  - test
+  - staging
+  - prod
+  - build
+  - stable
+  - promotion map
+source: mpt-release/README.md + promotion-map.yaml + InfraPortal promotion policies
+as_of: 2026-10-15
+body: |
+  ## How a build reaches each environment
+
+      registered build (main/master) ──► dev ──► test
+      registered build (release/*)   ──► staging ──► prod
+
+  - **Into dev and staging** a version only ever arrives as a promotion from the synthetic `build`
+    environment: every published build registers itself, and the `build → dev` (main/master,
+    auto-approved) or `build → staging` (release/*, QA and release approval) policy creates the
+    promotion from that registration.
+  - **After that** the stage-to-stage edges take over: `dev → test` (auto), `staging → prod`
+    (gated, every work item signed off). `mpt-support-tools` also has `test → staging`, because
+    most of its services have no release branch.
+
+  `promotion-map.yaml` in mpt-release lists only the stage-to-stage edges — `dev: test`,
+  `test: staging`, `staging: prod` — because the `build` edges never copy between directories:
+  Deploy Registered Build pulls the manifest from ACR and commits it straight into `dev/` or
+  `staging/`.
+
+  | mpt-release directory | Role |
+  |---|---|
+  | `dev/`, `test/`, `staging/`, `prod/` | Desired state for that environment, reconciled by `Reconcile <env>`. |
+
+  Track A (`marketplace`) works the same way at staging — an approved `build → staging` promotion
+  of an `mpt` service is deployed by its staging pipeline — while its dev and test still deploy
+  from `manifest.json` on every master bump.
+
+  ## Why a test-verified build does not go to staging
+
+  Staging and prod carry release content; dev and test carry master. A build reaches staging by
+  being **built from a release branch**, which registers it and opens its `build → staging`
+  promotion. Verifying something in `test` does not graduate it — promoting a master build would
+  drag unreleased work into the release with it. The exception is `mpt-support-tools`'
+  `test → staging` edge, for services that have no release branch at all.
+
+  So "I tested it in test, why isn't it in staging?" usually has one answer: it will reach staging
+  when a release build containing it is produced and its `build → staging` promotion is approved.
+
+  ## The synthetic `build` environment
+
+  `build` never receives deploy events — it is the registry, not a place. Its policies set
+  `sourceRequiresDeploy = false` for exactly that reason, and `autoCreateFromBranches` decides which
+  branches open a promotion automatically. A build from any other branch (a feature branch) registers
+  and stops until someone promotes it from the UI or `POST /api/promotions/from-build`.
+
+  ## What happened to `stable` ("Staging Candidate")
+
+  Until 2026-10-14 there were two landing zones, `main/` and `stable/`, fed by the
+  `mpt-release.import-build` pipeline (ADO 5617), and the "Staging Candidate" environment showed
+  `release-track` markers for versions waiting for staging. Both landing zones and the import are
+  gone; `stable` is marked **retired** in Settings → Environments, so it no longer appears in any
+  current-state view. Its history (and old promotions "from Staging Candidate") still reads as it
+  did.
+related:
+  - delivery-tracks
+  - promotion-policies
+  - service-topology
+related_guides:
+  - check-deployed-version
+  - approve-promotion

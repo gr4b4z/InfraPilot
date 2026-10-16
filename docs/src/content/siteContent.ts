@@ -159,6 +159,7 @@ export const featureCards: FeatureCard[] = [
       'Handlebars templates with per-product and per-environment overrides',
       'Draft → edit markdown → publish flow with a permanent URL',
       'release_note.generated webhook (markdown) + release_note.generated.html (with server-rendered HTML for Confluence / email)',
+      'Post straight into a Microsoft Teams or Discord channel — no relay function in between',
     ],
   },
   {
@@ -492,11 +493,15 @@ executor:
     summary: 'Webhook subscriptions and notifications extend InfraPilot beyond the portal so downstream systems and teams can react to events.',
     paragraphs: [
       'Webhook subscriptions are useful when another system needs to observe deployment, approval, or operational events. InfraPilot signs outbound webhook deliveries and tracks their retry history.',
-      'Notifications are useful when humans need links back into the portal. Email and generic webhook notification channels can be enabled separately from executor webhooks.',
+      'Notifications are useful when humans need to read the event rather than act on it programmatically. The Microsoft Teams and Discord targets post a templated message straight into a channel, so there is no relay function in the middle reformatting the payload. Teams comes in two shapes: an Adaptive Card, or HTML posted to a Power Automate flow, which reads as an ordinary message and keeps tables and headings the card would drop. They are created from the **New Notification** button on the Webhooks page and share the same queue, filtering, retries, and delivery history as every other subscription.',
+      'Email notification channels remain separate, and are configured through the portal base URL and SMTP settings rather than as subscriptions.',
     ],
     bullets: [
       'Create outbound webhook subscriptions for system-to-system delivery',
       'Store the generated webhook secret at creation time and verify signed payloads',
+      'Post release notes and other events directly into a Teams or Discord channel',
+      'Write a Handlebars message template per notification, or take the per-event default',
+      'Treat a chat webhook URL as a secret — holding it is enough to post to the channel',
       'Configure portal base URL and SMTP settings for email notification flows',
       'Use delivery history and retry endpoints to debug outbound failures',
     ],
@@ -599,6 +604,7 @@ executor:
     paragraphs: [
       'Pipelines send deployment events to InfraPilot using an API key. Those events become the source of truth for deployment history, rollback target selection, promotion candidate creation, and the participants that promotion approval rules check (e.g. "the person who triggered this deploy cannot approve their own promotion").',
       'The request contract supports product, service, environment, version, source, timestamps, status, rollback flags, references, participants, and metadata. Each `references[]` entry can carry its own nested `participants[]` array — that is the more specific signal for "who QA-ed this ticket" or "who reviewed this PR" and wins over the event-level layer for the same role.',
+      'Two optional sections make a deployment explainable on its own. `run` records the CI run that performed it — the workflow, the job deep link, and on a failure the one line the pipeline identified as the cause — which is what the detail page states above everything else. `logs` carries what the pipeline printed (a Helm release printout, the diagnostics collected after a failure) as named blocks; the portal highlights the error lines and links straight to the first one. Neither is required: a producer that only reports "version V is live" simply omits them.',
       'Beyond ingest, two operator-facing surfaces sit on the same event: a PATCH endpoint for reference participant overrides (reassign / tombstone a slot without re-running the pipeline), and an enrichment layer populated server-side from Jira / Azure DevOps that is surfaced on read APIs.',
     ],
     bullets: [
@@ -606,8 +612,10 @@ executor:
       'Auth: X-Api-Key header',
       'Status values: succeeded, failed, in_progress',
       'Successful deploys are eligible for promotions and rollback history',
-      'References can be repository, pipeline, pull-request, or work-item — work-item references drive the Tickets queue',
+      'References can be repository, pipeline, pull-request, work-item, commit, or build-manifest — work-item references drive the Tickets queue, and a build-manifest reference makes the deployed version a link to what it is built from',
       'Participants carry on two levels (event-level + reference-level) with operator overrides and enrichment as additional layers',
+      'Optional `run` and `logs` sections record what created the deployment and what it printed — surfaced on GET /api/deployments/events/{id}',
+      'Log blocks are keyed by name, so a retrying pipeline replaces its earlier copy instead of duplicating it; content over 512 KiB per block keeps the tail',
     ],
     code: `POST /api/deployments/events
 X-Api-Key: <your-api-key>
@@ -662,7 +670,7 @@ X-Api-Key: <your-api-key>
     paragraphs: [
       'A promotion candidate represents "service X version V should move from a source env to a target env." Candidates are created by an external system — typically the pipeline that computed the env-to-env diff — via `POST /api/promotions`, authenticated with an API key (`X-Api-Key`) and scoped to the product. InfraPilot does not auto-generate candidates from the deploy stream, and there is no promotion topology.',
       'Each candidate is self-contained: the create request supplies the authoritative net change set as `references` (work items, PRs, commits) plus `fromRevision`/`toRevision`, so the candidate carries everything it needs rather than pulling it from a deploy event. Only `work-item` references feed the approval gate; PR and commit references are stored for display and traceability. The create request may also carry promotion-level participants, and references may carry their own reference-scoped participants (a ticket\'s QA, a PR\'s reviewer). Role strings are canonicalised on write; display names are controlled by an admin-managed role dictionary in Settings.',
-      'The non-admin endpoints are queue and review actions: list, detail, approve, reject, bulk approve, comments, and participants. Listing supports filtering by status, product, service, target environment, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped. Each candidate carries a `canApprove` flag for the current user, and the detail response adds `approvalProgress` (the live gate state) and `eligibleRequirements` (the open requirements the current user may approve).',
+      'The non-admin endpoints are queue and review actions: list, detail, approve, reject, bulk approve, comments, and participants. Listing supports filtering by status, product, service, target environment, and reference key. When no status filter is supplied the list returns all Pending candidates plus the most-recent resolved tail, so actionable work is never clipped. Each candidate carries a `canApprove` flag for the current user, the `approvableGates` the current user could sign right now, and a `deploysOnApproval` flag from its policy (whether approving is the last gate before the version is live, or whether the run it starts stops at an approval outside InfraPortal), and the detail response adds `approvalProgress` (the live gate state) and `eligibleRequirements` (the open requirements the current user may approve).',
       'A directory-search endpoint proxies Entra ID (via Microsoft Graph) when configured and falls back to local users otherwise, so the portal can resolve real people and groups when assigning participants or configuring policies.',
       'Create is idempotent on the natural key `(product, service, sourceEnv, targetEnv, version)`: re-posting the same version updates the existing non-terminal candidate rather than duplicating it, and posting a newer version on the same edge marks the prior still-Pending candidate `Superseded` (a pure state flip — the new candidate is self-contained and inherits nothing). The gate still blocks approval while the source environment has drifted off the candidate version. See "Promotion and rollback logic" for the full model.',
       'Admin endpoints configure the per-edge approval policy that drives the gate.',
@@ -692,10 +700,12 @@ Content-Type: application/json
     summary: 'Create, preview, approve, reject, and cancel rollback requests that revert one or more services in an environment to an earlier, previously-deployed version.',
     paragraphs: [
       'A rollback is the inverse of a promotion: the environment stays fixed and the version moves backward. One request groups N items so the same model covers a single malfunctioning service (one item) and aligning a whole environment to a reference (many items). Approval, gate, and tracking reuse the promotion policy for that (product, target env), so rollbacks follow promotion rules.',
-      'There are two selection modes. `manual` takes an explicit `items` list of `{ service, toVersion }`. `align` derives the items from the diff between the target environment and a `referenceEnv`, optionally minus an `exclude` list ("roll everything back to match prod, except these services"). `POST /api/rollbacks/preview` returns the resolved items with an `eligible` flag and a `skipReason` for each, so the UI can show "will roll back N, skip M" before submitting.',
-      'The safety rule: a target version must have previously run successfully in that environment (verified against deploy history) and must differ from what is currently running. Ineligible items are dropped; a request with zero eligible items is rejected.',
-      'If the resolved promotion policy has an approver group the request is created Pending and needs approval; with no approver group it auto-approves. On approval the `rollback.approved` webhook fires and your executor performs the deploy. Completion is detected from the resulting deploy event (matched on product/service/env/version after approval) — there is no trusted callback, and the `IsRollback` flag is corroboration, not a requirement. A request only allows Cancel while Pending; once Approved it has been dispatched.',
-      'Endpoints: `GET /api/rollbacks` (queue + per-request `canApprove`), `GET /api/rollbacks/{id}` (detail + approvals), `POST /api/rollbacks/preview`, `POST /api/rollbacks`, `POST /api/rollbacks/{id}/approve|reject|cancel`. Per-product enrollment is managed at `PUT /api/rollbacks/admin/enabled-products`. Everything is gated by the global `features.rollbacks` flag plus per-product enrollment, on top of promotion enrollment.',
+      'There are two selection modes. `manual` takes an explicit `items` list of `{ service, toVersion }`. `align` derives the items from the diff between the target environment and a `referenceEnv`, optionally minus an `exclude` list ("roll everything back to match prod, except these services"); a service already running the reference version is not part of the diff and is left out of the result entirely. `POST /api/rollbacks/preview` returns the resolved items with an `eligible` flag and a `skipReason` for each, so the UI can show "will roll back N, skip M" before submitting.',
+      'The safety rule: a target version must have previously run successfully in that environment (verified against deploy history) and must differ from what is currently running. "Currently running" is the newest succeeded deploy: a failed deploy never replaced what was running, so it is neither the current version nor a valid target, and align never lists a service whose last succeeded version already matches the reference. Failed deploys stay in deploy history, and when a service\'s newest deploy failed the preview item carries a `note` saying which version failed and what is still running. Ineligible items are dropped; a request with zero eligible items is rejected.',
+      'If the resolved promotion policy has an approver group the request is created Pending and needs approval; with no approver group it auto-approves. On approval the `rollback.approved` webhook fires and your executor performs the deploy. Completion is detected from the resulting succeeded deploy event (matched on product/service/env/version after approval); a failed deploy of the target leaves the item open and is reported on it as `lastFailedAttempt`. There is no trusted callback, and the `IsRollback` flag is corroboration, not a requirement.',
+      'A rollback closes once it no longer describes the environment, so an old request can never come back and revert a later deploy. When the gate clears, an item whose service already runs its target version closes as `RolledBack` straight away, and one whose service has moved to a third version since the request was raised closes as `Superseded`. After approval, any succeeded deploy of a different version supersedes the item, except a redeploy of its `fromVersion`, which is the version the rollback exists to remove. Each closed item carries a `note` and the `completedDeployEventId` of the deploy that closed it, and the request becomes `RolledBack` once every item is closed.',
+      'Cancel takes `{ reason? }`. A Pending request can be cancelled by its creator or an admin. An Approved or RollingBack request can be cancelled by an admin only, with a mandatory reason: it cannot recall a deploy already under way, but its open items are marked `Skipped` so the release pipeline stops carrying them. An admin can also skip a single open item with `POST /api/rollbacks/{id}/items/{itemId}/skip` and `{ reason }`. Both actions are audited, and the reason is shown on the request.',
+      'Endpoints: `GET /api/rollbacks` (queue + per-request `canApprove`), `GET /api/rollbacks/{id}` (detail + approvals), `POST /api/rollbacks/preview`, `POST /api/rollbacks`, `POST /api/rollbacks/{id}/approve|reject|cancel|override-approval`, `POST /api/rollbacks/{id}/items/{itemId}/skip`. Per-product enrollment is managed at `PUT /api/rollbacks/admin/enabled-products`. Everything is gated by the global `features.rollbacks` flag plus per-product enrollment, on top of promotion enrollment.',
     ],
     code: `// Single service (manual): roll "api" in staging back to 2.0
 POST /api/rollbacks
@@ -745,7 +755,7 @@ POST /api/rollbacks
     { "service": "web", "fromVersion": "5.6", "toVersion": "5.4", "status": "Pending" }
   ]
 }`,
-    note: 'The executor deploys the toVersion of each item; emitting the resulting deploy event (ideally with isRollback=true) is what flips that item to RolledBack, and the request to RolledBack once all items land.',
+    note: 'The executor deploys the toVersion of each item; emitting the resulting succeeded deploy event (ideally with isRollback=true) is what flips that item to RolledBack, and the request to RolledBack once every item is closed. Read item status rather than assuming every item is open: an item already at its target or overtaken by a later deploy is closed before the webhook fires.',
   },
   {
     slug: 'webhooks-api',
@@ -754,11 +764,85 @@ POST /api/rollbacks
     summary: 'Webhook endpoints manage outbound subscriptions, delivery history, retries, and test deliveries.',
     paragraphs: [
       'Webhooks are an operational integration surface for emitting deployment and promotion events to downstream systems — useful for pushing Jira/ServiceNow updates, Slack notifications, or triggering Logic Apps.',
-      'Promotion-related events include `promotion.approved`, `promotion.rejected`, `promotion.deployed`, and `promotion.updated`. Approval events carry an `approvedBy` array naming who caused the promotion to advance, oldest first — each entry is tagged `via: "approval"` (a policy-satisfying sign-off, with its `stepName`/`requirementName`) or `via: "bypass"` (an admin override, with its `reason`). From the promotion\'s point of view a bypass is still an approval, so it appears in the same list rather than a separate field; `approvedBy` is empty for an auto-approved candidate. An admin bypass fires the same `promotion.approved` event, additionally marked with `change.trigger = "administrator-bypass"`. The `promotion.updated` event fires for editorial changes (participant added/removed, comment added/edited/deleted) and carries a `change.changeType` discriminator plus the full current candidate state, so subscribers can act without re-fetching.',
+      'A subscription targets one of six shapes. `generic` signs a JSON POST to any URL. `azure_devops` posts to an Incoming WebHook service connection, signing with HMAC-SHA1 in a configurable header, so an InfraPilot event can trigger a pipeline directly. `github` calls `repository_dispatch` with a bearer token to start a GitHub Actions workflow. `msteams`, `msteams_html` and `discord` post a rendered message into a chat channel. Filtering, retries, and delivery history behave identically across all of them.',
+      'The three chat targets — created from **New Notification** in the portal rather than New Webhook — replace the pattern of pointing a generic webhook at a relay function that reformats the event for Teams. They send prose rather than the envelope: the body comes from a Handlebars `messageTemplate` rendered against the delivery payload, with an optional `messageTitle` for the card heading. Every event has a built-in default, so a notification works before you write a template; the release-note default forwards the already-rendered `data.renderedContent` untouched. None of them takes a secret — the webhook URL is itself the capability to post, so an absolute https URL is required and the URL is masked wherever the portal shows it. Teams receives an Adaptive Card, or a MessageCard when the URL is a legacy Office 365 connector host (detected automatically); Discord receives an embed when a heading is set and plain content when it is not. `POST /api/webhooks/preview-message` renders a template against a sample payload for any event and returns both the text and the exact request body, without storing or sending anything.',
+      'Every chat delivery carries `X-Webhook-Event` and `X-Webhook-Delivery`. Neither Teams nor Discord reads them, but a relay in front of one does: chat platforms have no idempotency of their own, so if a flow retries or is wired up twice the delivery id is the only thing tying the duplicate posts back to a single send. Matched against the notification\'s delivery history, it separates "InfraPilot sent twice" from "the flow ran twice on one send".',
+      '`msteams_html` exists because the Adaptive Card is not always the shape you want. A card renders inside a bordered box attributed to the Workflows app and supports only a markdown subset, dropping tables and headings. A Power Automate flow whose action is *Post message in a chat or channel* instead takes HTML and posts it as an ordinary message, so `msteams_html` converts the rendered message to an HTML fragment and POSTs it raw — no JSON wrapper, `Content-Type: text/html`. The URL is the same kind of Power Automate URL as `msteams` and nothing in it says which action the flow behind it uses, so the target is chosen rather than detected. Literal HTML in a template passes through untouched, which is what lets an existing HTML report be moved onto a notification without rewriting it.',
+      'Promotion-related events include `promotion.approved`, `promotion.rejected`, `promotion.deployed` (carries `change.previousStatus`, so a consumer can tell an ordinary completion from one that closed a still-Pending or Rejected candidate because the version reached the target environment out-of-band), `promotion.updated`, and the work-item sign-off events `promotion.ticket.approved` / `promotion.ticket.issue-raised` / `promotion.ticket.blocked`. Approval events carry an `approvedBy` array naming who caused the promotion to advance, oldest first — each entry is tagged `via: "approval"` (a policy-satisfying sign-off, with its `stepName`/`requirementName`) or `via: "bypass"` (an admin override, with its `reason`). From the promotion\'s point of view a bypass is still an approval, so it appears in the same list rather than a separate field; `approvedBy` is empty for an auto-approved candidate. An admin bypass fires the same `promotion.approved` event, additionally marked with `change.trigger = "administrator-bypass"`. Likewise an admin reject (an administrator rejecting a promotion they are not an approver for) fires the ordinary `promotion.rejected` event, marked with `change.trigger = "administrator-reject"` and the `change.reason` given.',
+      'Every `promotion.approved` delivery is **held for 10 seconds** before it is sent. The window exists so an approval given by mistake can be taken back before downstream automation acts on it: `POST /api/promotions/{id}/cancel-approval` puts the candidate back to Pending, clears its recorded sign-offs, and drops any `promotion.approved` delivery still sitting in the hold (those rows settle as `cancelled` in the delivery history rather than being sent). Retries of an already-attempted delivery are never cancelled — once a request has gone out, the receiver has the news. The cancellation itself emits `promotion.approval.cancelled`, carrying `change.approvedWebhookStopped`: `false` means the approval event did reach subscribers and this one retracts it, `true` means it never went out at all. Nothing else is delayed — a rejection, a deployment, and a work-item sign-off all dispatch immediately.',
+      'The `promotion.updated` event fires for editorial changes on a candidate — participant added/removed, a work-item assignee assigned/cleared (`change.changeType = "reference.participant.upserted"` / `"reference.participant.removed"` with the `referenceKey`), and comment added/edited/deleted — carrying a `change.changeType` discriminator plus the full current candidate state, so subscribers can act without re-fetching. Work-item sign-offs are separate: they emit `promotion.ticket.approved` / `promotion.ticket.issue-raised` / `promotion.ticket.blocked` (keyed by `workItemKey` + `product` + `service` + `targetEnv` — one ticket can back several promotions of a service, and the same ticket on another service is a separate work item), and a sign-off that satisfies a gate then emits `promotion.approved` for each candidate it promotes. Neither an issue nor a block vetoes anything, and both are reversible, so a reviewer who blocks and later approves emits both events in turn. Only a block holds the gate: an issue flags a problem on a change that is still going out and satisfies the gate like an approval, so `promotion.ticket.issue-raised` can itself be followed by `promotion.approved`. Note these two names were previously `promotion.ticket.blocked` (for what is now an issue) and `promotion.ticket.rejected` (for what is now a block): a subscriber matching `promotion.ticket.blocked` still gets a held item, but the stronger of the two.',
       'Promotion Freeze events are `promotion.frozen` and `promotion.unfrozen`, dispatched when an administrator freezes or lifts a freeze on a `(product, targetEnv)` pair and filtered by product and environment like the other promotion events. The payload carries `eventType`, `product`, `targetEnv`, `reason`, `frozenBy`, `frozenAt`, `actor` (`{ name, email }` of who performed the action), `at`, and `heldCandidates` (Pending candidates held at freeze time, or candidates re-evaluated on unfreeze). `promotion.unfrozen` is sent before the `promotion.approved` events the lift triggers. A failed dispatch never fails the freeze or unfreeze.',
-      'Rollback events are `rollback.approved`, `rollback.rejected`, `rollback.deployed`, and `rollback.cancelled`. `rollback.approved` is the one your executor (e.g. a Logic App) should act on: it carries the `rollbackId`, `product`, `targetEnv`, `mode`, and an `items` array of `{ service, fromVersion, toVersion }` to deploy. `rollback.deployed` fires once every item has been confirmed back via deploy events. See the Rollbacks API page for full payload shapes.',
+      'Rollback events are `rollback.approved`, `rollback.rejected`, `rollback.deployed`, and `rollback.cancelled`. `rollback.approved` is the one your executor (e.g. a Logic App) should act on: it carries the `rollbackId`, `product`, `targetEnv`, `mode`, and an `items` array of `{ service, fromVersion, toVersion }` to deploy. `rollback.deployed` fires once every item is closed: landed, already running its target at approval, superseded by a later deploy, or skipped by an admin. `rollback.cancelled` also fires when an admin cancels an approved request. See the Rollbacks API page for full payload shapes.',
       'The create endpoint generates a secret once and returns it only in the creation response, which is important to capture at subscription creation time.',
+      'Every delivery is wrapped in an envelope `{ id, eventType, timestamp, data }` (JSON, camelCase). The examples below show the `data` for each promotion event.',
     ],
+    code: `// promotion.approved — a normal, policy-satisfying sign-off completed the gate
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt",
+  "service": "mpt-spotlight",
+  "sourceEnv": "dev",
+  "targetEnv": "test",
+  "version": "6.0.11-gd4134b92",
+  "fromRevision": "a1b2c3d",
+  "toRevision": "f9e8d7c",
+  "status": "Approved",
+  "approvedAt": "2026-07-20T10:12:00Z",
+  "approvedBy": [
+    {
+      "name": "Dana Lee", "email": "dana@acme.com", "at": "2026-07-20T10:11:58Z",
+      "via": "approval", "stepName": "Release Approval", "requirementName": "Release managers", "reason": null
+    }
+  ],
+  "participants": [ { "role": "release-manager", "displayName": "Dana Lee", "email": "dana@acme.com" } ],
+  "references": [ { "type": "work-item", "key": "MPT-4451", "title": "Add express checkout" } ],
+  "change": null
+}
+
+// promotion.approved — an admin BYPASS (gate not satisfied; force-approved)
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt", "targetEnv": "test", "version": "6.0.11-gd4134b92", "status": "Approved",
+  "approvedBy": [
+    { "name": "Sam Admin", "email": "sam@acme.com", "via": "bypass", "reason": "hotfix INC-1234", "stepName": null, "requirementName": null }
+  ],
+  "change": { "trigger": "administrator-bypass", "reason": "hotfix INC-1234" }
+}
+
+// promotion.approval.cancelled — the approval was taken back; the candidate is Pending again
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt", "targetEnv": "test", "version": "6.0.11-gd4134b92",
+  "status": "Pending",
+  "approvedAt": null,
+  "approvedBy": [],
+  "change": {
+    "comment": "wrong service",
+    "clearedApprovals": 1,
+    // true  → promotion.approved was caught in its hold and never sent
+    // false → it went out; this event retracts it
+    "approvedWebhookStopped": true
+  }
+}
+
+// promotion.updated — a work-item assignee was assigned (changeType names the sub-event)
+{
+  "candidateId": "8c1e2f9a-...",
+  "product": "mpt", "targetEnv": "test", "status": "Pending",
+  "change": { "changeType": "reference.participant.upserted", "referenceKey": "MPT-4451", "role": "reviewer" }
+}
+
+// promotion.ticket.approved — a work-item sign-off (keyed by workItemKey + product + service + targetEnv:
+// the same ticket carried by two services is two work items, each signed off on its own)
+{
+  "workItemKey": "MPT-4451",
+  "product": "mpt",
+  "service": "mpt-helpdesk",
+  "targetEnv": "test",
+  "candidateId": "8c1e2f9a-...",
+  "approver": "qa@acme.com",
+  "comment": "verified in test"
+}`,
   },
   {
     slug: 'auth-api',
@@ -808,8 +892,9 @@ POST /api/rollbacks
     summary: 'How InfraPilot gates externally-created promotion candidates, detects source drift, completes them from deploy events, and runs rollbacks as the inverse.',
     paragraphs: [
       'A promotion answers "this version should move from environment A forward to B" and a rollback answers "environment A is on the wrong version — put it back to a known-good one it ran before." Rollback reuses the promotion policy/approval machinery; the difference is that the environment stays fixed and the version moves backward.',
-      'Promotion candidates. Candidates are created by an external system (typically the pipeline that computed the env-to-env diff) via `POST /api/promotions` — InfraPilot does not auto-generate them from deploy events, and there is no promotion topology. Create requires a promotion policy to exist for the (product, service, target env) edge, otherwise it returns 422. The lifecycle is Pending → Approved → Deploying → Deployed, with Superseded and Rejected as terminal off-ramps. Create is idempotent on the natural key (product, service, sourceEnv, targetEnv, version): re-posting the same version updates the existing non-terminal candidate, and posting a newer version on the same edge marks the prior still-Pending candidate Superseded — a pure state flip, with the new candidate self-contained (it inherits nothing; the caller supplies its own references). Completion is matched from a succeeded deploy event that lands the version on the target environment, which flips the candidate to Deployed.',
-      'The gate. Approval is evaluated against the policy snapshot taken at creation time: an ordered set of steps, each with one or more requirements. A requirement names groups and/or users and a minApprovers count, and is satisfied by a group member or a listed user; every requirement in every step must be satisfied (each person counts toward at most one requirement). The gate mode (PromotionOnly, WorkItemsOnly, or WorkItemsAndManual) plus the work-item options (requireAllWorkItemsApproved, autoApproveOnAllWorkItemsApproved, autoApproveWhenNoWorkItems) control how work-item sign-off interacts with manual approval. An empty step tree auto-approves. Group membership is evaluated live at approval time, so added or removed approvers take effect immediately.',
+      'Promotion candidates. Candidates are created by an external system (typically the pipeline that computed the env-to-env diff) via `POST /api/promotions` — InfraPilot does not auto-generate them from deploy events, and there is no promotion topology. Create requires a promotion policy to exist for the (product, service, target env) edge, otherwise it returns 422. The lifecycle is Pending → Approved → Deploying → Deployed, with Superseded and Rejected as terminal off-ramps. Create is idempotent on the natural key (product, service, sourceEnv, targetEnv, version): re-posting the same version updates the existing non-terminal candidate, and posting a newer version on the same edge marks the prior still-Pending candidate Superseded — a pure state flip, with the new candidate self-contained (it inherits nothing; the caller supplies its own references). Completion is matched from a succeeded deploy event that lands the version on the target environment, which flips the candidate to Deployed — from whatever state it was in, including Pending and Rejected. Once the version is live in the target env the change has shipped, so the candidate has to say so; a rejection that reality overrode stays visible in the approval trail. An approval given by mistake can be taken back while the candidate is still Approved and undispatched: `POST /api/promotions/{id}/cancel-approval` returns it to Pending and clears the recorded sign-offs, so it has to be approved again. Once it is Deploying the edge closes — from there the answer is a rollback, not an undo. Every action on a promotion (create, approve, cancel-approval, reject, bypass, supersede, deploy, participant and policy changes) also writes a system entry on the candidate\'s comment thread, so the thread reads as the full history of what happened to it.',
+      'The gate. Approval is evaluated against the policy snapshot taken at creation time: an ordered set of steps, each with one or more requirements. A requirement names groups and/or users and a minApprovers count, and is satisfied by a group member or a listed user; every requirement in every step must be satisfied. A person counts once per requirement — an N-of-M requirement needs N different people — but may satisfy several requirements by approving each separately, one approval row per requirement. The gate mode (PromotionOnly, WorkItemsOnly, or WorkItemsAndManual) plus the work-item options (requireAllWorkItemsApproved, autoApproveOnAllWorkItemsApproved, autoApproveWhenNoWorkItems) control how work-item sign-off interacts with manual approval. An empty step tree auto-approves. Group membership is evaluated live at approval time, so added or removed approvers take effect immediately.',
+      'Editing a policy applies retroactively. A candidate is gated on a snapshot rather than a live join, so saving a policy re-stamps every promotion still Pending on that edge and re-evaluates it — relaxing a gate releases what was waiting on it, tightening one blocks it again, and the response tells you how many in-flight promotions were affected. Two limits keep that safe: promotions past Pending (Approved, Deploying, Deployed) keep the rules they were approved under, since their approval webhook has already fired; and deleting the last policy on an edge leaves pending candidates on their existing snapshot rather than auto-approving everything the gate was holding.',
       'Source-drift invariant. A candidate is only promotable while its source environment still runs the candidate version. If the source moves off that version, the gate blocks the candidate as stale rather than letting it promote a version no live environment runs. Drift is judged on positive evidence — a differing source deploy exists — so an absence of history never blocks.',
       'Rollbacks. A rollback request reverts one or more services in one environment to an earlier version that previously ran there. It is approved through the same policy/gate as a promotion (auto-approve when the policy has no requirements), then your executor performs the deploy on the rollback.approved webhook. Completion is inferred from the resulting deploy event; cancel is only allowed while Pending, because once approved the work has already been dispatched.',
       'What a rollback does to promotions. A rollback does not automatically create a promotion candidate — promotions are always created externally. If a rolled-back version is itself worth promoting forward, the external system that owns promotion creation must post that candidate via `POST /api/promotions`; the landed rollback deploy event on its own does not mint one.',
@@ -819,6 +904,7 @@ POST /api/rollbacks
       'Lifecycle: Pending → Approved → Deploying → Deployed; Superseded / Rejected are terminal',
       'Create is idempotent on (product, service, sourceEnv, targetEnv, version); a newer version supersedes a pending candidate (pure state flip, no inheritance)',
       'Gate = ordered steps of requirements (groups/users + minApprovers) + gate mode + work-item options; empty tree ⇒ auto-approve',
+      'Policy edits re-gate pending promotions on that edge; Approved and later keep the rules they were approved under',
       'Source-drift: a candidate is blocked while its source env no longer runs the version',
       'Completion: a succeeded deploy landing the version on the target env flips the candidate to Deployed',
       'Rollback safety rule: target version must have previously run in that environment and differ from what is running now',
@@ -1019,6 +1105,13 @@ export const deploymentApiFullPayload = `{
           "email": "maria.wisniewska@acmetrix.com"
         }
       ]
+    },
+    {
+      "type": "build-manifest",
+      "url": "https://github.com/Acmetrix/release/blob/9f8e7d6c/production/order-api/build-metadata.yaml",
+      "provider": "github",
+      "key": "production/order-api/build-metadata.yaml",
+      "revision": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"
     }
   ],
   "participants": [
@@ -1026,6 +1119,28 @@ export const deploymentApiFullPayload = `{
       "role": "triggered-by",
       "displayName": "Jan Kowalski",
       "email": "jan.kowalski@acmetrix.com"
+    }
+  ],
+  "run": {
+    "provider": "github-actions",
+    "runId": "30464088990",
+    "runNumber": "294",
+    "attempt": 1,
+    "workflowName": "Reconcile production",
+    "jobName": "Deploy Helm (order-api, 2.14.0)",
+    "runUrl": "https://github.com/Acmetrix/release/actions/runs/30464088990",
+    "jobUrl": "https://github.com/Acmetrix/release/actions/runs/30464088990/job/90617803378",
+    "triggeredBy": "jan-kowalski",
+    "startedAt": "2026-04-16T10:24:00Z",
+    "completedAt": "2026-04-16T10:30:00Z",
+    "failureReason": null
+  },
+  "logs": [
+    {
+      "name": "helm upgrade output",
+      "source": "helm",
+      "content": "Release \\"order-api\\" has been upgraded.\\nSTATUS: deployed\\n",
+      "truncated": false
     }
   ],
   "metadata": {
@@ -1222,9 +1337,108 @@ export const deploymentApiReferenceTypeColumns: TableColumn[] = [
 
 export const deploymentApiReferenceTypeRows: TableRow[] = [
   { type: '`repository`', usage: 'Link to the source code repository.' },
-  { type: '`pipeline`', usage: 'Link to the CI/CD build or workflow run.' },
+  { type: '`pipeline`', usage: 'Link to the CI/CD run that **built** the artifact. Distinct from `run` below, which is the run that **deployed** it — a component is built once and deployed many times.' },
   { type: '`pull-request`', usage: 'Link to the merged pull request that triggered the deploy.' },
   { type: '`work-item`', usage: 'Link to a Jira issue, Azure DevOps work item, or similar tracking record.' },
+  { type: '`commit`', usage: 'Link to a single commit in the change set.' },
+  { type: '`build-manifest`', usage: 'Link to the release repository\'s record of what this version is made of (chart version, images, source revision). The deployment detail page hangs the version number off this link, so pin it to a commit rather than a branch.' },
+];
+
+export const deploymentApiRunRows: TableRow[] = [
+  {
+    field: '`provider`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: '`github-actions`, `azure-devops`, … Drives the provider label on the run link.',
+  },
+  {
+    field: '`runId` / `runNumber`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Provider-native run identity. `runId` is the API/URL id; `runNumber` is the human counter a person reads in the pipeline UI.',
+  },
+  {
+    field: '`attempt`',
+    type: 'number',
+    required: 'No',
+    default: 'null',
+    description: 'Re-run attempt. Shown next to the run number when greater than 1.',
+  },
+  {
+    field: '`workflowName` / `jobName`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'The workflow and the specific job that deployed this component. Send the job\'s real display name, not a placeholder — the page presents it as fact.',
+  },
+  {
+    field: '`runUrl`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Link to the whole run.',
+  },
+  {
+    field: '`jobUrl`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Link to this component\'s job inside the run — the deep link that matters when one leg of a fan-out failed. Preferred over `runUrl` wherever the UI shows a single link; omit it if you cannot resolve it unambiguously.',
+  },
+  {
+    field: '`triggeredBy`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Who set the run off, when no `triggered-by` participant is supplied.',
+  },
+  {
+    field: '`startedAt` / `completedAt`',
+    type: 'string (ISO 8601)',
+    required: 'No',
+    default: 'null',
+    description: 'Bounds of the deployment attempt. Both are needed for the page to show a duration.',
+  },
+  {
+    field: '`failureReason`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'The specific error, as identified by the pipeline itself (e.g. `pod x cannot start (container waiting reason=ErrImagePull)`). Quoted verbatim in the failure callout, so send the one line that explains the outcome rather than a summary. Omit on success.',
+  },
+];
+
+export const deploymentApiLogRows: TableRow[] = [
+  {
+    field: '`name`',
+    type: 'string',
+    required: 'Yes',
+    default: '—',
+    description: 'Heading for the block, and its identity within the event: re-posting the same event with the same name replaces that block rather than adding a second one. An unnamed block is rejected.',
+  },
+  {
+    field: '`source`',
+    type: 'string',
+    required: 'No',
+    default: 'null',
+    description: 'Which tool produced it — `helm`, `kubectl`, `pipeline`. Shown as a small tag beside the heading.',
+  },
+  {
+    field: '`content`',
+    type: 'string',
+    required: 'No',
+    default: '`""`',
+    description: 'The captured text. Over 512 KiB the server keeps the tail and marks the block truncated — a failing deploy prints its diagnostics last.',
+  },
+  {
+    field: '`truncated`',
+    type: 'boolean',
+    required: 'No',
+    default: '`false`',
+    description: 'Set it when the producer itself already dropped part of the log, so the page says so instead of implying the output is complete.',
+  },
 ];
 
 export const deploymentApiCommitLinkColumns: TableColumn[] = [
@@ -1346,6 +1560,21 @@ export const deploymentApiOverrideEndpointRows: TableRow[] = [
     path: '`/api/deployments/{eventId}/references/{key}/participants`',
     auth: 'Authenticated user',
     description: 'Upsert (or tombstone) the participant for a `(referenceKey, role)` slot on an existing deploy event.',
+  },
+];
+
+export const deploymentApiDetailEndpointRows: TableRow[] = [
+  {
+    method: '`GET`',
+    path: '`/api/deployments/events/{id}`',
+    auth: 'Authenticated user',
+    description: 'Everything the deployment detail page shows: the event with its `run`, log block summaries (names and sizes, no text), the same service\'s recent deployments in this environment, the promotions carrying this version, and the work items it delivered. `?historyLimit=` bounds the neighbour list (default 10).',
+  },
+  {
+    method: '`GET`',
+    path: '`/api/deployments/events/{id}/logs/{logId}`',
+    auth: 'Authenticated user',
+    description: 'One log block\'s text. Separate from the detail response because a release printout is too large to send for a page that may never expand it. The id pair is checked, so a log id cannot be used to read another deployment\'s output.',
   },
 ];
 
@@ -1492,6 +1721,18 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       rows: deploymentApiCommitLinkRows,
     },
     {
+      title: '`run` fields',
+      description: 'The CI run that **performed** the deployment, as opposed to the `pipeline` reference, which points at the run that built the artifact. Optional as a whole: omit it and the detail page simply reports the source with no run link. Every field is individually optional too — send what you know rather than nulls.',
+      columns: deploymentApiFieldColumns,
+      rows: deploymentApiRunRows,
+    },
+    {
+      title: '`logs[]` fields',
+      description: 'What the deploying pipeline printed, as named blocks. The detail page lists them without their text and fetches each on expand (a release printout is too large to send speculatively), colours error and warning lines, and links to the first error. Blocks are capped at 512 KiB each and 20 per event.',
+      columns: deploymentApiFieldColumns,
+      rows: deploymentApiLogRows,
+    },
+    {
       title: '`participants[]` fields',
       description: '`participants[]` is the event-level layer — people scoped to the whole deploy (e.g. the pipeline triggerer). Reference-level participants nested under `references[].participants` cover people scoped to one PR or one ticket; both layers are honoured when promotion approval rules look up roles.',
       columns: deploymentApiFieldColumns,
@@ -1507,6 +1748,12 @@ export const apiDocs: Record<string, ApiDocBlock[]> = {
       description: 'Reads of a deploy event resolve participants through a four-layer model. Promotion authorisation, the Tickets queue, and the detail view all use the same precedence so a person who appears at the right layer for a given (reference, role) is consistently surfaced.',
       columns: deploymentApiParticipantLayerColumns,
       rows: deploymentApiParticipantLayerRows,
+    },
+    {
+      title: 'Deployment detail — endpoints',
+      description: 'The read side of a single deployment. These are what the deployment detail page is built on: one call for the event and its context, one per log block on demand.',
+      columns: defaultEndpointColumns,
+      rows: deploymentApiDetailEndpointRows,
     },
     {
       title: 'Reference participant overrides — endpoint',
@@ -1718,7 +1965,8 @@ Content-Type: application/json
         { method: '`GET`', path: '`/api/promotions/{id}`', auth: 'CanApprove policy', description: 'Return one promotion candidate plus approval trail.' },
         { method: '`POST`', path: '`/api/promotions/{id}/approve`', auth: 'CanApprove policy', description: 'Approve one promotion candidate.' },
         { method: '`POST`', path: '`/api/promotions/{id}/reject`', auth: 'CanApprove policy', description: 'Reject one promotion candidate.' },
-        { method: '`POST`', path: '`/api/promotions/bulk/approve`', auth: 'CanApprove policy', description: 'Bulk-approve multiple candidates and return per-id outcomes.' },
+        { method: '`POST`', path: '`/api/promotions/{id}/cancel-approval`', auth: 'CanApprove policy', description: 'Undo an approval: an Approved candidate that has not been dispatched goes back to Pending and its sign-offs are cleared. 400 once the candidate is Deploying or later, or when the policy auto-approves (there is no human decision to retract).' },
+        { method: '`POST`', path: '`/api/promotions/bulk/approve`', auth: 'CanApprove policy', description: 'Bulk-approve multiple candidates and return per-id outcomes. With `gate`, every row approves that approval gate (each requirement of it the caller is eligible for) — what Mass approve on the Promotions page sends.' },
       ],
     },
     {
@@ -1739,7 +1987,9 @@ Content-Type: application/json
         { field: '`comment`', type: 'string', required: 'No', description: 'Optional comment for single approve or reject requests.' },
         { field: '`stepName`', type: 'string', required: 'No', description: 'Approve-as selection: the step to approve under. Auto-picked when the caller is eligible for exactly one open requirement.' },
         { field: '`requirementName`', type: 'string', required: 'No', description: 'Approve-as selection: the requirement to approve under (paired with `stepName`).' },
-        { field: '`ids`', type: 'Guid[]', required: 'Yes', description: 'Required for bulk approve; list of candidate ids to process.' },
+        { field: '`ids`', type: 'Guid[]', required: 'Yes', description: 'Required for bulk approve and bulk bypass; list of candidate ids to process.' },
+        { field: '`gate`', type: 'string', required: 'No', description: 'Bulk approve only: the approval-step name every row approves ("Release Approval"), case-insensitive. Omit for a plain approve per row.' },
+        { field: '`reason`', type: 'string', required: 'Yes (bypass)', description: 'Bulk bypass only: why the batch goes out without its gate; recorded on every bypassed candidate.' },
       ],
     },
     {
@@ -1751,6 +2001,8 @@ Content-Type: application/json
         { method: '`POST`', path: '`/api/promotions/admin/policies`', auth: 'Catalog admin', description: 'Create a promotion policy.' },
         { method: '`PUT`', path: '`/api/promotions/admin/policies/{id}`', auth: 'Catalog admin', description: 'Update a promotion policy.' },
         { method: '`DELETE`', path: '`/api/promotions/admin/policies/{id}`', auth: 'Catalog admin', description: 'Delete a promotion policy.' },
+        { method: '`POST`', path: '`/api/promotions/admin/candidates/{id}/bypass`', auth: 'Catalog admin', description: 'Force one Pending candidate to Approved without satisfying its gate. Requires a reason; audited and announced with the usual promotion.approved webhook.' },
+        { method: '`POST`', path: '`/api/promotions/admin/candidates/bulk/bypass`', auth: 'Catalog admin', description: 'Bypass a batch of Pending candidates with one reason, returning per-id outcomes.' },
       ],
     },
     {
@@ -1762,16 +2014,17 @@ Content-Type: application/json
         { field: '`targetEnv`', type: 'string', required: 'Yes', description: 'Target environment for the promotion policy.' },
         { field: '`steps`', type: 'array', required: 'No', description: 'Ordered list of approval steps. Each step has a `name` and `requirements[]`; a requirement has a `name`, `groups[]` of `{ id, name }`, `users[]` (emails), and `minApprovers`. A requirement is satisfiable by a group member OR a listed user. All requirements in all steps must be satisfied. An empty tree auto-approves.' },
         { field: '`gate`', type: 'enum', required: 'Yes', description: 'Gate mode: `PromotionOnly` | `WorkItemsOnly` | `WorkItemsAndManual`.' },
-        { field: '`requireAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Block manual approval until every work item is signed off.' },
-        { field: '`autoApproveOnAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Auto-promote once all work items are signed off.' },
+        { field: '`requireAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Block manual approval until every work item is signed off — decided by somebody, with none blocked. An issue counts as signed off; only a block holds the promotion.' },
+        { field: '`requireAllWorkItemInstancesApproved`', type: 'boolean', required: 'No', description: 'Judge each work item by the ticket\'s overall status across every service instance in the target environment — every instance decided, none blocked — instead of by this promotion\'s own service instance. Qualifies the two gate flags; default false.' },
+        { field: '`autoApproveOnAllWorkItemsApproved`', type: 'boolean', required: 'No', description: 'Auto-promote once all work items are signed off (none blocked). Raising an issue on the last outstanding item promotes it too.' },
         { field: '`autoApproveWhenNoWorkItems`', type: 'boolean', required: 'No', description: 'Auto-approve at create time when the payload carries no work items.' },
-        { field: '`timeoutHours`', type: 'integer', required: 'Yes', description: 'Timeout in hours. Clamped to 0 or higher.' },
+        { field: '`deploysOnApproval`', type: 'boolean', required: 'No', description: 'Whether an approval on this edge is the last gate before the version is live. Default true — the release automation deploys straight off the approval, and the promotion page warns approvers that Approve ships it. Set false for edges released by a pipeline that stops at an approval of its own outside InfraPortal, so the page says the approval is necessary but not sufficient. Display only: nothing about gating changes.' },
         { field: '`escalationGroup`', type: 'string', required: 'No', description: 'Optional escalation group.' },
       ],
     },
     {
       title: 'Decision body',
-      description: 'The single-approve endpoint `POST /api/promotions/{id}/approve` accepts `{ comment?, stepName?, requirementName? }`; `stepName`/`requirementName` pick which open requirement the caller is approving as (auto-picked when the caller is eligible for exactly one). The detail response (`GET /api/promotions/{id}`) includes `approvalProgress` (the live gate state) and `eligibleRequirements` (the requirements the current user may approve).',
+      description: 'The single-approve endpoint `POST /api/promotions/{id}/approve` accepts `{ comment?, stepName?, requirementName? }`; `stepName`/`requirementName` pick which open requirement the caller is approving as (auto-picked when the caller is eligible for exactly one). The detail response (`GET /api/promotions/{id}`) includes `approvalProgress` (the live gate state), `eligibleRequirements` (the requirements the current user may approve), and `canCancelApproval` (whether the caller may undo the approval right now). `POST /api/promotions/{id}/cancel-approval` accepts `{ comment? }` and returns `{ candidate, clearedApprovals, approvedWebhookStopped }` — `approvedWebhookStopped` is true when the `promotion.approved` delivery was still inside its 10-second hold and never went out, so the caller knows whether anything downstream heard about the approval it just retracted.',
     },
   ],
   'webhooks-api': [
@@ -1787,10 +2040,38 @@ Content-Type: application/json
         { method: '`GET`', path: '`/api/webhooks/{id}/deliveries`', auth: 'Catalog admin', description: 'List deliveries with pagination.' },
         { method: '`POST`', path: '`/api/webhooks/deliveries/{id}/retry`', auth: 'Catalog admin', description: 'Retry one failed delivery.' },
         { method: '`POST`', path: '`/api/webhooks/{id}/test`', auth: 'Catalog admin', description: 'Queue a ping delivery for testing.' },
+        { method: '`GET`', path: '`/api/webhooks/filter-options`', auth: 'Catalog admin', description: 'Products, services and environments seen so far, for the filter pickers.' },
       ],
     },
     {
-      title: 'Delivery headers and verification',
+      title: 'Target types',
+      description:
+        'A subscription\'s `targetType` decides how each delivery is framed on the wire. Event filtering, retry/backoff, and delivery history are shared across all three. It defaults to `generic`, and is fixed at creation — changing it would invalidate the stored credential, so recreate the subscription instead.',
+      columns: [
+        { key: 'target', label: 'targetType' },
+        { key: 'shape', label: 'Request' },
+        { key: 'auth', label: 'Authentication' },
+      ],
+      rows: [
+        {
+          target: '`generic`',
+          shape: 'POST of the InfraPilot envelope to any URL.',
+          auth: 'HMAC-SHA256 in `X-Hub-Signature-256`. The secret is generated by InfraPilot and returned once.',
+        },
+        {
+          target: '`azure_devops`',
+          shape: 'POST of the same envelope to an Incoming WebHook service connection endpoint, which triggers a pipeline through its `resources: webhooks:` declaration.',
+          auth: 'HMAC-SHA1 as `sha1=<hex digest>` in the header named by `signatureHeader` (default `X-Hub-Signature`). The secret must match the service connection and is supplied by the caller.',
+        },
+        {
+          target: '`github`',
+          shape: '`POST /repos/{owner}/{repo}/dispatches` with `{"event_type", "client_payload"}`, where `client_payload` is the envelope. `githubEventType` overrides `event_type`; by default it is the InfraPilot event name. Success is `204 No Content`.',
+          auth: '`Authorization: Bearer <token>`; no signature. The token is supplied by the caller and needs permission to dispatch repository events.',
+        },
+      ],
+    },
+    {
+      title: 'Generic target — delivery headers and verification',
       columns: [
         { key: 'header', label: 'Header' },
         { key: 'description', label: 'Description' },
@@ -1822,9 +2103,17 @@ Content-Type: application/json
         { field: '`name`', type: 'string', required: 'Yes', description: 'Subscription display name.' },
         { field: '`url`', type: 'string', required: 'Yes', description: 'Destination URL.' },
         { field: '`events`', type: 'string[]', required: 'Yes', description: 'At least one event type is required.' },
-        { field: '`filters.product`', type: 'string', required: 'No', description: 'Optional product filter.' },
-        { field: '`filters.environment`', type: 'string', required: 'No', description: 'Optional environment filter.' },
+        { field: '`filters.products`', type: 'string[]', required: 'No', description: 'Products to listen for. Empty or omitted means every product.' },
+        { field: '`filters.services`', type: 'string[]', required: 'No', description: 'Services to listen for. Empty or omitted means every service.' },
+        { field: '`filters.environments`', type: 'string[]', required: 'No', description: 'Environments to listen for. Alias-resolved on write; empty or omitted means every environment.' },
+        { field: '`filters.product`', type: 'string', required: 'No', description: 'Deprecated single-value form of `filters.products`, still accepted and folded into the set.' },
+        { field: '`filters.environment`', type: 'string', required: 'No', description: 'Deprecated single-value form of `filters.environments`, still accepted and folded into the set.' },
       ],
+    },
+    {
+      title: 'How filters match',
+      description:
+        'Each dimension is a set and the three are ANDed: `products: ["billing"]` with `environments: ["prod", "preprod"]` delivers the two upper environments of billing and nothing else. An empty set means every value. A dimension is only tested against events that state it — most events are product-wide and name no single service, so a `services` filter narrows the per-service events (`deployment.*`, `promotion.*`) without silencing the product-wide ones such as release notes and rollbacks. Responses always report all three as arrays.',
     },
     {
       title: 'Update request body',
@@ -1833,7 +2122,7 @@ Content-Type: application/json
         { field: '`name`', type: 'string', required: 'No', description: 'Optional replacement name.' },
         { field: '`url`', type: 'string', required: 'No', description: 'Optional replacement URL.' },
         { field: '`events`', type: 'string[]', required: 'No', description: 'Optional replacement event list.' },
-        { field: '`filters`', type: 'object', required: 'No', description: 'Optional replacement filters object.' },
+        { field: '`filters`', type: 'object', required: 'No', description: 'Optional replacement filters object. Applied whole — a supplied object states all three dimensions, so an omitted or empty one clears that dimension back to "any".' },
         { field: '`active`', type: 'boolean', required: 'No', description: 'Optional active-state change.' },
       ],
     },
@@ -1854,8 +2143,9 @@ Content-Type: application/json
   "url": "https://example.com/infrapilot/webhook",
   "events": ["deployment.created"],
   "filters": {
-    "product": "ticketing-platform",
-    "environment": "production"
+    "products": ["ticketing-platform", "billing-platform"],
+    "services": ["api", "worker"],
+    "environments": ["production", "preprod"]
   }
 }`,
     },
@@ -1869,15 +2159,45 @@ Content-Type: application/json
   "secret": "whsec_base64value",
   "events": ["deployment.created"],
   "filters": {
-    "product": "ticketing-platform",
-    "environment": "production"
+    "products": ["ticketing-platform", "billing-platform"],
+    "services": ["api", "worker"],
+    "environments": ["production", "preprod"]
   },
+  "targetType": "generic",
+  "signatureHeader": null,
+  "githubEventType": null,
   "active": true,
   "createdAt": "2026-04-16T12:15:00Z"
 }`,
     },
     {
-      title: 'Node.js verification example',
+      title: 'Create an Azure DevOps or GitHub subscription',
+      description:
+        'Both reuse a credential the receiving system already holds, so `secret` is required on create and is never returned. Supply it again on `PUT` to rotate it; omit it to keep the stored one.',
+      code: `POST /api/webhooks
+
+{
+  "name": "Trigger release pipeline",
+  "targetType": "azure_devops",
+  "url": "https://dev.azure.com/contoso/_apis/public/distributedtask/webhooks/infrapilot?api-version=6.0-preview",
+  "events": ["promotion.approved"],
+  "secret": "<the service connection secret>",
+  "signatureHeader": "X-Hub-Signature"
+}
+
+POST /api/webhooks
+
+{
+  "name": "Trigger deploy workflow",
+  "targetType": "github",
+  "url": "https://api.github.com/repos/contoso/infrastructure/dispatches",
+  "events": ["rollback.approved"],
+  "secret": "<token with permission to dispatch repository events>",
+  "gitHubEventType": "infrapilot"
+}`,
+    },
+    {
+      title: 'Generic target — Node.js verification example',
       code: `import crypto from 'node:crypto';
 
 function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
@@ -2121,7 +2441,7 @@ function verifyInfraPilotWebhook(rawBody, signatureHeader, secret) {
     },
     {
       title: 'Webhook events',
-      description: 'Two events fire on every publish — subscribe to whichever payload matches your consumer. Both honour the standard `Product` / `Environment` subscription filters. The HTML is rendered server-side once via Markdig (advanced pipeline — tables, autolinks, task lists) and reused across all subscribers.',
+      description: 'Two events fire on every publish — subscribe to whichever payload matches your consumer. Both honour the standard `products` / `environments` subscription filters (a release note is product-wide, so a `services` filter does not narrow it). The HTML is rendered server-side once via Markdig (advanced pipeline — tables, autolinks, task lists) and reused across all subscribers.',
       columns: [
         { key: 'event',   label: 'Event' },
         { key: 'payload', label: 'Payload' },

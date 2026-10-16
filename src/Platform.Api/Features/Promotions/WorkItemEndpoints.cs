@@ -1,4 +1,6 @@
+using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 
 namespace Platform.Api.Features.Promotions;
 
@@ -6,6 +8,13 @@ namespace Platform.Api.Features.Promotions;
 /// Ticket-level (work-item) approval endpoints. Mounted at <c>/api/work-items</c>; gated by the
 /// same CanApprove policy as <see cref="PromotionEndpoints"/> — any authenticated user can hit
 /// these and per-action authority is enforced server-side.
+///
+/// <para>A work item is identified by <c>(key, product, service, targetEnv)</c>. The key rides in
+/// the path; the other three are query parameters on reads and body fields on writes. The service
+/// is not optional: the same Jira ticket carried by two services of one product is two work items
+/// (<c>mpt-helpdesk/MPT-1</c>, <c>mpt-platform/MPT-1</c>), and a request that names only the ticket
+/// cannot say which one it means. Links minted before the service joined the identity resolve
+/// through <c>GET /{key}/instances</c>, which lists the services carrying the ticket.</para>
 ///
 /// <para>Recording an approval here only persists a row; it does not transition any
 /// PromotionCandidate. The PR3 gate evaluator consumes these rows.</para>
@@ -21,85 +30,304 @@ public static class WorkItemEndpoints
         // Inbox: tickets the current user could sign off right now. Mounted under the work-items
         // group at /me/pending — see class summary for the route choice.
         //
-        // Optional `assignee` and `role` query parameters narrow the list (display only —
-        // authorisation is unchanged). The matrix:
-        //  - both null            → full authorized list (no narrowing).
-        //  - role only            → candidates with at least one participant in that role.
-        //  - assignee=email       → candidates where that email holds a role in the assignee
-        //                           set (or the role-filter when set).
-        //  - assignee=unassigned  → candidates with no participant in the effective role set
-        //                           ("unassigned" is case-insensitive).
+        // Optional `assignee` narrows the list (display only — authorisation is unchanged):
+        //  - null                 → full authorized list (no narrowing).
+        //  - assignee=email       → candidates where that email holds a role on the work item
+        //                           (any role, or the policy-required roles when
+        //                           roleRequirement=assigned — the queue's person filter).
+        //  - assignee=unassigned  → candidates with no participant in any role that counts as an
+        //                           assignment ("unassigned" is case-insensitive).
         // Response carries the rendered tickets plus an `assignees` rollup of (email, role) →
-        // count built from the authorized list <i>before</i> role/person narrowing, plus the
-        // canonical `roles` set — both feed the front-end's dropdowns without a second call.
+        // count built from the authorized list <i>before</i> person narrowing — the person
+        // dropdown's contents, limited to people holding a policy-required role (the only picks
+        // the queue's person filter can match).
+        //
+        // `roleRequirement` narrows by the promotion policy's work-item role requirement — the roles
+        // that make somebody answerable for an item (see WorkItemRoleRequirements). Two values:
+        //  - "assigned" → the person must hold a role the item's own policy REQUIRES. This is what
+        //                 the "Assigned to me" tab and the queue's person filter mean: being named
+        //                 as, say, a ticket's reporter isn't being made answerable for it.
+        //  - "missing"  → items where at least one policy-required role has nobody in it ("Not
+        //                 assigned"). Independent of `assignee`.
+        // Anything else (including omitted) leaves the person behaviour untouched.
         group.MapGet("/me/pending", async (
             WorkItemApprovalService svc,
-            string? assignee, string? role, string? status, string? since,
+            string? assignee, string? status, string? since, string? roleRequirement,
+            int? limit, string? cursor,
             CancellationToken ct) =>
         {
             // status: "pending" (default) | "decided" (combined approved + rejected for the user).
-            // For decided views, an optional `since` ISO timestamp narrows to recent decisions —
-            // defaulting to last 24h server-side when the client doesn't pass one.
+            // For decided views, an optional `since` ISO timestamp narrows to recent decisions.
+            // Omitting `since` means "all time" — the client's time-frame picker sends an explicit
+            // cutoff for every bounded choice (last day / 7d / 30d) and nothing for "All time", so a
+            // missing param must pass through as null (no cutoff), not a server-side 24h default.
             var normalized = status?.Trim().ToLowerInvariant();
             DateTimeOffset? sinceCutoff = null;
             if (DateTimeOffset.TryParse(since, out var parsed)) sinceCutoff = parsed;
 
-            var queue = normalized switch
+            if (normalized == "decided")
             {
-                "decided" => await svc.GetDecidedAsync(
+                // The decided view is history, and history only grows, so it comes a page at a time:
+                // `limit` rows (default 100, clamped to 1..500), then `cursor` = the previous page's
+                // `nextCursor` for the next. The pending views are bounded by the work in flight and
+                // stay unpaged.
+                DecidedCursor? after = null;
+                if (!string.IsNullOrEmpty(cursor))
+                {
+                    if (!DecidedCursor.TryParse(cursor, out var position))
+                        return Results.BadRequest(new
+                        {
+                            error = "cursor is not valid — pass back the nextCursor of a previous page, or omit it for the first page.",
+                        });
+                    after = position;
+                }
+
+                // On the decided view `assignee` narrows by the decider (who clicked Approve /
+                // Reject) — a single email, resolved client-side ("Me" → current user). The
+                // "unassigned" sentinel is pending-only (a decided row always has a decider), so
+                // ignore it here rather than filter to a literal "unassigned" email.
+                var page = await svc.GetDecidedAsync(
                     decision: null,
-                    since: sinceCutoff ?? DateTimeOffset.UtcNow.AddDays(-1),
-                    ct),
-                _ => await svc.GetPendingForCurrentUserAsync(ct, assignee, role),
-            };
+                    since: sinceCutoff,
+                    decidedBy: string.Equals(assignee?.Trim(), "unassigned", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : assignee,
+                    limit: limit ?? WorkItemApprovalService.DecidedPageSize,
+                    after: after,
+                    ct: ct);
+                return Results.Ok(new
+                {
+                    tickets = page.Tickets,
+                    assignees = page.Assignees,
+                    total = page.Total,
+                    hasMore = page.NextCursor is not null,
+                    nextCursor = page.NextCursor?.Encode(),
+                });
+            }
+
+            var queue = await svc.GetPendingForCurrentUserAsync(
+                ct, assignee, ParseRoleRequirement(roleRequirement));
             return Results.Ok(new
             {
                 tickets = queue.Tickets,
                 assignees = queue.Assignees,
-                roles = queue.Roles,
             });
         });
 
-        // Ticket context — authority + decision history for a specific (key, product, env).
-        group.MapGet("/{key}", async (
+        // The ticket across every service in one (product, targetEnv): each instance with its own
+        // sign-off state, plus the overall roll-up. Every instance page shows this, and it is the
+        // resolver for links minted before the service was part of the identity: the client asks
+        // which services carry the ticket, then goes to that instance (or offers the choice).
+        group.MapGet("/{key}/instances", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             string product,
             string targetEnv,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
-            var ctx = await svc.GetTicketContextAsync(decoded, product, targetEnv, ct);
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
+            var overall = (await svc.GetOverallStatusAsync(decoded, product, targetEnv, ct))?.ToSummary();
+            return Results.Ok(new
+            {
+                workItemKey = decoded,
+                product,
+                targetEnv,
+                // Null when no promotion has carried the ticket in that product/env.
+                overall,
+                instances = overall?.InstanceStatuses ?? Array.Empty<WorkItemInstanceSummary>(),
+            });
+        });
+
+        // Full detail for the work-item page: display fields, people, decision trail, comment
+        // thread, and every candidate carrying the ticket. Mounted before /{key} so "detail" is
+        // never swallowed as a key segment (it wouldn't be — the shapes differ — but keeping the
+        // more specific route first makes the intent obvious).
+        group.MapGet("/{key}/detail", async (
+            WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
+            string key,
+            string product,
+            string service,
+            string targetEnv,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            if (string.IsNullOrWhiteSpace(service)) return MissingService();
+            // Sign-offs are keyed on (key, product, service, targetEnv), so the environment is
+            // resolved on the way in — here and on every route below. A decision recorded against
+            // "production" has to be the one a caller asking about "prod" sees, or the same reviewer
+            // is asked to sign the same ticket off twice.
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
+            var detail = await svc.GetDetailAsync(decoded, product, service, targetEnv, ct);
+            return detail is null
+                ? Results.NotFound(new { error = $"Work item '{decoded}' not found for {product}/{service}/{targetEnv}" })
+                : Results.Ok(ToDetailDto(detail));
+        });
+
+        // Ticket context — authority + decision history for a specific (key, product, service, env).
+        group.MapGet("/{key}", async (
+            WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
+            string key,
+            string product,
+            string service,
+            string targetEnv,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            if (string.IsNullOrWhiteSpace(service)) return MissingService();
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
+            var ctx = await svc.GetTicketContextAsync(decoded, product, service, targetEnv, ct);
             return Results.Ok(ToContextDto(ctx));
         });
 
-        // Record approval. Body carries (product, targetEnv, comment?). Returns the row + the
-        // candidate id it was attached to so the UI can deep-link back.
+        // Record approval. Body carries (product, service, targetEnv, comment?). Returns the row +
+        // the candidate id it was attached to so the UI can deep-link back.
         group.MapPost("/{key}/approvals", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
             WorkItemDecisionRequest body,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
+            var env = await environments.ResolveAsync(body.TargetEnv, ct);
             return await RunDecisionAsync(() => svc.ApproveAsync(
-                decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
+                decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
+        }).DenyPersonalTokens();
+
+        // Raise an issue — flags a problem on the item without calling it undeliverable.
+        group.MapPost("/{key}/issues", async (
+            WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
+            string key,
+            WorkItemDecisionRequest body,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            var env = await environments.ResolveAsync(body.TargetEnv, ct);
+            return await RunDecisionAsync(() => svc.RaiseIssueAsync(
+                decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
+        }).DenyPersonalTokens();
+
+        // Record a block — holds the item back. Neither this nor /issues vetoes the promotion, and
+        // both are reversible: the same user may later POST /approvals to release the item.
+        //
+        // These two routes replaced /blocks (which meant today's /issues) and /rejections (which
+        // meant today's /blocks). Old paths are gone rather than aliased: an alias would have kept
+        // /blocks working while silently changing which decision it records.
+        group.MapPost("/{key}/blocks", async (
+            WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
+            string key,
+            WorkItemDecisionRequest body,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            var env = await environments.ResolveAsync(body.TargetEnv, ct);
+            return await RunDecisionAsync(() => svc.BlockAsync(
+                decoded, body.Product ?? "", body.Service ?? "", env, body.Comment, ct));
+        }).DenyPersonalTokens();
+
+        // ── Comment thread ────────────────────────────────────────────────
+        // Keyed by (key, product, service, targetEnv) like the decisions, so the thread survives a
+        // superseded candidate. Edit/delete route by comment id — no key in the path — because the
+        // id alone identifies the row and the author check is the only authorisation that matters.
+
+        group.MapGet("/{key}/comments", async (
+            WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
+            string key,
+            string product,
+            string service,
+            string targetEnv,
+            CancellationToken ct) =>
+        {
+            var decoded = Uri.UnescapeDataString(key ?? "");
+            if (string.IsNullOrWhiteSpace(service)) return MissingService();
+            targetEnv = await environments.ResolveAsync(targetEnv, ct);
+            var comments = await svc.GetCommentsAsync(decoded, product, service, targetEnv, ct);
+            return Results.Ok(new { comments = comments.Select(ToCommentDto) });
         });
 
-        // Record rejection.
-        group.MapPost("/{key}/rejections", async (
+        group.MapPost("/{key}/comments", async (
             WorkItemApprovalService svc,
+            EnvironmentAliasResolver environments,
             string key,
-            WorkItemDecisionRequest body,
+            WorkItemCommentRequest body,
             CancellationToken ct) =>
         {
             var decoded = Uri.UnescapeDataString(key ?? "");
-            return await RunDecisionAsync(() => svc.RejectAsync(
-                decoded, body.Product ?? "", body.TargetEnv ?? "", body.Comment, ct));
+            try
+            {
+                var comment = await svc.AddCommentAsync(
+                    decoded, body.Product ?? "", body.Service ?? "",
+                    await environments.ResolveAsync(body.TargetEnv, ct),
+                    body.Body ?? "", ct);
+                return Results.Ok(ToCommentDto(comment));
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        group.MapPatch("/comments/{commentId:guid}", async (
+            WorkItemApprovalService svc,
+            Guid commentId,
+            WorkItemCommentRequest body,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var comment = await svc.UpdateCommentAsync(commentId, body.Body ?? "", ct);
+                return Results.Ok(ToCommentDto(comment));
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        group.MapDelete("/comments/{commentId:guid}", async (
+            WorkItemApprovalService svc,
+            Guid commentId,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                await svc.DeleteCommentAsync(commentId, ct);
+                return Results.NoContent();
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
         });
 
         return group;
     }
+
+    /// <summary>
+    /// The 400 for a read that names a ticket without saying which service's instance it means. The
+    /// message points at the resolver so a caller holding a pre-service link knows where to go.
+    /// </summary>
+    private static IResult MissingService()
+        => Results.BadRequest(new
+        {
+            error = "service is required — a work item is identified by (key, product, service, targetEnv). "
+                  + "Use GET /api/work-items/{key}/instances?product=&targetEnv= to list the services carrying the ticket.",
+        });
+
+    /// <summary>
+    /// Maps the <c>roleRequirement</c> query value onto the filter. Unknown values fall back to
+    /// <see cref="WorkItemRoleRequirementFilter.Any"/> rather than 400: the parameter only narrows a
+    /// read, so a typo should return the unnarrowed queue, not fail the page.
+    /// </summary>
+    private static WorkItemRoleRequirementFilter ParseRoleRequirement(string? value)
+        => (value?.Trim().ToLowerInvariant()) switch
+        {
+            "assigned" => WorkItemRoleRequirementFilter.Assigned,
+            "missing" => WorkItemRoleRequirementFilter.Missing,
+            _ => WorkItemRoleRequirementFilter.Any,
+        };
 
     private static async Task<IResult> RunDecisionAsync(Func<Task<WorkItemApproval>> op)
     {
@@ -123,24 +351,130 @@ public static class WorkItemEndpoints
         id = a.Id,
         workItemKey = a.WorkItemKey,
         product = a.Product,
+        service = a.Service,
         targetEnv = a.TargetEnv,
         approverEmail = a.ApproverEmail,
         approverName = a.ApproverName,
         decision = a.Decision.ToString(),
         comment = a.Comment,
         createdAt = a.CreatedAt,
+        updatedAt = a.UpdatedAt,
     };
 
     private static object ToContextDto(TicketContext ctx) => new
     {
         workItemKey = ctx.WorkItemKey,
         product = ctx.Product,
+        service = ctx.Service,
         targetEnv = ctx.TargetEnv,
         pendingCandidateId = ctx.PendingCandidateId,
         canApprove = ctx.CanApprove,
         blockedReason = ctx.BlockedReason,
+        myDecision = ctx.MyDecision,
         approvals = ctx.Approvals.Select(ToApprovalDto),
+    };
+
+    private static object ToCommentDto(WorkItemComment c) => new
+    {
+        id = c.Id,
+        workItemKey = c.WorkItemKey,
+        product = c.Product,
+        service = c.Service,
+        targetEnv = c.TargetEnv,
+        authorEmail = c.AuthorEmail,
+        authorName = c.AuthorName,
+        body = c.Body,
+        // Set on the entries written automatically for a sign-off; null for human discussion. The UI
+        // styles the two differently and only offers edit/delete on the latter.
+        decision = c.Decision?.ToString(),
+        createdAt = c.CreatedAt,
+        updatedAt = c.UpdatedAt,
+    };
+
+    private static object ToDetailDto(WorkItemDetail d) => new
+    {
+        workItemKey = d.WorkItemKey,
+        product = d.Product,
+        // Identity: this page is about the ticket's change in THIS service. The same ticket on a
+        // sibling service is a different work item with its own page.
+        service = d.Service,
+        targetEnv = d.TargetEnv,
+        // Where the change is actually running — the environments a reviewer can exercise it in.
+        // Resolved from deploy events matching the carrying version, not from the promotion edge.
+        environments = d.Environments.Select(e => new
+        {
+            environment = e.Environment,
+            service = e.Service,
+            version = e.Version,
+            deployedAt = e.DeployedAt,
+        }),
+        title = d.Title,
+        // Secondary display line: the tracker's own summary when the title carries the commit
+        // subject. Null when the producer sent a single name.
+        subTitle = d.SubTitle,
+        // The work item's body, verbatim from the source system. Null when the producer sent none —
+        // the page renders no Content section at all in that case.
+        content = d.Content,
+        // Tracker labels for the chips beside the title. Null when the producer sent none.
+        priority = d.Priority,
+        workItemType = d.WorkItemType,
+        url = d.Url,
+        provider = d.Provider,
+        pendingCandidateId = d.PendingCandidateId,
+        primaryCandidateId = d.PrimaryCandidateId,
+        canApprove = d.CanApprove,
+        canManage = d.CanManage,
+        blockedReason = d.BlockedReason,
+        myDecision = d.MyDecision,
+        participants = d.Participants,
+        // Work-item completeness: the roles the carrying promotion's policy requires somebody in, and
+        // the ones still empty. A non-empty missingRoles is what makes the page ask for an assignment.
+        requiredRoles = d.RequiredRoles,
+        missingRoles = d.MissingRoles,
+        approvals = d.Approvals.Select(ToApprovalDto),
+        comments = d.Comments.Select(ToCommentDto),
+        // The change behind the ticket: the commits whose messages referenced it, and the pull
+        // requests those commits merged. Empty when the producer didn't declare `commits` on the
+        // work-item reference.
+        commits = d.Commits.Select(c => new
+        {
+            hash = c.Hash,
+            title = c.Title,
+            url = c.Url,
+            provider = c.Provider,
+            participants = c.Participants,
+        }),
+        pullRequests = d.PullRequests.Select(p => new
+        {
+            key = p.Key,
+            title = p.Title,
+            url = p.Url,
+            provider = p.Provider,
+            revision = p.Revision,
+            participants = p.Participants,
+        }),
+        candidates = d.Candidates.Select(c => new
+        {
+            id = c.Id,
+            service = c.Service,
+            version = c.Version,
+            sourceEnv = c.SourceEnv,
+            targetEnv = c.TargetEnv,
+            status = c.Status,
+            createdAt = c.CreatedAt,
+            isPrimary = c.IsPrimary,
+        }),
+        // The ticket across every service carrying it in this product/env, and whether this
+        // promotion's gate waits for all of them (policy) or for this instance alone.
+        overall = d.Overall,
+        gateRequiresAllInstances = d.GateRequiresAllInstances,
     };
 }
 
-public record WorkItemDecisionRequest(string? Product, string? TargetEnv, string? Comment);
+/// <summary>Body for a work-item decision. All three of product, service and targetEnv complete
+/// the work item's identity and are required.</summary>
+public record WorkItemDecisionRequest(string? Product, string? Service, string? TargetEnv, string? Comment);
+
+/// <summary>Body for posting/editing a work-item comment. Product/Service/TargetEnv are required on
+/// create (they complete the thread key) and ignored on edit.</summary>
+public record WorkItemCommentRequest(string? Product, string? Service, string? TargetEnv, string? Body);

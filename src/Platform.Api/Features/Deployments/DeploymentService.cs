@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Settings;
+using Platform.Api.Features.Users;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Persistence;
@@ -15,6 +17,10 @@ public class DeploymentService
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IPromotionIngestHook _promotionHook;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
+    private readonly EnvironmentAliasResolver _environments;
+    private readonly UserPreferencesService _userPrefs;
+    private readonly ServiceDeletionService _serviceDeletions;
+    private readonly ServiceProductOverrideService _productOverrides;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -23,17 +29,35 @@ public class DeploymentService
         PropertyNameCaseInsensitive = true,
     };
 
+    /// <summary>
+    /// Per-block cap on captured pipeline output. Beyond this the <b>tail</b> is kept: a failing
+    /// deploy prints its diagnostics last, so the end of the log is the part worth having. 512 KiB
+    /// comfortably holds a full Helm release printout plus its pod/event dumps.
+    /// </summary>
+    public const int LogContentLimitBytes = 512 * 1024;
+
+    /// <summary>Cap on how many blocks one event may carry, so a misbehaving producer can't flood the table.</summary>
+    public const int MaxLogsPerEvent = 20;
+
     public DeploymentService(
         PlatformDbContext db,
         IWebhookDispatcher webhookDispatcher,
         IPromotionIngestHook promotionHook,
         IOptionsMonitor<NormalizationOptions> normalization,
+        EnvironmentAliasResolver environments,
+        UserPreferencesService userPrefs,
+        ServiceDeletionService serviceDeletions,
+        ServiceProductOverrideService productOverrides,
         ILogger<DeploymentService> logger)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
         _promotionHook = promotionHook;
         _normalization = normalization;
+        _environments = environments;
+        _userPrefs = userPrefs;
+        _serviceDeletions = serviceDeletions;
+        _productOverrides = productOverrides;
         _logger = logger;
     }
 
@@ -50,14 +74,19 @@ public class DeploymentService
     public async Task<DeployEvent> CreateManualEventAsync(
         CreateManualDeployRequest req, ManualDeployActor actor, CancellationToken ct = default)
     {
-        var environment = _normalization.CurrentValue.ApplyEnvironment(req.Environment);
+        var environment = await ResolveEnvironmentAsync(req.Environment, ct);
+
+        // Same override as CI ingest, applied before the lookup: the event this entry is based on lives
+        // under the resolved product, so asking for the requested one would report "no prior deployment"
+        // for a service that has plenty — just filed where the admin said it belongs.
+        var product = await _productOverrides.ResolveProductAsync(req.Product, req.Service, ct);
 
         var latest = await _db.DeployEvents
-            .Where(e => e.Product == req.Product && e.Service == req.Service && e.Environment == environment)
+            .Where(e => e.Product == product && e.Service == req.Service && e.Environment == environment)
             .OrderByDescending(e => e.DeployedAt)
             .FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException(
-                $"No existing deployment for {req.Product}/{req.Service} in {req.Environment} to base a manual entry on.");
+                $"No existing deployment for {product}/{req.Service} in {req.Environment} to base a manual entry on.");
 
         // Carry references/participants from the latest event verbatim (same JSON shape as the DTOs),
         // then force the attribution: drop any inherited triggered-by and set it to the actual caller.
@@ -73,7 +102,7 @@ public class DeploymentService
         metadata["note"] = req.Note;
 
         var dto = new CreateDeployEventDto(
-            Product: req.Product,
+            Product: product,
             Service: req.Service,
             Environment: environment,
             Version: req.Version,
@@ -89,13 +118,87 @@ public class DeploymentService
         return await IngestEvent(dto, ct);
     }
 
+    /// <summary>
+    /// The environment key to store for what a sender supplied: the configured casing/punctuation
+    /// canonicalisation first (<c>Normalization:Environments</c> in appsettings), then the admin's
+    /// alias map. Both are needed and in this order — the alias list is written in canonical form,
+    /// so "Pre Prod" has to become "pre-prod" before it can match an alias spelled that way.
+    /// </summary>
+    private async Task<string> ResolveEnvironmentAsync(string? sent, CancellationToken ct)
+        => await _environments.ResolveAsync(_normalization.CurrentValue.ApplyEnvironment(sent), ct);
+
+    /// <summary>Outcome of an ingest: the stored event plus whether it was a replay of an existing row.</summary>
+    public record IngestResult(DeployEvent Event, bool Replayed);
+
     public async Task<DeployEvent> IngestEvent(CreateDeployEventDto dto, CancellationToken ct = default)
+        => (await IngestEventWithResult(dto, ct)).Event;
+
+    /// <summary>
+    /// Ingests a deploy event idempotently. A row whose natural key
+    /// <c>(Product, Service, Environment, Version, DeployedAt, Source)</c> — the same key
+    /// <see cref="RemoveDuplicates"/> uses — already exists is treated as a replay: the existing
+    /// row is returned with <c>Replayed=true</c> and no webhook / promotion hook fires again.
+    /// This makes pipeline retries safe as long as the sender keeps <c>deployedAt</c> stable
+    /// across attempts. The guard is check-then-insert (no unique index across providers), so a
+    /// truly concurrent duplicate can still slip through; <see cref="RemoveDuplicates"/> remains
+    /// the backstop for that case.
+    /// <para>Either path un-retires the service if an admin had soft-deleted it — see
+    /// <see cref="ServiceDeletionService.ReviveOnDeployAsync"/>. A replay counts: the retirement was
+    /// wrong either way, and the sender should not have to post a second, distinct deploy to undo it.</para>
+    /// </summary>
+    public async Task<IngestResult> IngestEventWithResult(CreateDeployEventDto dto, CancellationToken ct = default)
     {
         var norm = _normalization.CurrentValue;
 
-        // Optional canonicalisation — controlled by appsettings `Normalization:*`. Off by
-        // default, so senders' original casing is preserved unless an admin opts in.
-        var environment = norm.ApplyEnvironment(dto.Environment);
+        // Casing/punctuation canonicalisation (appsettings `Normalization:*`), then the admin's
+        // alias map: a sender that calls production "prod" stores under whichever key an admin
+        // curated, so one environment does not arrive as three.
+        var environment = await ResolveEnvironmentAsync(dto.Environment, ct);
+
+        // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
+        // so an admin override for the service wins over what was sent (ServiceProductOverride).
+        // Resolved once, before anything reads it: the revive probe, the replay key, the
+        // PreviousVersion derivation and the stored row all have to agree on which product this
+        // deploy belongs to, and resolving per-use is how they would drift apart.
+        var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
+
+        // Staged, not saved: it rides along with whichever SaveChanges below commits the event.
+        await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
+
+        var replayed = await _db.DeployEvents
+            .Where(e => e.Product == product && e.Service == dto.Service
+                     && e.Environment == environment && e.Version == dto.Version
+                     && e.Source == dto.Source && e.DeployedAt == dto.DeployedAt)
+            .OrderBy(e => e.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+        if (replayed is not null)
+        {
+            // A replay still refreshes run details and logs. The first attempt of a pipeline can
+            // post before it has resolved its job URL or finished capturing output; the retry
+            // carries the fuller picture, and dropping it would leave the detail page thinner than
+            // the sender intended.
+            if (dto.Run is not null)
+            {
+                replayed.Run = dto.Run;
+                _db.DeployEvents.Update(replayed);
+            }
+            await SyncLogsAsync(replayed.Id, dto.Logs, ct);
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "Replayed deploy event {Id}: {Product}/{Service} → {Environment} v{Version} already ingested; returning existing row",
+                replayed.Id, LogSanitizer.Clean(replayed.Product), LogSanitizer.Clean(replayed.Service),
+                LogSanitizer.Clean(replayed.Environment), LogSanitizer.Clean(replayed.Version));
+
+            // A replay still runs the promotion hook. The original POST could only match promotions
+            // that existed at the time; one created since — or one stranded by a hook failure the first
+            // time round — is closed by the retry rather than left open forever. The hook is idempotent
+            // (it skips candidates already Deployed/Superseded), so replaying costs nothing when there
+            // is nothing to close.
+            await _promotionHook.OnIngestedAsync(replayed, ct);
+
+            return new IngestResult(replayed, true);
+        }
 
         // Use caller-supplied previousVersion when present (lets integrators assert the
         // predecessor they observed and detect drift vs. the server's history). Otherwise
@@ -104,7 +207,7 @@ public class DeploymentService
         if (previousVersion is null)
         {
             var previousEvent = await _db.DeployEvents
-                .Where(e => e.Product == dto.Product && e.Service == dto.Service && e.Environment == environment)
+                .Where(e => e.Product == product && e.Service == dto.Service && e.Environment == environment)
                 .OrderByDescending(e => e.DeployedAt)
                 .Select(e => new { e.Version })
                 .FirstOrDefaultAsync(ct);
@@ -115,7 +218,7 @@ public class DeploymentService
         var deployEvent = new DeployEvent
         {
             Id = Guid.NewGuid(),
-            Product = dto.Product,
+            Product = product,
             Service = dto.Service,
             Environment = environment,
             Version = dto.Version,
@@ -132,6 +235,7 @@ public class DeploymentService
                     Key: r.Key,
                     Revision: r.Revision,
                     Title: r.Title,
+                    SubTitle: r.SubTitle,
                     // Apply the same role canonicalisation to nested participants so
                     // reference-level roles are stored in the same shape as event-level.
                     Participants: r.Participants is null
@@ -139,7 +243,21 @@ public class DeploymentService
                         : r.Participants.Select(p => new ParticipantDto(
                             Role: norm.ApplyRole(p.Role),
                             DisplayName: p.DisplayName,
-                            Email: p.Email)).ToList())).ToList(),
+                            Email: p.Email)).ToList(),
+                    // Stored verbatim — normalisation applies to roles and environment names,
+                    // not to a ticket body.
+                    Content: r.Content,
+                    // Carried through untouched: Commits links a work item to its commit/PR
+                    // references, OccurredAt is the lead-time clock start — both are consumed
+                    // by WorkItemCommitTime when the work-item projection is synced. Resolution is
+                    // the tracker's own verdict on the item, which nothing here is entitled to edit.
+                    Commits: r.Commits,
+                    Resolution: r.Resolution,
+                    OccurredAt: r.OccurredAt,
+                    // Tracker labels, stored as sent — the UI recognises the common Jira ones and
+                    // shows anything else as-is.
+                    Priority: r.Priority,
+                    WorkItemType: r.WorkItemType)).ToList(),
                 JsonOptions),
             ParticipantsJson = JsonSerializer.Serialize(
                 (dto.Participants ?? []).Select(p => new ParticipantDto(
@@ -148,16 +266,19 @@ public class DeploymentService
                     Email: p.Email)).ToList(),
                 JsonOptions),
             MetadataJson = JsonSerializer.Serialize(dto.Metadata ?? new Dictionary<string, object>(), JsonOptions),
+            RunJson = dto.Run is null ? null : JsonSerializer.Serialize(dto.Run, JsonOptions),
             CreatedAt = DateTimeOffset.UtcNow,
         };
 
         _db.DeployEvents.Add(deployEvent);
+        await SyncLogsAsync(deployEvent.Id, dto.Logs, ct);
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "Ingested deploy event {Id}: {Product}/{Service} → {Environment} v{Version} (prev: {PreviousVersion})",
-            deployEvent.Id, deployEvent.Product, deployEvent.Service, deployEvent.Environment,
-            deployEvent.Version, deployEvent.PreviousVersion ?? "none");
+            deployEvent.Id, LogSanitizer.Clean(deployEvent.Product), LogSanitizer.Clean(deployEvent.Service),
+            LogSanitizer.Clean(deployEvent.Environment), LogSanitizer.Clean(deployEvent.Version),
+            LogSanitizer.Clean(deployEvent.PreviousVersion ?? "none"));
 
         await _webhookDispatcher.DispatchAsync("deployment.created", new
         {
@@ -173,14 +294,230 @@ public class DeploymentService
             deployEvent.DeployedAt,
             references = deployEvent.References,
             participants = deployEvent.Participants,
-        }, new WebhookEventFilters(deployEvent.Product, deployEvent.Environment));
+            // Subscribers alerting on failures need the cause and somewhere to click, not just
+            // status="failed".
+            runUrl = dto.Run?.JobUrl ?? dto.Run?.RunUrl,
+            failureReason = dto.Run?.FailureReason,
+        }, new WebhookEventFilters(
+            deployEvent.Product, deployEvent.Environment, deployEvent.Service));
 
         // Fire-and-observe: generate promotion candidates / close in-flight ones. The hook is
         // feature-flag gated internally and swallows its own failures so ingestion stays
         // resilient even when the promotion machinery misbehaves.
         await _promotionHook.OnIngestedAsync(deployEvent, ct);
 
-        return deployEvent;
+        return new IngestResult(deployEvent, false);
+    }
+
+    // --- Captured pipeline output ---
+
+    /// <summary>
+    /// Stages the event's log blocks to match <paramref name="logs"/>, keyed by name: a block the
+    /// sender repeats is updated in place, one it stops sending is left alone. Deliberately not a
+    /// full reconcile — a producer may report the Helm output and its diagnostics from two different
+    /// calls, and deleting whatever the current call didn't mention would make the second call erase
+    /// the first. Blocks past <see cref="MaxLogsPerEvent"/> are dropped with a warning.
+    /// <para>Caller owns the surrounding <c>SaveChangesAsync</c>.</para>
+    /// </summary>
+    private async Task SyncLogsAsync(Guid eventId, List<CreateDeployLogDto>? logs, CancellationToken ct)
+    {
+        if (logs is null || logs.Count == 0) return;
+
+        // Named blocks only — the name is the identity, so an unnamed block can neither be replaced
+        // nor labelled in the UI.
+        var incoming = logs
+            .Where(l => !string.IsNullOrWhiteSpace(l.Name))
+            .GroupBy(l => l.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last()) // last wins: a sender repeating a name within one payload meant the later one
+            .ToList();
+
+        if (incoming.Count > MaxLogsPerEvent)
+        {
+            _logger.LogWarning(
+                "Deploy event {EventId} sent {Count} log blocks; keeping the first {Limit}",
+                eventId, incoming.Count, MaxLogsPerEvent);
+            incoming = incoming.Take(MaxLogsPerEvent).ToList();
+        }
+
+        var existing = await _db.DeployEventLogs
+            .Where(l => l.DeployEventId == eventId)
+            .ToListAsync(ct);
+        var byName = existing.ToDictionary(l => l.Name, StringComparer.OrdinalIgnoreCase);
+
+        // Continue numbering after what's already stored so blocks arriving in a later call sort
+        // after the earlier ones rather than colliding at 0.
+        var nextSequence = existing.Count == 0 ? 0 : existing.Max(l => l.Sequence) + 1;
+
+        foreach (var dto in incoming)
+        {
+            var name = dto.Name.Trim();
+            var (content, truncated, originalBytes) = CapLogContent(dto.Content ?? "");
+            truncated = truncated || dto.Truncated;
+
+            if (byName.TryGetValue(name, out var row))
+            {
+                row.Source = dto.Source;
+                row.Content = content;
+                row.Truncated = truncated;
+                row.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                row.LineCount = CountLines(content);
+                row.OriginalByteCount = originalBytes;
+                _db.DeployEventLogs.Update(row);
+                continue;
+            }
+
+            _db.DeployEventLogs.Add(new DeployEventLog
+            {
+                Id = Guid.NewGuid(),
+                DeployEventId = eventId,
+                Name = name,
+                Source = dto.Source,
+                Sequence = nextSequence++,
+                Content = content,
+                Truncated = truncated,
+                ByteCount = System.Text.Encoding.UTF8.GetByteCount(content),
+                LineCount = CountLines(content),
+                OriginalByteCount = originalBytes,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Trims content to <see cref="LogContentLimitBytes"/>, keeping the tail and prefixing a marker
+    /// so a reader is never left wondering whether the log simply started mid-sentence. Measured in
+    /// UTF-8 bytes (what the column costs), cut on a character boundary.
+    /// </summary>
+    public static (string Content, bool Truncated, int OriginalByteCount) CapLogContent(string content)
+    {
+        var originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
+        if (originalBytes <= LogContentLimitBytes) return (content, false, originalBytes);
+
+        // Character count is an upper bound on byte count for the tail, so slicing by characters
+        // then re-checking converges without a per-character scan.
+        var kept = content;
+        while (System.Text.Encoding.UTF8.GetByteCount(kept) > LogContentLimitBytes)
+        {
+            var overBy = System.Text.Encoding.UTF8.GetByteCount(kept) - LogContentLimitBytes;
+            kept = kept[Math.Min(kept.Length, overBy)..];
+        }
+        // Drop the partial first line — a log that opens mid-token reads like corruption.
+        var firstNewline = kept.IndexOf('\n');
+        if (firstNewline >= 0 && firstNewline < kept.Length - 1) kept = kept[(firstNewline + 1)..];
+
+        return ($"[… {originalBytes - System.Text.Encoding.UTF8.GetByteCount(kept)} bytes trimmed from the start of this log …]\n{kept}",
+            true, originalBytes);
+    }
+
+    /// <summary>
+    /// Returns one log block's content, or null when the block doesn't exist or belongs to a
+    /// different event (the id pair is checked, so a guessed log id can't leak another deployment's
+    /// output).
+    /// </summary>
+    public async Task<DeployLogContentDto?> GetLogContent(Guid eventId, Guid logId, CancellationToken ct = default)
+    {
+        var log = await _db.DeployEventLogs.AsNoTracking()
+            .FirstOrDefaultAsync(l => l.Id == logId && l.DeployEventId == eventId, ct);
+        return log is null
+            ? null
+            : new DeployLogContentDto(log.Id, log.Name, log.Source, log.Content, log.Truncated, log.OriginalByteCount);
+    }
+
+    // --- Detail view ---
+
+    /// <summary>
+    /// Assembles the deployment detail page's payload for one event: the event, its captured output
+    /// (summaries only — content is a separate call), the same service's neighbouring deployments,
+    /// and the promotions and work items that tie this deployment into the release process.
+    /// Returns null when no such event exists.
+    /// </summary>
+    public async Task<DeployEventDetailDto?> GetEventDetail(
+        Guid id, int historyLimit = 10, CancellationToken ct = default)
+    {
+        var ev = await _db.DeployEvents.AsNoTracking().FirstOrDefaultAsync(e => e.Id == id, ct);
+        if (ev is null) return null;
+
+        var overrides = await LoadOverridesByEventAsync([ev.Id], ct);
+        var eventDto = MapToResponseDto(ev, overrides.GetValueOrDefault(ev.Id));
+
+        // Projected without Content: the summary list exists precisely so opening the page doesn't
+        // drag every log block along with it. Sizes were materialised at ingest for this reason.
+        var logSummaries = await _db.DeployEventLogs.AsNoTracking()
+            .Where(l => l.DeployEventId == id)
+            .OrderBy(l => l.Sequence)
+            .Select(l => new DeployLogSummaryDto(
+                l.Id, l.Name, l.Source, l.Sequence, l.ByteCount, l.LineCount, l.Truncated, l.CreatedAt))
+            .ToListAsync(ct);
+
+        // Same service in the same environment: the question a reader has on this page is "what did
+        // this service do before/after here", not "what happened elsewhere".
+        var history = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == ev.Product && e.Service == ev.Service && e.Environment == ev.Environment)
+            .OrderByDescending(e => e.DeployedAt)
+            .Take(Math.Max(1, historyLimit))
+            .Select(e => new
+            {
+                e.Id, e.Environment, e.Version, e.PreviousVersion, e.IsRollback,
+                e.Status, e.Source, e.DeployedAt, e.RunJson,
+            })
+            .ToListAsync(ct);
+
+        var historyDtos = history
+            .Select(e => new DeployEventHistoryEntryDto(
+                e.Id, e.Environment, e.Version, e.PreviousVersion, e.IsRollback,
+                e.Status, e.Source, e.DeployedAt,
+                FailureReason: Deserialize<DeployRun>(e.RunJson)?.FailureReason))
+            .ToList();
+
+        // Promotions on the same (product, service, version). Outbound: this environment is the
+        // promotion's source, so this deploy is what may move forward. Inbound: it is the target, so
+        // this deploy is what the promotion delivered.
+        var promotions = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Product == ev.Product && c.Service == ev.Service && c.Version == ev.Version
+                     && (c.SourceEnv == ev.Environment || c.TargetEnv == ev.Environment))
+            .OrderByDescending(c => c.CreatedAt)
+            .Select(c => new
+            {
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status, c.CreatedAt, c.ApprovedAt, c.DeployedAt,
+            })
+            .ToListAsync(ct);
+
+        var promotionDtos = promotions
+            .Select(c => new RelatedPromotionDto(
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status.ToString(),
+                Direction: c.SourceEnv == ev.Environment ? "outbound" : "inbound",
+                c.CreatedAt, c.ApprovedAt, c.DeployedAt))
+            .ToList();
+
+        // Work items come from the relational projection rather than the event's JSON so the titles
+        // reflect any later Jira enrichment.
+        var workItemRows = await _db.DeployEventWorkItems.AsNoTracking()
+            .Where(w => w.DeployEventId == id)
+            .OrderBy(w => w.WorkItemKey)
+            .Select(w => new { w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType })
+            .ToListAsync(ct);
+
+        // Sign-off is keyed on (key, product, service, targetEnv); the service is this event's, so a
+        // link only still needs a target env. Take them from the promotions carrying this version —
+        // those are the gates the ticket is actually in.
+        var signOffEnvs = promotionDtos
+            .Select(p => p.TargetEnv)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var workItemDtos = workItemRows
+            .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType, signOffEnvs))
+            .ToList();
+
+        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);
+    }
+
+    private static int CountLines(string content)
+    {
+        if (content.Length == 0) return 0;
+        var lines = 1;
+        foreach (var c in content) if (c == '\n') lines++;
+        return lines;
     }
 
     /// <summary>
@@ -201,7 +538,10 @@ public class DeploymentService
             return new List<DeploymentVersionDto>();
 
         var query = _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == product && e.Environment == environment);
+            .Where(e => e.Product == product && e.Environment == environment)
+            // A retired service is not a rollback target — offering its versions in the picker would
+            // invite somebody to redeploy the thing that was just migrated away.
+            .ExcludingDeletedServices(_db);
         if (!string.IsNullOrWhiteSpace(serviceName))
             query = query.Where(e => e.Service == serviceName);
 
@@ -262,28 +602,124 @@ public class DeploymentService
         return versions;
     }
 
+    /// <summary>
+    /// The service × environment matrix. Services an admin has retired are dropped here — this is the
+    /// query the product page derives its service list from, so filtering it is what actually takes
+    /// an obsolete service off the page. Retired environments are dropped too: their last events
+    /// stopped describing anything the day nothing deployed there any more.
+    /// </summary>
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
-        var query = _db.DeployEvents.AsQueryable();
-        if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
-        if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
-        if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
+        var retired = await _environments.RetiredKeysAsync(ct);
 
-        // Latest event per (product, service, environment) using a window-function approach
-        var latest = await query
-            .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
-            .ToListAsync(ct);
+        // Cell-key order, ordinal — what the grouped query this replaced returned wherever its
+        // GROUP BY ran sorted (SQLite always), now fixed rather than left to the plan.
+        var latest = (await LatestStateEvents(product, environment, serviceName, retired).ToListAsync(ct))
+            .OrderBy(e => e.Product, StringComparer.Ordinal)
+            .ThenBy(e => e.Service, StringComparer.Ordinal)
+            .ThenBy(e => e.Environment, StringComparer.Ordinal)
+            .ToList();
 
         var overrides = await LoadOverridesByEventAsync(latest.Select(e => e.Id), ct);
         return latest.Select(e => MapToStateDto(e, overrides.GetValueOrDefault(e.Id))).ToList();
     }
 
+    /// <summary>
+    /// <see cref="GetState"/>'s rows, in the same order, as <c>view=summary</c> carries them (see
+    /// <see cref="DeploymentStateSummaryDto"/>). Only the scalar columns are selected, so the JSON
+    /// columns the full view deserializes never leave the database — and with no references to
+    /// show, there are no participant overrides to merge either.
+    /// </summary>
+    public async Task<List<DeploymentStateSummaryDto>> GetStateSummary(
+        string? product, string? environment, string? serviceName, CancellationToken ct = default)
+        => (await LatestStateEvents(product, environment, serviceName, await _environments.RetiredKeysAsync(ct))
+                .Select(e => new DeploymentStateSummaryDto(
+                    e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
+                    e.IsRollback, e.Status, e.Source, e.DeployedAt))
+                .ToListAsync(ct))
+            .OrderBy(e => e.Product, StringComparer.Ordinal)
+            .ThenBy(e => e.Service, StringComparer.Ordinal)
+            .ThenBy(e => e.Environment, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// The matrix's rows: each (product, service, environment)'s newest event by <c>DeployedAt</c>,
+    /// whatever became of it — a failed or still-running deploy is what the environment last tried,
+    /// and a rollback is a deploy like any other.
+    ///
+    /// <para>Shaped to stay on the <c>(product, service, environment, deployedAt DESC)</c> index: the
+    /// distinct cells come off the index, each cell's newest id is a correlated TOP 1 seek on it, and
+    /// only those rows are then read whole, by primary key. Ranking every event with ROW_NUMBER
+    /// instead (what <c>GroupBy(...).First()</c> translates to) sorts the entire history, each row's
+    /// JSON columns included, to keep one row per cell. Ties on <c>DeployedAt</c> are ordered no
+    /// further, exactly as before, and resolve in index order — the same lookup shape ingest uses for
+    /// <c>PreviousVersion</c> and the promotions list for the target's current version.</para>
+    ///
+    /// <para>A join on the looked-up id rather than <c>Id IN (...)</c>: Postgres plans the IN form as a
+    /// hashed semi-join that evaluates the per-cell lookup twice. Unordered — the callers sort in
+    /// memory rather than have the database sort rows carrying JSON columns.</para>
+    ///
+    /// <para>Cells in a <paramref name="retired"/> environment are left out, explicit
+    /// <paramref name="environment"/> filter or not: nothing is current in an environment nobody
+    /// deploys to. Their history is still on the history and event-detail paths.</para>
+    /// </summary>
+    private IQueryable<DeployEvent> LatestStateEvents(
+        string? product, string? environment, string? serviceName, IReadOnlySet<string> retired)
+    {
+        // Read-only: the rows are mapped straight to DTOs, so tracking every matrix row (each carrying
+        // its JSON columns) buys nothing.
+        var query = _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(retired);
+        if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
+        if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
+        if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
+
+        // The filters and the retired-service and retired-environment checks are all on the cell's
+        // own key, so the per-cell lookup doesn't repeat them: every event of a cell that passed
+        // shares its key.
+        var latest = query
+            .Select(e => new { e.Product, e.Service, e.Environment })
+            .Distinct()
+            .Select(k => new
+            {
+                Id = _db.DeployEvents
+                    .Where(e => e.Product == k.Product && e.Service == k.Service && e.Environment == k.Environment)
+                    .OrderByDescending(e => e.DeployedAt)
+                    .Select(e => e.Id)
+                    .First(),
+            });
+
+        return from l in latest
+               join e in _db.DeployEvents.AsNoTracking() on l.Id equals e.Id
+               select e;
+    }
+
+    /// <summary>
+    /// The product × environment matrix. Products the caller has hidden are dropped here rather
+    /// than in the UI — this is the canonical product list, so filtering it also empties the
+    /// release-notes index and every product dropdown built from it. Retired environments are
+    /// dropped from each card, and a product seen only in retired environments has no card at all.
+    /// </summary>
     public async Task<List<ProductSummaryDto>> GetProductSummaries(CancellationToken ct = default)
     {
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var retired = await _environments.RetiredKeysAsync(ct);
+
+        // One row per (product, service, environment). A summary only counts those and reads the
+        // newest timestamp, which is the group's MAX — so the query aggregates over the narrow index
+        // instead of ranking whole event rows (JSON columns and all) to pick each group's latest.
         var latest = await _db.DeployEvents
+            .AsNoTracking()
+            .Where(e => !hidden.Contains(e.Product))
+            // Retired services stop counting towards the per-environment service totals too, or the
+            // product card would keep advertising components the product page no longer lists.
+            .ExcludingDeletedServices(_db)
+            // And a retired environment loses its column on the card, for the same reason the
+            // product page's matrix loses it.
+            .ExcludingRetiredEnvironments(retired)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => g.OrderByDescending(e => e.DeployedAt).First())
+            .Select(g => new { g.Key.Product, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
 
         var grouped = latest
@@ -306,10 +742,127 @@ public class DeploymentService
         return grouped;
     }
 
+    /// <summary>
+    /// Cross-product service search: case-insensitive substring match on the service name. This is
+    /// the query behind "find a service without knowing its product", so unlike the other read
+    /// paths it takes no product argument at all. Hidden products are dropped for the same reason
+    /// they are in <see cref="GetProductSummaries"/> — hiding a product hides it everywhere — and
+    /// retired services stay out like on every other read path. A hit lists only the environments
+    /// that are not retired; a service seen only in retired ones is not a hit. Results are
+    /// most-recently-deployed first, capped by <paramref name="limit"/>.
+    /// </summary>
+    public async Task<List<ServiceSearchResultDto>> SearchServices(
+        string query, int limit = 20, CancellationToken ct = default)
+    {
+        var needle = query.Trim().ToLower();
+        if (needle.Length == 0) return new List<ServiceSearchResultDto>();
+
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var retired = await _environments.RetiredKeysAsync(ct);
+
+        // One row per (product, service, environment) — grouped into per-service hits in memory,
+        // which keeps the query translatable (a nested Distinct inside a GroupBy projection isn't).
+        var rows = await _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(retired)
+            .Where(e => !hidden.Contains(e.Product))
+            .Where(e => e.Service.ToLower().Contains(needle))
+            .GroupBy(e => new { e.Product, e.Service, e.Environment })
+            .Select(g => new
+            {
+                g.Key.Product,
+                g.Key.Service,
+                g.Key.Environment,
+                LastDeployedAt = g.Max(e => e.DeployedAt),
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => new { r.Product, r.Service })
+            .Select(g => new ServiceSearchResultDto(
+                g.Key.Product,
+                g.Key.Service,
+                g.OrderByDescending(r => r.LastDeployedAt)
+                    .Select(r => new ServiceSearchEnvironmentDto(r.Environment, r.LastDeployedAt))
+                    .ToList(),
+                g.Max(r => r.LastDeployedAt)))
+            .OrderByDescending(s => s.LastDeployedAt)
+            .Take(Math.Max(1, limit))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Assembles the service detail page's payload for one (product, service): the latest event per
+    /// environment, the most recent distinct versions with the environments each reached, and the
+    /// service's promotions. Returns null when the pair has no visible deployments — unknown and
+    /// retired look the same here, exactly as they do on every other read path.
+    ///
+    /// <para>Retired environments are left out of both the per-environment state and each version's
+    /// "reached" list, and a version seen only in retired environments is not listed. Promotions are
+    /// not filtered: they are history, and one that left from a retired environment still did.</para>
+    /// </summary>
+    public async Task<ServiceDetailDto?> GetServiceDetail(
+        string product, string service, int versionsLimit = 10, CancellationToken ct = default)
+    {
+        var environments = await GetState(product, null, service, ct);
+        if (environments.Count == 0) return null;
+
+        // Recent deploys, newest first, folded into distinct versions in memory (same reasoning as
+        // GetVersions: GroupBy + First doesn't translate cleanly). Oversampled so a version that was
+        // redeployed many times doesn't starve the list of older versions. Retired environments are
+        // filtered before the cap, so their rows don't eat into the oversample either — and answered
+        // from the snapshot GetState already loaded.
+        var recent = await _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(await _environments.RetiredKeysAsync(ct))
+            .Where(e => e.Product == product && e.Service == service)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new { e.Id, e.Environment, e.Version, e.Status, e.IsRollback, e.DeployedAt })
+            .Take(Math.Max(1, versionsLimit) * 20)
+            .ToListAsync(ct);
+
+        var versions = new List<ServiceVersionDto>();
+        var byVersion = new Dictionary<string, List<ServiceVersionEnvironmentDto>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in recent)
+        {
+            if (!byVersion.TryGetValue(e.Version, out var envs))
+            {
+                if (versions.Count >= versionsLimit) continue;
+                envs = new List<ServiceVersionEnvironmentDto>();
+                byVersion[e.Version] = envs;
+                // Rows arrive newest-first, so first sight of a version fixes its LastDeployedAt.
+                versions.Add(new ServiceVersionDto(e.Version, e.DeployedAt, envs));
+            }
+            // Latest event per (version, environment): rows are newest-first, so keep the first one.
+            if (envs.Any(x => string.Equals(x.Environment, e.Environment, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            envs.Add(new ServiceVersionEnvironmentDto(e.Id, e.Environment, e.Status, e.IsRollback, e.DeployedAt));
+        }
+
+        var promotions = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Product == product && c.Service == service)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(25)
+            .Select(c => new
+            {
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status, c.CreatedAt, c.ApprovedAt, c.DeployedAt,
+            })
+            .ToListAsync(ct);
+
+        var promotionDtos = promotions
+            .Select(c => new ServicePromotionDto(
+                c.Id, c.SourceEnv, c.TargetEnv, c.Version, c.Status.ToString(),
+                c.CreatedAt, c.ApprovedAt, c.DeployedAt))
+            .ToList();
+
+        return new ServiceDetailDto(product, service, environments, versions, promotionDtos);
+    }
+
     public async Task<List<DeployEventResponseDto>> GetHistory(
         string product, string service, string? environment, int limit = 50, CancellationToken ct = default)
     {
         var query = _db.DeployEvents
+            .ExcludingDeletedServices(_db)
             .Where(e => e.Product == product && e.Service == service);
 
         if (!string.IsNullOrEmpty(environment))
@@ -328,6 +881,7 @@ public class DeploymentService
         string product, string environment, DateTimeOffset since, CancellationToken ct = default)
     {
         var events = await _db.DeployEvents
+            .ExcludingDeletedServices(_db)
             .Where(e => e.Product == product && e.Environment == environment && e.DeployedAt >= since)
             .OrderByDescending(e => e.DeployedAt)
             .ToListAsync(ct);
@@ -340,6 +894,7 @@ public class DeploymentService
         string product, DateTimeOffset since, int limit = 200, CancellationToken ct = default)
     {
         var events = await _db.DeployEvents
+            .ExcludingDeletedServices(_db)
             .Where(e => e.Product == product && e.DeployedAt >= since)
             .OrderByDescending(e => e.DeployedAt)
             .Take(limit)
@@ -430,6 +985,46 @@ public class DeploymentService
         return (groupCount, stale.Count);
     }
 
+    // --- Log retention ---
+
+    /*
+     * Captured pipeline output is by far the largest thing stored per deploy — a Helm printout plus
+     * failure diagnostics per event — and it ages fast: the log matters while somebody is debugging
+     * that deploy, not months later. This pair purges log rows for deploy events older than a cutoff;
+     * the events themselves, and everything else on them, stay. Age is the EVENT's DeployedAt, not the
+     * log row's CreatedAt, so all of one deploy's blocks age together.
+     */
+
+    /// <summary>Logs (row count and stored bytes) that <see cref="RemoveOldLogs"/> would delete.</summary>
+    public async Task<(int Logs, long Bytes)> CountOldLogs(int olderThanDays, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-olderThanDays);
+        var rows = await OldLogsQuery(cutoff).Select(l => (long)l.ByteCount).ToListAsync(ct);
+        return (rows.Count, rows.Sum());
+    }
+
+    /// <summary>Deletes log rows for deploy events older than the cutoff. Returns what was removed.</summary>
+    public async Task<(int Logs, long Bytes)> RemoveOldLogs(int olderThanDays, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-olderThanDays);
+        var stale = await OldLogsQuery(cutoff).ToListAsync(ct);
+        if (stale.Count == 0) return (0, 0);
+
+        var bytes = stale.Sum(l => (long)l.ByteCount);
+        _db.DeployEventLogs.RemoveRange(stale);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Log retention removed {Logs} log block(s), {Bytes} bytes, for deploys older than {Days} days",
+            stale.Count, bytes, olderThanDays);
+
+        return (stale.Count, bytes);
+    }
+
+    private IQueryable<DeployEventLog> OldLogsQuery(DateTimeOffset cutoff) =>
+        _db.DeployEventLogs
+            .Where(l => _db.DeployEvents.Any(e => e.Id == l.DeployEventId && e.DeployedAt < cutoff));
+
     // --- Mapping helpers ---
 
     private static DeploymentStateDto MapToStateDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides)
@@ -441,8 +1036,9 @@ public class DeploymentService
             : Deserialize<EnrichmentDto>(e.EnrichmentJson);
 
         return new DeploymentStateDto(
-            e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment);
+            e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment,
+            Deserialize<DeployRun>(e.RunJson));
     }
 
     private static DeployEventResponseDto MapToResponseDto(DeployEvent e, IReadOnlyList<ReferenceParticipantOverride>? overrides)
@@ -456,7 +1052,8 @@ public class DeploymentService
 
         return new DeployEventResponseDto(
             e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
-            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata);
+            e.IsRollback, e.Status, e.Source, e.DeployedAt, refs, parts, enrichment, metadata,
+            Deserialize<DeployRun>(e.RunJson));
     }
 
     /// <summary>

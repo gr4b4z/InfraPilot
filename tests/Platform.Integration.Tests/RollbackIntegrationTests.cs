@@ -8,20 +8,25 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Data.Common;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Integration.Tests;
 
 /// <summary>
-/// End-to-end tests for the rollback feature: feature-flag + per-product gating, the two selection
-/// modes (manual + align-all-except), the "version must have run here" safety rule, auto-approve +
-/// completion via deploy event, and the stale-promotion invariant (drift block + reactivation).
+/// End-to-end tests for the rollback feature: per-product creator and approver permissions
+/// (<c>RollbackPolicy</c>), the admin approval-gate override, the two selection modes (manual +
+/// align-all-except), the "version must have run here" safety rule, completion via deploy event, and
+/// the stale-promotion invariant (drift block + reactivation).
 /// </summary>
 public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.RollbackFactory>, IDisposable
 {
     private readonly RollbackFactory _factory;
     private readonly HttpClient _admin;
     private readonly HttpClient _apiKey;
+    // Two non-admin identities, so creator/approver membership can be tested from both sides.
+    private readonly HttpClient _user;   // user@localhost   — QA + User
+    private readonly HttpClient _viewer; // viewer@localhost — no roles at all
 
     private const string Product = "acme";
 
@@ -31,32 +36,244 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         _admin = factory.CreateAdminClient();
         _apiKey = factory.CreateClient();
         _apiKey.DefaultRequestHeaders.Add("X-Api-Key", RollbackFactory.TestApiKey);
+        _user = factory.CreateAuthenticatedClient("user@localhost", "user123");
+        _viewer = factory.CreateAuthenticatedClient("viewer@localhost", "viewer123");
     }
 
     public void Dispose()
     {
         _admin.Dispose();
         _apiKey.Dispose();
+        _user.Dispose();
+        _viewer.Dispose();
     }
+
+    private static object RollbackBody(string product, string toVersion, string targetEnv = "staging") => new
+    {
+        product,
+        targetEnv,
+        mode = "manual",
+        items = new[] { new { service = "api", toVersion } },
+    };
 
     // ── Tests ─────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Create_WhenProductNotEnrolled_Returns400()
+    public async Task Create_ForUnconfiguredProduct_ByNonAdmin_Returns403()
     {
         await EnableRollbacksAsync();
-        // Deliberately do NOT enroll a fresh product.
-        var product = $"unenrolled-{Guid.NewGuid():N}";
+        // Deliberately do NOT configure a policy for this product.
+        var product = $"unconfigured-{Guid.NewGuid():N}";
         await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
 
-        var resp = await _admin.PostAsJsonAsync("/api/rollbacks", new
+        var resp = await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_ForUnconfiguredProduct_ByAdmin_LandsPending_AndNeverAutoApproves()
+    {
+        // The security fix: an unconfigured environment used to project to "auto-approve" and revert
+        // with no human gate at all. It must now land Pending, approvable only by an explicit override.
+        await EnableRollbacksAsync();
+        var product = $"unconfigured-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString();
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.True(detail.GetProperty("unconfigured").GetBoolean());
+        Assert.False(detail.GetProperty("canApprove").GetBoolean());  // nobody is authorized
+        Assert.True(detail.GetProperty("canOverride").GetBoolean());  // only route forward
+
+        // A normal approval must refuse, and say why.
+        var approve = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.BadRequest, approve.StatusCode);
+        Assert.Contains("override", (await Body(approve)).GetProperty("error").GetString()!);
+    }
+
+    [Fact]
+    public async Task Create_ByNonCreator_Returns403_AndByListedCreator_Succeeds()
+    {
+        await EnableRollbacksAsync();
+        var product = $"creators-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        // Only user@localhost may create; viewer@localhost may not.
+        await UpsertPolicyAsync(product, "staging", creatorUsers: new[] { "user@localhost" }, requirementGroup: null);
+
+        var denied = await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+
+        var allowed = await _user.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Created, allowed.StatusCode);
+    }
+
+    [Fact]
+    public async Task Preview_ByNonCreator_Returns403()
+    {
+        // The dry run reports current and candidate versions across environments, so it is gated by the
+        // same create permission rather than left open as a "read-only" endpoint.
+        await EnableRollbacksAsync();
+        var product = $"preview-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await UpsertPolicyAsync(product, "staging", creatorUsers: new[] { "user@localhost" }, requirementGroup: null);
+
+        var resp = await _viewer.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "1.0"));
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Approve_ByAdminNotNamedInGate_Returns403()
+    {
+        // Admins are NOT implicit members of every approver group for rollbacks (unlike promotions):
+        // an admin clearing a gate has to do it through the reason-carrying override, so a bypass never
+        // looks like an ordinary approval in the history.
+        await EnableRollbacksAsync();
+        var product = $"gated-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await UpsertPolicyAsync(product, "staging",
+            creatorUsers: new[] { "admin@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString();
+
+        // admin@localhost is in no group in the strict test directory, so the only thing that could let
+        // this through is the implicit admin shortcut — which rollbacks switch off.
+        var approve = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.Forbidden, approve.StatusCode);
+
+        // Still Pending, and the gate reports 0 of 1 satisfied.
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Pending", detail.GetProperty("status").GetString());
+        var req = detail.GetProperty("gate").EnumerateArray().Single();
+        Assert.Equal(0, req.GetProperty("matched").GetInt32());
+        Assert.Equal(1, req.GetProperty("required").GetInt32());
+        Assert.False(req.GetProperty("satisfied").GetBoolean());
+
+        // A genuine member of the group can approve, confirming the gate is refusing the admin
+        // specifically rather than being unsatisfiable.
+        var byMember = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.OK, byMember.StatusCode);
+        Assert.Equal("Approved", (await Body(byMember)).GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Override_RequiresAdminAndReason_ThenApprovesAndIsFlagged()
+    {
+        await EnableRollbacksAsync();
+        var product = $"override-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await UpsertPolicyAsync(product, "staging",
+            creatorUsers: new[] { "admin@localhost", "viewer@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        var id = created.GetProperty("id").GetString();
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+
+        // Non-admin cannot override even though they may create here.
+        var byViewer = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval",
+            new { reason = "let me through" });
+        Assert.Equal(HttpStatusCode.Forbidden, byViewer.StatusCode);
+
+        // A reason is mandatory.
+        var noReason = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval", new { reason = "  " });
+        Assert.Equal(HttpStatusCode.BadRequest, noReason.StatusCode);
+
+        var ok = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval",
+            new { reason = "SEV1 INC-42, approvers unreachable" });
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Approved", detail.GetProperty("status").GetString());
+        Assert.True(detail.GetProperty("approvalOverridden").GetBoolean());
+        var approval = detail.GetProperty("approvals").EnumerateArray().Single();
+        Assert.True(approval.GetProperty("isOverride").GetBoolean());
+        Assert.Equal("SEV1 INC-42, approvers unreachable", approval.GetProperty("comment").GetString());
+        Assert.Equal("admin@localhost", approval.GetProperty("approverEmail").GetString());
+
+        // Overriding twice is refused — the request is no longer Pending.
+        var again = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval", new { reason = "again" });
+        Assert.Equal(HttpStatusCode.BadRequest, again.StatusCode);
+    }
+
+    [Fact]
+    public async Task Approve_ByNamedUser_SatisfiesGate()
+    {
+        // The positive path for the gate: a requirement naming a user explicitly is satisfied by them.
+        await EnableRollbacksAsync();
+        var product = $"approve-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        var resp = await _admin.PostAsJsonAsync("/api/rollbacks/admin/policies", new
         {
             product,
             targetEnv = "staging",
-            mode = "manual",
-            items = new[] { new { service = "api", toVersion = "1.0" } },
+            creators = new { groups = Array.Empty<object>(), users = new[] { "admin@localhost" } },
+            steps = new[]
+            {
+                new
+                {
+                    name = "Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Named approver",
+                            groups = Array.Empty<object>(),
+                            users = new[] { "viewer@localhost" },
+                            minApprovers = 1,
+                        },
+                    },
+                },
+            },
         });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        var id = created.GetProperty("id").GetString();
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+
+        var approve = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { comment = "ok" });
+        Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
+        Assert.Equal("Approved", (await Body(approve)).GetProperty("status").GetString());
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.False(detail.GetProperty("approvalOverridden").GetBoolean()); // a real approval, not a bypass
+    }
+
+    [Fact]
+    public async Task EnvSpecificPolicy_WinsOverProductDefault()
+    {
+        await EnableRollbacksAsync();
+        var product = $"scoped-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+        await IngestAsync(product, "api", "prod", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "prod", "1.1", Hours(-1));
+
+        // Product default: ungated. Prod: gated. Same product, different answers per environment.
+        await UpsertPolicyAsync(product, targetEnv: null,
+            creatorUsers: new[] { "viewer@localhost" }, requirementGroup: null);
+        await UpsertPolicyAsync(product, targetEnv: "prod",
+            creatorUsers: new[] { "viewer@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var staging = await Body(await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Approved", staging.GetProperty("status").GetString()); // default policy, no gate
+
+        var prod = await Body(await _viewer.PostAsJsonAsync("/api/rollbacks",
+            RollbackBody(product, "1.0", targetEnv: "prod")));
+        Assert.Equal("Pending", prod.GetProperty("status").GetString());     // env-specific gate applies
     }
 
     [Fact]
@@ -155,12 +372,12 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         var items = preview.GetProperty("items").EnumerateArray().ToList();
         var a = items.Single(i => i.GetProperty("service").GetString() == "svc-a");
         var b = items.Single(i => i.GetProperty("service").GetString() == "svc-b");
-        var c = items.Single(i => i.GetProperty("service").GetString() == "svc-c");
         Assert.True(a.GetProperty("eligible").GetBoolean());      // 2.0 → 1.0, 1.0 ran in staging
         Assert.Equal("1.0", a.GetProperty("toVersion").GetString());
         Assert.False(b.GetProperty("eligible").GetBoolean());     // excluded
         Assert.Equal("excluded", b.GetProperty("skipReason").GetString());
-        Assert.False(c.GetProperty("eligible").GetBoolean());     // already matching (2.0 == 2.0)
+        // svc-c already matches the reference (2.0 == 2.0), so it isn't in the diff and isn't listed.
+        Assert.DoesNotContain(items, i => i.GetProperty("service").GetString() == "svc-c");
 
         var create = await _admin.PostAsJsonAsync("/api/rollbacks", body);
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
@@ -168,6 +385,310 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         var created_items = created.GetProperty("items").EnumerateArray().ToList();
         Assert.Single(created_items); // only svc-a
         Assert.Equal("svc-a", created_items[0].GetProperty("service").GetString());
+    }
+
+    // ── Staleness: a rollback closes once it no longer describes the environment ──
+
+    [Fact]
+    public async Task Align_IgnoresFailedDeploys_AndCreatesNothingForServicesAlreadyAtReference()
+    {
+        // The 2026-09-21 shape: a release whose deploys all failed, so the cluster never left the old
+        // version, and an align to prod raised on top of it.
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "svc-a", "staging", "5.0.350", Hours(-10));
+        await IngestAsync(product, "svc-a", "staging", "5.9.0", Hours(-3), status: "failed");
+        await IngestAsync(product, "svc-a", "staging", "5.9.0", Hours(-2), status: "failed");
+        await IngestAsync(product, "svc-a", "prod", "5.0.350", Hours(-5));
+        // svc-b really did move to 5.9.0, so it is the one genuine difference.
+        await IngestAsync(product, "svc-b", "staging", "5.0.1", Hours(-10));
+        await IngestAsync(product, "svc-b", "staging", "5.9.0", Hours(-2));
+        await IngestAsync(product, "svc-b", "prod", "5.0.1", Hours(-5));
+        // svc-c only ever failed in staging: nothing runs there, so it is not a service to align.
+        await IngestAsync(product, "svc-c", "staging", "5.9.0", Hours(-2), status: "failed");
+        await IngestAsync(product, "svc-c", "prod", "5.0.7", Hours(-5));
+
+        var body = new { product, targetEnv = "staging", mode = "align", referenceEnv = "prod" };
+
+        var preview = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", body));
+        var a = ItemFor(preview, "svc-a");
+        Assert.False(a.GetProperty("eligible").GetBoolean());
+        Assert.Equal("5.0.350", a.GetProperty("fromVersion").GetString()); // the last succeeded deploy
+        Assert.Equal("already running this version", a.GetProperty("skipReason").GetString());
+        // Still reported: deploy history shows 5.9.0, and the preview has to say why it disagrees.
+        var note = a.GetProperty("note").GetString()!;
+        Assert.Contains("5.9.0", note);
+        Assert.Contains("failed", note);
+        Assert.Contains("5.0.350 is still running", note);
+        Assert.True(ItemFor(preview, "svc-b").GetProperty("eligible").GetBoolean());
+        Assert.DoesNotContain(preview.GetProperty("items").EnumerateArray(),
+            i => i.GetProperty("service").GetString() == "svc-c");
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", body));
+        var item = Assert.Single(created.GetProperty("items").EnumerateArray());
+        Assert.Equal("svc-b", item.GetProperty("service").GetString());
+        Assert.Equal("5.9.0", item.GetProperty("fromVersion").GetString());
+    }
+
+    [Fact]
+    public async Task Manual_FailedVersionIsNeitherCurrentNorARollbackTarget()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        await IngestAsync(product, "api", "staging", "2.0", Hours(-1), status: "failed");
+
+        // 2.0 only ever failed here, so it never ran: the safety rule refuses it.
+        var preview = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "2.0")));
+        var target = ItemFor(preview, "api");
+        Assert.False(target.GetProperty("eligible").GetBoolean());
+        Assert.Equal("version never ran in this environment", target.GetProperty("skipReason").GetString());
+
+        // And "current" is the last succeeded deploy, not the failed one.
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("1.1", ItemFor(created, "api").GetProperty("fromVersion").GetString());
+    }
+
+    [Fact]
+    public async Task ApprovedRollback_IsSupersededByALaterDeployOfAnotherVersion()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Approved", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString()!;
+
+        // Staging moves forward to 1.2 instead of back to 1.0: the rollback is stale.
+        var landedId = await IngestAsync(product, "api", "staging", "1.2", Hours(1));
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        var item = ItemFor(detail, "api");
+        Assert.Equal("Superseded", item.GetProperty("status").GetString());
+        Assert.Equal(landedId, item.GetProperty("completedDeployEventId").GetString());
+        Assert.NotEqual(JsonValueKind.Null, item.GetProperty("completedAt").ValueKind);
+        Assert.Contains("1.2", item.GetProperty("note").GetString()!);
+        // Its only item is terminal, so the request is settled and leaves the pipeline's view.
+        Assert.Equal("RolledBack", detail.GetProperty("status").GetString());
+        Assert.Empty(await OpenItemsSeenByPipelineAsync(product, "staging"));
+    }
+
+    [Fact]
+    public async Task ApprovedRollback_StaysOpenThroughARedeployOfItsFromVersionAndFailedDeploys()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        var id = created.GetProperty("id").GetString()!;
+
+        // 1.1 lands again (a retry, or an overlapping run finishing late): the version the rollback
+        // exists to remove, so the rollback still describes the environment.
+        await IngestAsync(product, "api", "staging", "1.1", Hours(1));
+        // A failed deploy of another version moved nothing.
+        await IngestAsync(product, "api", "staging", "1.2", Hours(2), status: "failed");
+        // A failed deploy of the target itself did not put it live.
+        var failedId = await IngestAsync(product, "api", "staging", "1.0", Hours(3), status: "failed");
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        var item = ItemFor(detail, "api");
+        Assert.Equal("Pending", item.GetProperty("status").GetString());
+        Assert.Equal("Approved", detail.GetProperty("status").GetString());
+        // The failed attempt is reported, so an open item that was already tried says so.
+        Assert.Equal(failedId, item.GetProperty("lastFailedAttempt").GetProperty("deployEventId").GetString());
+        Assert.Equal(new[] { "api@1.0" }, await OpenItemsSeenByPipelineAsync(product, "staging"));
+
+        // Only a succeeded deploy of the target completes it.
+        await IngestAsync(product, "api", "staging", "1.0", Hours(4));
+        var done = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("RolledBack", ItemFor(done, "api").GetProperty("status").GetString());
+        Assert.Equal("RolledBack", done.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Override_ClosesItemsAlreadyAtTheirTarget_AndSupersedesOnesTheEnvironmentMovedPast()
+    {
+        // Unconfigured product: the request lands Pending, so the environment can move before the
+        // gate clears.
+        await EnableRollbacksAsync();
+        var product = $"unconfigured-{Guid.NewGuid():N}";
+        foreach (var (svc, from, to) in new[] { ("svc-a", "1.1", "1.0"), ("svc-b", "2.1", "2.0"), ("svc-c", "3.1", "3.0") })
+        {
+            await IngestAsync(product, svc, "staging", to, Hours(-5));
+            await IngestAsync(product, svc, "staging", from, Hours(-4));
+        }
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
+        {
+            product, targetEnv = "staging", mode = "manual",
+            items = new[]
+            {
+                new { service = "svc-a", toVersion = "1.0" },
+                new { service = "svc-b", toVersion = "2.0" },
+                new { service = "svc-c", toVersion = "3.0" },
+            },
+        }));
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString()!;
+
+        // While it waits: svc-a reaches its target some other way, and svc-b moves on to a third version.
+        var aLanded = await IngestAsync(product, "svc-a", "staging", "1.0", Hours(0.1));
+        var bLanded = await IngestAsync(product, "svc-b", "staging", "2.2", Hours(0.2));
+
+        var resp = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/override-approval", new { reason = "INC-1" });
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        var a = ItemFor(detail, "svc-a");
+        Assert.Equal("RolledBack", a.GetProperty("status").GetString());
+        Assert.Equal(aLanded, a.GetProperty("completedDeployEventId").GetString());
+        var b = ItemFor(detail, "svc-b");
+        Assert.Equal("Superseded", b.GetProperty("status").GetString());
+        Assert.Equal(bLanded, b.GetProperty("completedDeployEventId").GetString());
+        Assert.Equal("Pending", ItemFor(detail, "svc-c").GetProperty("status").GetString());
+        Assert.Equal("RollingBack", detail.GetProperty("status").GetString());
+        Assert.Equal(new[] { "svc-c@3.0" }, await OpenItemsSeenByPipelineAsync(product, "staging"));
+    }
+
+    [Fact]
+    public async Task Approve_WhenEveryItemIsAlreadyAtItsTarget_SettlesTheRequestAtOnce()
+    {
+        await EnableRollbacksAsync();
+        var product = $"satisfied-{Guid.NewGuid():N}";
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        await UpsertPolicyAsync(product, "staging",
+            creatorUsers: new[] { "viewer@localhost" }, requirementGroup: RollbackFactory.ApproverGroup);
+
+        var created = await Body(await _viewer.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "1.0")));
+        Assert.Equal("Pending", created.GetProperty("status").GetString());
+        var id = created.GetProperty("id").GetString()!;
+        var landed = await IngestAsync(product, "api", "staging", "1.0", Hours(0.1)); // reached by other means
+
+        var approve = await _viewer.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("RolledBack", detail.GetProperty("status").GetString());
+        var item = ItemFor(detail, "api");
+        Assert.Equal("RolledBack", item.GetProperty("status").GetString());
+        Assert.Equal(landed, item.GetProperty("completedDeployEventId").GetString());
+        Assert.Contains("Already running 1.0", item.GetProperty("note").GetString()!);
+    }
+
+    [Fact]
+    public async Task Cancel_ApprovedRequest_NeedsAnAdminAndAReason_AndSkipsTheOpenItems()
+    {
+        var product = await FreshEnrolledProductAsync();
+        foreach (var svc in new[] { "svc-a", "svc-b" })
+        {
+            await IngestAsync(product, svc, "staging", "1.0", Hours(-3));
+            await IngestAsync(product, svc, "staging", "1.1", Hours(-2));
+        }
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
+        {
+            product, targetEnv = "staging", mode = "manual",
+            items = new[] { new { service = "svc-a", toVersion = "1.0" }, new { service = "svc-b", toVersion = "1.0" } },
+        }));
+        var id = created.GetProperty("id").GetString()!;
+        await IngestAsync(product, "svc-a", "staging", "1.0", Hours(1)); // svc-a lands → RollingBack
+
+        var nonAdmin = await _user.PostAsJsonAsync($"/api/rollbacks/{id}/cancel", new { reason = "stuck" });
+        Assert.Equal(HttpStatusCode.Forbidden, nonAdmin.StatusCode);
+        var noReason = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/cancel", new { reason = "  " });
+        Assert.Equal(HttpStatusCode.BadRequest, noReason.StatusCode);
+
+        var cancel = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/cancel", new { reason = "svc-b stays on 1.1" });
+        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Cancelled", detail.GetProperty("status").GetString());
+        Assert.Equal("svc-b stays on 1.1", detail.GetProperty("cancelReason").GetString());
+        Assert.False(string.IsNullOrEmpty(detail.GetProperty("cancelledByName").GetString()));
+        Assert.Equal("RolledBack", ItemFor(detail, "svc-a").GetProperty("status").GetString()); // landed, untouched
+        var b = ItemFor(detail, "svc-b");
+        Assert.Equal("Skipped", b.GetProperty("status").GetString());
+        Assert.Contains("cancelled", b.GetProperty("note").GetString()!);
+        Assert.Empty(await OpenItemsSeenByPipelineAsync(product, "staging"));
+        Assert.Contains("rollback.cancelled", await AuditActionsAsync(id));
+    }
+
+    [Fact]
+    public async Task SkipItem_IsAdminOnly_ClosesOneItem_AndSettlesTheRequestWithTheLast()
+    {
+        var product = await FreshEnrolledProductAsync();
+        foreach (var svc in new[] { "svc-a", "svc-b" })
+        {
+            await IngestAsync(product, svc, "staging", "1.0", Hours(-3));
+            await IngestAsync(product, svc, "staging", "1.1", Hours(-2));
+        }
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
+        {
+            product, targetEnv = "staging", mode = "manual",
+            items = new[] { new { service = "svc-a", toVersion = "1.0" }, new { service = "svc-b", toVersion = "1.0" } },
+        }));
+        var id = created.GetProperty("id").GetString()!;
+        var aId = ItemFor(created, "svc-a").GetProperty("id").GetString();
+        var bId = ItemFor(created, "svc-b").GetProperty("id").GetString();
+
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _user.PostAsJsonAsync($"/api/rollbacks/{id}/items/{aId}/skip", new { reason = "no" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/items/{aId}/skip", new { })).StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/items/{aId}/skip", new { reason = "keep 1.1" })).StatusCode);
+        var afterOne = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Skipped", ItemFor(afterOne, "svc-a").GetProperty("status").GetString());
+        Assert.Contains("keep 1.1", ItemFor(afterOne, "svc-a").GetProperty("note").GetString()!);
+        Assert.Equal("RollingBack", afterOne.GetProperty("status").GetString());
+        Assert.Equal(new[] { "svc-b@1.0" }, await OpenItemsSeenByPipelineAsync(product, "staging"));
+
+        // A closed item cannot be skipped again.
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/items/{aId}/skip", new { reason = "again" })).StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/items/{bId}/skip", new { reason = "keep 1.1" })).StatusCode);
+        var afterBoth = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("RolledBack", afterBoth.GetProperty("status").GetString());
+        Assert.Contains("rollback.item.skipped", await AuditActionsAsync(id));
+    }
+
+    [Fact]
+    public async Task IncidentReplay_StaleRollbackIsNotReappliedOnceTheNewerPromotionDeploys()
+    {
+        // The 2026-09-29 regression on a staging→prod edge. A rollback is approved but never lands;
+        // a newer promotion is approved and deployed. The release pipeline rebuilds its manifest from
+        // what is still open, so the moment the promotion leaves Approved, a still-open rollback item
+        // would revert the version that promotion just shipped.
+        var product = $"promo-{Guid.NewGuid():N}";
+        await SeedPromotionTopologyAndPolicyAsync(product);
+        await EnableRollbacksAsync();
+        await EnrollAsync(product, "prod");
+
+        await IngestAsync(product, "api", "prod", "1.0", Hours(-6));
+        await IngestAsync(product, "api", "prod", "1.1", Hours(-5));
+        var rollback = await Body(await _admin.PostAsJsonAsync("/api/rollbacks",
+            RollbackBody(product, "1.0", targetEnv: "prod")));
+        Assert.Equal("Approved", rollback.GetProperty("status").GetString());
+        var rollbackId = rollback.GetProperty("id").GetString()!;
+        Assert.Equal(new[] { "api@1.0" }, await OpenItemsSeenByPipelineAsync(product, "prod"));
+
+        // A newer version is promoted and approved after the rollback.
+        await IngestAsync(product, "api", "staging", "1.2", Hours(-1));
+        Assert.Equal(HttpStatusCode.Created, (await CreatePromotionAsync(product, "api", "staging", "prod", "1.2")).StatusCode);
+        var candidateId = await GetPendingCandidateIdAsync(product, "prod");
+        Assert.Equal(HttpStatusCode.OK, (await _admin.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { })).StatusCode);
+
+        // The promotion deploys, and with that leaves Approved.
+        await IngestAsync(product, "api", "prod", "1.2", Hours(1));
+        var promotion = await Body(await _admin.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Deployed", promotion.GetProperty("candidate").GetProperty("status").GetString());
+
+        // The rollback must not come back: it is closed, and the pipeline's read returns nothing.
+        Assert.Empty(await OpenItemsSeenByPipelineAsync(product, "prod"));
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{rollbackId}"));
+        Assert.Equal("Superseded", ItemFor(detail, "api").GetProperty("status").GetString());
+        Assert.Equal("RolledBack", detail.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -332,12 +853,50 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             .ToListAsync();
     }
 
-    private async Task EnrollAsync(string product)
+    // Enrollment is now the existence of a rollback policy. An "enrolled" product in these tests gets
+    // an ungated (empty-steps) policy, which reproduces what the pre-policy code did for these
+    // scenarios: the rollback target is staging, the seeded promotion policy targets prod, so
+    // target-only resolution found nothing and every rollback auto-approved.
+    private async Task EnrollAsync(string product, string targetEnv = "staging")
+        => await UpsertPolicyAsync(product, targetEnv, creatorUsers: null, requirementGroup: null);
+
+    /// <summary>
+    /// Creates a rollback policy. <paramref name="creatorUsers"/> null ⇒ no creator set (admins only);
+    /// <paramref name="requirementGroup"/> null ⇒ no approval requirements (auto-approve).
+    /// </summary>
+    private async Task<string> UpsertPolicyAsync(
+        string product, string? targetEnv, string[]? creatorUsers, string? requirementGroup,
+        int minApprovers = 1)
     {
-        var enabled = await GetEnabledProductsAsync();
-        enabled.Add(product);
-        (await _admin.PutAsJsonAsync("/api/rollbacks/admin/enabled-products", new { products = enabled }))
-            .EnsureSuccessStatusCode();
+        object? steps = requirementGroup is null
+            ? Array.Empty<object>()
+            : new[]
+            {
+                new
+                {
+                    name = "Approval",
+                    requirements = new[]
+                    {
+                        new
+                        {
+                            name = "Approvers",
+                            groups = new[] { new { id = requirementGroup, name = requirementGroup } },
+                            users = Array.Empty<string>(),
+                            minApprovers,
+                        },
+                    },
+                },
+            };
+
+        var resp = await _admin.PostAsJsonAsync("/api/rollbacks/admin/policies", new
+        {
+            product,
+            targetEnv,
+            creators = new { groups = Array.Empty<object>(), users = creatorUsers ?? Array.Empty<string>() },
+            steps,
+        });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        return (await Body(resp)).GetProperty("id").GetString()!;
     }
 
     private async Task EnableRollbacksAsync()
@@ -350,28 +909,54 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     {
         await EnableRollbacksAsync();
         var product = $"acme-{Guid.NewGuid():N}";
-        var enabled = await GetEnabledProductsAsync();
-        enabled.Add(product);
-        (await _admin.PutAsJsonAsync("/api/rollbacks/admin/enabled-products", new { products = enabled }))
-            .EnsureSuccessStatusCode();
+        await EnrollAsync(product);
         return product;
     }
 
-    private async Task<List<string>> GetEnabledProductsAsync()
-    {
-        var body = await Body(await _admin.GetAsync("/api/rollbacks/admin/enabled-products"));
-        return body.GetProperty("products").EnumerateArray().Select(e => e.GetString()!).ToList();
-    }
-
-    private async Task IngestAsync(string product, string service, string env, string version,
-        DateTimeOffset deployedAt, bool isRollback = false)
+    /// <summary>Posts a deploy event and returns its id.</summary>
+    private async Task<string> IngestAsync(string product, string service, string env, string version,
+        DateTimeOffset deployedAt, bool isRollback = false, string status = "succeeded")
     {
         var resp = await _apiKey.PostAsJsonAsync("/api/deployments/events", new
         {
             product, service, environment = env, version,
-            source = "rollback-test", deployedAt, status = "succeeded", isRollback,
+            source = "rollback-test", deployedAt, status, isRollback,
         });
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        return (await Body(resp)).GetProperty("id").GetString()!;
+    }
+
+    private static JsonElement ItemFor(JsonElement request, string service)
+        => request.GetProperty("items").EnumerateArray().Single(i => i.GetProperty("service").GetString() == service);
+
+    /// <summary>
+    /// The items the release pipeline would still apply: open items of Approved and RollingBack
+    /// requests, the same two reads get-approved-rollbacks.ps1 makes.
+    /// </summary>
+    private async Task<List<string>> OpenItemsSeenByPipelineAsync(string product, string targetEnv)
+    {
+        var open = new List<string>();
+        foreach (var status in new[] { "Approved", "RollingBack" })
+        {
+            var body = await Body(await _apiKey.GetAsync(
+                $"/api/rollbacks?product={product}&targetEnv={targetEnv}&status={status}"));
+            foreach (var request in body.GetProperty("requests").EnumerateArray())
+            foreach (var item in request.GetProperty("items").EnumerateArray())
+            {
+                var itemStatus = item.GetProperty("status").GetString();
+                if (itemStatus is "Pending" or "RollingBack")
+                    open.Add($"{item.GetProperty("service").GetString()}@{item.GetProperty("toVersion").GetString()}");
+            }
+        }
+        return open;
+    }
+
+    private async Task<List<string>> AuditActionsAsync(string entityId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var id = Guid.Parse(entityId);
+        return await db.AuditLog.Where(a => a.EntityId == id).Select(a => a.Action).ToListAsync();
     }
 
     private async Task<string?> GetPendingCandidateIdAsync(string product, string targetEnv)
@@ -432,12 +1017,60 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     {
         public const string TestApiKey = "rollback-test-api-key-13579";
 
+        /// <summary>The one group with real membership in these tests: viewer@localhost only.</summary>
+        public const string ApproverGroup = "release-managers";
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             base.ConfigureWebHost(builder);
             builder.UseSetting("Deployments:ApiKeys:0:Name", "rollback-integration-test");
             builder.UseSetting("Deployments:ApiKeys:0:Key", TestApiKey);
             builder.UseSetting("Deployments:ApiKeys:0:Roles:0", "InfraPortal.Admin");
+
+            // The default StubIdentityService answers GetGroupMembers with *every* active local user
+            // regardless of the group asked for, so under local auth everyone is in every group. That
+            // makes group-based approver requirements untestable — and in particular it cannot show
+            // whether an admin cleared a gate by genuine membership or by the implicit admin shortcut,
+            // which is exactly the distinction rollbacks now depend on. Swap in a strict directory.
+            builder.ConfigureServices(services =>
+            {
+                RemoveService<IIdentityService>(services);
+                services.AddScoped<IIdentityService, StrictIdentityService>();
+            });
         }
+    }
+
+    /// <summary>
+    /// Test directory with explicit membership: <see cref="RollbackFactory.ApproverGroup"/> contains
+    /// viewer@localhost and nobody else, and every other group is empty. Notably admin@localhost is in
+    /// no group at all, so any gate an admin clears must have been cleared by an override.
+    /// </summary>
+    private sealed class StrictIdentityService : IIdentityService
+    {
+        private static readonly Dictionary<string, UserInfo[]> Members = new(StringComparer.OrdinalIgnoreCase)
+        {
+            [RollbackFactory.ApproverGroup] = [new UserInfo("viewer-1", "Viewer", "viewer@localhost")],
+        };
+
+        public Task<IReadOnlyList<UserInfo>> GetGroupMembers(string groupId, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(
+                Members.TryGetValue(groupId, out var m) ? m : Array.Empty<UserInfo>());
+
+        public Task<UserInfo?> GetUser(string userId, CancellationToken ct = default)
+            => Task.FromResult<UserInfo?>(null);
+
+        public Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
+            => Task.FromResult(AccountStatus.Unknown);
+
+        public Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
+
+        public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<GroupInfo>>(
+                [new GroupInfo(RollbackFactory.ApproverGroup, RollbackFactory.ApproverGroup)]);
+
+        public Task<IReadOnlyList<UserInfo>> SearchUsersInGroups(
+            string query, IReadOnlyList<GroupInfo> groups, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());
     }
 }

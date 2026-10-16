@@ -1,0 +1,98 @@
+id: webhook-catalogue
+title: What every webhook does
+group: Webhooks
+summary: >-
+  Every outbound event InfraPortal can publish, which subscriptions consume it, and what happens
+  downstream when it arrives.
+aliases:
+  - what webhooks are there
+  - list the webhooks
+  - what does this webhook do
+  - webhook events
+  - which webhook triggers the deployment
+  - what fires when a promotion is approved
+  - repository dispatch
+tags:
+  - webhook
+  - promotion.approved
+  - rollback.approved
+  - repository_dispatch
+  - azure devops
+  - github actions
+source: InfraPilot webhookTargets.ts + mpt-release/.github/workflows + mpt-release/docs/release-pipelines.md
+as_of: 2026-08-28
+body: |
+  InfraPortal is the **decision** plane, not the delivery plane. It never deploys anything itself —
+  it publishes an event, and something downstream acts. Webhooks are that boundary.
+
+  ## The events that drive delivery
+
+  These three actually cause things to happen. Everything else is notification.
+
+  | Event | Consumed by | What happens |
+  |---|---|---|
+  | `promotion.approved` | GitHub `repository_dispatch` → **Promote Single Build Manifest** (mpt-release) | Copies `build-metadata.yaml` into the target environment directory, archiving the version it replaces. The commit then triggers `Reconcile <env>`. |
+  | `promotion.approved` (source `build`) | GitHub `repository_dispatch` → **Deploy Registered Build** (mpt-release) | `oras pull`s the manifest from ACR by digest, verifies service and version match the promotion, refuses any dispatch whose `sourceEnv` is not `build`, and commits it into `<env>/<component>/build-metadata.yaml`. That commit *is* the deployment. |
+  | `promotion.approved` (Track A) | ADO Incoming Webhook → **marketplace-sdp** | Rebuilds the release branch (`staging/5.0806`, `prod/5.0828`) from the whole approved set and deploys it. |
+  | `rollback.approved` | Same receivers | Rollback travels the identical path — an earlier version is re-declared and redeployed. There is no separate undo mechanism. |
+
+  ## The full subscribable list
+
+  Deployments — `deployment.created`
+
+  Service requests — `request.status_changed`, `approval.created`, `approval.approved`,
+  `approval.rejected`, `approval.changesrequested`
+
+  Promotions — `promotion.created`, `promotion.approved`, `promotion.approval.cancelled`,
+  `promotion.rejected`, `promotion.deploying`, `promotion.deployed`, `promotion.superseded`,
+  `promotion.updated`
+
+  Work items — `promotion.ticket.approved`, `promotion.ticket.issue-raised`,
+  `promotion.ticket.blocked`
+
+  Rollbacks — `rollback.approved`, `rollback.rejected`, `rollback.deployed`, `rollback.cancelled`
+
+  Release notes — `release_note.generated`, `release_note.generated.html`
+
+  Connectivity — `ping`
+
+  ## How a subscription is targeted
+
+  A subscription carries an event list plus three filter dimensions — products, services,
+  environments. **An empty filter means "any"**, so an unfiltered subscription receives everything
+  for its events. This is the usual reason a webhook fires more often than expected, and the usual
+  reason a new product silently gets no automation: nothing was filtered *to* it, but an existing
+  subscription filtered *away* from it.
+
+  Target types change the payload shape, not the routing: `generic`, `azure_devops`, `github`,
+  `msteams`, `msteams_html`, `discord`. The GitHub type sends `repository_dispatch` with the
+  configured `GitHubEventType` as the dispatch type — that string is what the workflow's
+  `types:` list must match.
+
+  ## Delivery, retries and the hold window
+
+  Deliveries are queued, not sent inline. The worker retries on a fixed backoff —
+  **30s, 2m, 10m, 1h, 4h** — and each attempt records HTTP status, response body and error.
+
+  `promotion.approved` is held briefly before it goes out. That window is what makes "cancel an
+  approval I just gave" meaningful: cancel inside it and the webhook never leaves, so downstream
+  never knew. Cancel after it and the announcement has already gone — the UI says which happened,
+  because they are very different pieces of news.
+
+  ## The dispatch types mpt-release listens for
+
+  | Dispatch type | Workflow |
+  |---|---|
+  | `promote-single-build-manifest` | Promote Single Build Manifest |
+  | `deploy-build` | Deploy Registered Build |
+  | `update-promotion-work-items-dev` / `-prod` | Update Promotion Work Items |
+
+  If a promotion is approved and nothing happens, the first question is whether an **active**
+  subscription matches `promotion.approved` for that product and environment, and the second is
+  whether its delivery failed. Both are visible per-promotion.
+related:
+  - promotion-policies
+  - delivery-tracks
+  - deploy-event-sources
+related_guides:
+  - approve-promotion

@@ -1,0 +1,37 @@
+id: request-catalog-service
+title: Request a service from the catalog
+group: Catalog
+summary: >-
+  Raise a platform request — a repository, a namespace, a DNS record, access — from the service
+  catalog, and follow it through validation and approval.
+aliases:
+  - request a repo
+  - create a repository
+  - raise a request
+  - order a service
+  - request access
+  - new dns record
+  - submit a catalog request
+route: /catalog
+requires:
+  feature_flag: ServiceCatalog
+  roles: []
+steps:
+  - text: Open **Service Catalog** to browse what the platform team offers.
+    anchor: nav-catalog
+  - text: Choose the service you need to open its request form.
+    anchor: catalog-item-grid
+  - text: >-
+      Fill in the fields. I can fill them for you while you are on this page — tell me what you
+      want and I will set the values on your screen.
+    anchor: catalog-request-form
+  - text: >-
+      Click **Validate**. Every field is checked against the service's rules, and any failures come
+      back with the reason.
+    anchor: catalog-validate-button
+  - text: >-
+      Once validation passes, submit the request. It then goes to approval where the service
+      requires it, and to execution once approved.
+    note: Track it afterwards under **My Requests**.
+related:
+  - track-request

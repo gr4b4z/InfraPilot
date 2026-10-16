@@ -1,7 +1,51 @@
 import { acquireToken, isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
-import { isLocalAuthEnabled } from './authConfig';
-import { getStoredToken } from './localAuth';
+import { authHeaders } from './authHeaders';
+import {
+  GATEWAY_STATUSES,
+  httpProblem,
+  isAbortError,
+  networkProblem,
+  reportConnectionHealthy,
+  reportConnectionProblem,
+} from './connection';
+
+/**
+ * A webhook subscription's filter dimensions as written. Each is a set; an omitted or empty one
+ * means "any". Sent whole — a supplied `filters` states all three, so an empty array clears a
+ * dimension rather than leaving it alone.
+ */
+export interface WebhookFilterInput {
+  products?: string[];
+  services?: string[];
+  environments?: string[];
+}
+
+/**
+ * Everything the build registry read surface filters on. Shared by the list and the facet counts,
+ * which take the identical query string — the counts describe the list, so they must be asked the
+ * same question.
+ */
+export interface BuildQueryParams {
+  product?: string;
+  service?: string;
+  branch?: string;
+  version?: string;
+  /** Free-text search — substring across product, service, version, branch, commit, CI build id. */
+  q?: string;
+  /** ISO instant; inclusive lower bound on registration time. */
+  since?: string;
+  /** ISO instant; exclusive upper bound on registration time. */
+  until?: string;
+}
+
+/** Serialises build filters, dropping the ones that aren't set, into a leading-`?` query string. */
+function buildQuery(params?: BuildQueryParams & { limit?: number }): string {
+  const entries = Object.entries(params ?? {})
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => [k, String(v)] as [string, string]);
+  return entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+}
 
 class ApiClient {
   private token: string | null = null;
@@ -10,38 +54,43 @@ class ApiClient {
     this.token = token;
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...((options.headers as Record<string, string>) || {}),
-    };
+  private async request<T>(path: string, options: RequestInit = {}, isRetry = false): Promise<T> {
+    const headers = await authHeaders(
+      (options.headers as Record<string, string>) || {},
+      this.token,
+    );
 
-    if (isMsalEnabled()) {
-      const token = await acquireToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-    } else if (isLocalAuthEnabled()) {
-      const token = getStoredToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-    } else if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    const url = buildApiUrl(path);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (err) {
+      // No HTTP answer at all. A caller cancelling its own request says nothing about the API.
+      if (!isAbortError(err)) reportConnectionProblem(networkProblem(url, err));
+      throw err;
     }
 
-    const response = await fetch(buildApiUrl(path), {
-      ...options,
-      headers,
-    });
+    // Feeds the shell's connection banner: a gateway status means the API behind nginx is down;
+    // any other answer, even an error, proves it is up.
+    if (GATEWAY_STATUSES.has(response.status)) reportConnectionProblem(httpProblem(url, response));
+    else reportConnectionHealthy();
 
     if (!response.ok) {
-      // A 401 under MSAL means the session expired or was revoked. Silent renewal
-      // can't recover and a reload won't either (the stale account lingers in
-      // sessionStorage), so force an interactive redirect instead of leaving the
-      // UI stuck with no data. Local-auth 401s keep their existing behaviour.
+      // A 401 under MSAL means the API rejected the token — revoked, or the session ended early.
+      // Retry once with a freshly issued one (acquireToken signs in by itself if Entra needs the
+      // user); only if that is rejected too, sign in interactively rather than leaving the UI
+      // stuck with no data. Local-auth 401s keep their existing behaviour.
       if (response.status === 401 && isMsalEnabled()) {
-        await reauthenticate();
+        if (!isRetry) {
+          const fresh = await acquireToken({ forceRefresh: true }).catch(() => null);
+          if (fresh) return this.request<T>(path, options, true);
+        } else {
+          // Failing to start the redirect still fails this request with the API error below.
+          await reauthenticate().catch(() => undefined);
+        }
       }
       const error = await response.json().catch(() => ({ error: response.statusText }));
       throw new Error(error.error || `API error: ${response.status}`);
@@ -137,9 +186,83 @@ class ApiClient {
     return this.request<import('./types').ProductSummary[]>('/deployments/products');
   }
 
-  getDeploymentState(params?: { product?: string; environment?: string; serviceName?: string }) {
-    const query = params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]).toString() : '';
-    return this.request<import('./types').DeploymentStateEntry[]>(`/deployments/state${query}`);
+  /**
+   * The current state matrix in its `view=summary` shape: every row without its `references`,
+   * `participants`, `enrichment` and `run` — most of the full response's weight, and none of it read
+   * by the matrix or the pickers built from it. Something that needs to render those wants the
+   * endpoint's default (full) view instead.
+   */
+  getDeploymentStateSummary(params?: { product?: string; environment?: string; serviceName?: string }) {
+    const entries = Object.entries({ ...params, view: 'summary' }).filter(([, v]) => v) as [string, string][];
+    return this.request<import('./types').DeploymentStateSummary[]>(
+      `/deployments/state?${new URLSearchParams(entries).toString()}`,
+    );
+  }
+
+  // Build registry
+  /**
+   * Registered builds, newest first. `q` is the free-text search (substring across product, service,
+   * version, branch, commit and CI build id); `product`/`service` match exactly, `version` pins one
+   * build, `branch` is a substring, and `since`/`until` are ISO instants windowing the registration
+   * time.
+   */
+  listBuilds(params?: BuildQueryParams & { limit?: number }) {
+    return this.request<{ results: import('./types').BuildSummary[] }>(`/builds${buildQuery(params)}`);
+  }
+
+  /**
+   * Which products, services and branches have builds under the given filters, and how many each
+   * holds — the pick lists behind the registry page's filter combo boxes. Each facet ignores its
+   * own field, so the list a filter came from still offers the alternatives to the current pick.
+   */
+  getBuildFacets(params?: BuildQueryParams) {
+    return this.request<import('./types').BuildFacets>(`/builds/facets${buildQuery(params)}`);
+  }
+
+  /**
+   * Target environments a registered build can be promoted to for this service — the edges with a
+   * resolving `build → *` policy. Empty means the product isn't enrolled in build promotions.
+   */
+  getBuildTargets(product: string, service: string) {
+    const query = new URLSearchParams([['product', product], ['service', service]]).toString();
+    return this.request<{ targets: import('./types').BuildTarget[] }>(
+      `/promotions/build-targets?${query}`,
+    );
+  }
+
+  /**
+   * "Deploy this build": creates a promotion candidate from a registered build. The server builds
+   * the change set from the stored manifest and stamps the caller as triggered-by.
+   */
+  createPromotionFromBuild(buildId: string, targetEnv: string) {
+    return this.request<{ id: string; status: string }>('/promotions/from-build', {
+      method: 'POST',
+      body: JSON.stringify({ buildId, targetEnv }),
+    });
+  }
+
+  /**
+   * Cross-product service search — find a service without knowing which product it lives in.
+   * Case-insensitive substring match on the service name; the same name under two products
+   * returns two hits.
+   */
+  searchDeploymentServices(q: string, limit?: number) {
+    const entries: [string, string][] = [['q', q]];
+    if (limit) entries.push(['limit', String(limit)]);
+    return this.request<{ results: import('./types').ServiceSearchResult[] }>(
+      `/deployments/services/search?${new URLSearchParams(entries).toString()}`,
+    );
+  }
+
+  /**
+   * Everything the service detail page shows, in one call: current state per environment, the
+   * last distinct versions and which environments each reached, and the service's promotions.
+   */
+  getServiceDetail(product: string, service: string, params?: { versionsLimit?: number }) {
+    const query = params?.versionsLimit ? `?versionsLimit=${params.versionsLimit}` : '';
+    return this.request<import('./types').ServiceDetail>(
+      `/deployments/services/${encodeURIComponent(product)}/${encodeURIComponent(service)}${query}`,
+    );
   }
 
   getDeploymentHistory(product: string, service: string, params?: { environment?: string; limit?: number }) {
@@ -148,6 +271,21 @@ class ApiClient {
     if (params?.limit) entries.push(['limit', String(params.limit)]);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<import('./types').DeployEvent[]>(`/deployments/history/${product}/${service}${query}`);
+  }
+
+  /**
+   * Everything the deployment detail page shows, in one call: the event with its CI run, the log
+   * blocks it captured (as summaries — text comes from {@link getDeploymentLog}), the neighbouring
+   * deployments of the same service, and the promotions and work items it connects to.
+   */
+  getDeploymentEvent(id: string, params?: { historyLimit?: number }) {
+    const query = params?.historyLimit ? `?historyLimit=${params.historyLimit}` : '';
+    return this.request<import('./types').DeploymentDetail>(`/deployments/events/${id}${query}`);
+  }
+
+  /** One log block's text. Separate from the detail call because a Helm printout is large. */
+  getDeploymentLog(eventId: string, logId: string) {
+    return this.request<import('./types').DeployLogContent>(`/deployments/events/${eventId}/logs/${logId}`);
   }
 
   getRecentDeployments(product: string, environment: string, since?: string) {
@@ -188,6 +326,118 @@ class ApiClient {
     return this.request<{ groups: number; rows: number }>('/deployments/admin/duplicates', {
       method: 'DELETE',
     });
+  }
+
+  /**
+   * Deploy-event log retention: captured pipeline output for deploys older than the cutoff. The
+   * events themselves are never touched — only their stored log blocks.
+   */
+  getDeploymentLogRetentionPreview(olderThanDays: number) {
+    return this.request<{ logs: number; bytes: number }>(
+      `/deployments/admin/logs?olderThanDays=${olderThanDays}`,
+    );
+  }
+
+  removeOldDeploymentLogs(olderThanDays: number) {
+    return this.request<{ logs: number; bytes: number }>(
+      `/deployments/admin/logs?olderThanDays=${olderThanDays}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  /**
+   * Retired services — the admin soft delete. A retired `(product, service)` disappears from the
+   * deployment matrix, from promotions and from the work-item queue; nothing is erased, and a new
+   * deployment for the service un-retires it on its own. This endpoint is the only way to see the
+   * retired ones, which is why the restore UI calls it directly rather than deriving the list.
+   */
+  listDeletedServices(product?: string) {
+    const query = product ? `?product=${encodeURIComponent(product)}` : '';
+    return this.request<DeletedService[]>(`/deployments/admin/deleted-services${query}`);
+  }
+
+  deleteService(body: { product: string; service: string; reason?: string }) {
+    return this.request<DeleteServiceResult>('/deployments/admin/deleted-services', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  restoreService(product: string, service: string) {
+    return this.request<void>(
+      `/deployments/admin/deleted-services?product=${encodeURIComponent(product)}&serviceName=${encodeURIComponent(service)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  /**
+   * Service→product overrides. Product arrives as free text on every deploy, build and external
+   * promotion, and a pipeline mid-migration keeps sending the product it was configured with years
+   * ago; a row here decides where the service's entities actually land, whatever was posted.
+   * `fromProduct` narrows a row to one sending product — omit it for a catch-all.
+   */
+  listServiceProductOverrides() {
+    return this.request<ServiceProductOverride[]>('/deployments/admin/product-overrides');
+  }
+
+  saveServiceProductOverride(body: {
+    service: string;
+    product: string;
+    fromProduct?: string | null;
+    reason?: string | null;
+  }) {
+    return this.request<ServiceProductOverride>('/deployments/admin/product-overrides', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  deleteServiceProductOverride(id: string) {
+    return this.request<void>(`/deployments/admin/product-overrides/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Overrides only affect what arrives next. These two move the history that was stored before the
+   * override existed: GET counts what would move, POST moves it. Same payload from both, so the
+   * confirmation the admin approved is the report they get back.
+   */
+  previewServiceProductRemap(id: string) {
+    return this.request<ServiceProductRemap>(
+      `/deployments/admin/product-overrides/${encodeURIComponent(id)}/remap`,
+    );
+  }
+
+  applyServiceProductRemap(id: string) {
+    return this.request<ServiceProductRemap>(
+      `/deployments/admin/product-overrides/${encodeURIComponent(id)}/remap`,
+      { method: 'POST' },
+    );
+  }
+
+  /**
+   * Webhook delivery maintenance: `failed` is the whole failed set (bulk-retryable), `purgeable`
+   * counts settled rows (delivered or failed) older than the cutoff. Pending rows are never counted
+   * or purged — they are still owed to a receiver.
+   */
+  getWebhookDeliveryMaintenanceStats(olderThanDays: number) {
+    return this.request<{ failed: number; purgeable: number; oldestFailedAt: string | null }>(
+      `/webhooks/maintenance/deliveries?olderThanDays=${olderThanDays}`,
+    );
+  }
+
+  retryFailedWebhookDeliveries() {
+    return this.request<{ retried: number }>('/webhooks/maintenance/deliveries/retry-failed', {
+      method: 'POST',
+    });
+  }
+
+  purgeWebhookDeliveries(olderThanDays: number) {
+    return this.request<{ removed: number }>(
+      `/webhooks/maintenance/deliveries?olderThanDays=${olderThanDays}`,
+      { method: 'DELETE' },
+    );
   }
 
   // Catalog Admin
@@ -240,16 +490,59 @@ class ApiClient {
     return this.request<import('./types').WebhookSubscription>(`/webhooks/${id}`);
   }
 
-  createWebhook(data: { name: string; url: string; events: string[]; filters?: { product?: string; environment?: string } }) {
+  /**
+   * `secret` is required for the azure_devops and github targets — those reuse a credential the
+   * receiving system already holds. Generic targets ignore it and mint their own, returned once.
+   * The msteams and discord targets reject it outright: their URL is the credential. Those two take
+   * `messageTemplate` / `messageTitle` instead, and fall back to per-event defaults without them.
+   */
+  createWebhook(data: { name: string; url: string; events: string[]; filters?: WebhookFilterInput; targetType?: string; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
     return this.request<import('./types').WebhookSubscription>('/webhooks', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
-  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: { product?: string; environment?: string }; active?: boolean }) {
+  /** `secret` rotates the stored credential; omit it to keep the current one. */
+  updateWebhook(id: string, data: { name?: string; url?: string; events?: string[]; filters?: WebhookFilterInput; active?: boolean; secret?: string; signatureHeader?: string; gitHubEventType?: string; messageTemplate?: string; messageTitle?: string }) {
     return this.request<import('./types').WebhookSubscription>(`/webhooks/${id}`, {
       method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Products, services and environments the platform has seen, for the filter pickers. Suggestions
+   * only — a subscription may legitimately name a value that has not deployed yet.
+   */
+  getWebhookFilterOptions() {
+    return this.request<{ products: string[]; services: string[]; environments: string[] }>(
+      '/webhooks/filter-options'
+    );
+  }
+
+  /**
+   * Renders a notification template against a sample payload for the given event. Nothing is stored
+   * and nothing is posted, so this is safe to call while the operator types.
+   */
+  previewNotificationMessage(data: {
+    targetType: string;
+    eventType: string;
+    messageTemplate?: string;
+    messageTitle?: string;
+    url?: string;
+  }) {
+    return this.request<{
+      eventType: string;
+      targetType: string;
+      title: string;
+      text: string;
+      samplePayload: string;
+      requestBody: string;
+      /** Not always JSON — the Teams HTML target posts an HTML fragment. */
+      contentType: string;
+    }>('/webhooks/preview-message', {
+      method: 'POST',
       body: JSON.stringify(data),
     });
   }
@@ -282,7 +575,26 @@ class ApiClient {
     service?: string;
     targetEnv?: string;
     reference?: string;
+    /**
+     * Narrow to promotions still waiting on this approval step, by name ("Release Approval"). Only a
+     * Pending promotion waits on anything, so this narrows the result to Pending whatever `status`
+     * says — and a promotion held behind its work-item gate waits on no step at all, so it is left
+     * out even though the step is short of approvals (see `workItemsOutstanding`).
+     */
+    gate?: string;
+    /**
+     * Qualifies `gate`: keep only the promotions where that gate is the **last** thing outstanding —
+     * every other approval step signed off and the work-item gate, if any, clear. Ignored without
+     * `gate`.
+     */
+    gateOnly?: boolean;
     limit?: number;
+    /**
+     * `summary` leaves each reference's heavy fields out — `content`, `participants`, `commits`,
+     * `resolution`, `occurredAt` — none of which a list row reads. For list views only: anything that
+     * renders a reference's body or people, or sends references back, needs the default.
+     */
+    view?: 'summary';
   }) {
     const entries: [string, string][] = [];
     if (params?.status) entries.push(['status', params.status]);
@@ -290,7 +602,10 @@ class ApiClient {
     if (params?.service) entries.push(['service', params.service]);
     if (params?.targetEnv) entries.push(['targetEnv', params.targetEnv]);
     if (params?.reference) entries.push(['reference', params.reference]);
+    if (params?.gate) entries.push(['gate', params.gate]);
+    if (params?.gate && params.gateOnly) entries.push(['gateOnly', 'true']);
     if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.view) entries.push(['view', params.view]);
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<{ candidates: PromotionCandidate[] }>(`/promotions/${query}`);
   }
@@ -306,17 +621,33 @@ class ApiClient {
       bypass: { byName: string; at: string; reason: string | null } | null;
       /** The Promotion Freeze holding this Pending candidate; null when not frozen (or not Pending). */
       freeze: Omit<PromotionFreeze, 'heldCandidates'> | null;
+      /** Whether the current user may undo this promotion's approval right now. */
+      canCancelApproval: boolean;
+      /**
+       * The deploy event that put this version live in the target environment — what the promotion's
+       * `Deployed` state actually refers to. Null unless the candidate is Deployed, and null too when
+       * the matching event has since been pruned from deploy history.
+       */
+      deploymentEventId: string | null;
+      /**
+       * Failed attempts to deploy this version to the target environment, newest first (capped at 20).
+       * A failed deploy never completes a promotion, so this is the only sign that one was tried.
+       */
+      failedDeployments: { id: string; deployedAt: string; source: string }[];
     }>(`/promotions/${id}`);
   }
 
-  listPromotionRoles() {
-    return this.request<{ roles: string[] }>(`/promotions/roles`);
-  }
-
-  searchPromotionUsers(q: string) {
+  /**
+   * Directory search for the assignment pickers. With `role`, a role an admin restricted to
+   * directory groups (Settings → Participant Roles) only returns their members, and `restrictedTo`
+   * names those groups.
+   */
+  searchPromotionUsers(q: string, role?: string | null) {
+    const roleParam = role ? `&role=${encodeURIComponent(role)}` : '';
     return this.request<{
       users: Array<{ id: string; displayName: string; email: string }>;
-    }>(`/promotions/users/search?q=${encodeURIComponent(q)}`);
+      restrictedTo?: PromotionPolicyGroupRef[];
+    }>(`/promotions/users/search?q=${encodeURIComponent(q)}${roleParam}`);
   }
 
   searchPromotionGroups(q: string) {
@@ -344,6 +675,40 @@ class ApiClient {
     }>(
       `/deployments/${eventId}/references/${encodeURIComponent(referenceKey)}/participants`,
       { method: 'PATCH', body: JSON.stringify({ role, assignee }) },
+    );
+  }
+
+  /**
+   * Assign / reassign / clear a participant on a specific work-item reference of a promotion
+   * candidate. This is what the work-items queue uses (candidates are self-contained — there is no
+   * deploy event to override). Pass `assignee: null` to clear the role on that reference.
+   */
+  assignPromotionReferenceParticipant(
+    candidateId: string,
+    referenceKey: string,
+    role: string,
+    assignee: { email: string; displayName: string } | null,
+  ) {
+    return this.request<{ participants: PromotionSourceEventParticipant[] }>(
+      `/promotions/${candidateId}/references/${encodeURIComponent(referenceKey)}/participants`,
+      { method: 'PATCH', body: JSON.stringify({ role, assignee }) },
+    );
+  }
+
+  /**
+   * Put one person in a role on every work item of a promotion candidate at once — replacing whoever
+   * each had in it, or with `onlyMissing` only on the ones that have nobody. `assignee: null` clears
+   * the role everywhere. Returns the work-item keys by outcome.
+   */
+  assignPromotionWorkItemsParticipant(
+    candidateId: string,
+    role: string,
+    assignee: { email: string; displayName: string } | null,
+    onlyMissing = false,
+  ) {
+    return this.request<{ role: string; updated: string[]; unchanged: string[]; skipped: string[] }>(
+      `/promotions/${candidateId}/work-items/participants`,
+      { method: 'PATCH', body: JSON.stringify({ role, assignee, onlyMissing }) },
     );
   }
 
@@ -413,6 +778,22 @@ class ApiClient {
   }
 
   /**
+   * Undo an approval: an Approved promotion that hasn't been dispatched goes back to Pending and its
+   * recorded sign-offs are cleared. `approvedWebhookStopped` reports whether the promotion.approved
+   * webhook was caught inside its 10s hold — i.e. whether downstream ever heard about the approval.
+   */
+  cancelPromotionApproval(id: string, comment?: string) {
+    return this.request<{
+      candidate: PromotionCandidate;
+      clearedApprovals: number;
+      approvedWebhookStopped: boolean;
+    }>(`/promotions/${id}/cancel-approval`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+  }
+
+  /**
    * Admin escape hatch: force a Pending promotion to Approved without satisfying its gate.
    * Requires a reason. Hits the admin-only endpoint (CatalogAdmin); the backend still fires the
    * existing promotion.approved webhook so downstream automation is unchanged.
@@ -424,72 +805,249 @@ class ApiClient {
     );
   }
 
-  bulkApprovePromotions(ids: string[], comment?: string) {
-    return this.request<{ results: Array<{ id: string; ok: boolean; status?: string; error?: string }> }>(
-      `/promotions/bulk/approve`,
-      { method: 'POST', body: JSON.stringify({ ids, comment }) },
+  /**
+   * Admin override of {@link rejectPromotion}: rejects a Pending promotion without the caller being
+   * one of its approvers. Requires a reason. Admin-only endpoint (CatalogAdmin); the effects are a
+   * normal rejection's (decision row, promotion.rejected webhook), marked as an administrator reject
+   * in the audit trail. No bulk counterpart here — the UI deliberately has no bulk reject.
+   */
+  adminRejectPromotion(id: string, reason: string) {
+    return this.request<{ id: string; status: string }>(
+      `/promotions/admin/candidates/${id}/reject`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
     );
   }
 
-  // ── Work-item (ticket) approvals ───────────────────────────────────────
+  /**
+   * Settles open promotions that deploy history has already decided: closes the ones whose version
+   * shipped, supersedes the ones a newer version overtook, leaves everything ambiguous alone.
+   * Admin-only. `dryRun` reports what would happen without writing — the UI always runs it first so
+   * the admin applies a reviewed list, never a surprise.
+   */
+  reconcilePromotionCompletions(dryRun: boolean) {
+    return this.request<PromotionReconcileResult>(
+      `/promotions/admin/candidates/reconcile-completions`,
+      { method: 'POST', body: JSON.stringify({ dryRun }) },
+    );
+  }
 
-  // Authority + decision history for a single (key, product, env). Drives the
+  /**
+   * Re-announces `promotion.approved` for promotions stuck at Approved with no deploy behind them —
+   * the ones whose original announcement never reached the pipeline that acts on it. Promotions
+   * whose delivery is still queued are skipped rather than duplicated. Admin-only; `dryRun` reports
+   * the list without queuing anything, which the Maintenance card always does first.
+   */
+  resendApprovedPromotionWebhooks(dryRun: boolean) {
+    return this.request<ResendApprovedWebhooksResult>(
+      `/promotions/admin/candidates/resend-approved-webhooks`,
+      { method: 'POST', body: JSON.stringify({ dryRun }) },
+    );
+  }
+
+  /**
+   * Duplicate promotion candidates — residue of the pre-fix create path that minted a new row per
+   * external POST instead of reusing the natural key. Same scan/remove contract as the deploy-event
+   * duplicates pair; the backend excludes legitimate re-promote history from what it calls a duplicate.
+   */
+  getPromotionDuplicatesPreview() {
+    return this.request<{ groups: number; rows: number }>('/promotions/admin/duplicates');
+  }
+
+  removePromotionDuplicates() {
+    return this.request<{ groups: number; rows: number }>('/promotions/admin/duplicates', {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Signs off every work item stranded in the "No live promotion" state — its promotions were all
+   * superseded or rejected, so nothing will ever consume the sign-off and the row sits in the
+   * work-item queue as pending work forever. Items a live promotion still carries are untouched, and
+   * so is anything somebody already decided (an Issue or a Block is somebody's call). Admin-only;
+   * `dryRun` reports the list without writing, which the Maintenance card always does first.
+   */
+  approveOrphanedWorkItems(dryRun: boolean) {
+    return this.request<OrphanedWorkItemSweepResult>(
+      `/promotions/admin/work-items/approve-orphaned`,
+      { method: 'POST', body: JSON.stringify({ dryRun }) },
+    );
+  }
+
+  /**
+   * Approves several promotions in one call, partially: one outcome per id, a refusal on one row
+   * never stops the rest. With `gate`, every row approves that gate ("Release Approval"), which
+   * means every requirement of it the caller is eligible for. That is mass approve. Without it, each
+   * row is a plain approve and needs the caller to be eligible for exactly one open requirement.
+   */
+  bulkApprovePromotions(ids: string[], comment?: string, gate?: string) {
+    return this.request<{ results: BulkApproveOutcome[] }>(`/promotions/bulk/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, comment, gate }),
+    });
+  }
+
+  /**
+   * Admin bypass for a batch: each Pending promotion is forced to Approved without satisfying its
+   * gate, audited and announced exactly as {@link bypassPromotion} does for one. One reason covers
+   * them all and is required. Per-id outcome, like bulk approve.
+   */
+  bulkBypassPromotions(ids: string[], reason: string) {
+    return this.request<{ results: BulkDecisionOutcome[] }>(`/promotions/admin/candidates/bulk/bypass`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, reason }),
+    });
+  }
+
+  // ── Work-item (ticket) approvals ───────────────────────────────────────
+  // A work item is (key, product, service, targetEnv): the same ticket carried by two services of
+  // one product is two work items, each with its own sign-off, thread and people. Every call here
+  // names all four.
+
+  // Authority + decision history for a single (key, product, service, env). Drives the
   // TicketsCard row state on the promotion detail page. Returns canApprove +
   // blockedReason mirroring the throwing decision path so the UI surfaces the
   // same wording the user would see on a failed POST.
-  getWorkItemContext(key: string, product: string, targetEnv: string) {
-    const params = new URLSearchParams({ product, targetEnv });
+  getWorkItemContext(key: string, product: string, service: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, service, targetEnv });
     return this.request<WorkItemContext>(
       `/work-items/${encodeURIComponent(key)}?${params.toString()}`,
     );
   }
 
-  approveWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+  /**
+   * The services whose promotions carry a ticket in one (product, targetEnv) — the resolver for a
+   * link that predates the service being part of the identity. Empty when the ticket is unknown.
+   */
+  getWorkItemInstances(key: string, product: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, targetEnv });
+    return this.request<WorkItemInstancesResponse>(
+      `/work-items/${encodeURIComponent(key)}/instances?${params.toString()}`,
+    );
+  }
+
+  approveWorkItem(key: string, product: string, service: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
       `/work-items/${encodeURIComponent(key)}/approvals`,
-      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, comment }) },
     );
   }
 
-  rejectWorkItem(key: string, product: string, targetEnv: string, comment?: string) {
+  /**
+   * Flag a problem on the work item without holding it back: the gate counts the item as cleared, so
+   * this can be the decision that satisfies it (and auto-approves the promotion, under a policy that
+   * does that). The same user can call `approveWorkItem` or `blockWorkItem` later.
+   */
+  raiseWorkItemIssue(key: string, product: string, service: string, targetEnv: string, comment?: string) {
     return this.request<WorkItemApproval>(
-      `/work-items/${encodeURIComponent(key)}/rejections`,
-      { method: 'POST', body: JSON.stringify({ product, targetEnv, comment }) },
+      `/work-items/${encodeURIComponent(key)}/issues`,
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, comment }) },
     );
   }
 
-  // The current user's pending work items across all (product, targetEnv) pairs.
+  /**
+   * Hold the work item back — the only decision that stops the promotion gate. Still nothing is
+   * vetoed: the promotion stays Pending and the decision can be changed later. Vetoing is a
+   * promotion-level action (`rejectPromotion`), never something done to one work item.
+   */
+  blockWorkItem(key: string, product: string, service: string, targetEnv: string, comment?: string) {
+    return this.request<WorkItemApproval>(
+      `/work-items/${encodeURIComponent(key)}/blocks`,
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, comment }) },
+    );
+  }
+
+  /**
+   * Everything the work-item detail page renders in one call: display fields, assigned people,
+   * decision trail, comment thread, and every promotion candidate carrying the ticket. 404s when
+   * the platform has never seen the key for that (product, service, targetEnv).
+   */
+  getWorkItemDetail(key: string, product: string, service: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, service, targetEnv });
+    return this.request<WorkItemDetail>(
+      `/work-items/${encodeURIComponent(key)}/detail?${params.toString()}`,
+    );
+  }
+
+  // ── Work-item comments ────────────────────────────────────────────────
+  // Threads key on (key, product, service, targetEnv) — the same grain as the decisions — so they
+  // survive a superseded candidate. Edit/delete address the comment by id alone.
+
+  listWorkItemComments(key: string, product: string, service: string, targetEnv: string) {
+    const params = new URLSearchParams({ product, service, targetEnv });
+    return this.request<{ comments: WorkItemComment[] }>(
+      `/work-items/${encodeURIComponent(key)}/comments?${params.toString()}`,
+    );
+  }
+
+  addWorkItemComment(key: string, product: string, service: string, targetEnv: string, body: string) {
+    return this.request<WorkItemComment>(
+      `/work-items/${encodeURIComponent(key)}/comments`,
+      { method: 'POST', body: JSON.stringify({ product, service, targetEnv, body }) },
+    );
+  }
+
+  updateWorkItemComment(commentId: string, body: string) {
+    return this.request<WorkItemComment>(`/work-items/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  deleteWorkItemComment(commentId: string) {
+    return this.request<void>(`/work-items/comments/${commentId}`, { method: 'DELETE' });
+  }
+
+  // The current user's pending work items across all (product, service, targetEnv) identities.
   // Powers the /me/work-items queue page.
   //
-  // Optional `role` and `assignee` narrow the list (display only — server-side authorisation
-  // is unchanged). The matrix:
-  //   - both null            → full authorized list (no narrowing).
-  //   - role only            → at least one participant in that role.
-  //   - assignee=email       → that email holds a role in the assignee set (or the role-filter
-  //                            when set).
-  //   - assignee=unassigned  → no participant in the effective role set.
-  // Response also carries the (email, role) → count rollup and the canonical role set so the
-  // queue page can populate its dropdowns without a second call.
+  // Optional `assignee` narrows the list (display only — server-side authorisation is
+  // unchanged):
+  //   - null                 → full authorized list (no narrowing).
+  //   - assignee=email       → that email holds a role on the work item (any role, or the
+  //                            policy-required roles when roleRequirement=assigned — the queue's
+  //                            person filter).
+  //   - assignee=unassigned  → nobody in any role that counts as an assignment.
+  // Response also carries the (email, required-role) → count rollup, so the page can populate
+  // its person dropdown in the same call.
   getMyPendingWorkItems(args?: {
-    role?: string;
     assignee?: string;
     /**
      * Status mode — "pending" (default, the inbox awaiting decision) or "decided"
-     * (combined approved + rejected history). On "decided" the role/assignee filters are
-     * ignored; pass `since` to narrow the time window (server defaults to last 24h).
+     * (combined approved + rejected history). On "decided" `assignee` narrows by the decider
+     * (WorkItemApproval.ApproverEmail) rather than by work-item participant; pass `since` to
+     * narrow the time window (omit for all time).
      */
     status?: 'pending' | 'decided';
     /** ISO timestamp lower bound on the decision time. Only used when status === 'decided'. */
     since?: string;
+    /**
+     * Narrows by the promotion policy's work-item role requirement — the roles that make somebody
+     * answerable for a work item:
+     *   - `assigned` → `assignee` must hold a role the item's own policy REQUIRES. Items whose policy
+     *                  requires no role never match. This is what the "Assigned to me" tab and the
+     *                  queue's person filter mean.
+     *   - `missing`  → items where at least one policy-required role has nobody in it and nobody has
+     *                  decided them yet ("Not assigned"). A decided item needs no assignment.
+     * Ignored on the "decided" view.
+     */
+    roleRequirement?: 'assigned' | 'missing';
+    /**
+     * Rows per page on the "decided" view (server default 100, clamped to 1..500). The pending
+     * views are not paged and ignore it.
+     */
+    limit?: number;
+    /** The previous decided page's `nextCursor`, for the page after it. Omit for the first page. */
+    cursor?: string;
   }) {
     const params = new URLSearchParams();
-    const role = args?.role?.trim();
     const assignee = args?.assignee?.trim();
     const status = args?.status;
-    if (role) params.set('role', role);
     if (assignee) params.set('assignee', assignee);
     if (status && status !== 'pending') params.set('status', status);
     if (args?.since) params.set('since', args.since);
+    if (args?.roleRequirement) params.set('roleRequirement', args.roleRequirement);
+    if (args?.limit) params.set('limit', String(args.limit));
+    if (args?.cursor) params.set('cursor', args.cursor);
     const qs = params.toString();
     const suffix = qs.length > 0 ? `?${qs}` : '';
     return this.request<MyPendingWorkItemsResponse>(`/work-items/me/pending${suffix}`);
@@ -560,9 +1118,7 @@ class ApiClient {
   }
 
   getRollback(id: string) {
-    return this.request<RollbackRequest & { approvals: RollbackApprovalEntry[] }>(
-      `/rollbacks/${id}`,
-    );
+    return this.request<RollbackDetail>(`/rollbacks/${id}`);
   }
 
   previewRollback(body: RollbackInput) {
@@ -593,22 +1149,65 @@ class ApiClient {
     });
   }
 
-  cancelRollback(id: string) {
+  // A Pending request: its creator or an admin, reason optional. An Approved or RollingBack one: admin
+  // only, and the reason is mandatory — it is shown on the request card and written to the audit log.
+  cancelRollback(id: string, reason?: string) {
     return this.request<RollbackRequest>(`/rollbacks/${id}/cancel`, {
       method: 'POST',
+      body: JSON.stringify({ reason }),
     });
   }
 
+  // Admin-only: close one open item of an approved rollback so the release stops carrying it.
+  skipRollbackItem(id: string, itemId: string, reason: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/items/${itemId}/skip`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  // Admin-only: force a pending rollback past its approval gate. The reason is mandatory and is
+  // recorded on the resulting approval row, which is flagged as an override.
+  overrideRollbackApproval(id: string, reason: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/override-approval`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  // Products the caller may actually raise a rollback for (their hidden products removed).
   getRollbackEnabledProducts() {
     return this.request<{ products: string[] }>(`/rollbacks/enabled-products`);
   }
 
-  // Admin: set the full set of products enrolled in rollbacks.
-  setRollbackEnabledProducts(products: string[]) {
-    return this.request<{ products: string[] }>(`/rollbacks/admin/enabled-products`, {
-      method: 'PUT',
-      body: JSON.stringify({ products }),
-    });
+  // Whether the caller may create a rollback for this (product, env), and the server's reason if not.
+  canCreateRollback(product: string, targetEnv: string) {
+    const qs = new URLSearchParams({ product, targetEnv }).toString();
+    return this.request<{ allowed: boolean; reason: string | null }>(`/rollbacks/can-create?${qs}`);
+  }
+
+  // ── Rollback policy admin ──────────────────────────────────────────────
+  // A policy says who may create rollbacks for a product and who must approve them. Its existence is
+  // also the product's rollback enrollment — there is no separate enabled-products list.
+
+  listRollbackPolicies() {
+    return this.request<{ policies: RollbackPolicy[] }>(`/rollbacks/admin/policies`);
+  }
+
+  upsertRollbackPolicy(policy: UpsertRollbackPolicyPayload, id?: string) {
+    return id
+      ? this.request<RollbackPolicy>(`/rollbacks/admin/policies/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(policy),
+        })
+      : this.request<RollbackPolicy>(`/rollbacks/admin/policies`, {
+          method: 'POST',
+          body: JSON.stringify(policy),
+        });
+  }
+
+  deleteRollbackPolicy(id: string) {
+    return this.request<void>(`/rollbacks/admin/policies/${id}`, { method: 'DELETE' });
   }
 
   // ── Feature flags ──────────────────────────────────────────────────────
@@ -702,12 +1301,346 @@ class ApiClient {
       body: JSON.stringify(payload),
     });
   }
+
+  /**
+   * Every environment name the stored data uses, with what hangs off each. Admin-only: it is the
+   * input to a merge decision, and the row counts are what an admin needs before folding one name
+   * into another.
+   */
+  listEnvironmentUsage() {
+    return this.request<EnvironmentUsage[]>('/settings/environments/usage');
+  }
+
+  /**
+   * Aliases only fix what arrives next. These two move the history that arrived under the old
+   * names: preview counts what would move, merge moves it. Same payload from both, so the
+   * confirmation the admin approved is the report they get back.
+   *
+   * `recordAliases` also records the merged names as aliases of the target and drops them as
+   * environments of their own — without it the next pipeline run undoes the merge.
+   */
+  previewEnvironmentMerge(body: { into: string; from: string[]; recordAliases?: boolean }) {
+    return this.request<EnvironmentMergePlan>('/settings/environments/merge/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  mergeEnvironments(body: { into: string; from: string[]; recordAliases?: boolean }) {
+    return this.request<EnvironmentMergePlan>('/settings/environments/merge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  // ── The signed-in user's own preferences ───────────────────────────────────
+
+  /**
+   * Vocabulary for the promotions list filters. Unfiltered by design — dropdown options built from
+   * a filtered result set collapse to whatever is already selected.
+   */
+  getPromotionFilterOptions() {
+    return this.request<{
+      products: string[];
+      targetEnvs: string[];
+      /**
+       * Approval-step names appearing on pending promotions — the gate filter's vocabulary. Empty
+       * when no pending promotion has a human gate at all, which is the cue to hide the control.
+       * Absent on responses from an older API.
+       */
+      gates?: string[];
+    }>(`/promotions/filter-options`);
+  }
+
+  /**
+   * The promotions activity feed — one request backs the whole audit page: the rows, the counts its
+   * tabs are badged with, and the actors its dropdown offers.
+   *
+   * `from`/`to` are absolute instants. A calendar day is the reader's, not the server's, so the page
+   * resolves its own midnight before calling (see `promotionAuditFilterParams`).
+   */
+  getPromotionAudit(params: {
+    from?: string;
+    to?: string;
+    category?: string;
+    action?: string;
+    actor?: string;
+    product?: string;
+    service?: string;
+    targetEnv?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === '') continue;
+      query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return this.request<PromotionAuditResponse>(`/promotions/audit${suffix ? `?${suffix}` : ''}`);
+  }
+
+  getMyPreferences() {
+    return this.request<UserPreferencesPayload>(`/me/preferences`);
+  }
+
+  /**
+   * Everything the hidden-products control needs. `products` is deliberately the UNFILTERED list —
+   * every other product-bearing endpoint already has the hidden set applied, so this is the only
+   * call that can still see a hidden product and therefore the only one that can offer to unhide it.
+   */
+  getMyProductVisibility() {
+    return this.request<{ products: string[]; hiddenProducts: string[] }>(`/me/preferences/products`);
+  }
+
+  setMyHiddenProducts(products: string[]) {
+    return this.request<UserPreferencesPayload>(`/me/preferences/hidden-products`, {
+      method: 'PUT',
+      body: JSON.stringify({ products }),
+    });
+  }
+
+  // ── The signed-in user's personal access tokens (agent access) ─────────────
+
+  /** Newest first. Revoked and expired tokens are included, so the list doubles as history. */
+  listMyTokens() {
+    return this.request<{ tokens: PersonalAccessToken[] }>(`/me/tokens`);
+  }
+
+  /** The response carries the plaintext secret — the only time the server will ever return it. */
+  createMyToken(body: { name: string; expiresInDays: TokenLifetimeDays }) {
+    return this.request<CreatedPersonalAccessToken>(`/me/tokens`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  revokeMyToken(id: string) {
+    return this.request<void>(`/me/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  // ── Everyone's personal access tokens (admin: Settings → Agent Tokens) ───────
+
+  /** Active tokens, newest first; with `includeInactive` also those that ended in the last 90 days. */
+  listAllTokens(includeInactive = false) {
+    return this.request<{ tokens: AdminPersonalAccessToken[] }>(
+      `/tokens/admin?includeInactive=${includeInactive}`,
+    );
+  }
+
+  /** `reason` is recorded in the audit log. Revoking a revoked token succeeds and changes nothing. */
+  adminRevokeToken(id: string, reason?: string) {
+    return this.request<void>(`/tokens/admin/${encodeURIComponent(id)}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || null }),
+    });
+  }
+
+  /** Revokes every active token `email` holds; answers how many that was. */
+  adminRevokeOwnerTokens(email: string, reason?: string) {
+    return this.request<{ revoked: number }>(`/tokens/admin/revoke-owner`, {
+      method: 'POST',
+      body: JSON.stringify({ email, reason: reason || null }),
+    });
+  }
+
+  // ── Analytics ──────────────────────────────────────────────────────────
+
+  getDeploymentFrequency(params?: {
+    product?: string;
+    serviceName?: string;
+    environment?: string;
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week';
+    groupBy?: 'none' | 'service' | 'environment' | 'product';
+    tz?: string;
+    includeRollbacks?: boolean;
+    includeRedeploys?: boolean;
+    summaryOnly?: boolean;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.serviceName) entries.push(['serviceName', params.serviceName]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.groupBy) entries.push(['groupBy', params.groupBy]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    if (params?.includeRollbacks) entries.push(['includeRollbacks', 'true']);
+    if (params?.includeRedeploys) entries.push(['includeRedeploys', 'true']);
+    if (params?.summaryOnly) entries.push(['summaryOnly', 'true']);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<FrequencyResponse>(`/analytics/deployments/frequency${query}`);
+  }
+
+  getWorkItemMatrix(params: {
+    product: string;
+    environment?: string;
+    reachedEnv?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries: [string, string][] = [['product', params.product]];
+    if (params.environment) entries.push(['environment', params.environment]);
+    if (params.reachedEnv) entries.push(['reachedEnv', params.reachedEnv]);
+    if (params.from) entries.push(['from', params.from]);
+    if (params.to) entries.push(['to', params.to]);
+    if (params.limit) entries.push(['limit', String(params.limit)]);
+    if (params.offset) entries.push(['offset', String(params.offset)]);
+    return this.request<WorkItemMatrixResponse>(
+      `/analytics/work-items/matrix?` + new URLSearchParams(entries).toString());
+  }
+
+  getPromotionQueueStats(params?: { product?: string; from?: string; to?: string }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<PromotionQueueResponse>(`/analytics/promotions/queue${query}`);
+  }
+
+  getLeadTime(params?: {
+    product?: string;
+    serviceName?: string;
+    environment?: string;
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week';
+    tz?: string;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.serviceName) entries.push(['serviceName', params.serviceName]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
+  }
+}
+
+export interface UserPreferencesPayload {
+  hiddenProducts: string[];
+}
+
+/** The lifetimes the token endpoint accepts. */
+export type TokenLifetimeDays = 7 | 30 | 90;
+
+/**
+ * A personal access token as listed — never the secret itself. `prefix` (`ipt_ab12cd34`) is the
+ * public part, safe to show so a user can tell which token an agent is holding.
+ */
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  /** The creator's roles at creation time, minus Admin. */
+  roles: string[];
+}
+
+export interface CreatedPersonalAccessToken extends PersonalAccessToken {
+  /** The plaintext secret. Returned once, on creation; not retrievable afterwards. */
+  token: string;
+}
+
+/** A token as an administrator sees it: anyone's, with its owner. */
+export interface AdminPersonalAccessToken extends PersonalAccessToken {
+  /** Lower-cased email: what tokens are owned by, and what "revoke all" takes. */
+  ownerEmail: string;
+  /** The owner's display name when the token was created. */
+  ownerName: string;
 }
 
 export interface AppSettingsPayload {
-  environments: { key: string; displayName: string }[];
-  roles: { key: string; displayName: string }[];
+  /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values.
+   *  `aliases` are the other names producers call this same environment; every write path resolves
+   *  through them, so one environment stops arriving under three names. `retired` takes the
+   *  environment out of every current-state view while keeping its history; absent means false. */
+  environments: {
+    key: string;
+    displayName: string;
+    color?: string | null;
+    isProduction?: boolean;
+    aliases?: string[] | null;
+    retired?: boolean;
+  }[];
+  /** `aliases` are other names producers send for the role; `assigneeGroups` narrow the person
+   *  picker for it to members of those directory groups. */
+  roles: {
+    key: string;
+    displayName: string;
+    aliases?: string[] | null;
+    assigneeGroups?: PromotionPolicyGroupRef[] | null;
+  }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
+}
+
+/**
+ * One environment name as the stored data actually uses it — as opposed to the ones an admin
+ * curated. This is what makes duplicates visible: three rows for "dev", "develop" and
+ * "development", each with its own deploy count.
+ *
+ * `resolvesTo` non-null means an alias already redirects this name, but its history has not been
+ * merged yet: new deploys land on the canonical key while these rows stay behind.
+ */
+export interface EnvironmentUsage {
+  key: string;
+  deployments: number;
+  promotions: number;
+  releaseNotes: number;
+  lastDeployedAt: string | null;
+  configured: boolean;
+  resolvesTo: string | null;
+}
+
+/**
+ * What merging environments involves. Identical shape from the preview and the apply — `applied` is
+ * what tells them apart.
+ *
+ * `moved` is the headline ("did this do anything"); `leftBehind` is the honest caveat. Rows are left
+ * behind when they would collide with one the target already has — a promotion policy for the same
+ * edge, a ticket sign-off from the same approver, a rollback policy for the same product — or when
+ * a promotion's two ends would become the same environment (`degenerateEdges`).
+ */
+export interface EnvironmentMergePlan {
+  into: string;
+  sources: string[];
+  aliasesRecorded: boolean;
+  /** Sources that were configured environments in their own right and were removed from the list. */
+  removedEnvironments: string[];
+  applied: boolean;
+  moved: number;
+  leftBehind: number;
+  counts: {
+    deployments: number;
+    promotionPolicies: number;
+    promotionPolicyConflicts: number;
+    promotionCandidates: number;
+    openPromotionCandidates: number;
+    promotionWorkItems: number;
+    workItemApprovals: number;
+    workItemApprovalConflicts: number;
+    workItemComments: number;
+    releaseNotes: number;
+    releaseNoteTemplates: number;
+    releaseNoteTemplateConflicts: number;
+    rollbackRequests: number;
+    rollbackPolicies: number;
+    rollbackPolicyConflicts: number;
+    webhookSubscriptions: number;
+    degenerateEdges: number;
+  };
 }
 
 export interface RawPreview {
@@ -840,8 +1773,30 @@ export interface PromotionCandidate {
   sourceEnv: string;
   targetEnv: string;
   version: string;
-  /** Version currently deployed in `targetEnv` (what this promotion would replace). Null for first deploy. */
+  /**
+   * Display/traceability revisions: the SHA the target env currently runs and the SHA being
+   * promoted. Supplied by the external creator; either may be null. Together with the candidate's
+   * `repository` reference they let the UI link to the provider's commit-diff view.
+   */
+  fromRevision?: string | null;
+  toRevision?: string | null;
+  /**
+   * Version deployed in `targetEnv` right now — live state, not this promotion's. Once the
+   * promotion lands it equals `version`, so render history off `fromVersion` instead.
+   */
   targetCurrentVersion: string | null;
+  /**
+   * The version `targetEnv` ran when this promotion was created: the "from" side of the change it
+   * describes, and the baseline its change set was computed against. Null for a first deploy into
+   * the target, and absent on responses from an older API.
+   */
+  fromVersion?: string | null;
+  /**
+   * Git ref this version was built from (`refs/heads/…`). Only candidates whose source is the
+   * synthetic `build` env carry one — everywhere else the source environment is the provenance.
+   * Absent on responses from an older API.
+   */
+  sourceBranch?: string | null;
   status: PromotionStatus;
   externalRunUrl: string | null;
   createdAt: string;
@@ -854,69 +1809,457 @@ export interface PromotionCandidate {
   canApprove: boolean;
   /** Pending and held by an active Promotion Freeze on (product, targetEnv). */
   frozen: boolean;
+  /**
+   * Whether approving this promotion is the **last** gate before the version is live.
+   *
+   * `true` — the release automation deploys straight off the approval, so Approve ships it. `false`
+   * — the approval starts a deployment run that stops at an approval outside InfraPortal (the SDP
+   * pipeline's Azure DevOps environment check on staging and prod), so the target environment does
+   * not change until somebody signs off there too.
+   *
+   * Absent on responses from an older API, and on candidates whose policy snapshot predates the
+   * flag — treat `undefined` as `true`, which is what every edge did before it existed.
+   */
+  deploysOnApproval?: boolean;
+  /**
+   * Whether this candidate's edge creates work items at all. False for dev-only edges (e.g. dev → test)
+   * whose policy opts out: the change set still lists its work-item references, but there is nothing to
+   * sign off, no queue entry, and no required roles. Absent on responses from an older API — treat
+   * `undefined` as true.
+   */
+  tracksWorkItems?: boolean;
+  /**
+   * Participant roles the resolved promotion policy requires somebody in on every work item of this
+   * candidate (canonical keys, e.g. `qa-owner`). Empty when the policy asks for none — the common case.
+   */
+  requiredWorkItemRoles?: string[];
+  /**
+   * The candidate's work items that are missing somebody in at least one required role. Derived
+   * server-side from the candidate's policy snapshot and its current participants, so it stays correct
+   * when a work item is attached later, someone is reassigned, or the policy changes.
+   */
+  workItemRoleGaps?: WorkItemRoleGap[];
+  /**
+   * The approval steps this promotion is still short of approvals on, named as the policy names them
+   * ("Release Approval", "Security Sign-off"). Empty on anything that isn't Pending and on
+   * auto-approve edges. Only the list computes it — absent on the detail response, which carries the
+   * full `approvalProgress` breakdown instead.
+   */
+  pendingGates?: string[];
+  /**
+   * The subset of `pendingGates` the current user could approve right now: they are an approver
+   * for it, have not signed it yet, it is still short of approvals, and the work-item gate is not
+   * holding the promotion. `canApprove` is "this is non-empty". Mass approve reads it per row.
+   * Only the list computes it. Absent on the detail response and on an older API.
+   */
+  approvableGates?: string[];
+  /**
+   * Whether the policy's work-item gate is holding this promotion back — every work item must be
+   * signed off before anyone may approve any step. Read alongside `pendingGates`: the steps listed
+   * there are short of approvals but *held*, not waiting, so a promotion with this set is waiting on
+   * its work items and not on any gate. The `gate` filter passes it over, and the list card says
+   * "work items" rather than naming a step nobody can sign yet.
+   */
+  workItemsOutstanding?: boolean;
 }
+
+/** One row of a bulk decision: it went through (with the status it is at now), or why not. */
+export type BulkDecisionOutcome =
+  | { id: string; ok: true; status: PromotionStatus }
+  | { id: string; ok: false; error: string };
+
+/**
+ * One row of a bulk approve. A success also says which requirements were signed (gate mode only)
+ * and what the promotion still waits on: a gate that was not the last leaves it Pending.
+ */
+export type BulkApproveOutcome =
+  | {
+      id: string;
+      ok: true;
+      status: PromotionStatus;
+      approvedAs?: string[];
+      pendingGates?: string[];
+      workItemsOutstanding?: boolean;
+    }
+  | { id: string; ok: false; error: string };
+
+// ── Promotions audit ──────────────────────────────────────────────────────
+/**
+ * The kind of action an audit row records, as the server groups them. Categories rather than raw
+ * action names because that grouping is domain knowledge the API owns (see
+ * `PromotionAuditCategories`): the same fact decides what a tab shows and what a saved link means.
+ *
+ * `other` is what an action the server's map hasn't heard of falls back to, so a new audit action
+ * appears in the feed the day it ships rather than silently vanishing.
+ */
+export type PromotionAuditCategory =
+  | 'approved'
+  | 'approval-step'
+  | 'rejected'
+  | 'cancelled'
+  | 'created'
+  | 'updated'
+  | 'deployed'
+  | 'work-item'
+  | 'comment'
+  | 'people'
+  | 'other';
+
+/** Somebody named on a row other than as its actor — see {@link PromotionAuditEntry.approvedBy}. */
+export interface PromotionAuditActor {
+  id: string;
+  name: string;
+}
+
+/** One recorded action on one promotion. */
+export interface PromotionAuditEntry {
+  id: string;
+  timestamp: string;
+  /** Groups the rows one request wrote — an approval and the gate it opened share one. */
+  correlationId: string;
+  /** The raw audit action, e.g. `promotion.approved`. */
+  action: string;
+  category: PromotionAuditCategory;
+  actorId: string;
+  actorName: string;
+  /** `user` or `system`. Gate evaluation, ingest and auto-approval are the system's. */
+  actorType: string;
+
+  // The promotion this happened to. Always present: the feed only carries rows it could join.
+  candidateId: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  /** The promotion's status **now**, not at the time of the action. */
+  candidateStatus: PromotionStatus;
+
+  /** What the actor typed, on the actions that take a comment. */
+  comment: string | null;
+  /** Required on a bypass and an administrator reject — why the gate was overridden. */
+  reason: string | null;
+  /** The ticket a work-item action was about. */
+  workItemKey: string | null;
+  role: string | null;
+  referenceKey: string | null;
+  /**
+   * How an approval or rejection came about, e.g. `gate-evaluator`, `administrator-bypass`,
+   * `administrator-reject`.
+   */
+  trigger: string | null;
+  /**
+   * On a gate-opening row: the people whose approvals opened it. The row's own actor is the evaluator
+   * that noticed, so this is where "who approved it" actually lives. Null for an auto-approval, which
+   * nobody decided.
+   */
+  approvedBy: PromotionAuditActor[] | null;
+  /** The action's whole recorded payload, for the row's details expansion. Shape varies by action. */
+  details: Record<string, unknown> | null;
+}
+
+export interface PromotionAuditResponse {
+  entries: PromotionAuditEntry[];
+  /** Rows matching every filter — not the page. */
+  total: number;
+  page: number;
+  pageSize: number;
+  range: { from: string | null; to: string | null };
+  /**
+   * Per-action counts under every filter **except** the action/category one, so a tab badge says what
+   * selecting it would show rather than what is already selected.
+   */
+  actions: { action: string; category: PromotionAuditCategory; count: number }[];
+  /** Likewise for actors: counted under every filter except the actor filter itself. */
+  actors: { id: string; name: string; type: string; count: number }[];
+}
+
+/**
+ * One work item that has nobody in a role its promotion policy requires. Only ever reported for an
+ * item still awaiting a decision — once somebody has signed off (or raised an issue, or blocked it)
+ * there is no assignment left to ask for, and the server stops reporting the gap.
+ */
+export interface WorkItemRoleGap {
+  workItemKey: string;
+  title: string | null;
+  /** Canonical role keys nobody holds on this work item. Always non-empty. */
+  missingRoles: string[];
+}
+
+/**
+ * A work-item sign-off outcome. `Blocked` is the only one that holds the promotion: it leaves the
+ * item unresolved, which stalls the gate without terminating the candidate. `Issue` says "something's
+ * wrong here" about a change that is still going out, so it clears the gate like `Approved` does.
+ * All three are reversible, and vetoing belongs to the promotion, not to a single work item.
+ */
+export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked';
 
 export interface WorkItemApproval {
   id: string;
   workItemKey: string;
   product: string;
+  service: string;
   targetEnv: string;
   approverEmail: string;
   approverName: string;
-  decision: 'Approved' | 'Rejected';
+  decision: WorkItemDecision;
   comment: string | null;
   createdAt: string;
+  /** Set when the approver later changed their decision; the row is updated in place. */
+  updatedAt?: string | null;
 }
 
 export interface WorkItemContext {
   workItemKey: string;
   product: string;
+  service: string;
   targetEnv: string;
+  /** Null when no live promotion carries the item — orphaned, but still signable. */
   pendingCandidateId: string | null;
+  /** Whether the current user may record — or change — a decision right now. */
   canApprove: boolean;
   blockedReason: string | null;
+  /** The current user's own decision, if they already made one. */
+  myDecision?: WorkItemDecision | null;
   approvals: WorkItemApproval[];
+}
+
+/** One entry in a work item's thread. Keyed by (workItemKey, product, service, targetEnv). */
+export interface WorkItemComment {
+  id: string;
+  workItemKey: string;
+  product: string;
+  service: string;
+  targetEnv: string;
+  authorEmail: string;
+  authorName: string;
+  body: string;
+  /**
+   * Set when this entry records a sign-off rather than free-text discussion (written automatically
+   * on Approve / Block / Reject). Those entries — and anything authored by `system` — are immutable,
+   * so the UI shows no edit/delete on them.
+   */
+  decision?: WorkItemDecision | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+/** One promotion candidate carrying a work item, as listed on the detail page. */
+export interface WorkItemCandidateRef {
+  id: string;
+  service: string;
+  version: string;
+  sourceEnv: string;
+  targetEnv: string;
+  status: PromotionStatus;
+  createdAt: string;
+  /** The candidate participant assignments write to (newest Pending, else newest overall). */
+  isPrimary: boolean;
+}
+
+/**
+ * One environment a work item's change is deployed to — resolved server-side from the deploy events
+ * that shipped the carrying version, so it answers "where can I test this?" rather than "where is
+ * this promotion headed?". `deployedAt` is the most recent succeeded deploy of that version there.
+ */
+export interface WorkItemEnvironment {
+  environment: string;
+  service: string;
+  version: string;
+  deployedAt: string;
+}
+
+/**
+ * The sign-off state of one work item instance, derived from its decisions with display precedence:
+ * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
+ * For the gate only `Blocked` (and an undecided item) holds a promotion — `Issue` clears it.
+ */
+export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
+
+/** One per-service instance of a ticket, from `GET /api/work-items/{key}/instances`. */
+export interface WorkItemInstance {
+  service: string;
+  /** The newest title any candidate of that service recorded for the ticket. */
+  title: string | null;
+  state: WorkItemInstanceState;
+}
+
+/**
+ * The ticket across every service carrying it in one (product, targetEnv): what "is MPT-1 done"
+ * means to somebody who does not think per service. `state` follows display precedence across
+ * instances — any block → Blocked, else any issue → Issue, else all approved → Approved, else
+ * Pending. A policy with `requireAllWorkItemInstancesApproved` gates on this instead of on the
+ * promotion's own instance: it waits for every instance to be decided with none blocked, which an
+ * `Issue` roll-up satisfies but a `Pending` one does not.
+ */
+export interface WorkItemOverallStatus {
+  state: WorkItemInstanceState;
+  instances: number;
+  approved: number;
+  issues: number;
+  blocked: number;
+  pending: number;
+  /** Every instance with its own state, sorted by service. */
+  instanceStatuses: WorkItemInstance[];
+}
+
+/** Response shape for `GET /api/work-items/{key}/instances`. */
+export interface WorkItemInstancesResponse {
+  workItemKey: string;
+  product: string;
+  targetEnv: string;
+  /** Null when no promotion has carried the ticket in that product/env. */
+  overall: WorkItemOverallStatus | null;
+  /** Sorted by service name. Empty when no promotion has carried the ticket in that product/env. */
+  instances: WorkItemInstance[];
+}
+
+/** Full response shape for `GET /api/work-items/{key}/detail`. */
+export interface WorkItemDetail {
+  workItemKey: string;
+  product: string;
+  /**
+   * The service whose change this work item is. Part of the identity — the same ticket on a sibling
+   * service of the product is a different work item with its own page, sign-off and thread.
+   */
+  service: string;
+  /**
+   * The promotion edge this sign-off gates. Identity (it keys the decisions and comments), not a
+   * property of the work item to present — `environments` is what says where the change is live.
+   */
+  targetEnv: string;
+  /** Environments the change is deployed to, newest deploy first. */
+  environments: WorkItemEnvironment[];
+  title: string | null;
+  /**
+   * Secondary display line: the messages of every commit this item was carried by, joined by the
+   * server. `title` names the ticket, this says what changed under it. Null when no commit message
+   * is known, or when the item's one commit is named the same thing as the ticket.
+   */
+  subTitle: string | null;
+  /**
+   * The work item's body, copied verbatim from the source system — a Jira description, a PR
+   * description, a commit message body. Where `title` is the one-line summary, this is the prose
+   * under it. Null when the producer sent none; the server blanks-to-null, so a non-null value
+   * always has something in it.
+   */
+  content: string | null;
+  /**
+   * The tracker's priority label ("High") and issue type ("Bug", "Story"), as the producer read
+   * them. Shown as chips beside the title; null when the producer sent none, and then no chip is
+   * rendered. Labels, not enums — `WorkItemTraits` recognises the common Jira names for colour and
+   * icon and shows anything else as-is.
+   */
+  priority: string | null;
+  workItemType: string | null;
+  url: string | null;
+  provider: string | null;
+  pendingCandidateId: string | null;
+  /** Target for participant writes — null only if the ticket has no candidates at all. */
+  primaryCandidateId: string | null;
+  canApprove: boolean;
+  /** Whether the caller may assign / remove people (QA or Admin). */
+  canManage: boolean;
+  blockedReason: string | null;
+  myDecision: WorkItemDecision | null;
+  participants: PromotionSourceEventParticipant[];
+  /** Roles the carrying promotion's policy requires somebody in on this work item. */
+  requiredRoles?: string[];
+  /** The subset of `requiredRoles` nobody holds — non-empty means the work item is incomplete. */
+  missingRoles?: string[];
+  approvals: WorkItemApproval[];
+  comments: WorkItemComment[];
+  /** Commits whose messages referenced this work item. Empty when the producer declared none. */
+  commits: WorkItemCommitRef[];
+  /** Pull requests those commits merged — derived server-side via commit hash → PR revision. */
+  pullRequests: WorkItemPullRequestRef[];
+  candidates: WorkItemCandidateRef[];
+  /** The ticket across every service instance in this product/env. Null only if nothing is indexed. */
+  overall: WorkItemOverallStatus | null;
+  /**
+   * Whether the primary promotion's policy waits for `overall` to be approved rather than for this
+   * instance alone — the page says so, or a sign-off that releases nothing reads as a bug.
+   */
+  gateRequiresAllInstances: boolean;
+}
+
+/**
+ * One commit that carried a work item. `hash` is always present (it's what the producer declared);
+ * the rest is hydrated from the matching `commit` reference and is null when the payload had none —
+ * such a row renders as a bare hash with no link.
+ */
+export interface WorkItemCommitRef {
+  hash: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  participants: PromotionSourceEventParticipant[];
+}
+
+/** One pull request behind a work item, reached through the commit it merged. */
+export interface WorkItemPullRequestRef {
+  key: string;
+  title: string | null;
+  url: string | null;
+  provider: string | null;
+  /** The merge commit that tied this PR to the work item. */
+  revision: string | null;
+  participants: PromotionSourceEventParticipant[];
 }
 
 /** One row from `GET /api/work-items/me/pending`. */
 export interface PendingTicket {
   workItemKey: string;
   product: string;
+  /** The promotion edge the sign-off gates — identity, not display. See `WorkItemDetail.targetEnv`. */
   targetEnv: string;
   provider: string | null;
   url: string | null;
   title: string | null;
+  /** Secondary display line — see `WorkItemDetail.subTitle`. */
+  subTitle?: string | null;
+  /** Tracker labels — see `WorkItemDetail.priority` / `WorkItemDetail.workItemType`. */
+  priority?: string | null;
+  workItemType?: string | null;
   candidateId: string;
+  /** Part of the work item's identity (see `WorkItemDetail.service`) and the row's candidate. */
   service: string;
   version: string;
-  sourceEnv: string;
+  /** Environments this version is deployed to, newest deploy first — where the item can be tested. */
+  environments: WorkItemEnvironment[];
   blockingPromotions: number;
-  /** Source deploy event id — used to PATCH reference participants. */
-  sourceDeployEventId: string;
   /** Participants on this specific work-item reference (overrides applied). */
   participants: PromotionSourceEventParticipant[];
+  /** Roles the carrying promotion's policy requires somebody in on this work item. */
+  requiredRoles?: string[];
+  /** The subset of `requiredRoles` nobody holds — non-empty means the work item needs attention. */
+  missingRoles?: string[];
   /**
-   * Status of the candidate this row represents. "Pending" on the inbox; for decision-history
-   * views the candidate may have moved on (Approved / Deploying / Deployed / Rejected /
-   * Superseded). "Unknown" when no candidate could be linked to the row.
+   * Status of the candidate this row represents. "Pending" for a live promotion; anything else means
+   * the row is either decision history or an orphan — a work item whose promotion died (Superseded /
+   * Rejected) and which nobody has signed off, kept in the queue so the work isn't lost.
+   * "Unknown" when no candidate could be linked to the row.
    */
   candidateStatus?: string;
   /**
    * The decision recorded on this ticket — null on the pending inbox; populated on the
    * "decided" view. Decisions can come from any approver in the candidate's authorised group.
    */
-  decision?: 'Approved' | 'Rejected' | null;
+  decision?: WorkItemDecision | null;
   decidedAt?: string | null;
   decidedByEmail?: string | null;
   decidedByName?: string | null;
   decisionComment?: string | null;
+  /** The ticket across every service instance — the "2 of 3 services" beside the row's own state. */
+  overall?: WorkItemOverallStatus | null;
 }
 
 /**
  * One row of the (email, role) assignee summary returned alongside the queue. Counts come from
- * the user's authorized list <i>before</i> the role/person filter is applied, so the queue page
- * can render every choice the user could narrow to. Aggregated server-side per (email, role)
- * pair — a single person on multiple roles produces multiple rows.
+ * the user's authorized list <i>before</i> the person filter is applied, so the queue page can
+ * render every choice the user could narrow to. On the pending path the role is always one the
+ * item's policy requires — the only assignments the person filter matches. Aggregated
+ * server-side per (email, role) pair — a single person on multiple roles produces multiple rows.
  */
 export interface PendingAssignee {
   email: string;
@@ -928,10 +2271,20 @@ export interface PendingAssignee {
 /** Full response shape for `GET /api/work-items/me/pending`. */
 export interface MyPendingWorkItemsResponse {
   tickets: PendingTicket[];
-  /** (email, role) rollup of the unfiltered authorized list. Sorted by count desc, displayName asc. */
+  /**
+   * (email, required-role) rollup of the unfiltered authorized list — the person dropdown's
+   * contents. Sorted by count desc, displayName asc. On the "decided" view this is the decider
+   * rollup instead (role is empty there).
+   */
   assignees: PendingAssignee[];
-  /** Canonical assignee-role set from PromotionAssigneeRoleSettings — feeds the role dropdown. */
-  roles: string[];
+  // Decided view only — it comes a page at a time, newest decision first. The pending views
+  // return everything in one response and leave these out.
+  /** Decisions in the whole window (after the decider narrowing), not just this page. */
+  total?: number;
+  /** Whether rows exist after this page. */
+  hasMore?: boolean;
+  /** Pass back as `cursor` for the next page; null on the last one. */
+  nextCursor?: string | null;
 }
 
 export interface PromotionParticipant {
@@ -957,6 +2310,24 @@ export interface PromotionSourceEventReference {
   key?: string | null;
   revision?: string | null;
   title?: string | null;
+  /**
+   * Secondary display line under `title` on a `work-item` reference: the messages of the commits
+   * the ticket declares, joined by the server. Absent when there are none to show. (Producers send
+   * the tracker's own summary on this field; the read path replaces it — see WorkItemDisplay.)
+   */
+  subTitle?: string | null;
+  /**
+   * Tracker labels on a `work-item` reference: the priority ("High") and the issue type ("Bug",
+   * "Story"), verbatim from the producer. Absent when the producer didn't ask the tracker.
+   */
+  priority?: string | null;
+  workItemType?: string | null;
+  /**
+   * Commit hashes this reference was derived from — set by the producer on `work-item` references
+   * to record which commit messages mentioned the ticket. The server uses it to resolve the
+   * ticket's `commits` and `pullRequests` on the detail projection.
+   */
+  commits?: string[] | null;
   /**
    * Reference-scoped participants. Optional and may be absent on legacy payloads —
    * always treat as `participants ?? []`. Same shape as event-level participants.
@@ -1034,12 +2405,32 @@ export interface PromotionApprovalProgress {
 }
 
 export interface PromotionWorkItemGate {
+  /**
+   * True when the policy holds human approval back until every work item is signed off. Together
+   * with `satisfied === false` this is exactly what makes the approve call fail, so it is what the
+   * detail page disables its Approve button on. Distinct from `autoApprove`, which never blocks.
+   */
   required: boolean;
   total: number;
   approved: number;
+  /**
+   * Work items carrying an Issue — counted apart from `approved` because they are flagged, not
+   * outstanding: they satisfy the gate alongside approvals.
+   */
+  issues?: number;
+  /**
+   * Work items somebody blocked — the only verdict that holds the gate. Whatever is left
+   * (`total - approved - issues - blocked`) is items nobody has ruled on yet.
+   */
+  blocked?: number;
   satisfied: boolean;
   /** When true, resolving all work items auto-approves the promotion (no manual sign-off needed). */
   autoApprove: boolean;
+  /**
+   * True when the policy judges each work item by the ticket's overall status across every service
+   * instance (requireAllWorkItemInstancesApproved), so `approved` means "approved on every service".
+   */
+  allInstances?: boolean;
 }
 
 export interface PromotionStepProgress {
@@ -1075,6 +2466,168 @@ export interface PromotionPolicyStep {
   requirements: PromotionPolicyRequirement[];
 }
 
+/**
+ * Result of the admin reconcile pass over open promotions. `examined − closed − superseded` is the
+ * count left open on purpose — promotions history says nothing about — and surfacing that gap is as
+ * much the point of the report as the repairs are.
+ */
+export interface PromotionReconcileResult {
+  examined: number;
+  closed: number;
+  superseded: number;
+  leftOpen: number;
+  dryRun: boolean;
+  candidates: PromotionReconcileCandidate[];
+}
+
+export interface PromotionReconcileCandidate {
+  id: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  previousStatus: string;
+  /** "closed" (its version shipped) or "superseded" (a newer version overtook it). */
+  action: 'closed' | 'superseded';
+  /** When the deciding deploy landed. */
+  at: string;
+  /** For a supersede, the newer version now in the target. Null for a close. */
+  landedVersion: string | null;
+}
+
+/**
+ * Result of the approved-webhook resend. `examined` is every approved-but-undeployed promotion in
+ * scope, and `resent + skipped === examined`. `deliveries` is what actually got queued — it can be
+ * 0 with a non-zero `resent` when no active subscription listens for `promotion.approved`, which
+ * the card reports rather than claiming success. Always 0 on a dry run.
+ */
+export interface ResendApprovedWebhooksResult {
+  examined: number;
+  resent: number;
+  skipped: number;
+  deliveries: number;
+  dryRun: boolean;
+  promotions: ResendApprovedWebhookPromotion[];
+}
+
+/** One approved promotion the resend looked at, with what the platform knows of its last delivery. */
+export interface ResendApprovedWebhookPromotion {
+  id: string;
+  product: string;
+  service: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  approvedAt: string | null;
+  /** "delivered" | "failed" | "cancelled" | "pending", or "none" when nothing is on record. */
+  lastDeliveryStatus: string;
+  lastDeliveryAt: string | null;
+  /** Rows queued by this resend. 0 on a dry run and on a skipped row. */
+  deliveries: number;
+  /** Why this promotion was left alone; null when it was (or would be) re-sent. */
+  skippedReason: string | null;
+}
+
+/**
+ * Result of the stranded work-item sweep. `examined` is what the scan found; on a dry run nothing
+ * else moves. On an apply `approved + failed === examined`, and each failed row carries its own
+ * `error` — a row that raced into a decided state between the preview and the apply.
+ */
+export interface OrphanedWorkItemSweepResult {
+  examined: number;
+  approved: number;
+  failed: number;
+  dryRun: boolean;
+  items: OrphanedWorkItem[];
+}
+
+/** One work item the sweep found: the ticket, plus the dead promotion it was last riding. */
+export interface OrphanedWorkItem {
+  workItemKey: string;
+  title: string | null;
+  product: string;
+  targetEnv: string;
+  service: string;
+  version: string;
+  /** "Superseded" or "Rejected" — the terminal state that stranded the item. */
+  candidateStatus: string;
+  /** Why this row was not signed off. Null on a preview and on every successful row. */
+  error: string | null;
+}
+
+/** A service an admin retired. See {@link ApiClient.listDeletedServices}. */
+export interface DeletedService {
+  id: string;
+  product: string;
+  service: string;
+  deletedAt: string;
+  deletedByName: string;
+  reason: string | null;
+}
+
+/**
+ * What a retirement took out of view. The counts are reported so the admin can see the size of what
+ * they hid — `hiddenOpenPromotions` especially, since a promotion somebody was waiting to approve
+ * disappearing is the one surprising consequence of retiring a service.
+ */
+export interface DeleteServiceResult {
+  service: DeletedService;
+  hiddenDeployments: number;
+  hiddenOpenPromotions: number;
+}
+
+/**
+ * One configured service→product mapping. `fromProduct` null means the row applies whatever product
+ * the sender posted; a row naming a specific `fromProduct` wins over the catch-all for that sender.
+ *
+ * `storedEntities` / `strandedEntities` are the at-a-glance health of the mapping: how many deploy
+ * events and builds for this service already sit under `product`, and how many are still filed
+ * somewhere else. A row stuck at `storedEntities: 0` is usually spelling the service differently
+ * than the pipeline does.
+ */
+export interface ServiceProductOverride {
+  id: string;
+  service: string;
+  fromProduct: string | null;
+  product: string;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  updatedByName: string;
+  storedEntities: number;
+  strandedEntities: number;
+}
+
+/**
+ * What remapping an override's history involves. Identical shape from the preview and the apply —
+ * `applied` is what tells them apart.
+ *
+ * `buildConflicts` are builds left where they are because the target product already has that
+ * service+version. `ticketApprovals` / `ticketComments` are this service's work-item sign-offs and
+ * thread entries, which follow it (work items are keyed per service). `strandedTicketApprovals` are
+ * legacy approvals that were never attributed to a service and therefore stay put.
+ */
+export interface ServiceProductRemap {
+  overrideId: string;
+  service: string;
+  product: string;
+  fromProducts: string[];
+  applied: boolean;
+  deployments: number;
+  deployWorkItems: number;
+  builds: number;
+  buildConflicts: number;
+  promotions: number;
+  openPromotions: number;
+  promotionWorkItems: number;
+  ticketApprovals: number;
+  ticketComments: number;
+  retirements: number;
+  retirementMerges: number;
+  strandedTicketApprovals: number;
+}
+
 export interface PromotionPolicy {
   id: string;
   product: string;
@@ -1082,13 +2635,42 @@ export interface PromotionPolicy {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
-  timeoutHours: number;
+  /**
+   * Whether promotions on this edge create work items. False for edges whose target isn't ready for QA
+   * (a dev integration environment, a CI test ring): no work items are created, so every other
+   * work-item setting on the policy is inert.
+   */
+  tracksWorkItems: boolean;
+  /**
+   * Participant roles every work item on this edge must have somebody in (canonical keys). A work item
+   * missing one is flagged as incomplete wherever it renders. Not part of the approval gate.
+   */
+  requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
+  /**
+   * Judge each work item by the ticket's overall status across every service instance in the target
+   * environment, instead of by this promotion's own service instance. Qualifies the two gate flags.
+   */
+  requireAllWorkItemInstancesApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
+  sourceRequiresDeploy: boolean;
+  /**
+   * Whether an approval on this edge is the last gate before the version is live. False for edges a
+   * pipeline releases behind its own approval — the SDP pipeline's Azure DevOps environment check on
+   * staging and prod. Display only; nothing about gating changes.
+   */
+  deploysOnApproval: boolean;
+  /** Branch patterns (full refs, `*` wildcards) that auto-create candidates from registered builds. */
+  autoCreateFromBranches: string[];
+  /** Per-edge override (seconds) of the approval → promotion.approved delivery delay; null = default. */
+  approvedWebhookDelaySeconds: number | null;
   createdAt: string;
   updatedAt: string;
+  // Set only on create/update responses: how many pending promotions were re-gated under the saved
+  // settings. Null when reading policies back.
+  reappliedCandidates: number | null;
 }
 
 /** An active Promotion Freeze on (product, targetEnv); heldCandidates = Pending candidates of the pair. */
@@ -1116,11 +2698,20 @@ export interface UpsertPromotionPolicyPayload {
   sourceEnv: string;
   targetEnv: string;
   steps: PromotionPolicyStep[];
-  timeoutHours: number;
+  /** Whether promotions on this edge create work items at all. */
+  tracksWorkItems: boolean;
+  /** Canonical participant roles every work item on this edge must have somebody in. */
+  requiredWorkItemRoles: string[];
   escalationGroup: string | null;
   requireAllWorkItemsApproved: boolean;
+  requireAllWorkItemInstancesApproved: boolean;
   autoApproveOnAllWorkItemsApproved: boolean;
   autoApproveWhenNoWorkItems: boolean;
+  sourceRequiresDeploy: boolean;
+  /** Whether an approval on this edge is the last gate before the version is live. */
+  deploysOnApproval: boolean;
+  autoCreateFromBranches: string[];
+  approvedWebhookDelaySeconds: number | null;
 }
 
 export interface FeatureFlag {
@@ -1155,7 +2746,9 @@ export type RollbackItemStatus =
   | 'RollingBack'
   | 'RolledBack'
   | 'Failed'
-  | 'Skipped';
+  | 'Skipped'
+  /** A different version was deployed after approval, so this revert is no longer going out. */
+  | 'Superseded';
 
 export interface RollbackItem {
   id: string;
@@ -1163,9 +2756,14 @@ export interface RollbackItem {
   fromVersion: string;
   toVersion: string;
   status: RollbackItemStatus;
+  /** The deploy that closed the item: its landing, the deploy already running it, or what superseded it. */
   completedDeployEventId: string | null;
   externalRunUrl: string | null;
   completedAt: string | null;
+  /** Why the item closed when the status alone doesn't say (superseded, already running, skip reason). */
+  note: string | null;
+  /** Open items only: the newest failed deploy of the target version since the request was approved. */
+  lastFailedAttempt: { deployEventId: string; deployedAt: string } | null;
 }
 
 export interface RollbackRequest {
@@ -1182,7 +2780,15 @@ export interface RollbackRequest {
   createdAt: string;
   approvedAt: string | null;
   completedAt: string | null;
+  cancelledByName: string | null;
+  cancelledAt: string | null;
+  /** Mandatory when an admin cancelled an already-approved request; optional while Pending. */
+  cancelReason: string | null;
   canApprove: boolean;
+  /** Admin, still pending, and gated — i.e. the override action would succeed. */
+  canOverride: boolean;
+  /** An admin forced this request past its gate rather than satisfying it. */
+  approvalOverridden: boolean;
   items: RollbackItem[];
 }
 
@@ -1192,6 +2798,59 @@ export interface RollbackApprovalEntry {
   decision: 'Approved' | 'Rejected';
   comment: string | null;
   createdAt: string;
+  /** True for a gate override; `comment` then holds the mandatory reason. */
+  isOverride: boolean;
+}
+
+/** One approver requirement plus its progress, as returned on the rollback detail. */
+export interface RollbackGateRequirement {
+  name: string;
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+  matched: number;
+  required: number;
+  satisfied: boolean;
+}
+
+/** Detail shape: the list fields plus the gate, its progress, and the decision history. */
+export interface RollbackDetail extends RollbackRequest {
+  /** No rollback policy governs this environment: only an admin override can move it. */
+  unconfigured: boolean;
+  gate: RollbackGateRequirement[];
+  approvals: RollbackApprovalEntry[];
+}
+
+// ── Rollback policies ───────────────────────────────────────────────────────
+
+/** A group ∪ user set. Empty grants nobody — it never means "everyone". */
+export interface RollbackPrincipalSet {
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+}
+
+export interface RollbackPolicy {
+  id: string;
+  product: string;
+  /** null ⇒ the product default, covering every environment without its own row. */
+  targetEnv: string | null;
+  creators: RollbackPrincipalSet;
+  steps: PromotionPolicyStep[];
+  escalationGroup: string | null;
+  /** False ⇒ only admins can create rollbacks in this scope. */
+  hasCreators: boolean;
+  /** True ⇒ no approval required in this scope (distinct from having no policy at all). */
+  isAutoApprove: boolean;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export interface UpsertRollbackPolicyPayload {
+  product: string;
+  targetEnv: string | null;
+  creators: RollbackPrincipalSet;
+  steps: PromotionPolicyStep[];
+  escalationGroup: string | null;
 }
 
 /** Body shared by previewRollback / createRollback. */
@@ -1211,6 +2870,11 @@ export interface ResolvedItem {
   toVersion: string;
   eligible: boolean;
   skipReason: string | null;
+  /**
+   * Set when the service's newest deploy failed: says which version failed and what is still running.
+   * The preview's `fromVersion` is always the last succeeded deploy.
+   */
+  note?: string | null;
 }
 
 export interface RollbackPreview {
@@ -1219,6 +2883,124 @@ export interface RollbackPreview {
   mode: RollbackMode;
   referenceEnv: string | null;
   items: ResolvedItem[];
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────
+
+export interface AnalyticsRange {
+  from: string;
+  to: string;
+}
+
+export interface FrequencyBucket {
+  start: string;
+  count: number;
+  failed: number;
+  rollbacks: number;
+}
+
+export interface FrequencySeries {
+  key: { product: string | null; serviceName: string | null; environment: string | null };
+  buckets: FrequencyBucket[];
+  summary: {
+    total: number;
+    perWeek: number;
+    medianIntervalHours: number | null;
+    longestGapHours: number | null;
+    lastDeployedAt: string | null;
+    changeFailureRate: number | null;
+    previousPeriodTotal: number;
+    batchSizeP50: number | null;
+  };
+}
+
+export interface FrequencyResponse {
+  definition: {
+    bucket: string;
+    groupBy: string;
+    tz: string;
+    includeRollbacks: boolean;
+    includeRedeploys: boolean;
+    changeFailureRate: string;
+  };
+  range: AnalyticsRange;
+  series: FrequencySeries[];
+}
+
+export type MatrixCellState =
+  | 'deployed'
+  | 'approved-awaiting-deploy'
+  | 'awaiting-approval'
+  | 'absent';
+
+export interface MatrixCell {
+  state: MatrixCellState;
+  version?: string | null;
+  at?: string | null;
+  deployEventId?: string | null;
+  candidateId?: string | null;
+}
+
+export interface MatrixItem {
+  key: string;
+  title: string | null;
+  url: string | null;
+  furthestEnv: string | null;
+  envs: Record<string, MatrixCell>;
+  lastActivityAt: string;
+}
+
+export interface WorkItemMatrixResponse {
+  environments: string[];
+  coverage: { deployments: number; withoutWorkItem: number; ratio: number };
+  totals: Record<string, number>;
+  totalItems: number;
+  items: MatrixItem[];
+  range: AnalyticsRange;
+}
+
+export interface PromotionQueueEdge {
+  product: string;
+  targetEnv: string;
+  pending: number;
+  awaitingDeploy: number;
+  oldestPendingHours: number | null;
+  oldestAwaitingDeployHours: number | null;
+}
+
+export interface LatencyStats {
+  n: number;
+  p50Hours: number | null;
+  p90Hours: number | null;
+}
+
+export interface PromotionQueueResponse {
+  edges: PromotionQueueEdge[];
+  approvalLatency: LatencyStats;
+  deployLatency: LatencyStats;
+  range: AnalyticsRange;
+}
+
+export interface LeadTimeEnvStats {
+  environment: string;
+  n: number;
+  p50Hours: number | null;
+  p75Hours: number | null;
+  p90Hours: number | null;
+}
+
+export interface LeadTimeResponse {
+  definition: {
+    clockStart: string;
+    clockStartFallback: string;
+    clockStop: string;
+    grain: string;
+  };
+  coverage: { workItems: number; withClockStart: number; ratio: number };
+  byEnvironment: LeadTimeEnvStats[];
+  buckets: { start: string; environment: string; n: number; p50Hours: number | null }[];
+  slowest: { workItemKey: string; environment: string; hours: number; deployEventId: string }[];
+  range: AnalyticsRange;
 }
 
 export const api = new ApiClient();

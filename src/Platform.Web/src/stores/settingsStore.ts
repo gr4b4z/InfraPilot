@@ -2,10 +2,32 @@ import { create } from 'zustand';
 import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
+import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
+import { resolveEnvKey } from '@/lib/envAlias';
+import { canonicaliseRoleKey, resolveRoleKey } from '@/lib/roleKey';
+// Type-only import in envStage keeps this from being a runtime cycle.
+import { defaultStageRank } from '@/lib/envStage';
 
 export interface EnvironmentConfig {
   key: string;
   displayName: string;
+  /** Admin-chosen accent (`#rrggbb`) used to tell environments apart at a glance. When unset,
+   *  `getEnvironmentColor` derives a stable colour from the key. */
+  color?: string | null;
+  /** Marks a production stage — what executive analytics report on. Several environments may be
+   *  marked (multi-region production). When none is, consumers fall back to the historical
+   *  convention: the last environment in the list is the end of the pipeline. */
+  isProduction?: boolean;
+  /** Other names producers call this same environment ("prod" for "production"). The server
+   *  resolves every write through them; the client resolves reads through them too, so rows that
+   *  arrived under an old name still render as the environment they actually are — until an admin
+   *  merges the history in Settings → Environments. */
+  aliases?: string[] | null;
+  /** Nothing deploys here any more. The server leaves it out of every current-state view — the
+   *  deployments matrix, product cards, service search and detail, analytics, work items — and the
+   *  pickers built from settings skip it (`activeEnvironments`). History keeps it, so its label,
+   *  colour and order still resolve: an old promotion "from" it still reads as it did. */
+  retired?: boolean;
 }
 
 export interface RoleConfig {
@@ -13,6 +35,13 @@ export interface RoleConfig {
   // backend normalises on write so this lookup is deterministic.
   key: string;
   displayName: string;
+  /** Other names producers send for this same role (Jira's `qa` for a `qa-owner`). Resolved on
+   *  read, server and client alike, so a participant sent under one fills, labels and is replaced
+   *  as this role. Stored canonicalised. */
+  aliases?: string[] | null;
+  /** Directory groups the assignment picker narrows this role to — anyone in any of them. Empty
+   *  means the whole directory. */
+  assigneeGroups?: { id: string; name: string }[] | null;
 }
 
 export interface ActivityTemplateLine {
@@ -23,6 +52,11 @@ export interface ActivityTemplateLine {
 interface SettingsState {
   /** Globally configured environments (shared across all products) */
   environments: EnvironmentConfig[];
+  /** `environments` without the retired ones, in the same order — what a picker or a "configured
+   *  environments" list should offer. Kept as state (derived on every write) rather than computed
+   *  in a selector, so subscribers get a stable reference. Lookups by key (labels, colours, order)
+   *  keep using the full list. */
+  activeEnvironments: EnvironmentConfig[];
   /** Admin-curated participant role display names. Canonical keys come from deploy-event
    * ingest or promotion-level assignment; this dictionary maps them to human-friendly
    * labels shown in the UI. Unknown keys fall back to the sender's `label` (if any),
@@ -38,14 +72,19 @@ interface SettingsState {
   setRoles: (roles: RoleConfig[]) => Promise<void>;
   setActivityTemplate: (lines: ActivityTemplateLine[]) => Promise<void>;
   getDisplayName: (key: string) => string;
+  /** Resolved `#rrggbb` for an environment — the configured colour, or a stable one derived
+   *  from the key so every environment is distinguishable even before an admin picks. */
+  getEnvironmentColor: (key: string) => string;
   getRoleDisplayName: (key: string) => string;
   getOrderedEnvironments: (keys: string[]) => string[];
+  /** Whether `key` (alias-resolved) is a retired environment — see `EnvironmentConfig.retired`. */
+  isRetired: (key: string) => boolean;
 }
 
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
-  { key: 'development', displayName: 'Development' },
-  { key: 'staging', displayName: 'Staging' },
-  { key: 'production', displayName: 'Production' },
+  { key: 'development', displayName: 'Development', color: '#2563eb' },
+  { key: 'staging', displayName: 'Staging', color: '#d97706' },
+  { key: 'production', displayName: 'Production', color: '#dc2626', isProduction: true },
 ];
 
 const DEFAULT_ROLES: RoleConfig[] = [
@@ -83,6 +122,7 @@ export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
 // of truth and every setter writes through to it.
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   environments: DEFAULT_ENVIRONMENTS,
+  activeEnvironments: withoutRetired(DEFAULT_ENVIRONMENTS),
   roles: DEFAULT_ROLES,
   activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
   loaded: false,
@@ -92,6 +132,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const s = await api.getAppSettings();
       set({
         environments: s.environments,
+        activeEnvironments: withoutRetired(s.environments),
         roles: s.roles,
         activityTemplate: s.activityTemplate as ActivityTemplateLine[],
         loaded: true,
@@ -106,7 +147,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // so the in-memory store never drifts from what's saved.
   setEnvironments: async (envs) => {
     await api.saveAppSettings({ ...currentPayload(get), environments: envs });
-    set({ environments: envs });
+    set({ environments: envs, activeEnvironments: withoutRetired(envs) });
   },
 
   setRoles: async (roles) => {
@@ -119,27 +160,65 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ activityTemplate: lines });
   },
 
+  // Alias-resolved, here and in the two lookups below: a deploy stored as "productions" before an
+  // admin folded it into "prod" still has to render with the "prod" label, colour and pipeline
+  // position. Otherwise configuring the alias appears to do nothing until the merge runs.
   getDisplayName: (key) => {
-    const env = get().environments.find((e) => e.key === key);
+    const canonical = resolveEnvKey(key, get().environments);
+    const env = get().environments.find((e) => e.key === canonical);
     return env?.displayName ?? key;
   },
 
+  getEnvironmentColor: (key) => {
+    const canonical = resolveEnvKey(key, get().environments);
+    const configured = get().environments.find((e) => e.key === canonical)?.color;
+    // Fall back on the canonical key, not the alias: two names for one environment must derive the
+    // same colour, or the badge changes shade depending on which pipeline wrote the row.
+    return normalizeHexColor(configured) ?? autoEnvColor(canonical);
+  },
+
+  // Both sides are canonicalised before matching: participant roles reach the client as the
+  // producer sent them ("QA", "triggeredBy") when role normalisation is switched off server-side,
+  // and a configured entry should still label them rather than falling through to the humaniser.
+  // Alias-resolved too, so Jira's `qa` reads as "QA owner" once it is listed as that role's alias.
   getRoleDisplayName: (key) => {
     if (!key) return '';
-    const role = get().roles.find((r) => r.key === key);
+    const roles = get().roles;
+    const canonical = resolveRoleKey(key, roles);
+    const role = roles.find((r) => canonicaliseRoleKey(r.key) === canonical);
     if (role) return role.displayName;
-    return humaniseRoleKey(key);
+    return humaniseRoleKey(canonical || key);
   },
 
   getOrderedEnvironments: (keys) => {
-    const order = get().environments.map((e) => e.key);
-    return [...keys].sort((a, b) => {
-      const ai = order.indexOf(a);
-      const bi = order.indexOf(b);
-      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-    });
+    const envs = get().environments;
+    const order = envs.map((e) => e.key);
+    // Ranked on the alias-resolved key, so an un-merged "productions" sits next to the "prod" it is
+    // an alias of instead of sorting somewhere else entirely. They stay two columns — only a merge
+    // collapses them, because every cell lookup keys on the name actually stored on the row.
+    // Configured keys keep their settings position; unknown keys get the default name-based stage
+    // order (dev < test < staging < prod — lib/envStage.ts, mirrored server-side) so an
+    // unconfigured "prod" never sorts before "test" by alphabetical accident.
+    const rank = (k: string) => {
+      const canonical = resolveEnvKey(k, envs);
+      const i = order.indexOf(canonical);
+      return i === -1 ? 1000 + defaultStageRank(canonical) : i;
+    };
+    return [...keys].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  },
+
+  // Alias-resolved like the lookups above: the server's retired set covers a retired environment's
+  // aliases too, so an un-merged alias row is retired here as well.
+  isRetired: (key) => {
+    const envs = get().environments;
+    const canonical = resolveEnvKey(key, envs);
+    return envs.find((e) => e.key === canonical)?.retired ?? false;
   },
 }));
+
+function withoutRetired(envs: EnvironmentConfig[]): EnvironmentConfig[] {
+  return envs.filter((e) => !e.retired);
+}
 
 function currentPayload(get: () => SettingsState) {
   const { environments, roles, activityTemplate } = get();

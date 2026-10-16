@@ -1,0 +1,260 @@
+import type {
+  PromotionSourceEventParticipant,
+  WorkItemDecision,
+  WorkItemInstanceState,
+  WorkItemOverallStatus,
+} from '@/lib/api';
+import { roleDisplay } from '@/lib/roleLabel';
+
+/**
+ * In-app route to a work item's detail page. A work item's identity for sign-off is
+ * (key, product, service, targetEnv) — the same grain the decisions and comments key on. The service
+ * is a path segment (`/work-items/mpt-helpdesk/MPT-1`) because it is the half of the name a reader
+ * sees: the same ticket on another service is a different work item with its own page. Product and
+ * target env travel as query params alongside.
+ *
+ * Pass `fromCandidateId` when linking out of a promotion: the detail page turns it into a "Back to
+ * promotion" breadcrumb so a reviewer who came in to sign something off lands back where they were
+ * instead of in the work-item queue. It rides in the URL rather than router state so a refresh or a
+ * shared link keeps the trail.
+ */
+export function workItemDetailPath(
+  key: string,
+  product: string,
+  service: string,
+  targetEnv: string,
+  fromCandidateId?: string | null,
+): string {
+  const params = new URLSearchParams({ product, targetEnv });
+  if (fromCandidateId) params.set('from', fromCandidateId);
+  return `/work-items/${encodeURIComponent(service)}/${encodeURIComponent(key)}?${params.toString()}`;
+}
+
+/**
+ * Reads the `from` param written by {@link workItemDetailPath} back out. Returns null unless the
+ * value is a well-formed GUID — the param lands in an href, so a junk value should fall back to the
+ * default breadcrumb rather than render a link to nowhere.
+ */
+export function referringCandidateId(value: string | null | undefined): string | null {
+  const raw = (value ?? '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw) ? raw : null;
+}
+
+/**
+ * Compact one-line label for a participant on a work item. Format: "Role: Display <email>",
+ * falling back to email-only or just the role label when no human name is available. Display names
+ * are truncated so a long full name can't blow a row's layout.
+ */
+export function formatReferenceParticipant(p: PromotionSourceEventParticipant): string {
+  const role = roleDisplay(p);
+  const name = (p.displayName ?? '').trim();
+  const truncatedName = name.length > 40 ? `${name.slice(0, 37)}...` : name;
+  const email = (p.email ?? '').trim();
+  if (truncatedName && email) return `${role}: ${truncatedName} <${email}>`;
+  if (truncatedName) return `${role}: ${truncatedName}`;
+  if (email) return `${role}: ${email}`;
+  return role;
+}
+
+/**
+ * Reads a list of canonical role keys as a sentence fragment: "QA Owner", "QA Owner and Reviewer",
+ * "QA Owner, Reviewer and Author". Used for the "needs attention" wording wherever a work item is
+ * missing somebody in a role its promotion policy requires — see components/promotions/MissingRoles.
+ */
+export function missingRolesLabel(roles: string[]): string {
+  const labels = roles.map((r) => roleDisplay({ role: r }));
+  if (labels.length === 0) return '';
+  if (labels.length === 1) return labels[0];
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
+
+/**
+ * Human name for a reference provider, for link labels like "View in Jira". Falls back to the raw
+ * value (title-cased on separators) so an unrecognised provider still reads as a name rather than a
+ * slug, and to a generic word when there's nothing to go on.
+ */
+export function providerLabel(provider: string | null | undefined, fallback = 'tracker'): string {
+  const raw = (provider ?? '').trim();
+  if (!raw) return fallback;
+  switch (raw.toLowerCase()) {
+    case 'jira':
+      return 'Jira';
+    case 'azure-devops':
+    case 'azuredevops':
+    case 'ado':
+      return 'Azure DevOps';
+    case 'github':
+      return 'GitHub';
+    case 'gitlab':
+      return 'GitLab';
+    case 'bitbucket':
+      return 'Bitbucket';
+    default:
+      return raw
+        .split(/[-_\s]+/)
+        .filter(Boolean)
+        .map((w) => w[0].toUpperCase() + w.slice(1))
+        .join(' ');
+  }
+}
+
+/**
+ * The separator the server joins a work item's commit messages with (see the API's
+ * `WorkItemDisplay`). Lives next to the split that undoes it so the two can't drift apart.
+ */
+const COMMIT_MESSAGE_SEPARATOR = ' • ';
+
+/**
+ * A work item's `subTitle` read back as the individual commit messages it was built from — one
+ * entry per commit. A ticket that rode in on three commits has three things to say, and running
+ * them together makes one long sentence out of them, so every surface that shows the second line
+ * renders these as separate lines. Empty when there is nothing to show.
+ */
+export function commitMessageLines(subTitle: string | null | undefined): string[] {
+  return (subTitle ?? '')
+    .split(COMMIT_MESSAGE_SEPARATOR)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** Abbreviated commit hash for display. Git's own 7-character convention. */
+export function shortHash(hash: string): string {
+  const trimmed = (hash ?? '').trim();
+  return trimmed.length > 7 ? trimmed.slice(0, 7) : trimmed;
+}
+
+/**
+ * A trailing "one specific thing" locator on a repository URL — `/commit/<sha>`, `/pull/<n>`,
+ * GitLab's `/-/commit/<sha>`, and the tree/blob browsers. Producers vary on whether a `repository`
+ * reference points at the repository or at the exact revision it shipped, and both are legitimate
+ * as a link; only the repository root can be extended into a compare URL.
+ */
+const REPOSITORY_LOCATOR_SUFFIX =
+  /\/(?:-\/)?(?:commit|commits|pull|pullrequest|pullrequests|pull-requests|merge_requests|tree|blob|branchCompare)(?:\/[^/]*)?\/?$/i;
+
+/**
+ * The repository root behind a `repository` reference's URL: the same URL with any trailing
+ * revision/PR locator and `.git` suffix removed.
+ */
+function repositoryRootUrl(repositoryUrl: string | null | undefined): string {
+  let base = (repositoryUrl ?? '').trim().replace(/\/+$/, '');
+  // Loop, not a single replace: `/commit/<sha>` on a URL that already ended in `/tree/main` would
+  // otherwise leave half a locator behind. Bounded so a pathological URL can't spin.
+  for (let i = 0; i < 4 && REPOSITORY_LOCATOR_SUFFIX.test(base); i += 1) {
+    base = base.replace(REPOSITORY_LOCATOR_SUFFIX, '');
+  }
+  if (base.endsWith('.git')) base = base.slice(0, -4);
+  return base;
+}
+
+/**
+ * Web link to the provider's commit-diff view between two revisions — "what exactly is being
+ * promoted", one click from the promotion page. Built from the repository reference's URL and the
+ * candidate's fromRevision/toRevision. Returns null when the provider's compare URL shape is
+ * unknown or either input is missing: a wrong guess renders a 404 link, which is worse than none.
+ *
+ * The URL is reduced to the repository root first: a `repository` reference pinned to the revision
+ * it shipped (`.../_git/svc/commit/<sha>`) is common, and appending a compare path to that produced
+ * a link to nowhere.
+ */
+export function commitCompareUrl(
+  repositoryUrl: string | null | undefined,
+  provider: string | null | undefined,
+  fromRevision: string | null | undefined,
+  toRevision: string | null | undefined,
+): string | null {
+  const from = (fromRevision ?? '').trim();
+  const to = (toRevision ?? '').trim();
+  const base = repositoryRootUrl(repositoryUrl);
+  // All-zero revisions are onboarding placeholders, not commits a compare view could resolve.
+  if (!base || !from || !to || /^0+$/.test(from) || /^0+$/.test(to)) return null;
+
+  switch ((provider ?? '').trim().toLowerCase()) {
+    case 'github':
+      return `${base}/compare/${from}...${to}`;
+    case 'gitlab':
+      return `${base}/-/compare/${from}...${to}`;
+    case 'azure-devops':
+    case 'azuredevops':
+    case 'ado':
+      return `${base}/branchCompare?baseVersion=GC${from}&targetVersion=GC${to}&_a=commits`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Presentation for a work-item decision. One source of truth so the queue, the promotion row, and
+ * the detail page can't drift on what a decision looks like or reads as.
+ *
+ * Three text forms, because one string can't serve all three sentences: `label` is the badge
+ * ("Issue"), `attributed` prefixes an actor ("Issue raised by Ada"), and `youDid` completes a
+ * first-person sentence ("You raised an issue on this work item."). A single label forced
+ * constructions like "You issue this work item".
+ *
+ * Issue shares the warning palette with the undecided "Pending" state — the two never appear on the
+ * same row, and the label plus the icon carry the distinction.
+ */
+export function decisionStyle(decision: WorkItemDecision): {
+  label: string;
+  /** Reads as `${attributed} by <name>`. */
+  attributed: string;
+  /** Reads as `You ${youDid}.` */
+  youDid: string;
+  color: string;
+  bg: string;
+} {
+  switch (decision) {
+    case 'Approved':
+      return {
+        label: 'Approved',
+        attributed: 'Approved',
+        youDid: 'approved this work item',
+        color: 'var(--success)',
+        bg: 'var(--success-bg)',
+      };
+    case 'Issue':
+      return {
+        label: 'Issue',
+        attributed: 'Issue raised',
+        youDid: 'raised an issue on this work item',
+        color: 'var(--warning)',
+        bg: 'var(--warning-bg)',
+      };
+    case 'Blocked':
+      return {
+        label: 'Blocked',
+        attributed: 'Blocked',
+        youDid: 'blocked this work item',
+        color: 'var(--danger)',
+        bg: 'var(--danger-bg)',
+      };
+  }
+}
+
+/**
+ * Presentation for an instance's (or the overall) sign-off state. Decided states reuse
+ * {@link decisionStyle} so a chip on the instances row matches the badge on the page it links to;
+ * Pending takes the warning palette the queue already uses for "not signed off yet".
+ */
+export function instanceStateStyle(state: WorkItemInstanceState): { label: string; color: string; bg: string } {
+  if (state === 'Pending') {
+    return { label: 'Pending', color: 'var(--warning)', bg: 'var(--warning-bg)' };
+  }
+  const s = decisionStyle(state);
+  return { label: s.label, color: s.color, bg: s.bg };
+}
+
+/**
+ * One line for the ticket's roll-up across services: "2 of 3 services approved", with issues and
+ * blocks named because the approved count alone doesn't explain the rest ("1 of 3 services approved ·
+ * 1 issue · 1 blocked"). Only the blocked ones hold a promotion.
+ * Empty for a single-instance ticket, where the instance's own state says it all.
+ */
+export function overallSummaryLabel(overall: WorkItemOverallStatus | null | undefined): string {
+  if (!overall || overall.instances <= 1) return '';
+  const parts = [`${overall.approved} of ${overall.instances} services approved`];
+  if (overall.issues > 0) parts.push(`${overall.issues} issue${overall.issues === 1 ? '' : 's'}`);
+  if (overall.blocked > 0) parts.push(`${overall.blocked} blocked`);
+  return parts.join(' · ');
+}

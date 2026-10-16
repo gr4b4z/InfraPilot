@@ -7,7 +7,16 @@ authoritative set of changes (work items, PRs, commits) being promoted. Candidat
 the platform does not auto-generate them from deploy events.
 
 Lifecycle: `Pending → Approved → Deploying → Deployed`, with `Rejected` / `Superseded` as
-terminal off-ramps. The design rationale lives in
+terminal off-ramps. `Deployed` is the one state reality can force: when a succeeded deploy of the
+candidate's exact version lands on its target environment, ingestion closes the candidate as
+`Deployed` whatever state it was in — including `Pending` (nobody approved it; the version shipped
+out-of-band) and `Rejected` (somebody said no and it shipped anyway). `Superseded` is excluded:
+a newer candidate owns that edge and closes instead.
+
+Every action on a promotion leaves a system entry on its comment thread — created, change set
+refreshed, approved, rejected, bypassed, superseded, dispatched, deployed, participant assigned,
+policy re-applied. System entries are immutable (nobody edits or deletes them, admin included), so
+the thread is a reliable history of what happened to the promotion. The design rationale lives in
 [`docs/plans/external-promotion-creation.md`](../docs/plans/external-promotion-creation.md).
 
 ## Auth model
@@ -43,7 +52,13 @@ candidate; it does **not** recompute or infer the bundle.
   "toRevision":   "f9e8d7c",           // optional — SHA being promoted (display/traceability)
   "references": [                       // optional — the authoritative net change set
     { "type": "work-item",    "provider": "jira",   "key": "CHK-451",
-      "title": "Add express checkout", "url": "https://jira/CHK-451" },
+      "title": "Add express checkout",                           // the Jira ticket's own summary
+      "url": "https://jira/CHK-451",
+      "commits": ["f9e8d7c", "b41c0aa"],                         // the commit(s) that mentioned the ticket
+      "content": "One-tap checkout for saved cards.\n\nOut of scope: guest checkout.",
+      "priority": "High", "workItemType": "Story" },
+    { "type": "commit",       "provider": "github", "key": "f9e8d7c", "revision": "f9e8d7c",
+      "title": "Add one-tap express checkout for saved cards", "url": "https://github.com/o/r/commit/f9e8d7c" },
     { "type": "pull-request", "provider": "github", "key": "2087", "url": "https://github.com/o/r/pull/2087" },
     { "type": "repository",   "provider": "github", "revision": "f9e8d7c", "url": "https://github.com/o/r" }
   ],
@@ -53,11 +68,51 @@ candidate; it does **not** recompute or infer the bundle.
 }
 ```
 
-- A `reference` is `{ type, url?, provider?, key?, revision?, title?, participants? }`. Only
-  `type == "work-item"` references feed the approval gate (they become the candidate's work
-  items); `pull-request` / `repository` etc. are stored for display and traceability.
+- A `reference` is `{ type, url?, provider?, key?, revision?, title?, subTitle?, content?, priority?, workItemType?,
+  participants?, commits?, resolution?, occurredAt? }`. Only `type == "work-item"` references feed the approval gate (they
+  become the candidate's work items); `pull-request` / `repository` etc. are stored for display
+  and traceability. `occurredAt` has the same per-type meaning as on deploy ingest
+  (`notes/deployment-ingest-api.md`) and is resolved into the work item's `CommittedAt` for
+  lead-time analytics.
 - Work-item references may carry their own `participants[]` (a ticket's QA, a PR's reviewer);
   these surface on the candidate.
+- `content` is the reference's body copied from the source system (Jira description, PR
+  description, commit message body) — `title` is the summary line, `content` is the prose under
+  it. On a work item it becomes the **Content** section of the detail page, between People and
+  Sign-off, and is omitted entirely when absent. Shown as plain text; markup is not interpreted.
+- On a work-item reference, `title` should carry the **tracker's own summary** (the Jira ticket
+  title). A ticket routinely rides several commits, so no single commit subject can name it —
+  InfraPortal shows the messages of *all* the commits listed in `commits` as a second line under
+  the title, resolved from the `commit` references in the same payload. Send those commit
+  references (`type: "commit"`, `key` = hash, `title` = subject) or the second line has nothing to
+  show. `subTitle` exists for producers that put a commit subject on `title` instead: whenever it
+  is present it is read as the item's real name and displayed as the title. Never put commit
+  messages in `subTitle`.
+- A work-item reference may carry `resolution` — what its tracker says about the item:
+  ```jsonc
+  "resolution": {
+    "resolved": true,                 // the tracker reports it finished
+    "status":   "Done",               // the tracker's own word, display only
+    "at":       "2026-08-14T09:12:00Z",
+    "by":       { "displayName": "Farkas, Dariusz", "email": "dariusz.farkas@example.com" }
+  }
+  ```
+  `resolved: true` makes InfraPortal note on the work item's thread that its tracker already
+  considers it finished, naming the status, the date, and whoever performed the closing transition —
+  so a reviewer can see where the ticket stands without opening Jira. It is **not** a sign-off: a
+  closed ticket says the work is done, not that this release is fit to ship, which is the question
+  the gate asks, so the work item stays pending and a human still signs it off. Only `true` is
+  meaningful (`false` and an absent `resolution` are both "still open"), any decision already
+  recorded on the item is left untouched, and notes are deduplicated by content so a producer
+  re-posting the same change set does not repeat them.
+
+  Report closed tickets rather than dropping them: a producer that omits them makes a release whose
+  tickets are all finished look like it shipped nothing.
+- Every work-item reference should declare `commits` — the hashes of the commits whose messages
+  mentioned it — alongside a `commit` reference per hash: that is what lets the work-item detail
+  page link the ticket to the actual change. `fromRevision`/`toRevision` plus a `repository`
+  reference let the promotion page link to the provider's commit-diff view for the whole
+  candidate ("what exactly is being promoted").
 
 **Responses**
 
@@ -84,13 +139,78 @@ version on the target environment (see `notes/deployment-ingest-api.md`).
 ## Read
 
 ### `GET /api/promotions` — list
-Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`.
+Query params (all optional): `status`, `product`, `service`, `targetEnv`, `reference`, `gate`,
+`gateOnly`, `view`.
 Returns `{ "candidates": [ ... ] }`. Each candidate includes a **`canApprove`** boolean for the
-current user (Pending + authorized for ≥1 open requirement + not already decided), and a
-**`frozen`** boolean: `true` when the candidate is `Pending` and its `(product, targetEnv)` is held by
-an active [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes). The Promotions
-page shows such candidates in a separate "Frozen" group under a banner of the active freezes
-(read from `GET /api/promotions/freezes`) matching the product / target-env filters.
+current user (Pending + authorized for ≥1 open requirement + not already decided), a
+**`deploysOnApproval`** boolean read off its policy snapshot, and a **`frozen`** boolean: `true`
+when the candidate is `Pending` and its `(product, targetEnv)` is held by an active
+[Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes). The Promotions page shows
+such candidates in a separate "Frozen" group under a banner of the active freezes (read from
+`GET /api/promotions/freezes`) matching the product / target-env filters.
+
+**Response size — `view`.** `full` (the default) returns every candidate's references whole, in
+`sourceEventReferences` — the same list `GET /api/promotions/{id}` returns. `view=summary` returns
+the same response with each reference cut down to the fields a list row renders: `type`, `url`,
+`provider`, `key`, `revision`, `title`, `subTitle`, `priority`, `workItemType`. Left out (absent, not
+null): `content`, the reference-level `participants`, `commits`, `resolution`, `occurredAt`. Every
+candidate-level field is unchanged, and the `reference` filter still matches against the full
+references. Anything else is a `400`.
+
+Use `summary` for screens that list promotions — it is what the Promotions page and the my-tasks
+rollup poll with, and references' bodies are most of a list response's weight. Do **not** use it to
+read references you will send back: release automation that re-POSTs a candidate's references on
+upsert (`Update-InfraPortalPromotionWorkItems.ps1`) must read the default view, or the next upsert
+would drop the fields `summary` leaves out.
+
+**Filtering by approval gate.** `gate` is an approval-step name as the policy spells it
+("Release Approval"; an unnamed step is "Approval"), matched case-insensitively, and narrows the
+list to promotions that step is still **outstanding** on. `gateOnly=true` narrows further to the
+ones where it is the *last* thing outstanding — every other approval step already satisfied and, if
+the policy gates on work items, none of those holding it back either. That is the difference between
+"what will need a Release Approval" and "what am I the last signature on".
+
+Only a Pending promotion is waiting on anything, so `gate` narrows the result to Pending whatever
+`status` says. The vocabulary to offer comes from `GET /api/promotions/filter-options`, which
+returns `{ products, targetEnvs, gates }` — `gates` being the step names appearing on pending
+promotions (empty on an instance whose edges are all auto-approve).
+
+Every candidate carries the same state as two fields:
+
+- **`pendingGates`** — the approval steps it is still short of approvals on, in policy order.
+  Empty on anything that is not Pending and on auto-approve edges.
+- **`workItemsOutstanding`** — whether the policy's work-item gate is also holding it. A promotion
+  with one `pendingGates` entry and this set is *not* one signature from going out.
+
+A third field says which of those gates are the caller's:
+
+- **`approvableGates`** — the subset of `pendingGates` the current user could approve right now:
+  an approver for it, not yet signed by them, still short of approvals, and not held by the
+  work-item gate. `canApprove` is "this is non-empty". Mass approve reads it per row to separate
+  "yours to sign as Release Approval" from "waiting on Release Approval, but not on you".
+
+`deploysOnApproval` answers "what does pressing Approve do?", the question the queue could not
+previously answer. `true` (the default, and what a candidate whose snapshot predates the field
+reads as): InfraPortal's gate is the only gate — once satisfied, the release automation deploys the
+version, so an approval ships it. This is the mpt-release path. `false`: the approval starts a
+deployment run that stops at an approval of its own outside InfraPortal — the SDP pipeline
+(marketplace repo) cuts a release branch and queues a run whose staging and prod stages each wait
+on an Azure DevOps environment check — so the approval is necessary but not sufficient and the
+target environment does not change until somebody signs off there too.
+
+It is **display only**: gate evaluation, dispatch and webhook delivery are identical either way,
+and a producer never sends it. It is set per edge on the promotion policy
+(`deploysOnApproval`, Settings → Promotions → After approval); the flag defaults to `true`, and the
+edges seeded `false` are the `mpt` product's staging and prod ones.
+
+Every candidate (list and detail alike) carries two target-env versions, which mean different
+things once the promotion is no longer open:
+
+- **`fromVersion`** — what the target ran when the candidate was created: the "from" side of the
+  change, and the baseline `references` were computed against. Frozen, so a Deployed or Rejected
+  promotion still says where it came from. `null` for a first deploy into the target.
+- **`targetCurrentVersion`** — what the target runs *right now*. Equal to `fromVersion` while the
+  promotion is open, and to `version` once it lands. Use `fromVersion` to render history.
 
 ### `GET /api/promotions/{id}` — detail
 Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, approvalProgress, freeze }`.
@@ -129,6 +249,68 @@ Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, ap
   is not frozen or the candidate is no longer `Pending`. Once the freeze is lifted, a candidate whose
   gate was already satisfied reloads as `Approved`.
 
+### `GET /api/promotions/audit` — activity feed
+Every recorded action on a promotion, newest first. This is what the **Promotions audit** page
+(`/promotions/audit` in the web UI) is built on, and it answers the questions that arrive as
+questions: what was approved today, what was created today, what went to prod last week and who
+signed it off.
+
+Auth is the admin-only `AuditViewer` policy, the same gate that guards `GET /api/audit`: read
+end to end this is a cross-product record of who did what, which is an administrator's view of the
+system. Approvers still see the history of any single promotion on its detail page, which is not
+gated this way. The row's `sourceIp` is deliberately **not** returned, unlike on `/api/audit`.
+
+The web UI matches: `/promotions/audit` is behind `AdminRoute`, and the sidebar entry, the command
+palette target and the **Audit** button on the promotions list are hidden from non-admins.
+
+Query params (all optional):
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | Absolute instants bounding the window. A *calendar* day is the caller's, not the server's, so the UI resolves its own midnight and sends `from`. |
+| `days` | Convenience for a URL written by hand: `?days=7`. Ignored when `from` is given. |
+| `category` | Comma-separated kinds of action: `approved`, `approval-step`, `rejected`, `cancelled`, `created`, `updated`, `deployed`, `work-item`, `comment`, `people`, `other`. A category is just a named set of actions (`PromotionAuditCategories`); `other` resolves against the actions actually present, so it holds anything the map hasn't been taught. |
+| `action` | Comma-separated raw action names, e.g. `promotion.bypassed`. Unioned with `category`. |
+| `actor` | Exact actor id, or a case-insensitive fragment of an actor name. |
+| `product`, `service`, `targetEnv` | Scope to a promotion. `service` is a substring match, as on the list. |
+| `page`, `pageSize` | `pageSize` defaults to 50, capped at 200. |
+
+```jsonc
+{
+  "entries": [
+    { "id": "…", "timestamp": "2026-08-19T09:14:02Z", "correlationId": "…",
+      "action": "promotion.approved", "category": "approved",
+      "actorId": "…", "actorName": "System (gate satisfied)", "actorType": "system",
+      "candidateId": "…", "product": "acme", "service": "api",
+      "sourceEnv": "staging", "targetEnv": "prod", "version": "v1.4.0",
+      "candidateStatus": "Deployed",        // status NOW, not at the time of the action
+      "comment": null, "reason": null, "workItemKey": null,
+      "role": null, "referenceKey": null, "trigger": "gate-evaluator",
+      "approvedBy": [ { "id": "…", "name": "Maja Nowak" } ],
+      "details": { "trigger": "gate-evaluator" } }
+  ],
+  "total": 137,                             // rows matching every filter, not this page
+  "page": 1, "pageSize": 50,
+  "range": { "from": "2026-08-12T09:00:00Z", "to": null },
+  "actions": [ { "action": "promotion.approved", "category": "approved", "count": 12 } ],
+  "actors":  [ { "id": "…", "name": "Maja Nowak", "type": "user", "count": 31 } ]
+}
+```
+
+- **`approvedBy`** — on a gate-opening row, the people whose approvals opened it. The row itself is
+  written by the evaluator with the system as its actor, so this is where "who approved it" lives.
+  Read from the trail (the sibling `promotion.approval.recorded` rows sharing the correlation id),
+  not from the candidate's current approval rows: cancelling an approval deletes those, and a
+  historical line has to keep saying what happened. `null` for an auto-approval — nobody decided it.
+- **`actions`** / **`actors`** are facet counts, computed under every filter **except** the one they
+  feed. That is what lets the page's tab badges say what selecting them would show. `total` is
+  derived from the same counts, so a badge and its own list can never disagree.
+- The feed is **candidate-anchored**: rows are inner-joined to a promotion the caller may see, which
+  is what applies hidden products and retired services here. Two consequences — the module's audit
+  rows that hang off other entities (`work-item.approved`/`work-item.blocked`, which duplicate a
+  sign-off already recorded against the candidate as `promotion.ticket.*`, and `work-item.comment.*`)
+  are not in the feed, and neither is a sign-off recorded with no live candidate.
+
 ---
 
 ## Act
@@ -142,16 +324,66 @@ Body: `{ "comment"?: string, "stepName"?: string, "requirementName"?: string }`.
 - `403` if not eligible for the named requirement; `409` if that requirement is already satisfied.
 - On success returns the updated candidate.
 
-The approval is recorded with its `(stepName, requirementName)` attribution and the gate
-evaluator honors it (each approver counts toward at most one requirement — global
-distinct-person rule).
+The approval is recorded against its `(stepName, requirementName)` and the gate evaluator counts
+it toward exactly that requirement. One person may approve several requirements — one call per
+requirement — so somebody who is both the QA manager and the release manager clears both gates.
+Approving the same requirement twice is a `400`. `GET /api/promotions/{id}` lists the approvals
+with their attribution and `eligibleRequirements` — the open requirements the caller has not yet
+approved — so a client can offer one approve action per gate.
 
 ### `POST /api/promotions/{id}/reject`
 Body: `{ "comment"?: string }`. One rejection from an authorized approver terminates the candidate.
+`403` for anyone who is not an approver on the promotion's policy — an administrator who is not one
+uses the admin reject below.
 
 ### `POST /api/promotions/bulk/approve`
-Body: `{ "ids": ["<guid>", ...], "comment"?: string }`. Per-id outcome:
-`{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }`.
+Body: `{ "ids": ["<guid>", ...], "comment"?: string, "gate"?: string }`. Partial success, per-id
+outcome — one row being refused never stops the rest:
+`{ "results": [ { "id", "ok": true, "status", "approvedAs", "pendingGates", "workItemsOutstanding" } | { "id", "ok": false, "error" } ] }`.
+
+- **With `gate`** (an approval-step name as `pendingGates` spells it, case-insensitive): each row
+  approves that gate — every requirement of it the caller is eligible for and is still open, one
+  recorded approval per requirement, through the same guards as a single approve. `approvedAs`
+  lists the requirements signed. A row the caller cannot sign fails with the reason: not an approver
+  for that gate, already signed it, the gate is already satisfied, the promotion has no such gate,
+  or its work items still hold it. This is what the Promotions page's **Mass approve** dialog sends.
+- **Without `gate`**: each row is a plain approve, so a caller eligible for more than one open
+  requirement on a row gets that row back as `ok: false` (name the gate instead).
+
+`status` is the promotion's status afterwards — `Approved` when that was its last gate, otherwise
+still `Pending`, with `pendingGates` saying what is left.
+
+### `POST /api/promotions/admin/candidates/{id}/bypass` — admin
+Body: `{ "reason": string }` (required, else `400`). Forces a Pending promotion to `Approved`
+without satisfying its gate — work-item gate included. Audited as `promotion.bypassed` with the
+reason, and fires the same `promotion.approved` webhook a normal approval does, tagged
+`trigger: "administrator-bypass"`. Returns `{ "id", "status" }`; `400` when it is no longer Pending.
+
+### `POST /api/promotions/admin/candidates/bulk/bypass` — admin
+Body: `{ "ids": ["<guid>", ...], "reason": string }`. The bypass above for a batch, one reason for
+all of them (empty ⇒ `400`, nothing bypassed). Each promotion is bypassed, audited and announced on
+its own. Per-id outcome like bulk approve: `{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }`.
+
+### `POST /api/promotions/admin/candidates/{id}/reject` — admin
+Body: `{ "reason": string }` (required, trimmed; empty ⇒ `400`). Rejects a Pending promotion
+without the approver-eligibility check — the reject counterpart of bypass. Effects are a normal
+reject's: status `Rejected`, a `Rejected` decision row under the caller with the reason as its
+comment (the promotion page's "Other decisions"), a system comment, and the `promotion.rejected`
+webhook. The override is marked `trigger: "administrator-reject"` on the `promotion.rejected`
+audit row (category `rejected`, `reason` lifted in the audit feed) and on the webhook's `change`.
+Returns `{ "id", "status" }`; `400` when it is no longer Pending, `404` for an unknown id.
+
+### `POST /api/promotions/admin/candidates/bulk/reject` — admin
+Body: `{ "ids": ["<guid>", ...], "reason": string }`. The reject above for a batch, one reason for
+all (empty ⇒ `400`, nothing rejected). Per-id outcome like bulk bypass:
+`{ "results": [ { "id", "ok": true, "status" } | { "id", "ok": false, "error" } ] }` — an unknown
+or no-longer-Pending id fails on its own row and the rest still go through. API only; the UI has
+no bulk reject.
+
+**Automation agents:** these two are the reject to use with an API key — e.g. clearing stale
+Pending promotions after a release-track change. The key needs the `InfraPortal.Admin` role (any
+`/admin` route does); a non-admin key gets `403`. Approving stays a human action — there is no
+admin approve beyond the audited bypass.
 
 ### `GET /api/promotions/freezes` — active Promotion Freezes
 Same response as the admin `GET /api/promotions/admin/freezes` (see
@@ -163,9 +395,148 @@ lifting a freeze stays admin-only.
 - `GET /api/promotions/{id}/comments`, `POST /api/promotions/{id}/comments`,
   `PATCH /api/promotions/comments/{commentId}`, `DELETE /api/promotions/comments/{commentId}`.
 - `POST /api/promotions/{id}/participants`, `DELETE /api/promotions/{id}/participants/{role}`.
+- `PATCH /api/promotions/{id}/references/{referenceKey}/participants` — assign / reassign / clear a
+  person on one work-item reference. Body `{ "role", "assignee": { "email", "displayName" } | null }`.
+- `PATCH /api/promotions/{id}/work-items/participants` — the same on **every** work item of the
+  candidate at once (the promotion page's "Assign to all"). Body
+  `{ "role", "assignee": { "email", "displayName" } | null, "onlyMissing"?: bool }`. Replaces whoever
+  each ticket had in the role (aliases included); `onlyMissing` skips tickets that already have
+  somebody. Same role/permission rules as the per-reference route (configured role, QA or Admin).
+  Returns `{ role, updated: [keys], unchanged: [keys], skipped: [keys] }`; one system comment, audit
+  row and `promotion.updated` (`changeType: work-items.participant.upserted|removed`) per call.
+- `GET /api/promotions/users/search?q=&role=` — with `role`, a role restricted to directory groups
+  (see below) only returns their members; the response's `restrictedTo` names the groups.
 - `GET /api/promotions/roles`, `GET /api/promotions/users/search?q=`,
   `GET /api/promotions/groups/search?q=` — directory-backed pickers (resolve against AD/Graph in
-  MSAL mode; local users/static groups in dev).
+  MSAL mode; local users/static groups in dev). Note `roles` here reports the roles **observed in
+  the data**, which is not the same as the roles you may assign — see below.
+
+### Work-item sign-off — `/api/work-items/{key}`
+
+**A work item is `(key, product, service, targetEnv)`.** The same Jira ticket carried by three
+services of one product is three work items — `mpt-helpdesk/MPT-1`, `mpt-platform/MPT-1`,
+`mpt-currency/MPT-1` — each with its own sign-off, comment thread and assigned people, because each
+is a different change to a different deployable. Promotions of the *same* service (a newer version,
+a second source edge into the same target) share one work item, so a decision still survives a
+supersede. The UI route mirrors this: `/work-items/{service}/{key}?product=&targetEnv=`.
+
+Reads take `product`, `service` and `targetEnv` as query parameters; writes carry them in the body.
+`service` is required everywhere — a request that names only the ticket cannot say which instance it
+means and gets a `400` pointing at the resolver:
+
+- `GET /{key}/instances?product=&targetEnv=` → `{ overall, instances: [{ service, title, state }] }`:
+  every service whose promotions carry the ticket, each with its own state (`Pending` / `Approved` /
+  `Issue` / `Blocked`), and `overall` — the roll-up (`state`, `instances`, `approved`, `issues`,
+  `blocked`, `pending`): any block → Blocked, else any issue → Issue, else all approved → Approved,
+  else Pending. That precedence is for display; the gate reads the counts, and clears a ticket when
+  `blocked == 0 && pending == 0` (so an `Issue` roll-up clears, a `Pending` one does not).
+  The detail response and queue rows carry the same `overall`. This is also how a link
+  minted before the service joined the identity (`/work-items/{key}?product=&targetEnv=`) finds its
+  way to one instance, or to a picker.
+- `GET /{key}?product=&service=&targetEnv=` — sign-off context (authority, decision history).
+- `GET /{key}/detail?product=&service=&targetEnv=` — everything the work-item page renders.
+- `GET|POST /{key}/comments` — the thread, keyed the same way.
+
+Three decisions, each its own POST with body `{ product, service, targetEnv, comment? }`:
+
+| Route | Stored decision | Event |
+|---|---|---|
+| `POST /{key}/approvals` | `Approved` | `promotion.ticket.approved` |
+| `POST /{key}/issues` | `Issue` | `promotion.ticket.issue-raised` |
+| `POST /{key}/blocks` | `Blocked` | `promotion.ticket.blocked` |
+
+**Only a block holds the gate.** An issue ("something's wrong") is a flag on a change that is still
+going out, so it releases the gate exactly as an approval does — including the auto-approve
+accelerator, which means raising an issue on the last outstanding item can promote the candidate. A
+block ("not going out") leaves the item unresolved, which stalls the gate without terminating the
+candidate. All three decisions are reversible, and a new version of the promotion clears the held
+ones and asks again. Vetoing is candidate-level (`POST /api/promotions/{id}/reject`), never something
+done to one ticket.
+
+The `promotion.ticket.*` webhook payloads and audit rows carry `service` alongside `workItemKey`,
+`product` and `targetEnv`. Rows written before the `AddWorkItemService` migration have no `service`
+in their payload; the migration duplicated every existing decision and comment once per service that
+carried the ticket (status as-is), so the stored state is per service even where the history is not.
+
+**Renamed from Block/Reject.** These decisions were once named on a shift of one: today's issue was
+`Blocked` (`POST /blocks`, `promotion.ticket.blocked`) and today's block was `Rejected`
+(`POST /rejections`, `promotion.ticket.rejected`). The `RenameWorkItemDecisions` migration rewrote
+stored values so the database is consistent. Two things did not move: `POST /rejections` is gone
+rather than aliased (an alias would keep `/blocks` working while silently changing which decision it
+records), and audit rows written before the rename keep their original action names.
+
+### Work-items queue — `GET /api/work-items/me/pending`
+
+What the web app's *Work items queue* page reads. Two modes, picked by `status`:
+
+| Param | Applies to | Meaning |
+|---|---|---|
+| `status` | — | `pending` (default) — work items awaiting sign-off that the caller can decide. `decided` — the decision history (every decision by anyone, newest first). |
+| `assignee` | both | Pending: narrows to items where that email holds a role (`unassigned` = nobody in an assignment role). Decided: narrows to that **decider**, case-insensitively (`unassigned` is ignored). |
+| `roleRequirement` | pending | `assigned` — `assignee` must hold a role the item's policy requires; `missing` — a required role has nobody in it. |
+| `since` | decided | ISO timestamp; decisions at or after it. Omit for all time. |
+| `limit` | decided | Rows per page. Default `100`, clamped to `1..500`. |
+| `cursor` | decided | The previous page's `nextCursor`, for the page after it. Omit for the first page. Opaque — pass back what the server returned; anything else is a `400`. |
+
+Pending response: `{ tickets: [...], assignees: [{ email, displayName, role, count }] }`, unpaged —
+it is bounded by the work in flight. `assignees` is the person-filter rollup, computed before the
+`assignee` narrowing.
+
+Decided response — **paged**, every time window included (a busy month is as unbounded as all
+time):
+
+```json
+{
+  "tickets":    [ /* this page's rows, newest decision first */ ],
+  "assignees":  [ { "email": "…", "displayName": "…", "role": "", "count": 12 } ],
+  "total":      1234,
+  "hasMore":    true,
+  "nextCursor": "NjM4…"
+}
+```
+
+- Order is `(decidedAt DESC, id DESC)` — newest first as before, with the decision's id breaking
+  ties, so walking the pages returns exactly the one-shot list: no row twice, none skipped.
+- The cursor is a keyset position, not an offset. A decision's time never changes (a change of mind
+  rewrites the decision on the same row) and new decisions land at the top, so the pages after a
+  cursor are unaffected by decisions arriving in between; refetch the first page to see those.
+- `assignees` (the "decided by" dropdown, before the decider narrowing) and `total` (decisions in
+  the window after the decider narrowing) describe the whole window, not the page, and come on
+  every page.
+- `nextCursor` is `null` and `hasMore` is `false` on the last page.
+- **Compatibility:** `tickets` and `assignees` are unchanged in shape, but a caller that sends no
+  `limit` now gets the newest 100 decisions rather than the whole window. Follow `nextCursor` to
+  read further.
+
+### Participant roles
+
+Two different role sets, easily confused:
+
+- **The configured vocabulary** — `ui.app-settings` → `roles` (Settings → Participant Roles). The
+  roles the platform knows about: what the pickers and the work-item role filter list, and the only
+  ones a person can be *manually* assigned to. Naming someone on any other role returns `400`
+  (`POST /{id}/participants` and `PATCH …/references/{key}/participants`). Clearing a slot
+  (`assignee: null`) is always allowed, whatever its role — an ingested payload can put someone on a
+  role nobody configured, and that has to stay removable.
+- **The assignee-role set** — `promotions.assignee_roles`, default `["qa","reviewer","assignee"]`.
+  Only defines what counts as "assigned to somebody" when the work-items queue is filtered by person
+  with no role picked. Narrowing it does not narrow what an operator can filter on.
+
+**Ingest is exempt from both.** A producer's payload is a record of what happened, so any role is
+accepted and stored as sent. Roles that aren't in the configured vocabulary are reported back as
+`unknownRoles` on the work-items queue and flagged as unrecognised in the UI.
+
+Each configured role may also carry:
+
+- **`aliases`** — other names producers send for it (`qa` on `qa-owner`, for Jira's "QA" field).
+  Resolved **on read** everywhere roles are compared — required-role completeness
+  (`workItemRoleGaps`, `missingRoles`), the queue's role/person filters, a policy's
+  `requiredWorkItemRoles` — so existing tickets count immediately; nothing is rewritten. Manual
+  assignment through an alias stores the canonical key and replaces the aliased entry. An alias may
+  not also be a role of its own, nor belong to two roles (`PUT /api/settings` → `400`).
+- **`assigneeGroups`** — `[{ id, name }]` directory groups; the person search for the role
+  (`users/search?role=`) only returns their members (Graph transitive membership; locally, users whose
+  roles include the group). A picker filter, not a write gate.
 
 ---
 
@@ -200,9 +571,11 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
       ]
     }
   ],
-  "timeoutHours": 48,
   "escalationGroup": "SRE-OnCall",      // optional
-  "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed off
+  "requireAllWorkItemsApproved": false,        // block manual approval until every work item is signed
+                                               // off (decided, none blocked — an issue counts)
+  "requireAllWorkItemInstancesApproved": false, // judge a ticket by its overall status across every service
+                                               // instance (see below) instead of this service's own
   "autoApproveOnAllWorkItemsApproved": false,  // auto-promote once all work items are signed off
   "autoApproveWhenNoWorkItems": false          // auto-approve at create time when the payload has no work items
 }
@@ -213,16 +586,34 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
 ### Evaluation rules
 - **Within a requirement** → OR: a group member *or* a listed user qualifies.
 - **Within a step / across steps** → AND: every requirement (in every step) must be satisfied.
-- **Distinct people** (global): one human satisfies at most one requirement across the whole
-  policy. The matcher assigns most-constrained-requirement-first to avoid false "not satisfied".
+- **Distinct people** (per requirement): an N-of-M requirement needs N different people, but the
+  same person may satisfy several requirements by approving each one separately. (This replaced the
+  original global rule, under which a person eligible for two gates could clear only one and the
+  promotion stalled when nobody else was eligible for the other.) Legacy approvals recorded without
+  a requirement are placed by the matcher most-constrained-requirement-first, at most one each.
 - **Group membership is evaluated live** (token claims, then Microsoft Graph) at fetch/approval
   time — never snapshotted — so added/removed approvers take effect immediately. The *policy* is
   snapshotted onto the candidate at creation, but *who is in a group* is always current-state.
 - **Gating is expressed by two orthogonal things**: the human approver tree (`steps[]` — an empty
   tree means no human gate) and the work-item flags below.
+- **Instance vs. overall**: a work item is per service, so by default a promotion of `mpt-helpdesk`
+  waits only for `mpt-helpdesk/MPT-1`. With `requireAllWorkItemInstancesApproved` it waits for the
+  ticket's **overall** status — every service's instance of `MPT-1` in the target environment
+  decided, none holding a block. The overall status is what `GET /api/work-items/{key}/instances`
+  returns (and every instance page and queue row shows), so managers who read a ticket as
+  done-or-not and testers who sign off per service look at the same object. The flag only qualifies
+  the two gate flags below; on its own it changes nothing.
 - **Work-item gate**: when `requireAllWorkItemsApproved` is set and the candidate has work items,
-  all must be approved before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
-  promotes automatically once every work item is approved, regardless of the human approver tree.
+  all must be cleared before the promotion can proceed; `autoApproveOnAllWorkItemsApproved`
+  promotes automatically once every work item is cleared, regardless of the human approver tree.
+  A work item counts as cleared when it carries at least one decision and no `Blocked` one — so an
+  `Issue` clears it just as an `Approved` does, and an item nobody has ruled on does not.
+- **Work-item decisions** are `Approved`, `Issue`, or `Blocked`, one row per approver per
+  `(key, product, service, targetEnv)`. None of them vetoes the candidate. `Blocked` is the only one
+  that holds the gate, and it is a reversible hold: the gate stays unmet but the candidate stays
+  Pending, and the same approver can switch to `Approved` or `Issue` later to release it.
+  Re-deciding updates the approver's existing row (stamping `updatedAt`) instead of appending a
+  second one; recording the *same* decision twice is a 400.
 - An empty step tree (no requirements) ⇒ auto-approve (no human gate).
 - **Promotion Freeze**: while the candidate's `(product, targetEnv)` is frozen the gate is never
   satisfied — see [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes).

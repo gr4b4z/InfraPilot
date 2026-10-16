@@ -1,0 +1,40 @@
+id: mass-approve-promotions
+title: Approve many promotions at once
+group: Promotions
+summary: >-
+  Sign one approval gate — QA Review, Release Approval — on every promotion waiting for it in an
+  environment, in one go. Administrators can bypass the ones they cannot approve.
+aliases:
+  - mass approve
+  - bulk approve
+  - approve all promotions
+  - approve everything for prod
+  - release night approvals
+  - bypass many promotions
+route: /promotions
+requires:
+  feature_flag: Promotions
+  roles: []
+steps:
+  - text: >-
+      On **Promotions**, press **Mass approve** at the top of the page.
+    anchor: promotions-mass-approve
+  - text: >-
+      Pick the **environment** the promotions are going to, then the **gate** you are signing. Each
+      gate shows how many promotions are waiting on it and how many of those are yours to approve.
+  - text: >-
+      Check the list. Every promotion you can approve for that gate is ticked; untick any you want
+      to leave. Rows you cannot approve stay greyed out with the reason — waiting on work items, or
+      not yours to sign.
+    note: >-
+      Approving signs that one gate only. A promotion still waiting on another gate stays pending
+      and the list says which gate is next.
+  - text: >-
+      Administrators can tick a greyed-out row to **bypass** it, or switch any ticked row from
+      Approve to Bypass. A bypass approves the promotion without its gate and needs a reason, which
+      is recorded on every promotion bypassed.
+  - text: >-
+      Press the confirm button. The dialog then lists what happened to each promotion — approved,
+      signed and still waiting, bypassed, or why it could not be done.
+related:
+  - approve-promotion

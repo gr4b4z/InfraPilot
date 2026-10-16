@@ -1,8 +1,10 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useState, useMemo, useCallback, type ReactNode } from 'react';
+import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
+import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useDeploymentStore } from '@/stores/deploymentStore';
 import { useSettingsStore, resolveTemplate } from '@/stores/settingsStore';
-import { DeployEventDetail } from '@/components/deployments/DeployEventDetail';
+import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
+import { useEnvColorOrNull, useEnvControlStyle } from '@/components/environments/useEnvColor';
 import { formatDistanceToNow } from 'date-fns';
 import {
   ArrowLeft,
@@ -18,10 +20,22 @@ import {
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
+  Trash2,
 } from 'lucide-react';
-import type { DeploymentStateEntry, DeployEvent } from '@/lib/types';
+import type { DeploymentStateSummary, DeployEvent } from '@/lib/types';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
+import { api } from '@/lib/api';
+import type { PromotionCandidate } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { useFeatureFlag, FeatureFlag } from '@/stores/featureFlagsStore';
 import { collectParticipants } from '@/lib/types';
 import { resolveReferenceHref } from '@/lib/refUrl';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { RovingGroup } from '@/components/ui/RovingGroup';
+import { useSearchScope } from '@/stores/searchScopeStore';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 type ViewTab = 'state' | 'activity' | 'compare';
 type TimeFilter = 'all' | 'today' | '24h' | '7d' | 'custom';
@@ -80,13 +94,57 @@ function getSubtitle(filter: TimeFilter, customDate?: string): string {
   return map[filter] ?? '';
 }
 
+/** Tab names for the document title — the same words the segmented control shows. */
+const TAB_TITLES: Record<ViewTab, string> = {
+  state: 'State',
+  activity: 'Activity',
+  compare: 'Compare',
+};
+
+/**
+ * The time filter as a title segment. Deliberately terser than {@link getSubtitle}: a browser tab has
+ * no room for "Deployed in the last 7 days", and the unfiltered case contributes nothing at all
+ * rather than the subtitle's "Service × Environment matrix".
+ */
+function getTimeTitle(filter: TimeFilter, customDate?: string): string | null {
+  if (filter === 'custom') {
+    // A custom filter with no date picked yet isn't filtering anything.
+    return customDate ? `since ${new Date(customDate).toLocaleDateString()}` : null;
+  }
+  const map: Record<string, string | null> = {
+    all: null,
+    today: 'today',
+    '24h': 'last 24h',
+    '7d': 'last 7 days',
+  };
+  return map[filter] ?? null;
+}
+
 export function ProductDeploymentsPage() {
   const { product } = useParams<{ product: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { stateMatrix, recentActivity, loading, fetchState, fetchRecentByProduct } =
     useDeploymentStore();
   const { getDisplayName, getOrderedEnvironments } = useSettingsStore();
-  const [selected, setSelected] = useState<DeploymentStateEntry | null>(null);
+  const promotionsEnabled = useFeatureFlag(FeatureFlag.Promotions);
+  const [promotions, setPromotions] = useState<{ product: string; candidates: PromotionCandidate[] }>(
+    { product: '', candidates: [] },
+  );
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  // The service the admin is about to retire, and how that attempt is going. One at a time — this is
+  // a per-row decision, and a queue of half-confirmed retirements would be a worse UI, not a faster one.
+  const [retiring, setRetiring] = useState<string | null>(null);
+  const [retireBusy, setRetireBusy] = useState(false);
+  const [retireError, setRetireError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  // Clicking a deployment goes to its own page rather than opening a drawer: the drawer could only
+  // ever show a summary, while the questions people arrive with — why did it fail, what did it print,
+  // what does it feed — need the room the detail page has.
+  const openDeployment = useCallback(
+    (entry: { id: string }) =>
+      navigate(deploymentDetailPath(entry.id, { path: `/deployments/${product}`, label: product ?? 'deployments' })),
+    [navigate, product],
+  );
 
   // Read filter state from URL search params
   const tab: ViewTab = isViewTab(searchParams.get('tab')) ? searchParams.get('tab') as ViewTab : 'state';
@@ -189,26 +247,98 @@ export function ProductDeploymentsPage() {
     [updateParams]
   );
 
+  // Retire a service (admin). The refetch is what removes the row: the server owns the filter, so
+  // the page asks for the matrix again rather than splicing the service out of its local copy —
+  // which would also be the only version of the rule the client got to have an opinion about.
+  const retireService = useCallback(
+    async (service: string, reason: string) => {
+      if (!product) return;
+      setRetireBusy(true);
+      setRetireError(null);
+      try {
+        await api.deleteService({ product, service, reason: reason || undefined });
+        setRetiring(null);
+        await fetchState(product);
+      } catch (e) {
+        setRetireError(e instanceof Error ? e.message : 'Failed to remove the service');
+      } finally {
+        setRetireBusy(false);
+      }
+    },
+    [product, fetchState],
+  );
+
+  // The wall-monitor view: deploy events for this product repaint the matrix live, and
+  // promotion changes update the per-cell pending-promotion cue.
+  const deploymentsTick = useEntityRefresh(['deployment'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+  const promotionsTick = useEntityRefresh(['promotion'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+
+  // Each fetch below tells a new query (a different product, tab or time window — spinner) apart
+  // from a push refresh of the one on screen (silent: the matrix and activity rows stay mounted
+  // and the fresh data swaps into them, so the wall monitor never blinks).
+  const isMatrixRefresh = useIsBackgroundRefresh();
+  const isRecentRefresh = useIsBackgroundRefresh();
+  const isActivityRefresh = useIsBackgroundRefresh();
+
   // Fetch state matrix (always needed for state tab)
   useEffect(() => {
-    if (product) fetchState(product);
-  }, [product, fetchState]);
+    if (product) fetchState(product, undefined, { silent: isMatrixRefresh(product) });
+  }, [product, fetchState, deploymentsTick, isMatrixRefresh]);
+
+  // Pending promotions for this product, for the matrix's per-cell cue. Skipped entirely when the
+  // feature is off — there is nothing to show and no reason to call the endpoint.
+  //
+  // The result carries the product it was fetched for so the consumer can ignore it while a
+  // navigation to a different product is still in flight, rather than briefly painting one
+  // product's promotions onto another's matrix.
+  useEffect(() => {
+    if (!product || !promotionsEnabled) return;
+    let cancelled = false;
+    api
+      .listPromotions({ product, status: 'Pending' })
+      .then((r) => {
+        if (!cancelled) setPromotions({ product, candidates: r.candidates });
+      })
+      .catch(() => {
+        // The matrix is still useful without the cue; degrade to showing none.
+        if (!cancelled) setPromotions({ product, candidates: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product, promotionsEnabled, promotionsTick]);
 
   // Fetch recent activity when state tab has a time filter
   useEffect(() => {
     if (product && tab === 'state' && timeFilter !== 'all') {
       if (timeFilter === 'custom' && !customDate) return;
-      fetchRecentByProduct(product, computeSince(timeFilter, customDate));
+      fetchRecentByProduct(product, computeSince(timeFilter, customDate), {
+        silent: isRecentRefresh(`${product}|${timeFilter}|${customDate}`),
+      });
     }
-  }, [product, tab, timeFilter, customDate, fetchRecentByProduct]);
+  }, [product, tab, timeFilter, customDate, fetchRecentByProduct, deploymentsTick, isRecentRefresh]);
 
   // Fetch recent activity for activity tab
   useEffect(() => {
     if (product && tab === 'activity') {
       if (activityTimeFilter === 'custom' && !activityCustomDate) return;
-      fetchRecentByProduct(product, computeSince(activityTimeFilter, activityCustomDate));
+      fetchRecentByProduct(product, computeSince(activityTimeFilter, activityCustomDate), {
+        silent: isActivityRefresh(`${product}|${activityTimeFilter}|${activityCustomDate}`),
+      });
     }
-  }, [product, tab, activityTimeFilter, activityCustomDate, fetchRecentByProduct]);
+  }, [
+    product,
+    tab,
+    activityTimeFilter,
+    activityCustomDate,
+    fetchRecentByProduct,
+    deploymentsTick,
+    isActivityRefresh,
+  ]);
 
   // Build a set of recently-changed (service, env) keys for highlighting
   const recentKeys = useMemo(() => {
@@ -253,6 +383,34 @@ export function ProductDeploymentsPage() {
     });
   }, [stateMatrix, sortBy, sortDir, getCell]);
 
+  // `/` searches this product's services. Client-side over the loaded matrix, which is the whole
+  // product — a server round trip would return the same rows. Enter goes to the service's detail
+  // page, the page that answers "how is this one doing".
+  useSearchScope(
+    {
+      label: product ?? 'Services',
+      placeholder: 'Find a service in this product…',
+      search: async (query) => {
+        const needle = query.toLowerCase();
+        return services
+          .filter((service) => service.toLowerCase().includes(needle))
+          .slice(0, 25)
+          .map((service) => ({
+            id: service,
+            title: service,
+            subtitle: environments
+              .map((env) => {
+                const cell = getCell(service, env);
+                return `${getDisplayName(env)} ${cell ? `v${cell.version}` : '—'}`;
+              })
+              .join(' · '),
+            to: `/deployments/${product}/${service}`,
+          }));
+      },
+    },
+    [product, services, environments, getCell, getDisplayName],
+  );
+
   const toggleSort = useCallback(
     (key: string) => {
       const updates: Record<string, string | null> = {};
@@ -268,12 +426,28 @@ export function ProductDeploymentsPage() {
     },
     [sortBy, sortDir, updateParams]
   );
-  const isBehind = (service: string, envIndex: number) => {
-    if (envIndex === 0) return false;
-    const current = getCell(service, environments[envIndex]);
-    const prev = getCell(service, environments[envIndex - 1]);
-    return current && prev && current.version !== prev.version;
-  };
+  /**
+   * Pending promotions for this product, keyed `service::targetEnv` — what the matrix shows instead
+   * of a "behind" warning.
+   *
+   * <p>The old cue compared a cell's version against the environment to its left and flagged any
+   * difference. That fires on every normal state of a pipeline: dev is nearly always ahead of prod,
+   * and nothing is wrong. A pending promotion is the opposite kind of signal — somebody has actually
+   * queued this change and it is waiting on a person, which is the only thing on this page you can
+   * act on.</p>
+   */
+  const pendingPromotions = useMemo(() => {
+    const map = new Map<string, PromotionCandidate>();
+    // Gate on the flag here rather than clearing state when it flips, and on the product so a
+    // response for the page we just navigated away from is never painted.
+    if (!promotionsEnabled || promotions.product !== product) return map;
+    for (const c of promotions.candidates) {
+      const key = `${c.service}::${c.targetEnv}`;
+      // Newest wins if several are somehow open on the same edge; the list arrives newest-first.
+      if (!map.has(key)) map.set(key, c);
+    }
+    return map;
+  }, [promotions, promotionsEnabled, product]);
 
   // ── Compare helpers ──
   // If the user hasn't picked envs, default to the last two ordered envs —
@@ -443,6 +617,31 @@ export function ProductDeploymentsPage() {
     );
   }, [compareRows, resolvedFrom, resolvedTo, product, downloadFile]);
 
+  // Every filter on this page is already in the query string, so a link to it is a link to one
+  // specific view — and the title has to say which one, or a compare of dev → prod and a week of
+  // activity are the same tab to a reader. The compare envs are the *resolved* pair rather than the
+  // raw params: the page defaults them when the link omits them, and the title reports what is on
+  // screen.
+  useDocumentTitle(
+    tab === 'compare'
+      ? [
+          product,
+          TAB_TITLES.compare,
+          resolvedFrom && resolvedTo ? `${resolvedFrom} → ${resolvedTo}` : null,
+          compareMode === 'all' ? 'all services' : null,
+          'Deployments',
+        ]
+      : tab === 'activity'
+        ? [
+            product,
+            TAB_TITLES.activity,
+            getTimeTitle(activityTimeFilter, activityCustomDate),
+            envFilter === 'all' ? null : envFilter,
+            'Deployments',
+          ]
+        : [product, TAB_TITLES.state, getTimeTitle(timeFilter, customDate), 'Deployments'],
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -474,15 +673,18 @@ export function ProductDeploymentsPage() {
       {/* Tab switcher + filters */}
       <div className="flex items-center gap-4 flex-wrap">
         {/* State / Activity / Compare tabs — Compare only when 2+ environments */}
-        <SegmentedControl
-          options={[
-            { key: 'state', label: 'State' },
-            { key: 'activity', label: 'Activity' },
-            ...(environments.length >= 2 ? [{ key: 'compare', label: 'Compare' }] : []),
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as ViewTab)}
-        />
+        <div data-guide-anchor="deployments-activity-tab">
+          <SegmentedControl
+            options={[
+              { key: 'state', label: 'State' },
+              { key: 'activity', label: 'Activity' },
+              ...(environments.length >= 2 ? [{ key: 'compare', label: 'Compare' }] : []),
+            ]}
+            value={tab}
+            onChange={(v) => setTab(v as ViewTab)}
+            ariaLabel="View"
+          />
+        </div>
 
         {/* Time filter for state tab */}
         {tab === 'state' && (
@@ -491,6 +693,7 @@ export function ProductDeploymentsPage() {
               options={TIME_PRESETS}
               value={timeFilter}
               onChange={(v) => setTimeFilter(v as TimeFilter)}
+              ariaLabel="Time range"
             />
             {timeFilter === 'custom' && (
               <DateTimePicker value={customDate} onChange={setCustomDate} />
@@ -505,6 +708,7 @@ export function ProductDeploymentsPage() {
               options={ACTIVITY_TIME_PRESETS}
               value={activityTimeFilter}
               onChange={(v) => setActivityTimeFilter(v as TimeFilter)}
+              ariaLabel="Activity time range"
             />
             {activityTimeFilter === 'custom' && (
               <DateTimePicker value={activityCustomDate} onChange={setActivityCustomDate} />
@@ -519,6 +723,7 @@ export function ProductDeploymentsPage() {
               {allActivityEnvs.map((env) => (
                 <EnvPill
                   key={env}
+                  env={env}
                   label={getDisplayName(env)}
                   active={envFilter === env}
                   onClick={() => setEnvFilter(env)}
@@ -566,6 +771,7 @@ export function ProductDeploymentsPage() {
               ]}
               value={compareMode}
               onChange={(v) => setCompareMode(v as 'diff' | 'all')}
+              ariaLabel="Compare mode"
             />
             <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
               {resolvedFrom === resolvedTo
@@ -616,13 +822,13 @@ export function ProductDeploymentsPage() {
       ) : tab === 'state' ? (
         /* ── State Matrix ── */
         <div
-          className="rounded-xl border overflow-hidden"
+          className="rounded-xl border overflow-x-auto"
           style={{
             borderColor: 'var(--border-color)',
             backgroundColor: 'var(--bg-secondary)',
           }}
         >
-          <table className="w-full text-[13px]">
+          <table className="w-full min-w-max text-[13px]">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
                 <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
@@ -634,14 +840,18 @@ export function ProductDeploymentsPage() {
                     align="left"
                   />
                 </th>
+                {/* Header label carries the environment colour so a column is findable at a
+                    glance in a wide matrix. */}
                 {environments.map((env) => (
                   <th
                     key={env}
+                    // Addressable so "what's on staging?" can ring the whole column.
+                    data-guide-anchor={`env-column:${env}`}
                     className="text-center px-4 py-3 font-medium"
                     style={{ color: 'var(--text-muted)' }}
                   >
                     <SortHeader
-                      label={getDisplayName(env)}
+                      label={<EnvLabel env={env} />}
                       active={sortBy === env}
                       dir={sortDir}
                       onClick={() => toggleSort(env)}
@@ -651,90 +861,73 @@ export function ProductDeploymentsPage() {
                 ))}
               </tr>
             </thead>
-            <tbody>
-              {services.map((service) => (
+            {/* The matrix is a 2D grid: Up/Down move service, Left/Right move environment. Every
+                environment cell is registered — including the empty ones — because skipping them
+                would make the column indices lie and Left/Right would jump rows. */}
+            <KeyboardList
+              as="tbody"
+              count={services.length * environments.length}
+              columns={environments.length}
+              ariaLabel={`${product} deployment matrix`}
+            >
+              {services.map((service, serviceIdx) => (
                 <tr
                   key={service}
+                  // Addressable so the assistant can ring this exact row after sending the user
+                  // here — "where is auth-api" lands on the matrix with the row already picked out.
+                  data-guide-anchor={`service-row:${service}`}
                   style={{ borderBottom: '1px solid var(--border-color)' }}
                 >
                   <td
-                    className="px-4 py-3 font-medium"
+                    className="px-4 py-3 font-medium group"
                     style={{ color: 'var(--text-primary)' }}
                   >
-                    <Link
-                      to={`/deployments/${product}/${service}/history`}
-                      className="hover:underline"
-                      style={{ color: 'var(--text-primary)' }}
-                    >
-                      {service}
-                    </Link>
-                  </td>
-                  {environments.map((env, envIdx) => {
-                    const cell = getCell(service, env);
-                    const behind = isBehind(service, envIdx);
-                    const highlighted =
-                      timeFilter !== 'all' &&
-                      recentKeys.has(`${service}::${env}`);
-                    if (!cell) {
-                      return (
-                        <td
-                          key={env}
-                          className="text-center px-4 py-3"
+                    <span className="inline-flex items-center gap-2">
+                      <Link
+                        to={`/deployments/${product}/${service}`}
+                        className="hover:underline"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {service}
+                      </Link>
+                      {/* Admin-only. Retires a service a migration made obsolete: it leaves this
+                          matrix and promotions, keeps all of its history, and comes back on its own
+                          the moment something deploys it again. Revealed on hover/focus so a
+                          destructive-looking control isn't sitting next to every service name. */}
+                      {isAdmin && (
+                        <button
+                          onClick={() => {
+                            setRetireError(null);
+                            setRetiring(service);
+                          }}
+                          title={`Remove ${service} from this product`}
+                          aria-label={`Remove ${service} from this product`}
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
                           style={{ color: 'var(--text-muted)' }}
                         >
-                          —
-                        </td>
-                      );
-                    }
-                    return (
-                      <td
-                        key={env}
-                        className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
-                        style={{
-                          borderLeft: highlighted
-                            ? '3px solid var(--accent)'
-                            : '3px solid transparent',
-                          backgroundColor: highlighted
-                            ? 'var(--accent-muted)'
-                            : undefined,
-                        }}
-                        onClick={() => setSelected(cell)}
-                      >
-                        <div className="inline-flex flex-col items-center gap-0.5">
-                          <span className="inline-flex items-center gap-1">
-                            <span
-                              className="font-mono text-[12px] font-medium"
-                              style={{
-                                color: behind
-                                  ? 'var(--warning)'
-                                  : statusColor(cell.status),
-                              }}
-                            >
-                              {behind && '\u26a0 '}v{cell.version}
-                            </span>
-                            <RollbackIndicator
-                              isRollback={cell.isRollback}
-                              previousVersion={cell.previousVersion}
-                            />
-                          </span>
-                          {cell.status && cell.status !== 'succeeded' && (
-                            <StatusBadge status={cell.status} />
-                          )}
-                          <span
-                            className="text-[11px]"
-                            style={{ color: 'var(--text-muted)' }}
-                          >
-                            {formatDistanceToNow(new Date(cell.deployedAt), {
-                              addSuffix: true,
-                            })}
-                          </span>
-                        </div>
-                      </td>
-                    );
-                  })}
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </span>
+                  </td>
+                  {environments.map((env, envIdx) => (
+                    <MatrixCell
+                      key={env}
+                      index={serviceIdx * environments.length + envIdx}
+                      service={service}
+                      env={env}
+                      envLabel={getDisplayName(env)}
+                      cell={getCell(service, env)}
+                      pending={pendingPromotions.get(`${service}::${env}`)}
+                      highlighted={
+                        timeFilter !== 'all' && recentKeys.has(`${service}::${env}`)
+                      }
+                      onOpen={openDeployment}
+                    />
+                  ))}
                 </tr>
               ))}
-            </tbody>
+            </KeyboardList>
           </table>
         </div>
       ) : tab === 'compare' ? (
@@ -746,7 +939,7 @@ export function ProductDeploymentsPage() {
           fromLabel={getDisplayName(resolvedFrom)}
           toLabel={getDisplayName(resolvedTo)}
           mode={compareMode}
-          onRowClick={(cell) => setSelected(cell)}
+          onRowClick={(cell) => openDeployment(cell)}
         />
       ) : filteredActivity.length === 0 ? (
         <div
@@ -761,11 +954,8 @@ export function ProductDeploymentsPage() {
           {activityByEnv.map(({ env, events }) => (
             <div key={env} className="space-y-2">
               {envFilter === 'all' && (
-                <h3
-                  className="text-[12px] font-semibold uppercase tracking-wider px-1"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  {getDisplayName(env)}
+                <h3 className="text-[12px] font-semibold uppercase tracking-wider px-1">
+                  <EnvLabel env={env} />
                 </h3>
               )}
               {events.map((evt) => (
@@ -773,8 +963,7 @@ export function ProductDeploymentsPage() {
                   key={evt.id}
                   event={evt}
                   showEnv={envFilter !== 'all'}
-                  getDisplayName={getDisplayName}
-                  onClick={() => setSelected(evt)}
+                  onClick={() => openDeployment(evt)}
                 />
               ))}
             </div>
@@ -782,12 +971,27 @@ export function ProductDeploymentsPage() {
         </div>
       )}
 
-      {selected && (
-        <DeployEventDetail
-          entry={selected}
-          product={product!}
-          onClose={() => setSelected(null)}
-          onChanged={() => fetchState(product!)}
+      {retiring && (
+        <ConfirmDialog
+          title={`Remove ${retiring}?`}
+          body={
+            <>
+              <strong>{retiring}</strong> disappears from this matrix, from promotions and from the
+              work-item queue. Nothing is deleted — its deployment history stays exactly as it is, an
+              admin can restore it from Settings → Maintenance, and it comes back by itself if a
+              pipeline deploys it again.
+            </>
+          }
+          confirmLabel="Remove service"
+          confirmTone="danger"
+          commentLabel="Reason (optional)"
+          busy={retireBusy}
+          error={retireError}
+          onConfirm={(reason) => void retireService(retiring, reason)}
+          onCancel={() => {
+            setRetiring(null);
+            setRetireError(null);
+          }}
         />
       )}
     </div>
@@ -795,6 +999,130 @@ export function ProductDeploymentsPage() {
 }
 
 /* ── Reusable sub-components ── */
+
+/**
+ * One (service × environment) cell of the state matrix, and the keyboard route into a deployment.
+ *
+ * Extracted from the render loop because each cell needs its own {@link useKeyboardListRow} call, and
+ * a hook can't be called from inside a `.map` callback in the parent's body.
+ *
+ * Cells with nothing deployed are still focusable but not activatable: the grid's column arithmetic
+ * depends on every environment occupying a slot, so skipping them would make Left/Right jump rows.
+ */
+function MatrixCell({
+  index,
+  service,
+  env,
+  envLabel,
+  cell,
+  pending,
+  highlighted,
+  onOpen,
+}: {
+  index: number;
+  service: string;
+  /** Stored environment key — the anchor uses it, so the assistant's `env-cell:` names match the data. */
+  env: string;
+  envLabel: string;
+  cell: DeploymentStateSummary | undefined;
+  /** A Pending promotion targeting this (service, environment), if there is one. */
+  pending?: PromotionCandidate;
+  highlighted: boolean;
+  onOpen: (entry: { id: string }) => void;
+}) {
+  // `role: null` keeps the implicit cell role — see useKeyboardListRow.
+  const rowProps = useKeyboardListRow(index, () => cell && onOpen(cell), {
+    role: null,
+    disabled: !cell,
+    label: cell
+      ? `${service} in ${envLabel}, version ${cell.version}` +
+        `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}. Open deployment.`
+      : `${service} in ${envLabel}, not deployed` +
+        `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}`,
+  });
+
+  // Nothing deployed here yet. A pending promotion still belongs on the cell — a first deploy into
+  // an environment is exactly the case where "something is queued for this slot" is worth knowing.
+  // One name per (service, environment), on the empty cell too: "is X on prod yet?" rings the
+  // dash as readily as a version.
+  const anchor = `env-cell:${service}:${env}`;
+
+  if (!cell) {
+    return (
+      <td
+        {...rowProps}
+        data-guide-anchor={anchor}
+        className="text-center px-4 py-3"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        {pending ? <PendingPromotionChip candidate={pending} /> : '—'}
+      </td>
+    );
+  }
+
+  return (
+    <td
+      {...rowProps}
+      data-guide-anchor={anchor}
+      className="text-center px-4 py-2 cursor-pointer transition-colors hover:opacity-80"
+      style={{
+        borderLeft: highlighted ? '3px solid var(--accent)' : '3px solid transparent',
+        backgroundColor: highlighted ? 'var(--accent-muted)' : undefined,
+      }}
+    >
+      <div className="inline-flex flex-col items-center gap-0.5">
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="font-mono text-[12px] font-medium"
+            style={{ color: statusColor(cell.status) }}
+          >
+            v{cell.version}
+          </span>
+          <RollbackIndicator
+            isRollback={cell.isRollback}
+            previousVersion={cell.previousVersion}
+          />
+        </span>
+        {cell.status && cell.status !== 'succeeded' && <StatusBadge status={cell.status} />}
+        {pending && <PendingPromotionChip candidate={pending} />}
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {formatDistanceToNow(new Date(cell.deployedAt), { addSuffix: true })}
+        </span>
+      </div>
+    </td>
+  );
+}
+
+/**
+ * "A promotion into this slot is waiting on someone." Shown on the matrix cell for the
+ * (service, target environment) the promotion would land on.
+ *
+ * <p>Links straight to the promotion rather than the deployment the cell otherwise opens — the
+ * whole reason to surface it here is that it needs a decision, and making someone find it in the
+ * promotions queue afterwards defeats the point. Hence the click-stop: the cell's own handler goes
+ * to deployment history, which is not where this chip is pointing.</p>
+ */
+function PendingPromotionChip({ candidate }: { candidate: PromotionCandidate }) {
+  return (
+    <Link
+      to={`/promotions/${candidate.id}`}
+      onClick={(e) => e.stopPropagation()}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-opacity hover:opacity-80"
+      style={{
+        backgroundColor: 'var(--accent-bg)',
+        color: 'var(--accent)',
+        border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+      }}
+      title={
+        `Promotion awaiting approval: ${candidate.service} ${candidate.version} ` +
+        `from ${candidate.sourceEnv} → ${candidate.targetEnv}`
+      }
+    >
+      <ArrowUp size={10} />
+      v{candidate.version}
+    </Link>
+  );
+}
 
 function ExportMenu({
   onCSV,
@@ -853,7 +1181,7 @@ function SortHeader({
   onClick,
   align,
 }: {
-  label: string;
+  label: ReactNode;
   active: boolean;
   dir: 'asc' | 'desc';
   onClick: () => void;
@@ -874,17 +1202,25 @@ function SortHeader({
   );
 }
 
+/**
+ * One tab stop per control, arrows within it — see {@link RovingGroup}. Every strip on this page
+ * (State/Activity/Compare, the time presets, the compare mode) goes through here, so they all behave
+ * the same way and Tab crosses the filter bar in three presses rather than a dozen.
+ */
 function SegmentedControl({
   options,
   value,
   onChange,
+  ariaLabel,
 }: {
   options: { key: string; label: string }[];
   value: string;
   onChange: (key: string) => void;
+  ariaLabel: string;
 }) {
   return (
-    <div
+    <RovingGroup
+      ariaLabel={ariaLabel}
       className="inline-flex rounded-lg p-0.5 gap-0.5"
       style={{
         backgroundColor: 'var(--bg-secondary)',
@@ -895,6 +1231,8 @@ function SegmentedControl({
         <button
           key={opt.key}
           onClick={() => onChange(opt.key)}
+          // Read by RovingGroup to decide which control Tab lands on.
+          aria-pressed={value === opt.key}
           className="px-3.5 py-1.5 text-[13px] font-medium rounded-md transition-all"
           style={{
             backgroundColor:
@@ -908,7 +1246,7 @@ function SegmentedControl({
           {opt.label}
         </button>
       ))}
-    </div>
+    </RovingGroup>
   );
 }
 
@@ -934,27 +1272,42 @@ function DateTimePicker({
   );
 }
 
+/**
+ * Environment filter pill. When `env` is given the active state uses that environment's
+ * colour rather than the generic accent, so the selected filter matches the colour of the
+ * rows it selected. The "All" pill has no env and keeps the accent.
+ */
 function EnvPill({
+  env,
   label,
   active,
   onClick,
 }: {
+  env?: string;
   label: string;
   active: boolean;
   onClick: () => void;
 }) {
+  const envStyles = useEnvColorOrNull(env);
+  const activeStyle = envStyles
+    ? { backgroundColor: envStyles.bg, color: envStyles.fg, border: `1px solid ${envStyles.border}` }
+    : { backgroundColor: 'var(--accent-muted)', color: 'var(--accent)', border: '1px solid var(--accent)' };
+
   return (
     <button
       onClick={onClick}
-      className="px-2.5 py-1 text-[12px] font-medium rounded-full transition-all"
-      style={{
-        backgroundColor: active ? 'var(--accent-muted)' : 'transparent',
-        color: active ? 'var(--accent)' : 'var(--text-muted)',
-        border: active
-          ? '1px solid var(--accent)'
-          : '1px solid var(--border-color)',
-      }}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium rounded-full transition-all"
+      style={
+        active
+          ? activeStyle
+          : {
+              backgroundColor: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--border-color)',
+            }
+      }
     >
+      {env && <EnvDot env={env} size={6} />}
       {label}
     </button>
   );
@@ -971,16 +1324,15 @@ function EnvSelect({
   getLabel: (env: string) => string;
   onChange: (v: string) => void;
 }) {
+  // Each side of the comparison wears its environment's colour, so which direction you're
+  // comparing is readable from the control itself.
+  const style = useEnvControlStyle(value);
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]"
-      style={{
-        borderColor: 'var(--border-color)',
-        backgroundColor: 'var(--bg-primary)',
-        color: 'var(--text-primary)',
-      }}
+      className="px-2.5 py-1.5 rounded-lg border text-[13px] font-medium outline-none transition-colors focus:border-[var(--accent)]"
+      style={style}
     >
       {options.map((env) => (
         <option key={env} value={env}>
@@ -1000,13 +1352,13 @@ function CompareView({
   mode,
   onRowClick,
 }: {
-  rows: { service: string; from?: DeploymentStateEntry; to?: DeploymentStateEntry }[];
+  rows: { service: string; from?: DeploymentStateSummary; to?: DeploymentStateSummary }[];
   fromEnv: string;
   toEnv: string;
   fromLabel: string;
   toLabel: string;
   mode: 'diff' | 'all';
-  onRowClick: (cell: DeploymentStateEntry) => void;
+  onRowClick: (cell: DeploymentStateSummary) => void;
 }) {
   if (!fromEnv || !toEnv || fromEnv === toEnv) {
     return (
@@ -1046,11 +1398,11 @@ function CompareView({
             <th className="text-left px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
               Service
             </th>
-            <th className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
-              {fromLabel}
+            <th className="text-center px-4 py-3 font-medium">
+              <EnvLabel env={fromEnv} />
             </th>
-            <th className="text-center px-4 py-3 font-medium" style={{ color: 'var(--text-muted)' }}>
-              {toLabel}
+            <th className="text-center px-4 py-3 font-medium">
+              <EnvLabel env={toEnv} />
             </th>
           </tr>
         </thead>
@@ -1178,12 +1530,10 @@ const STYLE_COLORS: Record<string, string> = {
 function ActivityCard({
   event: evt,
   showEnv,
-  getDisplayName,
   onClick,
 }: {
   event: DeployEvent;
   showEnv: boolean;
-  getDisplayName: (key: string) => string;
   onClick: () => void;
 }) {
   const { activityTemplate } = useSettingsStore();
@@ -1215,15 +1565,7 @@ function ActivityCard({
               <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                 →
               </span>
-              <span
-                className="badge text-[11px]"
-                style={{
-                  backgroundColor: 'var(--accent-muted)',
-                  color: 'var(--accent)',
-                }}
-              >
-                {getDisplayName(evt.environment)}
-              </span>
+              <EnvBadge env={evt.environment} />
             </>
           )}
         </div>

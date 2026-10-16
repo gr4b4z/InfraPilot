@@ -1,9 +1,12 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
+using Platform.Api.Features.Users;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
@@ -16,7 +19,7 @@ namespace Platform.Api.Features.Promotions;
 /// <list type="bullet">
 ///   <item>Candidate creation from ingested deploy events (with policy snapshot + supersede rules).</item>
 ///   <item>State machine enforcement: Pending → Approved → Deploying → Deployed, plus Rejected / Superseded off-ramps.</item>
-///   <item>Approval recording and gate evaluation (per-requirement, distinct-person matching).</item>
+///   <item>Approval recording and gate evaluation (per-requirement matching; one approval per person per gate).</item>
 ///   <item>Per-user capability checks (<see cref="CanUserApproveAsync"/>) so the UI can grey out buttons.</item>
 /// </list>
 ///
@@ -32,6 +35,10 @@ public class PromotionService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly IOptionsMonitor<NormalizationOptions> _normalization;
+    private readonly EnvironmentAliasResolver _environments;
+    private readonly UserPreferencesService _userPrefs;
+    private readonly ServiceProductOverrideService _productOverrides;
+    private readonly ParticipantRoleCatalog _roles;
     private readonly ILogger<PromotionService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -39,6 +46,21 @@ public class PromotionService
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
     };
+
+    /// <summary>
+    /// How long a <c>promotion.approved</c> delivery is held before it goes out. The window exists
+    /// so <see cref="CancelApprovalAsync"/> can catch the mistake everyone makes — approving the
+    /// wrong row — before the downstream pipeline it triggers has heard about it. Deliberately short:
+    /// long enough to hit undo, short enough that nobody plans around it.
+    /// </summary>
+    public static readonly TimeSpan ApprovedWebhookDelay = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Handle the held <c>promotion.approved</c> deliveries are queued under, so cancelling an
+    /// approval can stop exactly this candidate's rows and nobody else's.
+    /// </summary>
+    public static string ApprovedWebhookCancelKey(Guid candidateId)
+        => $"promotion.approved:{candidateId}";
 
     public PromotionService(
         PlatformDbContext db,
@@ -48,7 +70,11 @@ public class PromotionService
         IAuditLogger audit,
         ILogger<PromotionService> logger,
         IWebhookDispatcher webhookDispatcher,
-        IOptionsMonitor<NormalizationOptions> normalization)
+        IOptionsMonitor<NormalizationOptions> normalization,
+        EnvironmentAliasResolver environments,
+        UserPreferencesService userPrefs,
+        ServiceProductOverrideService productOverrides,
+        ParticipantRoleCatalog roles)
     {
         _db = db;
         _resolver = resolver;
@@ -57,6 +83,10 @@ public class PromotionService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _normalization = normalization;
+        _environments = environments;
+        _userPrefs = userPrefs;
+        _productOverrides = productOverrides;
+        _roles = roles;
         _logger = logger;
     }
 
@@ -93,10 +123,17 @@ public class PromotionService
     public async Task<PromotionCandidate?> CreateExternalCandidateAsync(
         CreatePromotionDto dto, CancellationToken ct = default)
     {
-        var product = dto.Product.Trim();
         var service = dto.Service.Trim();
-        var sourceEnv = dto.SourceEnv.Trim();
-        var targetEnv = dto.TargetEnv.Trim();
+        // Admin override before anything else reads the product: policy resolution, the
+        // source-deployed check and the natural key all have to run against the product this
+        // candidate will be stored under, or the candidate is validated against one product's
+        // policies and then filed under another's.
+        var product = await _productOverrides.ResolveProductAsync(dto.Product, service, ct);
+        // Alias-resolved before policy resolution, not after: a caller that names the target
+        // "prod" has to reach the policy an admin wrote for "production", or the create is rejected
+        // as un-enrolled for an edge that is in fact configured.
+        var sourceEnv = await _environments.ResolveAsync(dto.SourceEnv, ct);
+        var targetEnv = await _environments.ResolveAsync(dto.TargetEnv, ct);
         var version = dto.Version.Trim();
         var references = dto.References ?? new List<ReferenceDto>();
         var participants = CanonicaliseParticipants(dto.Participants);
@@ -114,11 +151,16 @@ public class PromotionService
 
         // Ground the promotion in real source state: the exact version must have a succeeded deploy
         // in the source environment. Blocks promotions from an unknown / never-shipped source.
-        var sourceDeployed = await _db.DeployEvents.AsNoTracking().AnyAsync(e =>
-            e.Product == product && e.Service == service && e.Environment == sourceEnv
-            && e.Version == version && e.Status == "succeeded", ct);
-        if (!sourceDeployed)
-            throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
+        // Policies with SourceRequiresDeploy=false opt out — their source is a landing zone /
+        // release track that never receives deploy events, not a runtime environment.
+        if (policy.SourceRequiresDeploy)
+        {
+            var sourceDeployed = await _db.DeployEvents.AsNoTracking().AnyAsync(e =>
+                e.Product == product && e.Service == service && e.Environment == sourceEnv
+                && e.Version == version && e.Status == "succeeded", ct);
+            if (!sourceDeployed)
+                throw new SourceDeploymentNotFoundException(product, service, sourceEnv, version);
+        }
 
         // Reject redundant promotions: if the target env is already running this exact version
         // (via a prior promotion, a rollback, or an out-of-band deploy) there is nothing to promote.
@@ -143,7 +185,8 @@ public class PromotionService
             && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved
                 || c.Status == PromotionStatus.Deploying), ct);
         if (existing is not null)
-            return await UpdateExistingCandidateAsync(existing, dto, references, participants, ct);
+            return await UpdateExistingCandidateAsync(
+                existing, dto, references, participants, targetCurrentVersion, ct);
 
         var snapshot = await _resolver.SnapshotAsync(product, service, sourceEnv, targetEnv, ct);
 
@@ -169,6 +212,9 @@ public class PromotionService
             Version = version,
             FromRevision = dto.FromRevision,
             ToRevision = dto.ToRevision,
+            // The baseline this promotion was created against. Snapshotted rather than re-read at
+            // display time — see PromotionCandidate.FromVersion.
+            FromVersion = string.IsNullOrEmpty(targetCurrentVersion) ? null : targetCurrentVersion,
             References = references,
             Participants = participants,
             Status = effectiveAutoApprove ? PromotionStatus.Approved : PromotionStatus.Pending,
@@ -183,12 +229,22 @@ public class PromotionService
 
         _db.PromotionCandidates.Add(candidate);
 
-        // Populate the candidate-scoped work-item index from the payload's work-item references.
-        SyncWorkItems(candidate, payloadWorkItems);
+        // Populate the candidate-scoped work-item index from the payload's work-item references —
+        // unless the policy opts the edge out of work items entirely, in which case the references
+        // stay on the candidate as change-set history and nothing enters the work-item world.
+        if (snapshot.TracksWorkItems) SyncWorkItems(candidate, payloadWorkItems);
+
+        StageSystemComment(candidate.Id,
+            $"Promotion created for {service} {version} ({sourceEnv} → {targetEnv}), "
+            + $"carrying {references.Count} reference(s).");
 
         // Auto-approve: record a synthetic approval row so the UI's approval trail renders it.
         if (effectiveAutoApprove)
         {
+            StageSystemComment(candidate.Id, autoApproveNoWorkItems
+                ? "Auto-approved on creation — the policy waives approval when the change set carries no work items."
+                : "Auto-approved on creation — no approval is configured for this edge.");
+
             _db.PromotionApprovals.Add(new PromotionApproval
             {
                 Id = Guid.NewGuid(),
@@ -217,7 +273,8 @@ public class PromotionService
             _logger.LogInformation(
                 "Concurrent external create for {Product}/{Service} {Version} → reusing candidate {CandidateId}",
                 LogSanitizer.Clean(product), LogSanitizer.Clean(service), LogSanitizer.Clean(version), raced.Id);
-            return await UpdateExistingCandidateAsync(raced, dto, references, participants, ct);
+            return await UpdateExistingCandidateAsync(
+                raced, dto, references, participants, targetCurrentVersion, ct);
         }
 
         await _audit.Log(
@@ -243,6 +300,18 @@ public class PromotionService
             candidate.Id, LogSanitizer.Clean(product), LogSanitizer.Clean(service),
             LogSanitizer.Clean(version), candidate.Status);
 
+        // Announce the new candidate (this also covers any Pending candidates the create just
+        // superseded — a list refresh shows both changes at once).
+        await DispatchWebhookAsync(candidate, "promotion.created", ct);
+
+        // A new build invalidates the "held back" verdicts made against the old one.
+        await ResetHeldWorkItemDecisionsAsync(candidate, payloadWorkItems, ct);
+
+        // Then note which of them the tracker already considers finished. Context for whoever signs
+        // off, not a sign-off: the gate is untouched, so nothing needs re-evaluating here.
+        if (snapshot.TracksWorkItems)
+            await RecordUpstreamResolutionsAsync(candidate, payloadWorkItems, ct);
+
         // If born Approved, kick off execution right away — after the initial save so the candidate
         // is visible to queries even if dispatch transiently fails.
         if (candidate.Status == PromotionStatus.Approved)
@@ -253,8 +322,14 @@ public class PromotionService
                 "PromotionCandidate", candidate.Id, null,
                 new { autoApprove = true });
 
-            await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+            await DispatchWebhookAsync(candidate, "promotion.approved", ct,
+                options: ApprovedWebhookOptions(candidate));
         }
+
+        // Last: the version may already be live in the target. Ingest can only close a promotion that
+        // exists when the deploy lands, so without this a promotion created after its own deploy has
+        // nothing left to close it. Runs after dispatch so the trail reads in the order it happened.
+        await TryCloseIfAlreadyDeployedAsync(candidate, ct);
 
         return candidate;
     }
@@ -266,17 +341,27 @@ public class PromotionService
     /// </summary>
     private async Task<PromotionCandidate> UpdateExistingCandidateAsync(
         PromotionCandidate existing, CreatePromotionDto dto,
-        List<ReferenceDto> references, List<PromotionParticipant> participants, CancellationToken ct)
+        List<ReferenceDto> references, List<PromotionParticipant> participants,
+        string? targetCurrentVersion, CancellationToken ct)
     {
         existing.References = references;
         existing.FromRevision = dto.FromRevision;
         existing.ToRevision = dto.ToRevision;
+        // Re-pushed change set, re-read baseline: the references the source system just computed are
+        // relative to whatever the target runs now, so FromVersion moves with FromRevision.
+        existing.FromVersion = string.IsNullOrEmpty(targetCurrentVersion) ? null : targetCurrentVersion;
         if (participants.Count > 0) existing.Participants = participants;
 
-        // Re-sync the candidate-scoped work-item index to match the new references.
+        // Re-sync the candidate-scoped work-item index to match the new references. Skipped wholesale
+        // on an edge that doesn't track work items — the removal still runs, so a candidate created
+        // before the policy opted out is cleaned up by the next push from the source system.
         var stale = await _db.PromotionWorkItems.Where(w => w.CandidateId == existing.Id).ToListAsync(ct);
         _db.PromotionWorkItems.RemoveRange(stale);
-        SyncWorkItems(existing, ExtractWorkItemReferences(references));
+        if (ReadSnapshot(existing).TracksWorkItems)
+            SyncWorkItems(existing, ExtractWorkItemReferences(references));
+
+        StageSystemComment(existing.Id,
+            $"Change set refreshed by the source system — now carrying {references.Count} reference(s).");
 
         await _db.SaveChangesAsync(ct);
 
@@ -289,6 +374,14 @@ public class PromotionService
         _logger.LogInformation(
             "Updated existing candidate {CandidateId} from external create (refs={Count})",
             existing.Id, references.Count);
+
+        await DispatchWebhookAsync(existing, "promotion.updated", ct,
+            new { source = "external", refCount = references.Count });
+
+        // A refreshed change set can carry work items the tracker has closed since — including ones
+        // this candidate never listed before. Note those on their threads.
+        if (ReadSnapshot(existing).TracksWorkItems)
+            await RecordUpstreamResolutionsAsync(existing, ExtractWorkItemReferences(references), ct);
 
         if (existing.Status == PromotionStatus.Pending) return await ReevaluateAsync(existing.Id, ct);
         return existing;
@@ -321,6 +414,9 @@ public class PromotionService
         {
             old.Status = PromotionStatus.Superseded;
             old.SupersededById = fresh.Id;
+            StageSystemComment(old.Id,
+                $"Superseded — a newer promotion for {fresh.Service} {fresh.Version} took over this "
+                + $"{fresh.SourceEnv} → {fresh.TargetEnv} edge.");
         }
 
         if (stale.Count > 0)
@@ -330,28 +426,271 @@ public class PromotionService
     }
 
     /// <summary>
+    /// Notes, on the work item's own thread, that its tracker already reports it finished — the
+    /// status, when it was closed, and who performed the closing transition
+    /// (<see cref="ReferenceResolutionDto"/>).
+    ///
+    /// <para>Deliberately <b>not</b> a sign-off. A ticket closed in Jira says the work is done; it
+    /// does not say this release is fit to go out, which is the question the promotion gate asks. So
+    /// the item stays pending and a human still signs it off — they just no longer have to open Jira
+    /// to find out where the ticket stands, or who closed it.</para>
+    ///
+    /// <para>Idempotent by content: the source system re-posts its change set on every refresh, so a
+    /// note identical to one already on the thread is not written again. A ticket closed by somebody
+    /// else, or re-closed on a later date, produces a different sentence and is recorded as the new
+    /// fact it is.</para>
+    /// </summary>
+    private async Task<int> RecordUpstreamResolutionsAsync(
+        PromotionCandidate candidate, IReadOnlyList<ReferenceDto> workItemRefs, CancellationToken ct)
+    {
+        var resolved = workItemRefs
+            .Where(r => r.Resolution?.Resolved == true && !string.IsNullOrWhiteSpace(r.Key))
+            .GroupBy(r => r.Key!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+        if (resolved.Count == 0) return 0;
+
+        var keys = resolved.Select(r => r.Key!).ToList();
+        var alreadyNoted = (await _db.WorkItemComments.AsNoTracking()
+                .Where(c => keys.Contains(c.WorkItemKey)
+                         && c.Product == candidate.Product
+                         && c.Service == candidate.Service
+                         && c.TargetEnv == candidate.TargetEnv
+                         && c.AuthorEmail == WorkItemComment.SystemAuthor)
+                .Select(c => new { c.WorkItemKey, c.Body })
+                .ToListAsync(ct))
+            .Select(c => $"{c.WorkItemKey}\n{c.Body}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var now = DateTimeOffset.UtcNow;
+        var recorded = new List<string>();
+        foreach (var r in resolved)
+        {
+            var note = DescribeUpstreamResolution(r);
+            if (!alreadyNoted.Add($"{r.Key}\n{note}")) continue;
+
+            // Decision stays null: this is context on the thread, not a verdict. Authored by the
+            // system, which the read paths already treat as immutable.
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = r.Key!,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = WorkItemComment.SystemAuthor,
+                AuthorName = "System",
+                Body = note,
+                CreatedAt = now,
+            });
+            recorded.Add(r.Key!);
+        }
+
+        if (recorded.Count == 0) return 0;
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.closed-upstream",
+            "system", "System", "system",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                candidate.Product,
+                candidate.Service,
+                candidate.TargetEnv,
+                candidate.Version,
+                workItemKeys = recorded,
+            });
+
+        _logger.LogInformation(
+            "Noted {Count} work item(s) already closed upstream for candidate {CandidateId} ({Product}/{Env} {Version})",
+            recorded.Count, candidate.Id, LogSanitizer.Clean(candidate.Product),
+            LogSanitizer.Clean(candidate.TargetEnv), LogSanitizer.Clean(candidate.Version));
+
+        return recorded.Count;
+    }
+
+    /// <summary>
+    /// The sentence written to the work item's thread. Names the status, the person and the date the
+    /// tracker reported, omitting whichever of those the producer could not resolve, and says plainly
+    /// that a sign-off here is still outstanding — a reader who sees only "Done" would reasonably
+    /// assume otherwise.
+    /// </summary>
+    private static string DescribeUpstreamResolution(ReferenceDto reference)
+    {
+        var resolution = reference.Resolution!;
+        var tracker = string.IsNullOrWhiteSpace(reference.Provider) ? "The tracker" : reference.Provider;
+        var status = string.IsNullOrWhiteSpace(resolution.Status) ? "closed" : resolution.Status;
+
+        var who = (resolution.By?.DisplayName ?? "").Trim();
+        if (who.Length == 0) who = (resolution.By?.Email ?? "").Trim();
+        var when = resolution.At?.ToUniversalTime()
+            // Invariant: this sentence is a record, and a server culture change must not silently
+            // restyle dates already written into old threads.
+            .ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
+
+        var attribution = who.Length > 0 && when is not null ? $" by {who} on {when}"
+            : who.Length > 0 ? $" by {who}"
+            : when is not null ? $" on {when}"
+            : "";
+
+        return $"{tracker} reports this work item as {status}{attribution}. "
+             + "Sign-off for this promotion is still outstanding.";
+    }
+
+    /// <summary>
+    /// Returns the fresh candidate's work items to an undecided state by clearing the Issue and
+    /// Blocked sign-offs recorded for that <c>(key, product, service, targetEnv)</c>. Holds on the
+    /// same ticket for another service are a different work item and stay put — the code under
+    /// review there did not change.
+    ///
+    /// <para>Rationale: a "held back" verdict is a judgement about a specific build. When a new
+    /// version arrives carrying the same ticket, that judgement no longer describes anything — the
+    /// code under review changed — so leaving it in place would stall the new promotion on a stale
+    /// objection nobody is looking at. Approvals are deliberately <i>not</i> cleared: a sign-off is
+    /// defined to carry across builds (see <see cref="Models.WorkItemApproval"/>), and re-asking for
+    /// it on every version would make the gate unusable.</para>
+    ///
+    /// <para>Only reached from the create path, so "new candidate" means a new version by definition:
+    /// a repeat for the same version reuses the existing candidate and never lands here. Each cleared
+    /// ticket gets a system entry in its comment thread so the reviewer whose issue or block vanished
+    /// can see why, and one audit row records the sweep.</para>
+    /// </summary>
+    private async Task ResetHeldWorkItemDecisionsAsync(
+        PromotionCandidate candidate, IReadOnlyList<ReferenceDto> workItemRefs, CancellationToken ct)
+    {
+        if (workItemRefs.Count == 0) return;
+        var keys = workItemRefs.Select(r => r.Key!).ToList();
+
+        var held = await _db.WorkItemApprovals
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.Service == candidate.Service
+                     && a.TargetEnv == candidate.TargetEnv
+                     && a.Decision != WorkItemDecision.Approved)
+            .ToListAsync(ct);
+        if (held.Count == 0) return;
+
+        _db.WorkItemApprovals.RemoveRange(held);
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var group in held.GroupBy(a => a.WorkItemKey, StringComparer.OrdinalIgnoreCase))
+        {
+            var cleared = string.Join(", ", group
+                .Select(a => $"{a.Decision} by {a.ApproverName ?? a.ApproverEmail}"));
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = group.Key,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = WorkItemComment.SystemAuthor,
+                AuthorName = "System",
+                Body =
+                    $"Reset to pending — a new promotion ({candidate.Service} {candidate.Version}) "
+                    + $"carries this work item. Cleared: {cleared}.",
+                CreatedAt = now,
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.decisions.reset",
+            "system", "System", "system",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                reason = "new-version",
+                candidate.Product,
+                candidate.Service,
+                candidate.TargetEnv,
+                candidate.Version,
+                workItemKeys = held.Select(a => a.WorkItemKey).Distinct().ToList(),
+            });
+
+        _logger.LogInformation(
+            "Reset {Count} held work-item decision(s) for candidate {CandidateId} ({Product}/{Env} {Version})",
+            held.Count, candidate.Id, LogSanitizer.Clean(candidate.Product),
+            LogSanitizer.Clean(candidate.TargetEnv), LogSanitizer.Clean(candidate.Version));
+    }
+
+    /// <summary>
     /// Stages <see cref="PromotionWorkItem"/> inserts for the candidate from its work-item
     /// references. Deduped by key (case-insensitive), mirroring <c>WorkItemSyncService</c>.
     /// </summary>
     private void SyncWorkItems(PromotionCandidate candidate, IReadOnlyList<ReferenceDto> workItemRefs)
     {
         var now = DateTimeOffset.UtcNow;
+        var allRefs = candidate.References;
         foreach (var r in workItemRefs)
         {
+            // Display lines through the shared resolver: the tracker's name for the item, and the
+            // messages of the commits it rode in on. See Deployments.WorkItemDisplay.
+            var (title, subTitle) = Deployments.WorkItemDisplay.Resolve(r, allRefs);
             _db.PromotionWorkItems.Add(new PromotionWorkItem
             {
                 Id = Guid.NewGuid(),
                 CandidateId = candidate.Id,
                 WorkItemKey = r.Key!,
                 Product = candidate.Product,
+                Service = candidate.Service,
                 TargetEnv = candidate.TargetEnv,
                 Provider = r.Provider,
                 Url = r.Url,
-                Title = r.Title,
+                Title = title,
+                SubTitle = subTitle,
+                Content = r.Content,
+                Priority = r.Priority,
+                WorkItemType = r.WorkItemType,
                 Revision = r.Revision,
+                CommittedAt = Deployments.WorkItemCommitTime.Resolve(r, allRefs),
                 CreatedAt = now,
             });
         }
+    }
+
+    /// <summary>
+    /// Brings a candidate's <see cref="PromotionWorkItem"/> index in line with a policy that just
+    /// changed its <see cref="ResolvedPolicySnapshot.TracksWorkItems"/> setting: drops the rows when the
+    /// edge stopped tracking, rebuilds them from the candidate's own work-item references when it
+    /// started. Staged onto the caller's change tracker — the caller saves.
+    ///
+    /// <para>Sign-offs and comment threads are untouched: both key on
+    /// <c>(workItemKey, product, service, targetEnv)</c> rather than on the candidate, so a round trip
+    /// through "untracked" and back doesn't lose a reviewer's decision.</para>
+    /// </summary>
+    private async Task ResyncWorkItemIndexAsync(
+        PromotionCandidate candidate, bool tracks, CancellationToken ct)
+    {
+        var existingRows = await _db.PromotionWorkItems
+            .Where(w => w.CandidateId == candidate.Id)
+            .ToListAsync(ct);
+
+        if (!tracks)
+        {
+            if (existingRows.Count == 0) return;
+            _db.PromotionWorkItems.RemoveRange(existingRows);
+            StageSystemComment(candidate.Id,
+                $"Work items are no longer tracked on this edge — {existingRows.Count} work item(s) "
+                + "were removed from the work-items queue and no longer need a sign-off.");
+            return;
+        }
+
+        // Turning tracking on: only stage what isn't already there, so a partially-populated index
+        // (e.g. a policy toggled twice) can't produce duplicate rows for the same key.
+        var present = existingRows.Select(w => w.WorkItemKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = ExtractWorkItemReferences(candidate.References)
+            .Where(r => !present.Contains(r.Key!))
+            .ToList();
+        if (missing.Count == 0) return;
+
+        SyncWorkItems(candidate, missing);
+        StageSystemComment(candidate.Id,
+            $"Work items are now tracked on this edge — {missing.Count} work item(s) from this "
+            + "promotion's change set were added to the work-items queue for sign-off.");
     }
 
     /// <summary>Distinct <c>work-item</c> references (by key, case-insensitive) with a non-blank key.</summary>
@@ -402,6 +741,18 @@ public class PromotionService
     public async Task<List<PromotionCandidate>> GetAsync(PromotionQuery query, CancellationToken ct = default)
     {
         var q = _db.PromotionCandidates.AsNoTracking().AsQueryable();
+
+        // Applied before the status split below, not after: that split takes the newest N non-Pending
+        // rows, so filtering afterwards would quietly return fewer than the cap and make the resolved
+        // tail look shorter than it is.
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        if (hidden.Count > 0) q = q.Where(c => !hidden.Contains(c.Product));
+
+        // Services an admin retired leave this list for the same reason they leave the deployment
+        // matrix: a promotion for an obsolete component is not work anybody is going to do. The
+        // candidates themselves stay — a later deploy un-retires the service and they come back.
+        q = q.ExcludingDeletedServices(_db);
+
         if (query.Status is { } s) q = q.Where(c => c.Status == s);
         if (!string.IsNullOrEmpty(query.Product)) q = q.Where(c => c.Product == query.Product);
         if (!string.IsNullOrEmpty(query.TargetEnv)) q = q.Where(c => c.TargetEnv == query.TargetEnv);
@@ -434,6 +785,37 @@ public class PromotionService
             .ToList();
     }
 
+    /// <summary>
+    /// The distinct products and target environments that appear across <b>all</b> promotion
+    /// candidates — the vocabulary for the list page's filter dropdowns.
+    ///
+    /// <para>Separate from <see cref="GetAsync"/> on purpose. Building the dropdowns from a filtered
+    /// result set collapses them: pick an environment, the query narrows to it, and the only option
+    /// left to pick is the one already picked. The options have to come from a query that ignores
+    /// the selection.</para>
+    ///
+    /// <para>Hidden products are still excluded — this is a product-scoped list like any other, and
+    /// offering a filter for something the user has hidden would just produce an empty page.</para>
+    /// </summary>
+    public async Task<PromotionFilterOptions> GetFilterOptionsAsync(CancellationToken ct = default)
+    {
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var q = _db.PromotionCandidates.AsNoTracking().AsQueryable();
+        if (hidden.Count > 0) q = q.Where(c => !hidden.Contains(c.Product));
+        // Same reasoning as hidden products: a filter whose only rows are retired services would
+        // narrow the page to nothing.
+        q = q.ExcludingDeletedServices(_db);
+
+        var products = await q.Select(c => c.Product).Distinct().OrderBy(p => p).ToListAsync(ct);
+        var targetEnvs = await q.Select(c => c.TargetEnv).Distinct().OrderBy(e => e).ToListAsync(ct);
+        var gates = await GetGateOptionsAsync(q, ct);
+
+        return new PromotionFilterOptions(
+            products.Where(p => !string.IsNullOrWhiteSpace(p)).ToList(),
+            targetEnvs.Where(e => !string.IsNullOrWhiteSpace(e)).ToList(),
+            gates);
+    }
+
     public async Task<PromotionCandidate?> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
         return await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -452,8 +834,9 @@ public class PromotionService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Adds or replaces a participant on the candidate keyed by role (case-insensitive). Raises
-    /// <c>promotion.updated</c>. Role is trimmed; display casing is preserved on the stored record.
+    /// Adds or replaces a participant on the candidate keyed by role (case-insensitive, alias-aware).
+    /// Raises <c>promotion.updated</c>. Role is trimmed; display casing is preserved on the stored
+    /// record, except that a role given as an alias is stored as the role it names.
     /// </summary>
     public async Task<PromotionCandidate> UpsertParticipantAsync(
         Guid candidateId, PromotionParticipant participant, CancellationToken ct = default)
@@ -461,19 +844,29 @@ public class PromotionService
         // Storage-time canonicalisation is opt-in via `Normalization:Roles` in appsettings.
         // Dedupe, however, is always done on the normalised key so that "QA" and "qa" don't
         // end up as two participants on the same candidate regardless of the policy.
-        var storedRole = _normalization.CurrentValue.ApplyRole(participant.Role);
+        var aliases = await _roles.MapAsync(ct);
+        var storedRole = ConvergeRole(_normalization.CurrentValue.ApplyRole(participant.Role), aliases);
         if (string.IsNullOrEmpty(storedRole))
             throw new InvalidOperationException("Participant role is required");
-        var canonicalKey = RoleNormalizer.Normalize(storedRole);
+        var canonicalKey = aliases.Resolve(storedRole);
 
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
 
         var list = candidate.Participants;
-        var idx = list.FindIndex(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        var idx = list.FindIndex(p => aliases.Resolve(p.Role) == canonicalKey);
         var entry = new PromotionParticipant(storedRole, participant.DisplayName, participant.Email);
-        if (idx >= 0) list[idx] = entry; else list.Add(entry);
+        // Every entry the role resolves to goes, not just the first: a candidate ingested with both a
+        // "qa" and a "qa-owner" keeps one person in the role once "qa" is the other's alias. Nothing
+        // before idx matches, so it is still the replaced entry's position.
+        list.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
+        if (idx >= 0) list.Insert(idx, entry); else list.Add(entry);
         candidate.Participants = list;
+
+        var who = entry.DisplayName ?? entry.Email ?? "(unnamed)";
+        StageSystemComment(candidate.Id, idx >= 0
+            ? $"{Actor} changed the {storedRole} to {who}."
+            : $"{Actor} added {who} as {storedRole}.");
 
         await _db.SaveChangesAsync(ct);
 
@@ -493,18 +886,20 @@ public class PromotionService
     public async Task<PromotionCandidate> RemoveParticipantAsync(
         Guid candidateId, string role, CancellationToken ct = default)
     {
-        // Match on the normalised key regardless of how roles are stored so the caller can
-        // pass "QA", "qa", or "qa-lead" interchangeably.
-        var canonicalKey = RoleNormalizer.Normalize(role);
+        // Match on the normalised, alias-resolved key regardless of how roles are stored so the
+        // caller can pass "QA", "qa", or "qa-lead" interchangeably.
+        var aliases = await _roles.MapAsync(ct);
+        var canonicalKey = aliases.Resolve(role);
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
 
         var list = candidate.Participants;
         var before = list.Count;
-        list.RemoveAll(p => RoleNormalizer.Normalize(p.Role) == canonicalKey);
+        list.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
         if (list.Count == before) return candidate;
 
         candidate.Participants = list;
+        StageSystemComment(candidate.Id, $"{Actor} removed the {role} participant.");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -516,6 +911,211 @@ public class PromotionService
             new { changeType = "participant.removed", role });
 
         return candidate;
+    }
+
+    /// <summary>
+    /// Upserts (or, when <paramref name="assignee"/> is null, clears) a participant on a specific
+    /// work-item <b>reference</b> of a candidate — this is what the work-items queue's "Assign"
+    /// action writes to. Candidates are self-contained (there is no deploy event to override), so the
+    /// assignment lives directly on the candidate's <c>References[key].Participants</c>, which is
+    /// exactly what <c>GetWorkItemParticipants</c> reads back. Dedupe is on the normalised,
+    /// alias-resolved role, so assigning a QA owner replaces a <c>qa</c> the ticket arrived with once
+    /// <c>qa</c> is an alias of <c>qa-owner</c>, and the new entry is stored under the canonical key.
+    /// Returns the reference's updated participant list.
+    /// </summary>
+    public async Task<IReadOnlyList<ParticipantDto>> UpsertReferenceParticipantAsync(
+        Guid candidateId, string referenceKey, string role, ParticipantDto? assignee, CancellationToken ct = default)
+    {
+        // Assigning people to work-item references is part of work-item management, which is the QA
+        // role's jurisdiction (Admin included) — not tied to being an approver of the promotion.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Assigning work-item participants requires the QA or Admin role");
+
+        var aliases = await _roles.MapAsync(ct);
+        var storedRole = ConvergeRole(_normalization.CurrentValue.ApplyRole(role), aliases);
+        if (string.IsNullOrEmpty(storedRole))
+            throw new InvalidOperationException("Participant role is required");
+        var canonicalKey = aliases.Resolve(storedRole);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var refs = candidate.References;
+        var idx = refs.FindIndex(r =>
+            string.Equals(r.Key, referenceKey, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
+        if (idx < 0)
+            throw new KeyNotFoundException(
+                $"Work-item reference '{referenceKey}' not found on candidate {candidateId}");
+
+        var participants = (refs[idx].Participants ?? new List<ParticipantDto>()).ToList();
+        participants.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
+        if (assignee is not null)
+            participants.Add(new ParticipantDto(storedRole, assignee.DisplayName, assignee.Email));
+
+        refs[idx] = refs[idx] with { Participants = participants };
+        candidate.References = refs;
+
+        StageSystemComment(candidate.Id, assignee is null
+            ? $"{Actor} cleared the {storedRole} on work item {referenceKey}."
+            : $"{Actor} assigned {assignee.DisplayName ?? assignee.Email ?? "(unnamed)"} "
+              + $"as {storedRole} on work item {referenceKey}.");
+
+        await _db.SaveChangesAsync(ct);
+
+        var action = assignee is null
+            ? "promotion.reference.participant.removed"
+            : "promotion.reference.participant.upserted";
+        await _audit.Log(
+            "promotions", action,
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new { referenceKey, role = storedRole, canonicalKey, assignee?.DisplayName, assignee?.Email });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new
+            {
+                changeType = assignee is null ? "reference.participant.removed" : "reference.participant.upserted",
+                referenceKey,
+                role = storedRole,
+            });
+
+        return participants;
+    }
+
+    /// <summary>
+    /// <see cref="UpsertReferenceParticipantAsync"/> for every work item on the candidate in one write
+    /// — the promotion page's "Assign to all". Each work-item reference gets <paramref name="assignee"/>
+    /// in <paramref name="role"/>, replacing whoever it had there (aliases included); a null assignee
+    /// clears the role everywhere.
+    ///
+    /// <para>Reference-level on purpose. A promotion-level participant only fills a role a ticket
+    /// doesn't already have (see <see cref="WorkItemRoleRequirements.ResolveParticipants(PromotionCandidate, string, RoleAliasMap?)"/>),
+    /// so it cannot <i>update</i> one: the ticket that arrived with the wrong QA owner would keep
+    /// them.</para>
+    ///
+    /// <para><paramref name="onlyMissing"/> skips tickets that already have somebody reachable in the
+    /// role — on the ticket or through a promotion-level participant — which is the "fill the gaps"
+    /// variant. Tickets already holding exactly this person are left alone and reported as unchanged,
+    /// so the system comment, audit row and webhook describe only what moved. One comment, one audit
+    /// row and one <c>promotion.updated</c> for the whole batch; nothing is written when nothing
+    /// changes.</para>
+    /// </summary>
+    public async Task<WorkItemsAssignmentResult> AssignWorkItemsParticipantAsync(
+        Guid candidateId, string role, ParticipantDto? assignee, bool onlyMissing, CancellationToken ct = default)
+    {
+        // Same jurisdiction as the per-reference assignment.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Assigning work-item participants requires the QA or Admin role");
+
+        var aliases = await _roles.MapAsync(ct);
+        var storedRole = ConvergeRole(_normalization.CurrentValue.ApplyRole(role), aliases);
+        if (string.IsNullOrEmpty(storedRole))
+            throw new InvalidOperationException("Participant role is required");
+        var canonicalKey = aliases.Resolve(storedRole);
+
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        var refs = candidate.References;
+        var promotionParticipants = candidate.Participants;
+        var updated = new List<string>();
+        var unchanged = new List<string>();
+        var skipped = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < refs.Count; i++)
+        {
+            var reference = refs[i];
+            if (!string.Equals(reference.Type, "work-item", StringComparison.OrdinalIgnoreCase)) continue;
+            var key = (reference.Key ?? "").Trim();
+            // First entry per key, the one the per-reference route writes and the readers resolve.
+            if (key.Length == 0 || !seen.Add(key)) continue;
+
+            var participants = (reference.Participants ?? new List<ParticipantDto>()).ToList();
+            var inRole = participants.Where(p => aliases.Resolve(p.Role) == canonicalKey).ToList();
+
+            if (assignee is null)
+            {
+                if (inRole.Count == 0) { unchanged.Add(key); continue; }
+            }
+            else
+            {
+                if (onlyMissing)
+                {
+                    var effective = WorkItemRoleRequirements.ResolveParticipants(
+                        refs, promotionParticipants, key, aliases);
+                    if (WorkItemRoleRequirements.MissingRoles(effective, [canonicalKey], aliases).Count == 0)
+                    {
+                        skipped.Add(key);
+                        continue;
+                    }
+                }
+                if (inRole.Count == 1
+                    && string.Equals(inRole[0].Role, storedRole, StringComparison.Ordinal)
+                    && string.Equals(inRole[0].Email?.Trim(), assignee.Email?.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    unchanged.Add(key);
+                    continue;
+                }
+            }
+
+            participants.RemoveAll(p => aliases.Resolve(p.Role) == canonicalKey);
+            if (assignee is not null)
+                participants.Add(new ParticipantDto(storedRole, assignee.DisplayName, assignee.Email));
+            refs[i] = reference with { Participants = participants };
+            updated.Add(key);
+        }
+
+        var result = new WorkItemsAssignmentResult(storedRole, updated, unchanged, skipped);
+        if (updated.Count == 0) return result;
+
+        candidate.References = refs;
+        var keyList = updated.Count <= 10
+            ? string.Join(", ", updated)
+            : string.Join(", ", updated.Take(10)) + $" and {updated.Count - 10} more";
+        var items = updated.Count == 1 ? "work item" : $"{updated.Count} work items";
+        StageSystemComment(candidate.Id, assignee is null
+            ? $"{Actor} cleared the {storedRole} on {items}: {keyList}."
+            : $"{Actor} assigned {assignee.DisplayName ?? assignee.Email ?? "(unnamed)"} "
+              + $"as {storedRole} on {items}: {keyList}.");
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions",
+            assignee is null
+                ? "promotion.work-items.participant.removed"
+                : "promotion.work-items.participant.upserted",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                referenceKeys = updated, role = storedRole, canonicalKey, onlyMissing,
+                assignee?.DisplayName, assignee?.Email,
+            });
+
+        await DispatchWebhookAsync(candidate, "promotion.updated", ct,
+            new
+            {
+                changeType = assignee is null ? "work-items.participant.removed" : "work-items.participant.upserted",
+                referenceKeys = updated,
+                role = storedRole,
+            });
+
+        return result;
+    }
+
+    /// <summary>
+    /// The role to store for one a caller supplied: unchanged, unless it is an alias, in which case
+    /// the role it names. Manual writes converge on the canonical key so the data stops carrying two
+    /// names for one role; ingest is never routed through here.
+    /// </summary>
+    private static string ConvergeRole(string storedRole, RoleAliasMap aliases)
+    {
+        if (string.IsNullOrEmpty(storedRole)) return storedRole;
+        var resolved = aliases.Resolve(storedRole);
+        return resolved == RoleNormalizer.Normalize(storedRole) ? storedRole : resolved;
     }
 
     /// <summary>
@@ -582,6 +1182,36 @@ public class PromotionService
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// Stages a system entry on a candidate's comment thread. Every action that changes a promotion
+    /// leaves one, so the thread reads as the complete story of what happened to it — the audit log
+    /// answers "who did what" for compliance, this answers "why does this promotion look like this"
+    /// for whoever opens it next.
+    ///
+    /// <para>Staged, not saved: it joins the caller's own <c>SaveChangesAsync</c>, so a comment can
+    /// never survive a transition that failed to persist. Authored by
+    /// <see cref="PromotionComment.SystemAuthor"/> even when a person triggered the action — the
+    /// actor is named in the body, and system authorship is what makes the entry immutable
+    /// (see <see cref="EnsureNotSystemComment"/>).</para>
+    /// </summary>
+    private void StageSystemComment(Guid candidateId, string body)
+    {
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = candidateId,
+            AuthorEmail = PromotionComment.SystemAuthor,
+            AuthorName = "System",
+            Body = body,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+    }
+
+    /// <summary>How the current user is named in a system comment body.</summary>
+    private string Actor => string.IsNullOrWhiteSpace(_currentUser.Name)
+        ? (_currentUser.Email ?? "Someone")
+        : _currentUser.Name;
+
     public async Task<PromotionComment> AddCommentAsync(Guid candidateId, string body, CancellationToken ct = default)
     {
         var trimmed = (body ?? "").Trim();
@@ -624,6 +1254,8 @@ public class PromotionService
         var comment = await _db.PromotionComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
             ?? throw new KeyNotFoundException($"Comment {commentId} not found");
 
+        EnsureNotSystemComment(comment, "edited");
+
         if (!string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)
             && !_currentUser.IsAdmin)
         {
@@ -647,6 +1279,8 @@ public class PromotionService
         var comment = await _db.PromotionComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
             ?? throw new KeyNotFoundException($"Comment {commentId} not found");
 
+        EnsureNotSystemComment(comment, "deleted");
+
         if (!string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)
             && !_currentUser.IsAdmin)
         {
@@ -668,9 +1302,11 @@ public class PromotionService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Records an approval from the current user. Enforces all gating rules:
-    /// candidate must still be Pending, user must be in the approver group, and the same user may
-    /// not approve twice (also enforced by a DB-level unique index as belt-and-suspenders).
+    /// Records an approval from the current user against one requirement (gate). Enforces all
+    /// gating rules: candidate must still be Pending, user must be authorized for the requirement,
+    /// and the same user may not approve the same requirement twice (also enforced by a DB-level
+    /// unique index as belt-and-suspenders). A user eligible for several requirements approves each
+    /// one separately — that is how one person sitting in two gates clears both.
     ///
     /// <para>After persisting the approval row, delegates to <see cref="ReevaluateAsync"/> which
     /// runs the gate evaluator and transitions the candidate to <see cref="PromotionStatus.Approved"/>
@@ -691,23 +1327,30 @@ public class PromotionService
 
         // RequireAllWorkItemsApproved: the policy says every work item must be signed off before a
         // human release manager can approve the promotion. When the bundle has work items and at least
-        // one is still pending (or rejected), reject the attempt with an actionable message.
+        // one is still undecided (or blocked), reject the attempt with an actionable message.
         if (snapshot.RequireAllWorkItemsApproved && await CandidateHasWorkItemsAsync(candidate, ct))
         {
-            if (!await AreAllWorkItemsApprovedAsync(candidate, ct))
+            if (!await AreAllWorkItemsClearedAsync(candidate, ct))
                 throw new InvalidOperationException(
-                    "All work items must be approved before this promotion can be approved. " +
+                    "All work items must be signed off before this promotion can be approved — " +
+                    "a blocked item holds it, an issue does not. " +
                     "Check the work items queue for pending sign-offs.");
         }
 
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
-        await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
+
+        // A legacy, unattributed approval (recorded before gates were tracked per requirement) is
+        // ambiguous about which gate it meant, so it still counts as "this person has decided".
+        var mine = await LoadMyDecisionsAsync(candidateId, ct);
+        if (mine.Any(d => d.StepName is null && d.RequirementName is null))
+            throw new InvalidOperationException("You have already made a decision on this promotion");
 
         // Resolve which requirement this approval is attributed to. The approver may explicitly pin
         // a (stepName, requirementName); otherwise we auto-pick when exactly one open requirement is
-        // available, or ask the caller to choose when more than one is.
+        // available, or ask the caller to choose when more than one is. "Eligible" already excludes
+        // requirements this user has approved and requirements that are satisfied.
         var eligible = await GetEligibleRequirementsAsync(candidate, ct);
-        RequirementRef? target = null;
+        RequirementRef target;
         var hasExplicit = !string.IsNullOrWhiteSpace(stepName) || !string.IsNullOrWhiteSpace(requirementName);
         if (hasExplicit)
         {
@@ -716,7 +1359,8 @@ public class PromotionService
                 && string.Equals(r.RequirementName, requirementName ?? "", StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                // Distinguish "not eligible" from "already satisfied" so the caller can pick a status.
+                // Distinguish "not eligible" from "already approved by you" from "already satisfied"
+                // so the caller can pick a status.
                 var existsInTree = snapshot.ApprovalSteps.Any(s =>
                     string.Equals(s.Name ?? "", stepName ?? "", StringComparison.OrdinalIgnoreCase)
                     && s.Requirements.Any(rq =>
@@ -732,8 +1376,13 @@ public class PromotionService
                 }
 
                 if (existsInTree && authorized)
+                {
+                    if (mine.Any(d => SameRequirement(d, stepName, requirementName)))
+                        throw new InvalidOperationException(
+                            $"You have already approved this promotion as '{requirementName}'.");
                     throw new RequirementAlreadySatisfiedException(
                         $"Requirement '{requirementName}' is already satisfied — nothing to approve there.");
+                }
                 throw new UnauthorizedAccessException("You are not eligible for that requirement.");
             }
             target = match;
@@ -742,9 +1391,17 @@ public class PromotionService
         {
             if (eligible.Count == 1) target = eligible[0];
             else if (eligible.Count > 1) throw new MultipleEligibleRequirementsException(eligible);
-            // eligible.Count == 0: leave target null — EnsureUserCanApproveAsync already passed, so
-            // the user is authorized for the tree but every requirement they match is satisfied.
-            // Record an unattributed row (back-compat) so the matcher's surplus handling applies.
+            else
+            {
+                // EnsureUserCanApproveAsync passed, so the user is authorized for the tree — but every
+                // requirement they match is either satisfied or already carries their approval.
+                // Nothing to record; say which it is.
+                if (mine.Any(d => d.Decision == PromotionDecision.Approved))
+                    throw new InvalidOperationException(
+                        "You have already approved every requirement you are eligible for on this promotion.");
+                throw new RequirementAlreadySatisfiedException(
+                    "Every requirement you are eligible for is already satisfied — nothing to approve.");
+            }
         }
 
         var decision = new PromotionApproval
@@ -755,11 +1412,19 @@ public class PromotionService
             ApproverName = _currentUser.Name,
             Comment = comment,
             Decision = PromotionDecision.Approved,
-            StepName = target?.StepName,
-            RequirementName = target?.RequirementName,
+            StepName = target.StepName,
+            RequirementName = target.RequirementName,
             CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.PromotionApprovals.Add(decision);
+
+        var approvedAs = string.IsNullOrEmpty(target.RequirementName)
+            ? ""
+            : $" as '{target.RequirementName}'";
+        StageSystemComment(candidateId, string.IsNullOrWhiteSpace(comment)
+            ? $"{Actor} approved this promotion{approvedAs}."
+            : $"{Actor} approved this promotion{approvedAs} — {comment.Trim()}");
+
         await _db.SaveChangesAsync(ct);
 
         // Granular per-row event: "this user signed off on the candidate". Coarse candidate-level
@@ -778,6 +1443,75 @@ public class PromotionService
         // Approved (and emit the candidate-level audit + webhook) or leave it Pending if the
         // strategy threshold or work item gates aren't yet satisfied.
         return await ReevaluateAsync(candidateId, ct);
+    }
+
+    /// <summary>
+    /// Approves one named gate ("Release Approval") on a candidate: records the current user's approval
+    /// on every requirement of that approval step they are eligible for and that is still open. Mass
+    /// approve calls it per row. Somebody signing off a release across an environment approves "the
+    /// Release Approval gate", not one specific requirement, so the caller names the gate and the
+    /// requirements follow.
+    ///
+    /// <para>Each requirement goes through <see cref="ApproveAsync"/>, so the guards are the same ones a
+    /// single approval meets: the work-item gate, the legacy-decision rule, the audit row and the
+    /// re-evaluation that may flip the candidate to Approved. It stops early once the candidate leaves
+    /// Pending. A gate the user has nothing left to sign on throws with the reason. The bulk endpoint
+    /// reports that reason per row.</para>
+    /// </summary>
+    /// <returns>The candidate after the last approval, and the requirements approved, in policy order.</returns>
+    public async Task<GateApprovalResult> ApproveGateAsync(
+        Guid candidateId, string gate, string? comment, CancellationToken ct = default)
+    {
+        var gateName = (gate ?? "").Trim();
+        if (gateName.Length == 0)
+            throw new ArgumentException("Name the gate to approve.", nameof(gate));
+
+        var candidate = await LoadPendingAsync(candidateId, ct);
+        var snapshot = ReadSnapshot(candidate);
+        var gateRequirements = snapshot.ApprovalSteps
+            .Where(s => string.Equals(StepDisplayName(s), gateName, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(s => s.Requirements)
+            .ToList();
+        if (gateRequirements.Count == 0)
+            throw new InvalidOperationException($"This promotion has no '{gateName}' gate.");
+
+        var targets = (await GetEligibleRequirementsAsync(candidate, ct))
+            .Where(r => string.Equals(GateName(r.StepName), gateName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (targets.Count == 0)
+        {
+            // Nothing of this gate is left for this user. Say which of the three it is, most specific
+            // first.
+            var authorized = false;
+            foreach (var req in gateRequirements)
+            {
+                if (!await _auth.IsAuthorizedForRequirementAsync(req, _currentUser.Email, ct)) continue;
+                authorized = true;
+                break;
+            }
+            if (!authorized)
+                throw new UnauthorizedAccessException($"You are not an approver for '{gateName}' on this promotion.");
+
+            var mine = await LoadMyDecisionsAsync(candidateId, ct);
+            if (mine.Any(d => d.StepName is null && d.RequirementName is null))
+                throw new InvalidOperationException("You have already made a decision on this promotion");
+            if (mine.Any(d => d.Decision == PromotionDecision.Approved
+                              && string.Equals(GateName(d.StepName), gateName, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"You have already approved '{gateName}' on this promotion.");
+            throw new RequirementAlreadySatisfiedException(
+                $"'{gateName}' is already satisfied — nothing to approve there.");
+        }
+
+        var approved = new List<RequirementRef>();
+        foreach (var target in targets)
+        {
+            candidate = await ApproveAsync(candidateId, comment, target.StepName, target.RequirementName, ct);
+            approved.Add(target);
+            if (candidate.Status != PromotionStatus.Pending) break;
+        }
+
+        return new GateApprovalResult(candidate, approved);
     }
 
     /// <summary>
@@ -808,6 +1542,8 @@ public class PromotionService
 
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
+        StageSystemComment(candidate.Id,
+            "Approval gate satisfied — the promotion is approved and cleared to deploy.");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -819,9 +1555,107 @@ public class PromotionService
         _logger.LogInformation(
             "Candidate {Id} → Approved via gate evaluator", candidate.Id);
 
-        await DispatchWebhookAsync(candidate, "promotion.approved", ct);
+        await DispatchWebhookAsync(candidate, "promotion.approved", ct,
+            options: ApprovedWebhookOptions(candidate));
 
         return candidate;
+    }
+
+    /// <summary>
+    /// Retroactively applies a policy change to in-flight promotions: re-snapshots every
+    /// still-<see cref="PromotionStatus.Pending"/> candidate on the policy's
+    /// (product, service, sourceEnv, targetEnv) scope and re-evaluates its gate under the new
+    /// rules. Called by the admin endpoints after a policy is created, edited, or deleted, so a
+    /// settings change takes effect for existing promotions instead of only future ones.
+    ///
+    /// <para><paramref name="service"/> mirrors policy scoping: <c>null</c> means a product-default
+    /// policy changed, so every service on the edge is re-resolved. A candidate whose own
+    /// service-specific policy still wins resolution re-projects to an identical snapshot and is
+    /// left untouched.</para>
+    ///
+    /// <para>Safety rails: candidates that are Approved/Deploying/terminal are never touched (a
+    /// policy edit must not silently un-approve work — undoing an approval is a deliberate act, see
+    /// <see cref="CancelApprovalAsync"/>),
+    /// and when no policy resolves at all any more (policy deleted with no fallback) the candidate
+    /// keeps its creation-time snapshot — deleting a gate's configuration must not auto-approve
+    /// everything that was waiting on it.</para>
+    /// </summary>
+    /// <returns>The number of candidates whose snapshot was refreshed.</returns>
+    public async Task<int> RefreshPolicySnapshotsAsync(
+        string product, string? service, string sourceEnv, string targetEnv, CancellationToken ct = default)
+    {
+        var candidates = await _db.PromotionCandidates
+            .Where(c => c.Product == product
+                     && c.SourceEnv == sourceEnv
+                     && c.TargetEnv == targetEnv
+                     && c.Status == PromotionStatus.Pending
+                     && (service == null || c.Service == service))
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return 0;
+
+        var refreshed = new List<PromotionCandidate>();
+        foreach (var candidate in candidates)
+        {
+            var snapshot = await _resolver.SnapshotAsync(
+                candidate.Product, candidate.Service, candidate.SourceEnv, candidate.TargetEnv, ct);
+
+            // No policy resolves any more → the edge is un-enrolled. Keep the creation-time
+            // snapshot: swapping in the auto-approve fallback would promote the candidate as a
+            // side effect of DELETING a gate.
+            if (snapshot.PolicyId is null) continue;
+
+            var json = JsonSerializer.Serialize(snapshot, JsonOptions);
+            if (json == candidate.ResolvedPolicyJson) continue; // resolution unchanged — no-op
+
+            var wasTracking = ReadSnapshot(candidate).TracksWorkItems;
+
+            candidate.PolicyId = snapshot.PolicyId;
+            candidate.ResolvedPolicyJson = json;
+            StageSystemComment(candidate.Id,
+                $"{Actor} changed the promotion policy for this edge — the promotion has been "
+                + "re-gated under the new approval rules.");
+
+            // The work-item index is derived from the policy, so a change to TracksWorkItems has to
+            // reach candidates that already exist — otherwise turning it off would leave their tickets
+            // sitting in the queue with no way to clear them, and turning it back on would leave the
+            // promotion permanently without any. Rebuilt from the candidate's own references, which are
+            // the authoritative change set either way.
+            if (wasTracking != snapshot.TracksWorkItems)
+                await ResyncWorkItemIndexAsync(candidate, snapshot.TracksWorkItems, ct);
+
+            refreshed.Add(candidate);
+        }
+        if (refreshed.Count == 0) return 0;
+
+        await _db.SaveChangesAsync(ct);
+
+        foreach (var candidate in refreshed)
+        {
+            await _audit.Log(
+                "promotions", "promotion.policy.reapplied",
+                _currentUser.Id, _currentUser.Name, "user",
+                "PromotionCandidate", candidate.Id, null,
+                new
+                {
+                    candidate.PolicyId,
+                    candidate.Product,
+                    candidate.Service,
+                    candidate.SourceEnv,
+                    candidate.TargetEnv,
+                    candidate.Version,
+                });
+
+            // The new rules may already be satisfied (e.g. the gate was relaxed to auto-approve, or
+            // recorded approvals now cover the requirement tree) — evaluate immediately.
+            await ReevaluateAsync(candidate.Id, ct);
+        }
+
+        _logger.LogInformation(
+            "Policy change on {Product}/{Service} {SourceEnv} → {TargetEnv} re-applied to {Count} pending candidate(s)",
+            LogSanitizer.Clean(product), LogSanitizer.Clean(service ?? "*"),
+            LogSanitizer.Clean(sourceEnv), LogSanitizer.Clean(targetEnv), refreshed.Count);
+
+        return refreshed.Count;
     }
 
     /// <summary>
@@ -850,6 +1684,8 @@ public class PromotionService
 
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
+        StageSystemComment(candidate.Id,
+            $"{Actor} bypassed the approval gate (admin override) — {trimmedReason}");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
@@ -866,9 +1702,216 @@ public class PromotionService
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
             new { trigger = "administrator-bypass", reason = trimmedReason, frozen },
-            bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason));
+            bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason),
+            options: ApprovedWebhookOptions(candidate));
 
         return candidate;
+    }
+
+    // ---------------------------------------------------------------------
+    // Undo (Approved → Pending)
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Takes back an approval: an <see cref="PromotionStatus.Approved"/> candidate that has not been
+    /// handed to the executor yet goes back to <see cref="PromotionStatus.Pending"/> and its recorded
+    /// sign-offs are cleared. The everyday case is the wrong row approved by mistake, so the window is
+    /// deliberately narrow — the moment the candidate is Deploying it belongs to the pipeline, and the
+    /// answer becomes rollback, not undo.
+    ///
+    /// <para>Clearing the <see cref="PromotionApproval"/> rows is what makes the undo real rather than
+    /// cosmetic: leaving them would let the very next gate evaluation re-approve the candidate, and
+    /// would leave the mistaken approver unable to approve again (one decision per person). The
+    /// cleared sign-offs are named in the system comment, so the thread still records who had
+    /// approved and who took it back.</para>
+    ///
+    /// <para>Refused when the gate would re-satisfy itself with no approvals at all — an auto-approve
+    /// policy. There is no human decision to retract there, and the candidate would flip straight back
+    /// to Approved; tightening the edge's policy first is the action that gets somewhere.</para>
+    ///
+    /// <para>That question — and the eligibility check above it — is asked of the policy in force
+    /// <i>now</i>, not the one frozen onto the candidate when it was approved. The two diverge when the
+    /// edge's gate was tightened after the candidate reached Approved, because
+    /// <see cref="RefreshPolicySnapshotsAsync"/> re-snapshots Pending candidates only. Without the
+    /// re-resolution a candidate auto-approved under an empty gate stays un-cancellable forever: the
+    /// frozen snapshot keeps answering "it would re-approve anyway" no matter how the real policy has
+    /// changed, and nothing else moves a candidate off Approved. Cancelling under a newer policy
+    /// carries that policy onto the candidate, so it lands in Pending against the gate it will
+    /// actually have to satisfy.</para>
+    ///
+    /// <para>Best case, this also catches the <c>promotion.approved</c> webhook inside its
+    /// <see cref="ApprovedWebhookDelay"/> hold and stops it going out at all — reported back as
+    /// <see cref="CancelApprovalResult.ApprovedWebhookStopped"/> so the UI can tell the user whether
+    /// downstream heard about the approval before they took it back.</para>
+    /// </summary>
+    public async Task<CancelApprovalResult> CancelApprovalAsync(
+        Guid candidateId, string? comment, CancellationToken ct = default)
+    {
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+
+        if (candidate.Status != PromotionStatus.Approved)
+        {
+            throw new InvalidOperationException(candidate.Status switch
+            {
+                PromotionStatus.Pending =>
+                    "This promotion is not approved — there is nothing to cancel.",
+                PromotionStatus.Deploying or PromotionStatus.Deployed =>
+                    $"This promotion is already {candidate.Status.ToString().ToLowerInvariant()} — "
+                    + "cancelling the approval would not stop it. Roll back instead.",
+                _ =>
+                    $"This promotion is {candidate.Status} — its approval can no longer be cancelled.",
+            });
+        }
+
+        // Judged against the policy in force NOW, not the one frozen onto the candidate at approval
+        // time. The two diverge whenever the edge's gate was tightened after this candidate was
+        // approved (see ResolveCurrentPolicyAsync) — and that is precisely the case where the
+        // approval most needs taking back.
+        var policy = await ResolveCurrentPolicyAsync(candidate, ct);
+
+        // Anyone the policy trusts to approve this candidate may take an approval back — including an
+        // approver other than the one who made the mistake, which is the point when the mistake is
+        // spotted by a colleague. Admins qualify regardless, matching the bypass escape hatch.
+        if (!_currentUser.IsAdmin
+            && !await _auth.IsAuthorizedForAnyRequirementAsync(policy.Current, _currentUser.Email, ct))
+        {
+            throw new UnauthorizedAccessException(
+                "You are not authorized to cancel the approval on this promotion");
+        }
+
+        var wouldReapprove = await EvaluateGateAsync(
+            candidate, policy.Current, ct, ignoreRecordedApprovals: true);
+        if (wouldReapprove.Satisfied)
+        {
+            // Rejecting is NOT the alternative to offer: RejectAsync only accepts Pending candidates,
+            // so pointing an Approved one at it names an action that cannot be taken. Name the thing
+            // that is actually holding the gate open instead — with the re-resolution above, undoing
+            // that makes this call succeed. The two ways to be satisfied with zero sign-offs read very
+            // differently to whoever has to act: an empty requirement tree, or the work-item
+            // auto-approve rule firing over a tree that does have approvers in it.
+            throw new InvalidOperationException(
+                "This promotion's policy approves it without human sign-off, so there is no approval "
+                + "to take back — it would be approved again immediately. "
+                + (policy.Current.IsAutoApprove
+                    ? $"Add an approval requirement to the {candidate.SourceEnv} → {candidate.TargetEnv} "
+                      + "policy first, then cancel."
+                    : "Its policy auto-approves once every work item is signed off; block a work "
+                      + "item to reopen the gate, then cancel. (An issue does not — it flags a "
+                      + "problem without holding the release.)"));
+        }
+
+        // Cancelling under a newer policy has to carry that policy onto the candidate. Sending it
+        // back to Pending against the stale snapshot would let the next gate evaluation — the source
+        // system's next change-set refresh is enough — auto-approve it straight back under exactly
+        // the rules we just decided no longer apply.
+        if (policy.Json is not null)
+        {
+            candidate.PolicyId = policy.PolicyId;
+            candidate.ResolvedPolicyJson = policy.Json;
+            if (policy.Stored.TracksWorkItems != policy.Current.TracksWorkItems)
+                await ResyncWorkItemIndexAsync(candidate, policy.Current.TracksWorkItems, ct);
+        }
+
+        var approvals = await _db.PromotionApprovals
+            .Where(a => a.CandidateId == candidateId && a.Decision == PromotionDecision.Approved)
+            .ToListAsync(ct);
+        var clearedNames = approvals
+            .Select(a => string.IsNullOrWhiteSpace(a.ApproverName) ? a.ApproverEmail : a.ApproverName)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _db.PromotionApprovals.RemoveRange(approvals);
+
+        candidate.Status = PromotionStatus.Pending;
+        candidate.ApprovedAt = null;
+
+        var trimmedComment = (comment ?? "").Trim();
+        // A bypass records no approval row, so "cleared" would read as "nothing happened" on one.
+        var cleared = clearedNames.Count == 0
+            ? "the promotion is back to pending"
+            : $"the promotion is back to pending and the sign-off(s) by {string.Join(", ", clearedNames)} were cleared";
+        // Say so when the snapshot moved underneath the candidate: the reader needs to know the
+        // promotion is going back to a DIFFERENT gate than the one it was approved under.
+        var regated = policy.Json is null
+            ? ""
+            : " The promotion has been re-gated under the edge's current approval rules.";
+        StageSystemComment(candidateId, trimmedComment.Length == 0
+            ? $"{Actor} cancelled the approval — {cleared}.{regated}"
+            : $"{Actor} cancelled the approval — {cleared}. Reason: {trimmedComment}{regated}");
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "promotion.approval.cancelled",
+            _currentUser.Id, _currentUser.Name, "user",
+            "PromotionCandidate", candidate.Id, null,
+            new
+            {
+                comment = trimmedComment.Length == 0 ? null : trimmedComment,
+                clearedApprovals = approvals.Count,
+                repolicied = policy.Json is not null,
+                policyId = candidate.PolicyId,
+            });
+
+        _logger.LogInformation(
+            "Candidate {Id} approval cancelled by {Email}; {Count} approval row(s) cleared",
+            candidate.Id, _currentUser.Email, approvals.Count);
+
+        // Stop the held promotion.approved delivery first, so a consumer that does receive both
+        // events can never see the cancellation before the approval it cancels.
+        var stopped = 0;
+        try
+        {
+            stopped = await _webhookDispatcher.CancelPendingAsync(ApprovedWebhookCancelKey(candidate.Id), ct);
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal, exactly like dispatch: the state change is already persisted, and the
+            // promotion.approval.cancelled event below still tells consumers what happened.
+            _logger.LogWarning(ex,
+                "Cancelling held promotion.approved deliveries failed for candidate {Id}", candidate.Id);
+        }
+
+        await DispatchWebhookAsync(candidate, "promotion.approval.cancelled", ct,
+            new
+            {
+                comment = trimmedComment.Length == 0 ? null : trimmedComment,
+                clearedApprovals = approvals.Count,
+                // True ⇒ we caught it in the hold window and no promotion.approved ever left. A
+                // consumer that saw one knows this cancellation retracts it.
+                approvedWebhookStopped = stopped > 0,
+            });
+
+        return new CancelApprovalResult(candidate, approvals.Count, stopped > 0);
+    }
+
+    /// <summary>
+    /// Non-throwing form of the cancel-approval checks, for the UI's <c>canCancelApproval</c> flag.
+    /// Mirrors <see cref="CancelApprovalAsync"/>'s guards so the button is offered exactly when the
+    /// action would succeed.
+    /// </summary>
+    public async Task<bool> CanUserCancelApprovalAsync(
+        PromotionCandidate candidate, CancellationToken ct = default)
+    {
+        if (candidate.Status != PromotionStatus.Approved) return false;
+
+        try
+        {
+            var policy = await ResolveCurrentPolicyAsync(candidate, ct);
+            if (!_currentUser.IsAdmin
+                && !await _auth.IsAuthorizedForAnyRequirementAsync(policy.Current, _currentUser.Email, ct))
+                return false;
+
+            var wouldReapprove = await EvaluateGateAsync(
+                candidate, policy.Current, ct, ignoreRecordedApprovals: true);
+            return !wouldReapprove.Satisfied;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Cancel-approval capability probe failed for candidate {Id}", candidate.Id);
+            return false;
+        }
     }
 
     /// <summary>
@@ -884,9 +1927,9 @@ public class PromotionService
     ///   <item>If a <see cref="PromotionFreeze"/> is active on the candidate's (product, target env)
     ///         → blocked (after the source-drift check, before any auto-approve path).</item>
     ///   <item>If <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> and the bundle has
-    ///         work items that are not all approved → blocked.</item>
+    ///         work items that are not all cleared → blocked.</item>
     ///   <item>If <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/> and every
-    ///         work item is approved → satisfied, regardless of any manual approver requirements.</item>
+    ///         work item is cleared → satisfied, regardless of any manual approver requirements.</item>
     ///   <item>If there are no human approver requirements (empty requirement tree) → satisfied.</item>
     ///   <item>If <see cref="ResolvedPolicySnapshot.AutoApproveWhenNoWorkItems"/> and the candidate
     ///         has no work items → satisfied.</item>
@@ -894,35 +1937,46 @@ public class PromotionService
     ///         requirement tree; satisfied when every requirement has enough distinct eligible
     ///         approvers (see <see cref="ApprovalMatcher"/>).</item>
     /// </list>
-    /// A work item counts as approved when it has at least one Approved <see cref="WorkItemApproval"/>
-    /// row for <c>(WorkItemKey, Product, TargetEnv)</c> and zero Rejected rows.
+    /// A work item counts as cleared when it has at least one <see cref="WorkItemApproval"/> row for
+    /// <c>(WorkItemKey, Product, Service, TargetEnv)</c> — Approved or Issue — and zero Blocked ones.
     /// </remarks>
+    /// <param name="ignoreRecordedApprovals">
+    /// Evaluate as if no <see cref="PromotionApproval"/> row existed. Answers the one question
+    /// <see cref="CancelApprovalAsync"/> has to ask before it acts — "if I clear the sign-offs, does
+    /// this candidate stay approved anyway?" — which is true for a policy that approves on its own,
+    /// and means there is no approval to take back.
+    /// </param>
     internal async Task<GateResult> EvaluateGateAsync(
         PromotionCandidate candidate,
         ResolvedPolicySnapshot snapshot,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool ignoreRecordedApprovals = false)
     {
         // Source-drift invariant: a candidate is only promotable while its source environment is
         // still running the candidate's version. If the source was rolled back (or otherwise moved
         // off this version), block — promoting would push a version no live env runs. This clears
         // automatically once the source is redeployed to the version (see idempotent reactivation
         // in CreateCandidateAsync). Checked before auto-approve so even auto policies can't promote
-        // a drifted version.
-        var sourceCurrent = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == candidate.Product && e.Service == candidate.Service
-                     && e.Environment == candidate.SourceEnv)
-            .OrderByDescending(e => e.DeployedAt)
-            .Select(e => e.Version)
-            .FirstOrDefaultAsync(ct);
-        // Only block on positive evidence of drift: a source deploy exists and runs a *different*
-        // version. No source history (null) means we can't conclude drift, so don't block.
-        if (sourceCurrent is not null
-            && !string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
-            return new GateResult(false, new[]
-            {
-                $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
-                $"(now {sourceCurrent}) — promotion is stale until redeployed",
-            });
+        // a drifted version. Skipped when the policy opted out of source deploys entirely
+        // (SourceRequiresDeploy=false): a landing-zone source has no meaningful "current version".
+        if (snapshot.SourceRequiresDeploy)
+        {
+            var sourceCurrent = await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Product == candidate.Product && e.Service == candidate.Service
+                         && e.Environment == candidate.SourceEnv)
+                .OrderByDescending(e => e.DeployedAt)
+                .Select(e => e.Version)
+                .FirstOrDefaultAsync(ct);
+            // Only block on positive evidence of drift: a source deploy exists and runs a *different*
+            // version. No source history (null) means we can't conclude drift, so don't block.
+            if (sourceCurrent is not null
+                && !string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
+                return new GateResult(false, new[]
+                {
+                    $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
+                    $"(now {sourceCurrent}) — promotion is stale until redeployed",
+                });
+        }
 
         // Promotion Freeze (ADR-0001/0002): an active freeze on (product, target env) holds the gate
         // shut — checked before every auto-approve path below. Approvals keep being recorded; lifting
@@ -934,18 +1988,18 @@ public class PromotionService
                 $"Promotions of {candidate.Product} to {candidate.TargetEnv} are frozen — {freeze.Reason}",
             });
 
-        // 1. Work items REQUIRED but not all approved → blocked.
+        // 1. Work items REQUIRED but not all cleared → blocked.
         if (snapshot.RequireAllWorkItemsApproved
             && await CandidateHasWorkItemsAsync(candidate, ct)
-            && !await AreAllWorkItemsApprovedAsync(candidate, ct))
+            && !await AreAllWorkItemsClearedAsync(candidate, ct))
         {
-            return new GateResult(false, new[] { "All work items must be approved before this promotion can proceed" });
+            return new GateResult(false, new[] { "All work items must be signed off before this promotion can proceed" });
         }
 
-        // 2. Accelerator: all work items approved auto-promotes, regardless of manual steps.
+        // 2. Accelerator: all work items cleared auto-promotes, regardless of manual steps.
         if (snapshot.AutoApproveOnAllWorkItemsApproved
             && await CandidateHasWorkItemsAsync(candidate, ct)
-            && await AreAllWorkItemsApprovedAsync(candidate, ct))
+            && await AreAllWorkItemsClearedAsync(candidate, ct))
         {
             return new GateResult(true, Array.Empty<string>());
         }
@@ -959,16 +2013,20 @@ public class PromotionService
         if (snapshot.AutoApproveWhenNoWorkItems && !await CandidateHasWorkItemsAsync(candidate, ct))
             return new GateResult(true, Array.Empty<string>());
 
-        // 4. Human approver requirements must be satisfied.
+        // 4. Human approver requirements must be satisfied. Steps 1-3 above are approval-independent,
+        // so this is the only one a hypothetical "with no approvals recorded" run has to short-circuit.
+        if (ignoreRecordedApprovals)
+            return new GateResult(false, new[] { "No approvals recorded" });
         return await EvaluatePromotionOnlyGateAsync(candidate, snapshot, ct);
     }
 
     private async Task<GateResult> EvaluatePromotionOnlyGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
     {
-        // The manual gate is satisfied when EVERY requirement across EVERY step is satisfied by a
-        // distinct set of approvers (parallel AND over the flattened requirement set, D9). The
-        // matcher assigns each distinct approver to at most one requirement, most-constrained first.
+        // The manual gate is satisfied when EVERY requirement across EVERY step has enough distinct
+        // approvers of its own (parallel AND over the flattened requirement set). An approval counts
+        // toward the requirement it was recorded against, so one person may clear several gates;
+        // only legacy unattributed rows are placed by the matcher, at most one requirement each.
         var requirements = snapshot.AllRequirements;
         if (requirements.Count == 0)
             return new GateResult(true, Array.Empty<string>()); // no human gate
@@ -990,9 +2048,9 @@ public class PromotionService
     }
 
     /// <summary>
-    /// Loads the candidate's distinct Approved approver emails and runs the
-    /// <see cref="ApprovalMatcher"/> against the requirement set, using the authorizer to decide
-    /// eligibility. Eligibility for the current user is resolved live (group membership); for any
+    /// Loads the candidate's Approved rows — one decision per (approver, requirement) — and runs
+    /// the <see cref="ApprovalMatcher"/> against the requirement set, using the authorizer to decide
+    /// eligibility of the unattributed ones. Eligibility for the current user is resolved live (group membership); for any
     /// other recorded approver, eligibility is determined by the requirement's explicit user list
     /// (group membership for non-current users can't be answered by the identity service). This is
     /// adequate because, in practice, distinct group memberships are validated at record time via
@@ -1024,27 +2082,11 @@ public class PromotionService
             }
         }
 
-        // Collapse to one decision per distinct approver. A pinned attribution (resolvable to a
-        // requirement index) wins; otherwise the row is unpinned and auto-attributed by the matcher.
-        var decisionByEmail = new Dictionary<string, ApproverDecision>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in approvedRows)
-        {
-            if (string.IsNullOrEmpty(row.ApproverEmail)) continue;
-            int? pinned = null;
-            if (!string.IsNullOrEmpty(row.RequirementName)
-                && indexByName.TryGetValue((row.StepName ?? "", row.RequirementName), out var idx))
-            {
-                pinned = idx;
-            }
-
-            // Keep the strongest signal: a pinned decision should not be overwritten by a later
-            // unpinned dup (shouldn't happen given the unique constraint, but be defensive).
-            if (decisionByEmail.TryGetValue(row.ApproverEmail, out var existing) && existing.PinnedRequirementIndex is not null)
-                continue;
-            decisionByEmail[row.ApproverEmail] = new ApproverDecision(row.ApproverEmail, pinned);
-        }
-
-        var decisions = decisionByEmail.Values.ToList();
+        // One pinned decision per (approver, requirement) — an approver who cleared two gates reaches
+        // the matcher twice — plus one unpinned decision per approver with legacy/stale attribution.
+        var decisions = ToDecisions(
+            approvedRows.Select(a => new RecordedApproval(a.ApproverEmail, a.StepName, a.RequirementName)),
+            indexByName);
 
         // Pre-resolve eligibility for the UNPINNED approvers so the (synchronous) matcher stays pure.
         // Pinned rows are trusted (eligibility was validated at record time) so they're attributed
@@ -1179,8 +2221,8 @@ public class PromotionService
     /// Computes the "all work items resolved" gate condition for a candidate, or <c>null</c> when the
     /// policy doesn't gate on work items (neither <see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>
     /// nor <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>) or the candidate carries no
-    /// work items. A work item counts as resolved when it has an Approved <see cref="WorkItemApproval"/> and no
-    /// Rejected one.
+    /// work items. A work item counts as resolved when somebody has ruled on it and nobody blocked it —
+    /// an Issue resolves it as much as an Approval does, it just says something is wrong with what ships.
     /// </summary>
     private async Task<WorkItemGateProgress?> GetWorkItemGateAsync(
         PromotionCandidate candidate, ResolvedPolicySnapshot snapshot, CancellationToken ct)
@@ -1203,30 +2245,74 @@ public class PromotionService
         var approvals = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => workItemKeys.Contains(a.WorkItemKey)
                      && a.Product == candidate.Product
+                     && a.Service == candidate.Service
                      && a.TargetEnv == candidate.TargetEnv)
             .ToListAsync(ct);
 
         var approved = 0;
-        foreach (var key in workItemKeys)
+        var issues = 0;
+        var blocked = 0;
+        if (snapshot.RequireAllWorkItemInstancesApproved)
         {
-            var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
-            if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) continue;
-            if (rows.Any(a => a.Decision == PromotionDecision.Approved)) approved++;
+            // The gate judges each ticket by its overall status across every service instance — the
+            // same roll-up the work-item pages show — so a block on any sibling instance holds this
+            // promotion too, and a sibling nobody has ruled on still leaves the ticket outstanding.
+            var overall = await WorkItemOverallStatus.LoadAsync(_db,
+                workItemKeys.Select(k => new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv)), ct);
+            foreach (var key in workItemKeys)
+            {
+                var status = overall.GetValueOrDefault(new WorkItemTicketId(key, candidate.Product, candidate.TargetEnv));
+                if (status is null) continue; // no instance in the index ⇒ nothing signed off yet
+                if (status.Blocked > 0) { blocked++; continue; }
+                // Counts, not State: the roll-up shows Issue even when a sibling is still undecided,
+                // and an undecided sibling is outstanding however the ticket reads.
+                if (status.Pending > 0) continue;
+                if (status.Issues > 0) { issues++; continue; }
+                approved++;
+            }
+        }
+        else
+        {
+            foreach (var key in workItemKeys)
+            {
+                var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
+                // A block takes precedence over a sibling approval and is the only verdict that holds
+                // the item. Issues are counted apart from approvals so the UI can say what is flagged
+                // on what is shipping, rather than leaving a silent gap.
+                switch (WorkItemOverallStatus.StateOf(rows.Select(a => a.Decision)))
+                {
+                    case WorkItemInstanceState.Blocked: blocked++; break;
+                    case WorkItemInstanceState.Issue: issues++; break;
+                    case WorkItemInstanceState.Approved: approved++; break;
+                }
+            }
         }
 
         return new WorkItemGateProgress(
-            Required: true, Total: workItemKeys.Count, Approved: approved,
-            Satisfied: approved == workItemKeys.Count, AutoApprove: autoApprove);
+            // The two flags mean different things and only one of them blocks. RequireAll holds a
+            // human approver back until every item is signed off; AutoApproveOnAll is an
+            // accelerator that never blocks anything. Reporting the real flag lets the UI disable
+            // the Approve button for the first case without disabling it for the second.
+            Required: snapshot.RequireAllWorkItemsApproved,
+            Total: workItemKeys.Count, Approved: approved,
+            // Cleared, not approved: an issue satisfies the gate too, so the shortfall is exactly the
+            // items nobody has ruled on plus the ones somebody blocked.
+            Satisfied: approved + issues == workItemKeys.Count, AutoApprove: autoApprove,
+            Issues: issues,
+            Blocked: blocked,
+            AllInstances: snapshot.RequireAllWorkItemInstancesApproved);
     }
 
     /// <summary>
-    /// The set of OPEN requirements the current user may approve as: those they
-    /// <see cref="PromotionApprovalAuthorizer.IsAuthorizedForRequirementAsync"/> AND that are not yet
-    /// satisfied by the live matcher outcome. Returns an empty list when the candidate isn't Pending,
-    /// is auto-approve, the user has already decided, or the user is eligible for none.
+    /// The set of OPEN requirements the current user may still approve as: those they
+    /// <see cref="PromotionApprovalAuthorizer.IsAuthorizedForRequirementAsync"/>, that are not yet
+    /// satisfied by the live matcher outcome, and that they have not already approved. Returns an
+    /// empty list when the candidate isn't Pending, is auto-approve, the user holds a legacy
+    /// unattributed decision, or the user is eligible for none.
     ///
     /// <para>When the user is eligible for more than one open requirement, all of them are returned so
-    /// the caller (endpoint / UI) can prompt the approver to choose which one they approve as.</para>
+    /// the caller (endpoint / UI) can offer a separate approve action per gate. A user in two gates
+    /// therefore keeps the second one on offer after approving the first.</para>
     /// </summary>
     public async Task<IReadOnlyList<RequirementRef>> GetEligibleRequirementsAsync(
         PromotionCandidate candidate, CancellationToken ct = default)
@@ -1236,20 +2322,19 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove || snapshot.AllRequirements.Count == 0) return Array.Empty<RequirementRef>();
 
-        // Already decided? Nothing further to offer. Compare against the canonical stored form so a
-        // differently-cased email claim (e.g. UPN vs Graph mail) can't slip past the dedup.
-        var normalizedEmail = NormalizeEmail(_currentUser.Email);
-        var already = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == normalizedEmail, ct);
-        if (already) return Array.Empty<RequirementRef>();
+        // What this user has already decided on this candidate. A legacy unattributed row means they
+        // decided before gates were tracked — nothing further to offer. Attributed rows only take
+        // their own gate off the table.
+        var mine = await LoadMyDecisionsAsync(candidate.Id, ct);
+        if (mine.Any(d => d.StepName is null && d.RequirementName is null)) return Array.Empty<RequirementRef>();
 
         // Which requirements are still OPEN (not yet satisfied) per the live matcher.
         var match = await EvaluateRequirementMatchAsync(candidate, snapshot.AllRequirements, ct);
         var openByIndex = new bool[snapshot.AllRequirements.Count];
         for (var i = 0; i < match.Requirements.Count; i++) openByIndex[i] = !match.Requirements[i].Satisfied;
 
-        // Walk steps in flatten order, offering each (step, requirement) the user is authorized for
-        // and that is still open.
+        // Walk steps in flatten order, offering each (step, requirement) the user is authorized for,
+        // that is still open, and that they haven't approved yet.
         var result = new List<RequirementRef>();
         var cursor = 0;
         foreach (var step in snapshot.ApprovalSteps)
@@ -1258,6 +2343,7 @@ public class PromotionService
             {
                 var idx = cursor++;
                 if (!openByIndex[idx]) continue;
+                if (mine.Any(d => SameRequirement(d, step.Name, req.Name))) continue;
                 if (await _auth.IsAuthorizedForRequirementAsync(req, _currentUser.Email, ct))
                     result.Add(new RequirementRef(step.Name ?? "", req.Name ?? ""));
             }
@@ -1273,13 +2359,16 @@ public class PromotionService
     }
 
     /// <summary>
-    /// Returns <c>true</c> when every distinct work-item key on the candidate has at least one
-    /// <see cref="PromotionDecision.Approved"/> <see cref="WorkItemApproval"/> row and zero
-    /// <see cref="PromotionDecision.Rejected"/> rows. Returns <c>true</c> vacuously when the
+    /// Returns <c>true</c> when every distinct work-item key on the candidate is cleared: it carries at
+    /// least one <see cref="WorkItemApproval"/> row — <see cref="WorkItemDecision.Approved"/> or
+    /// <see cref="WorkItemDecision.Issue"/> — and zero <see cref="WorkItemDecision.Blocked"/> ones.
+    /// That is what the policy's <c>RequireAllWorkItemsApproved</c> asks for: a block is the only
+    /// verdict that holds a promotion, an issue flags a problem on a change that is still going out.
+    /// Returns <c>true</c> vacuously when the
     /// candidate has no work items — callers should guard with <see cref="CandidateHasWorkItemsAsync"/>
     /// first when they want "no work items" to be treated differently.
     /// </summary>
-    private async Task<bool> AreAllWorkItemsApprovedAsync(PromotionCandidate candidate, CancellationToken ct)
+    private async Task<bool> AreAllWorkItemsClearedAsync(PromotionCandidate candidate, CancellationToken ct)
     {
         var workItemKeys = await _db.PromotionWorkItems.AsNoTracking()
             .Where(w => w.CandidateId == candidate.Id)
@@ -1292,14 +2381,32 @@ public class PromotionService
         var approvals = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => workItemKeys.Contains(a.WorkItemKey)
                      && a.Product == candidate.Product
+                     && a.Service == candidate.Service
                      && a.TargetEnv == candidate.TargetEnv)
             .ToListAsync(ct);
 
         foreach (var key in workItemKeys)
         {
             var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
-            if (rows.Any(a => a.Decision == PromotionDecision.Rejected)) return false;
-            if (!rows.Any(a => a.Decision == PromotionDecision.Approved)) return false;
+            // A block holds the item regardless of sibling approvals; an issue does not hold it at
+            // all. An item nobody has ruled on is the one the gate is waiting for.
+            if (!WorkItemOverallStatus.ClearsGate(
+                    WorkItemOverallStatus.StateOf(rows.Select(a => a.Decision)))) return false;
+        }
+
+        // This service's instances are all cleared. Under RequireAllWorkItemInstancesApproved the
+        // policy reads the ticket as done-or-not across the product, so every OTHER service's
+        // instance in the target environment has to be cleared too — none may hold a block, and none
+        // may still be undecided.
+        if (ReadSnapshot(candidate).RequireAllWorkItemInstancesApproved)
+        {
+            var overall = await WorkItemOverallStatus.LoadAsync(_db,
+                workItemKeys.Select(k => new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv)), ct);
+            foreach (var key in workItemKeys)
+            {
+                var status = overall.GetValueOrDefault(new WorkItemTicketId(key, candidate.Product, candidate.TargetEnv));
+                if (status is null || !status.ClearsGateEverywhere) return false;
+            }
         }
 
         return true;
@@ -1307,7 +2414,10 @@ public class PromotionService
 
     /// <summary>
     /// Rejects a pending candidate. One rejection from an authorized approver is enough to
-    /// terminate the flow — consistent with treating rejection as an explicit veto.
+    /// terminate the flow — consistent with treating rejection as an explicit veto. Having already
+    /// approved one gate does not forfeit the veto: the release manager who signed off QA may still
+    /// refuse the release. Only a legacy unattributed decision (or a prior rejection, which would
+    /// have terminated the candidate anyway) blocks a second row.
     /// </summary>
     public async Task<PromotionCandidate> RejectAsync(
         Guid candidateId, string? comment, CancellationToken ct = default)
@@ -1316,35 +2426,112 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
 
         await EnsureUserCanApproveAsync(candidate, snapshot, ct);
-        await EnsureNotAlreadyDecidedAsync(candidateId, _currentUser.Email, ct);
+        var mine = await LoadMyDecisionsAsync(candidateId, ct);
+        if (mine.Any(d => d.StepName is null && d.RequirementName is null))
+            throw new InvalidOperationException("You have already made a decision on this promotion");
 
-        var decision = new PromotionApproval
+        await RecordRejectionAsync(candidate, comment,
+            systemComment: string.IsNullOrWhiteSpace(comment)
+                ? $"{Actor} rejected this promotion."
+                : $"{Actor} rejected this promotion — {comment.Trim()}",
+            auditState: new { comment },
+            webhookChange: null, ct);
+
+        _logger.LogInformation(
+            "Candidate {Id} rejected by {Email}", candidate.Id, _currentUser.Email);
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// Administrator override of <see cref="RejectAsync"/>: rejects any Pending candidate without the
+    /// approver-eligibility check — including one whose gate names nobody the caller is (a users-only
+    /// requirement), and one whose snapshot is auto-approve, which no approver can reject at all. The
+    /// everyday case is clearing stale promotions in bulk, e.g. after a release-track migration, from
+    /// the UI or an admin API key.
+    ///
+    /// <para>The effects are a normal rejection's — <see cref="PromotionStatus.Rejected"/>, a Rejected
+    /// decision row attributed to the caller with the reason as its comment, a system comment, the
+    /// <c>promotion.rejected</c> webhook (and so the realtime broadcast) — marked
+    /// <c>trigger=administrator-reject</c> on the audit row and the webhook's <c>change</c>, so the
+    /// override stays distinguishable from an approver's veto. The audit action is still
+    /// <c>promotion.rejected</c>: it is a rejection, and everything that asks "what was rejected"
+    /// should find it.</para>
+    ///
+    /// <para>A <paramref name="reason"/> is required. Authorization is enforced at the endpoint, as
+    /// for <see cref="BypassAsync"/>: <c>/api/promotions/admin</c>, gated by
+    /// <see cref="AuthorizationPolicies.CatalogAdmin"/>.</para>
+    /// </summary>
+    public async Task<PromotionCandidate> AdminRejectAsync(
+        Guid candidateId, string reason, CancellationToken ct = default)
+    {
+        var trimmedReason = (reason ?? "").Trim();
+        if (trimmedReason.Length == 0)
+            throw new ArgumentException("A reason is required to reject a promotion as an administrator.", nameof(reason));
+        // The reason is the decision row's comment, whose column is bounded — refuse it here rather
+        // than fail the save.
+        if (trimmedReason.Length > MaxDecisionCommentLength)
+            throw new ArgumentException(
+                $"The reason must be {MaxDecisionCommentLength} characters or fewer.", nameof(reason));
+
+        // Same refusals as BypassAsync: KeyNotFoundException (missing) or InvalidOperationException
+        // (no longer Pending), surfaced as 404 / 400 by the endpoint.
+        var candidate = await LoadPendingAsync(candidateId, ct);
+
+        var marker = new { trigger = AdminRejectTrigger, reason = trimmedReason };
+        await RecordRejectionAsync(candidate, trimmedReason,
+            systemComment: $"{Actor} rejected this promotion as an administrator (admin override) — {trimmedReason}",
+            auditState: marker,
+            webhookChange: marker, ct);
+
+        _logger.LogWarning(
+            "Candidate {Id} rejected by administrator {UserId} ({Email}); reason: {Reason}",
+            candidate.Id, _currentUser.Id, _currentUser.Email, LogSanitizer.Clean(trimmedReason));
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// <c>change.trigger</c> / audit <c>trigger</c> on a rejection made through
+    /// <see cref="AdminRejectAsync"/>. A normal rejection carries none.
+    /// </summary>
+    public const string AdminRejectTrigger = "administrator-reject";
+
+    /// <summary>Length cap of <see cref="PromotionApproval.Comment"/> (see the DbContext mapping).</summary>
+    private const int MaxDecisionCommentLength = 2000;
+
+    /// <summary>
+    /// The one place a Pending candidate becomes Rejected, shared by the approver and administrator
+    /// paths so they cannot drift: the Rejected decision row, the status flip and the system comment
+    /// in one save, then the <c>promotion.rejected</c> audit row and webhook. Callers have already
+    /// loaded the candidate as Pending and authorized the caller.
+    /// </summary>
+    private async Task RecordRejectionAsync(
+        PromotionCandidate candidate, string? comment, string systemComment,
+        object auditState, object? webhookChange, CancellationToken ct)
+    {
+        _db.PromotionApprovals.Add(new PromotionApproval
         {
             Id = Guid.NewGuid(),
-            CandidateId = candidateId,
+            CandidateId = candidate.Id,
             ApproverEmail = NormalizeEmail(_currentUser.Email),
             ApproverName = _currentUser.Name,
             Comment = comment,
             Decision = PromotionDecision.Rejected,
             CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.PromotionApprovals.Add(decision);
+        });
 
         candidate.Status = PromotionStatus.Rejected;
+        StageSystemComment(candidate.Id, systemComment);
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
             "promotions", "promotion.rejected",
             _currentUser.Id, _currentUser.Name, "user",
             "PromotionCandidate", candidate.Id, null,
-            new { comment });
+            auditState);
 
-        _logger.LogInformation(
-            "Candidate {Id} rejected by {Email}", candidate.Id, _currentUser.Email);
-
-        await DispatchWebhookAsync(candidate, "promotion.rejected", ct);
-
-        return candidate;
+        await DispatchWebhookAsync(candidate, "promotion.rejected", ct, webhookChange);
     }
 
     // ---------------------------------------------------------------------
@@ -1364,32 +2551,595 @@ public class PromotionService
 
         candidate.Status = PromotionStatus.Deploying;
         candidate.ExternalRunUrl = externalRunUrl;
+        StageSystemComment(candidate.Id, externalRunUrl is null
+            ? "Dispatched to the executor — deployment in progress."
+            : $"Dispatched to the executor — deployment in progress ({externalRunUrl}).");
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Candidate {Id} → Deploying (run={Run})", candidateId, externalRunUrl);
+
+        await DispatchWebhookAsync(candidate, "promotion.deploying", ct,
+            new { externalRunUrl });
+
         return candidate;
     }
 
-    /// <summary>Deploying → Deployed. Called from the ingest completion hook once the target
-    /// environment reports a deploy event matching this candidate's (product, service, target_env, version).</summary>
-    public async Task<PromotionCandidate> MarkDeployedAsync(Guid candidateId, CancellationToken ct = default)
+    /// <summary>
+    /// → Deployed. Called from the ingest completion hook once the target environment reports a
+    /// succeeded deploy matching this candidate's (product, service, target_env, version).
+    ///
+    /// <para>Reachable from every non-terminal state <i>and</i> from <see cref="PromotionStatus.Rejected"/>.
+    /// The transition records a fact rather than granting permission: the version is running in the
+    /// target environment, so the candidate describing it has to say Deployed whatever we decided
+    /// beforehand. A rejection that reality overrode is exactly the case worth recording — the
+    /// <paramref name="note"/> left on the thread says the version shipped anyway, and the rejection
+    /// stays in the approval trail. <see cref="PromotionStatus.Superseded"/> is excluded: a newer
+    /// candidate owns that edge now and is the one that should close.</para>
+    /// </summary>
+    /// <param name="note">
+    /// What to write on the comment thread. Callers pass the circumstances — dispatched through us,
+    /// or landed out-of-band while the promotion was still open. Defaults to a plain statement of
+    /// the transition.
+    /// </param>
+    /// <param name="deployedAt">
+    /// When the version actually went live. Pass the deploy event's own timestamp whenever the caller
+    /// has it: a promotion closed late — by the reconcile pass, or by a deploy that landed before the
+    /// promotion existed — would otherwise be stamped with the moment we noticed rather than the moment
+    /// it shipped, and the list would report a deploy date weeks after the fact. Defaults to now for
+    /// callers with no better answer.
+    /// </param>
+    public async Task<PromotionCandidate> MarkDeployedAsync(
+        Guid candidateId, string? note = null, DateTimeOffset? deployedAt = null, CancellationToken ct = default)
     {
         var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
             ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
 
-        if (candidate.Status is not (PromotionStatus.Deploying or PromotionStatus.Approved))
+        if (candidate.Status is PromotionStatus.Deployed or PromotionStatus.Superseded)
             throw new InvalidOperationException(
                 $"Cannot transition {candidate.Status} → Deployed (id={candidateId})");
 
+        var previous = candidate.Status;
         candidate.Status = PromotionStatus.Deployed;
-        candidate.DeployedAt = DateTimeOffset.UtcNow;
+        candidate.DeployedAt = deployedAt ?? DateTimeOffset.UtcNow;
+        StageSystemComment(candidate.Id, note
+            ?? $"Deployed to {candidate.TargetEnv} — {candidate.Service} {candidate.Version} is live.");
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogInformation("Candidate {Id} → Deployed", candidateId);
+        await _audit.Log(
+            "promotions", "promotion.deployed",
+            "system", "System", "system",
+            "PromotionCandidate", candidate.Id, null,
+            new { previousStatus = previous.ToString(), candidate.TargetEnv, candidate.Version });
 
-        await DispatchWebhookAsync(candidate, "promotion.deployed", ct);
+        _logger.LogInformation("Candidate {Id} → Deployed (from {Previous})", candidateId, previous);
+
+        await DispatchWebhookAsync(candidate, "promotion.deployed", ct,
+            new { previousStatus = previous.ToString() });
 
         return candidate;
+    }
+
+    // ---------------------------------------------------------------------
+    // Completion reconciliation (not ingest-driven)
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Closes a candidate whose version is <b>already</b> live in its target environment.
+    ///
+    /// <para>Completion used to be reachable only from deploy-event ingest
+    /// (<c>PromotionIngestHook.MatchCompletionAsync</c>), which answers "did this deploy close a
+    /// promotion?" — and can therefore only ever fire while the promotion already exists. A promotion
+    /// created <i>after</i> its version had landed had no future event left to match and stayed open
+    /// forever. This is the other direction of the same question, asked of a candidate rather than of
+    /// an event, so the two orderings converge on the same state.</para>
+    ///
+    /// <para>The create-time guard in <see cref="CreateExternalCandidateAsync"/> does not cover this:
+    /// it compares the target's <i>current</i> version only — deliberately, so that
+    /// rollback-then-re-promote still works — and so lets through a version that was deployed earlier
+    /// and has since been replaced.</para>
+    ///
+    /// <para>Returns true when the candidate was closed. Requires a <b>succeeded</b> event: a failed
+    /// attempt did not put the version live, and the promotion is right to keep waiting.</para>
+    ///
+    /// <para><b>The rollback case is why this is not simply "was it ever deployed".</b> Target ran v2,
+    /// was rolled back to v1, and v2 is being promoted again: v2 <i>is</i> in the target's history, but
+    /// it is not live and the promotion is a genuine intent to put it back. What separates that from a
+    /// promotion the environment has simply moved past is the direction of travel — a rolled-back target
+    /// is on an <i>older</i> version than the promotion carries, an advanced one on a <i>newer</i>. When
+    /// the two cannot be ordered confidently the candidate is left open, that being the direction which
+    /// cannot invent a deployment that did not happen.</para>
+    /// </summary>
+    public async Task<bool> TryCloseIfAlreadyDeployedAsync(
+        PromotionCandidate candidate, CancellationToken ct = default)
+    {
+        var assessment = await AssessAgainstDeployHistoryAsync(candidate, ct);
+        if (assessment.Verdict != CompletionVerdict.AlreadyDeployed) return false;
+
+        var landedAt = assessment.At!.Value;
+
+        // Say which way round it happened — "why is this closed with a deploy date before it was
+        // created?" is the first question whoever opens it will ask.
+        var note = landedAt < candidate.CreatedAt
+            ? $"Closed automatically — {candidate.Service} {candidate.Version} was already deployed to "
+              + $"{candidate.TargetEnv} on {landedAt:u}, before this promotion was created, so no "
+              + "further deploy was ever going to arrive to close it."
+            : $"Closed automatically — {candidate.Service} {candidate.Version} is live in "
+              + $"{candidate.TargetEnv} as of {landedAt:u}.";
+
+        await MarkDeployedAsync(candidate.Id, note, landedAt, ct);
+        return true;
+    }
+
+    private enum CompletionVerdict
+    {
+        /// <summary>Nothing in deploy history says anything about this candidate. Leave it open.</summary>
+        None,
+
+        /// <summary>Its version has a succeeded landing in the target and the target has not gone back.</summary>
+        AlreadyDeployed,
+
+        /// <summary>Its version never landed, and the target has since moved to a newer one.</summary>
+        Overtaken,
+    }
+
+    private record CompletionAssessment(CompletionVerdict Verdict, DateTimeOffset? At, string? OtherVersion);
+
+    /// <summary>
+    /// Reads a candidate's fate off the target environment's deploy history. The single place that
+    /// decision is made, so the create path, the ingest path and the reconcile pass cannot drift into
+    /// disagreeing about what a given history means.
+    /// </summary>
+    private async Task<CompletionAssessment> AssessAgainstDeployHistoryAsync(
+        PromotionCandidate candidate, CancellationToken ct)
+    {
+        var none = new CompletionAssessment(CompletionVerdict.None, null, null);
+        if (candidate.Status is PromotionStatus.Deployed or PromotionStatus.Superseded) return none;
+
+        // Earliest succeeded landing of this exact version, so a recorded deploy date is when the
+        // version first went live rather than whichever redeploy happens to be most recent.
+        var landed = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == candidate.Product
+                     && e.Service == candidate.Service
+                     && e.Environment == candidate.TargetEnv
+                     && e.Version == candidate.Version
+                     && e.Status == "succeeded")
+            .OrderBy(e => e.DeployedAt)
+            .Select(e => new { e.DeployedAt })
+            .FirstOrDefaultAsync(ct);
+
+        // What the target is running now, and since when.
+        var current = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == candidate.Product
+                     && e.Service == candidate.Service
+                     && e.Environment == candidate.TargetEnv
+                     && e.Status == "succeeded")
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new { e.Version, e.DeployedAt })
+            .FirstOrDefaultAsync(ct);
+
+        if (landed is not null)
+        {
+            var stillLive = current?.Version == candidate.Version;
+            // Moved forward ⇒ the version shipped and was later replaced, which is the ordinary end of a
+            // promotion. Moved back ⇒ a rollback, and this promotion is a live intent to redeploy.
+            var movedForward = !stillLive
+                && PromotionVersionOrder.IsNewerThan(current?.Version, candidate.Version);
+            return stillLive || movedForward
+                ? new CompletionAssessment(CompletionVerdict.AlreadyDeployed, landed.DeployedAt, null)
+                : none;
+        }
+
+        // Never landed. If the target has since moved to a newer version, this promotion was overtaken —
+        // whatever it was waiting for is not going to happen.
+        //
+        // The landing must postdate the candidate: when the target was already ahead at creation time,
+        // somebody asked for an older version deliberately, and that is not ours to retire.
+        if (current is not null
+            && current.DeployedAt >= candidate.CreatedAt
+            && PromotionVersionOrder.IsNewerThan(current.Version, candidate.Version))
+        {
+            return new CompletionAssessment(CompletionVerdict.Overtaken, current.DeployedAt, current.Version);
+        }
+
+        return none;
+    }
+
+    /// <summary>
+    /// Supersedes still-open promotions that a later deploy has overtaken: the target environment has
+    /// moved on to a <b>newer</b> version, so the one they describe is never going out.
+    ///
+    /// <para>Distinct from <see cref="SupersedeStalePendingAsync"/>, which fires when a newer
+    /// <i>candidate</i> is created and only touches Pending ones. Approved candidates were left
+    /// untouched by that rule, which is why they accumulate in "awaiting deploy" indefinitely once the
+    /// environment has passed them by.</para>
+    ///
+    /// <para>Two deliberate limits. Only versions that <see cref="PromotionVersionOrder"/> can order
+    /// confidently are considered, so an unrecognised versioning scheme leaves promotions alone rather
+    /// than closing them on a guess. And <c>Deploying</c> is excluded: a dispatch is in flight for
+    /// those, and the deploy that lands is the one entitled to decide their outcome.</para>
+    ///
+    /// <para><c>SupersededById</c> stays null — no candidate won here, an out-of-band deploy did — so
+    /// the comment carries the explanation instead.</para>
+    /// </summary>
+    public async Task<int> SupersedeOvertakenByDeployAsync(
+        string product, string service, string environment, string landedVersion,
+        DateTimeOffset landedAt, CancellationToken ct = default)
+    {
+        var open = await _db.PromotionCandidates
+            .Where(c => c.Product == product
+                     && c.Service == service
+                     && c.TargetEnv == environment
+                     && c.Version != landedVersion
+                     && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved))
+            .ToListAsync(ct);
+
+        var supersededCandidates = new List<PromotionCandidate>();
+        foreach (var candidate in open)
+        {
+            // Only supersede what this deploy actually overtook. A promotion created after the deploy
+            // landed is describing a later intention, whatever its version number says.
+            if (candidate.CreatedAt > landedAt) continue;
+            if (!PromotionVersionOrder.IsNewerThan(landedVersion, candidate.Version)) continue;
+
+            // Overtaken is not the same as never shipped. If this candidate's own version did land in
+            // the target at some point, it is Deployed — being replaced afterwards is the normal end of
+            // a promotion's life, not a supersede. Ordinarily ingest closed it at the time; this covers
+            // the case where that never happened.
+            if (await TryCloseIfAlreadyDeployedAsync(candidate, ct)) continue;
+
+            candidate.Status = PromotionStatus.Superseded;
+            StageSystemComment(candidate.Id,
+                $"Superseded — {service} {landedVersion} was deployed to {environment} on "
+                + $"{landedAt:u}, a newer version than the {candidate.Version} this promotion carries. "
+                + "It is no longer going out.");
+            supersededCandidates.Add(candidate);
+
+            _logger.LogInformation(
+                "Candidate {Id} → Superseded: {Environment} moved on to {LandedVersion} (was carrying {Version})",
+                candidate.Id, LogSanitizer.Clean(environment), LogSanitizer.Clean(landedVersion),
+                LogSanitizer.Clean(candidate.Version));
+        }
+
+        if (supersededCandidates.Count > 0)
+        {
+            await _db.SaveChangesAsync(ct);
+            foreach (var candidate in supersededCandidates)
+                await DispatchWebhookAsync(candidate, "promotion.superseded", ct,
+                    new { landedVersion, landedAt });
+        }
+        return supersededCandidates.Count;
+    }
+
+    /// <summary>
+    /// Sweeps every open candidate against the target environment's deploy history and settles the ones
+    /// history has already decided: closes those whose version shipped, supersedes those a newer version
+    /// overtook. The repair pass for promotions stranded while completion lived only on the ingest path.
+    ///
+    /// <para>Evidence-driven by construction — see <see cref="AssessAgainstDeployHistoryAsync"/>. A
+    /// promotion whose version never reached the target, or only failed there, is left exactly as it is;
+    /// so is one whose target rolled back, and one carrying a version this codebase cannot order.</para>
+    ///
+    /// <para><paramref name="dryRun"/> reports what it would do without writing anything, which is how
+    /// this should be run the first time.</para>
+    /// </summary>
+    public async Task<ReconcileCompletionsResult> ReconcileCompletionsAsync(
+        string? product = null, string? targetEnv = null, bool dryRun = false, CancellationToken ct = default)
+    {
+        var query = _db.PromotionCandidates
+            .Where(c => c.Status == PromotionStatus.Pending
+                     || c.Status == PromotionStatus.Approved
+                     || c.Status == PromotionStatus.Deploying);
+
+        if (!string.IsNullOrWhiteSpace(product)) query = query.Where(c => c.Product == product.Trim());
+        if (!string.IsNullOrWhiteSpace(targetEnv)) query = query.Where(c => c.TargetEnv == targetEnv.Trim());
+
+        var open = await query.OrderBy(c => c.CreatedAt).ToListAsync(ct);
+        var settled = new List<ReconciledCandidate>();
+        var closed = 0;
+        var superseded = 0;
+
+        foreach (var candidate in open)
+        {
+            var assessment = await AssessAgainstDeployHistoryAsync(candidate, ct);
+            if (assessment.Verdict == CompletionVerdict.None) continue;
+
+            var previous = candidate.Status;
+            var action = assessment.Verdict == CompletionVerdict.AlreadyDeployed ? "closed" : "superseded";
+
+            if (!dryRun)
+            {
+                try
+                {
+                    if (assessment.Verdict == CompletionVerdict.AlreadyDeployed)
+                    {
+                        await TryCloseIfAlreadyDeployedAsync(candidate, ct);
+                    }
+                    else
+                    {
+                        candidate.Status = PromotionStatus.Superseded;
+                        StageSystemComment(candidate.Id,
+                            $"Superseded — {candidate.TargetEnv} moved on to {candidate.Service} "
+                            + $"{assessment.OtherVersion} on {assessment.At:u} without this promotion's "
+                            + $"{candidate.Version} ever being deployed there. It is not going out.");
+                        await _db.SaveChangesAsync(ct);
+
+                        _logger.LogInformation(
+                            "Candidate {Id} → Superseded by reconcile: {TargetEnv} is on {Other}, not {Version}",
+                            candidate.Id, candidate.TargetEnv, assessment.OtherVersion, candidate.Version);
+                    }
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Raced with an ingest that settled it first. Nothing left to repair.
+                    _logger.LogWarning(ex, "Reconcile skipped candidate {Id}", candidate.Id);
+                    continue;
+                }
+            }
+
+            if (assessment.Verdict == CompletionVerdict.AlreadyDeployed) closed++; else superseded++;
+            settled.Add(new ReconciledCandidate(
+                candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                candidate.TargetEnv, candidate.Version, previous.ToString(), action,
+                assessment.At!.Value, assessment.OtherVersion));
+        }
+
+        _logger.LogInformation(
+            "Reconcile examined {Examined} open candidate(s): {Closed} already deployed, "
+            + "{Superseded} overtaken, {Untouched} left open (dryRun={DryRun})",
+            open.Count, closed, superseded, open.Count - closed - superseded, dryRun);
+
+        return new ReconcileCompletionsResult(open.Count, closed, superseded, dryRun, settled);
+    }
+
+    // ---------------------------------------------------------------------
+    // Duplicate-candidate maintenance
+    // ---------------------------------------------------------------------
+
+    /*
+     * The natural key (product, service, sourceEnv, targetEnv, version) is supposed to hold at most
+     * one non-terminal candidate (D15's reuse-and-update), but a pre-fix create path minted a fresh
+     * row per external POST — production carries groups of up to six copies of one promotion, all
+     * telling the same story. This pair of methods is the cleanup.
+     *
+     * What counts as a duplicate is deliberately narrower than "same natural key", because same-key
+     * rows in a terminal state can be legitimate history:
+     *
+     *   - deployed, rolled back, promoted and deployed again → two Deployed rows, both real. They
+     *     differ in DeployedAt (two separate landings), so DeployedAt is part of the group key.
+     *   - superseded, re-promoted, superseded again → two Superseded rows, both real. Each was
+     *     retired by its own newer candidate, so SupersededById is part of the group key. (Two rows
+     *     superseded by the SAME winner can only mean both were open at once — which is exactly the
+     *     bug whose residue this removes.)
+     *   - rejected, re-promoted, rejected again → two Rejected rows, both real, and nothing on the
+     *     row distinguishes the rejections. Rejected is excluded outright rather than guessed at.
+     *
+     * Within a group the earliest CreatedAt survives — it carries the fullest comment thread — and
+     * the rest go, along with their candidate-scoped children (approvals, comments, work-item index
+     * rows; work-item DECISIONS are keyed on the ticket, not the candidate, and are untouched).
+     * Anything pointing at a removed row via SupersededById is re-pointed at the keeper.
+     */
+
+    private record CandidateDuplicateKey(
+        string Product, string Service, string SourceEnv, string TargetEnv, string Version,
+        PromotionStatus Status, DateTimeOffset? DeployedAt, Guid? SupersededById);
+
+    private async Task<List<List<(Guid Id, DateTimeOffset CreatedAt)>>> DuplicateCandidateGroupsAsync(
+        CancellationToken ct)
+    {
+        var rows = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status != PromotionStatus.Rejected)
+            .Select(c => new
+            {
+                c.Id, c.Product, c.Service, c.SourceEnv, c.TargetEnv, c.Version,
+                c.Status, c.DeployedAt, c.SupersededById, c.CreatedAt,
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => new CandidateDuplicateKey(
+                r.Product, r.Service, r.SourceEnv, r.TargetEnv, r.Version,
+                r.Status, r.DeployedAt, r.SupersededById))
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Select(r => (r.Id, r.CreatedAt)).ToList())
+            .ToList();
+    }
+
+    /// <summary>Count of duplicate groups and rows <see cref="RemoveDuplicateCandidatesAsync"/> would remove.</summary>
+    public async Task<(int Groups, int Rows)> CountDuplicateCandidatesAsync(CancellationToken ct = default)
+    {
+        var groups = await DuplicateCandidateGroupsAsync(ct);
+        return (groups.Count, groups.Sum(g => g.Count - 1));
+    }
+
+    /// <summary>
+    /// Deletes duplicate candidates (see the criteria above), keeping the earliest per group.
+    /// Returns the number of groups touched and rows removed.
+    /// </summary>
+    public async Task<(int Groups, int Rows)> RemoveDuplicateCandidatesAsync(CancellationToken ct = default)
+    {
+        var groups = await DuplicateCandidateGroupsAsync(ct);
+        if (groups.Count == 0) return (0, 0);
+
+        var toDelete = new HashSet<Guid>();
+        // Removed id → the group's keeper, for re-pointing SupersededById references.
+        var keeperFor = new Dictionary<Guid, Guid>();
+        foreach (var group in groups)
+        {
+            var ordered = group.OrderBy(r => r.CreatedAt).ToList();
+            foreach (var (id, _) in ordered.Skip(1))
+            {
+                toDelete.Add(id);
+                keeperFor[id] = ordered[0].Id;
+            }
+        }
+
+        // Candidate-scoped children, removed explicitly rather than left to the database cascade so
+        // the behaviour is identical across providers (and visible in this method, not the mapping).
+        var approvals = await _db.PromotionApprovals
+            .Where(a => toDelete.Contains(a.CandidateId)).ToListAsync(ct);
+        var comments = await _db.PromotionComments
+            .Where(c => toDelete.Contains(c.CandidateId)).ToListAsync(ct);
+        var workItems = await _db.PromotionWorkItems
+            .Where(w => toDelete.Contains(w.CandidateId)).ToListAsync(ct);
+        _db.PromotionApprovals.RemoveRange(approvals);
+        _db.PromotionComments.RemoveRange(comments);
+        _db.PromotionWorkItems.RemoveRange(workItems);
+
+        // A candidate superseded BY a removed duplicate re-points to the group's keeper — the two
+        // described the same promotion, so the keeper is the honest answer to "what replaced this?".
+        var pointingAtRemoved = await _db.PromotionCandidates
+            .Where(c => c.SupersededById != null && toDelete.Contains(c.SupersededById.Value))
+            .ToListAsync(ct);
+        foreach (var c in pointingAtRemoved)
+            c.SupersededById = keeperFor[c.SupersededById!.Value];
+
+        var stale = await _db.PromotionCandidates
+            .Where(c => toDelete.Contains(c.Id)).ToListAsync(ct);
+        _db.PromotionCandidates.RemoveRange(stale);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Promotion-candidate dedup removed {Rows} rows across {Groups} groups "
+            + "({Approvals} approvals, {Comments} comments, {WorkItems} work-item rows; "
+            + "{Repointed} supersede pointers re-pointed)",
+            stale.Count, groups.Count, approvals.Count, comments.Count, workItems.Count,
+            pointingAtRemoved.Count);
+
+        return (groups.Count, stale.Count);
+    }
+
+    // ---------------------------------------------------------------------
+    // Approved-webhook resend maintenance
+    // ---------------------------------------------------------------------
+
+    /// <summary>The approval announcement, and the only event the resend pass re-emits.</summary>
+    public const string ApprovedEventType = "promotion.approved";
+
+    /// <summary>
+    /// Re-emits <c>promotion.approved</c> for every promotion sitting in
+    /// <see cref="PromotionStatus.Approved"/> — approved, and with no deploy yet to show for it.
+    ///
+    /// <para>The repair pass for an approval whose announcement never landed: nobody was subscribed
+    /// when it fired, the subscription was inactive or misconfigured, the receiver was down long
+    /// enough to exhaust its retries and the failed rows were purged, or the delivery was cancelled
+    /// by an undo the approver then reversed. In every one of those cases the promotion is correctly
+    /// Approved and the pipeline that should have picked it up never heard a thing.</para>
+    ///
+    /// <para>Deliberately scoped to Approved alone. Deploying and Deployed promotions demonstrably
+    /// got their message — something acted on it — and Pending, Rejected and Superseded ones were
+    /// never cleared to go out at all; re-announcing any of those would be inventing news.</para>
+    ///
+    /// <para>A promotion whose approval is still queued for delivery is skipped, not resent: that
+    /// covers both a fresh approval inside its <see cref="ApprovedWebhookDelay"/> undo window and a
+    /// worker running behind, and in both cases the receiver is about to be told anyway. The guard
+    /// reads the pending queue by payload rather than by cancel key, so rows queued before cancel
+    /// keys existed still count — double-firing a live pipeline is the one outcome this pass must
+    /// never produce.</para>
+    ///
+    /// <para><paramref name="dryRun"/> reports the list without queuing anything, which is how the
+    /// Maintenance card always runs it first.</para>
+    /// </summary>
+    public async Task<ResendApprovedWebhooksResult> ResendApprovedWebhooksAsync(
+        string? product = null, string? targetEnv = null, bool dryRun = false, CancellationToken ct = default)
+    {
+        var query = _db.PromotionCandidates.Where(c => c.Status == PromotionStatus.Approved);
+
+        if (!string.IsNullOrWhiteSpace(product)) query = query.Where(c => c.Product == product.Trim());
+        if (!string.IsNullOrWhiteSpace(targetEnv)) query = query.Where(c => c.TargetEnv == targetEnv.Trim());
+
+        // Oldest approval first: the longer a promotion has been waiting, the likelier it is the one
+        // that got lost, and an admin reading the preview should meet those at the top.
+        var approved = await query.OrderBy(c => c.ApprovedAt).ThenBy(c => c.CreatedAt).ToListAsync(ct);
+        if (approved.Count == 0)
+            return new ResendApprovedWebhooksResult(0, 0, 0, 0, dryRun, []);
+
+        // Every still-unsent approval delivery, whatever queued it — the skip guard, matched on the
+        // candidate id inside the envelope so pre-cancel-key rows are seen too.
+        var pendingPayloads = await _db.WebhookDeliveries.AsNoTracking()
+            .Where(d => d.EventType == ApprovedEventType && d.Status == "pending")
+            .Select(d => d.PayloadJson)
+            .ToListAsync(ct);
+
+        // Delivery history per candidate, for the preview. Keyed on the cancel key, which is indexed;
+        // an approval announced before cancel keys existed reads as "no delivery on record", which is
+        // the honest answer for a row the platform can no longer attribute.
+        var cancelKeys = approved.Select(c => ApprovedWebhookCancelKey(c.Id)).ToList();
+        var history = (await _db.WebhookDeliveries.AsNoTracking()
+                .Where(d => d.EventType == ApprovedEventType
+                         && d.CancelKey != null && cancelKeys.Contains(d.CancelKey))
+                .Select(d => new { d.CancelKey, d.Status, d.CreatedAt, d.DeliveredAt })
+                .ToListAsync(ct))
+            .GroupBy(d => d.CancelKey!)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.CreatedAt).First());
+
+        var rows = new List<ResentPromotion>();
+        var resent = 0;
+        var skipped = 0;
+        var deliveries = 0;
+
+        foreach (var candidate in approved)
+        {
+            history.TryGetValue(ApprovedWebhookCancelKey(candidate.Id), out var last);
+            var lastStatus = last?.Status ?? "none";
+            var lastAt = last is null ? null : (DateTimeOffset?)(last.DeliveredAt ?? last.CreatedAt);
+
+            var id = candidate.Id.ToString();
+            if (pendingPayloads.Any(p => p.Contains(id, StringComparison.OrdinalIgnoreCase)))
+            {
+                skipped++;
+                rows.Add(new ResentPromotion(
+                    candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                    candidate.TargetEnv, candidate.Version, candidate.ApprovedAt,
+                    lastStatus, lastAt, 0,
+                    "A delivery for this approval is still queued — it has not been given up on yet."));
+                continue;
+            }
+
+            if (dryRun)
+            {
+                resent++;
+                rows.Add(new ResentPromotion(
+                    candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                    candidate.TargetEnv, candidate.Version, candidate.ApprovedAt,
+                    lastStatus, lastAt, 0, null));
+                continue;
+            }
+
+            // No hold: the undo window exists to catch a mis-click on a decision just made, and this
+            // decision was made long ago. The cancel key is kept all the same, so cancelling the
+            // approval still stops a resend that has not gone out.
+            var queued = await DispatchWebhookAsync(
+                candidate, ApprovedEventType, ct,
+                change: new { changeType = "approved.resent", resentBy = _currentUser.Email },
+                options: new WebhookDispatchOptions(
+                    Delay: TimeSpan.Zero, CancelKey: ApprovedWebhookCancelKey(candidate.Id)));
+
+            resent++;
+            deliveries += queued;
+
+            StageSystemComment(candidate.Id,
+                $"{Actor} re-sent the approval webhook — {queued} "
+                + $"{(queued == 1 ? "delivery" : "deliveries")} queued.");
+            await _db.SaveChangesAsync(ct);
+
+            await _audit.Log(
+                "promotions", "promotion.approved.webhook.resent",
+                _currentUser.Id, _currentUser.Name, "user",
+                "PromotionCandidate", candidate.Id, null,
+                new { deliveries = queued, lastDeliveryStatus = lastStatus });
+
+            rows.Add(new ResentPromotion(
+                candidate.Id, candidate.Product, candidate.Service, candidate.SourceEnv,
+                candidate.TargetEnv, candidate.Version, candidate.ApprovedAt,
+                lastStatus, lastAt, queued, null));
+        }
+
+        _logger.LogInformation(
+            "Approved-webhook resend examined {Examined} approved promotion(s): {Resent} re-sent "
+            + "({Deliveries} deliveries queued), {Skipped} skipped as still queued (dryRun={DryRun})",
+            approved.Count, resent, deliveries, skipped, dryRun);
+
+        return new ResendApprovedWebhooksResult(approved.Count, resent, skipped, deliveries, dryRun, rows);
     }
 
     // ---------------------------------------------------------------------
@@ -1397,12 +3147,37 @@ public class PromotionService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Dispatches a webhook event for a promotion state change. Non-fatal: logs a warning on
-    /// failure but never throws — the state transition has already been persisted.
+    /// Delivery controls every <c>promotion.approved</c> dispatch uses: held for
+    /// <see cref="ApprovedWebhookDelay"/> and keyed so <see cref="CancelApprovalAsync"/> can stop it.
+    /// Applied on all three approval paths (gate satisfied, admin bypass, born-approved) so the rule
+    /// downstream sees is one rule, not three special cases.
     /// </summary>
-    private async Task DispatchWebhookAsync(
+    private static WebhookDispatchOptions ApprovedWebhookOptions(PromotionCandidate candidate)
+    {
+        // Per-edge override (D12 of feature-branch-builds): an auto-approved edge like build → dev
+        // sets 0 — an undo window on an automatic deploy is pure latency. Read from the candidate's
+        // snapshot (not a live policy join) like every other policy field, best-effort: a candidate
+        // with no readable snapshot keeps the global default.
+        var delay = ApprovedWebhookDelay;
+        try
+        {
+            if (ReadSnapshot(candidate).ApprovedWebhookDelaySeconds is int seconds)
+                delay = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        }
+        catch (InvalidOperationException) { /* no/unreadable snapshot — keep the default */ }
+        return new(Delay: delay, CancelKey: ApprovedWebhookCancelKey(candidate.Id));
+    }
+
+    /// <summary>
+    /// Dispatches a webhook event for a promotion state change. Non-fatal: logs a warning on
+    /// failure but never throws — the state transition has already been persisted. Returns how many
+    /// delivery rows were queued (0 when nobody subscribes, and 0 when the dispatch itself failed);
+    /// every caller but the resend maintenance pass ignores it.
+    /// </summary>
+    private async Task<int> DispatchWebhookAsync(
         PromotionCandidate candidate, string eventType, CancellationToken ct, object? change = null,
-        (string Name, string Email, DateTimeOffset At, string Reason)? bypass = null)
+        (string Name, string Email, DateTimeOffset At, string Reason)? bypass = null,
+        WebhookDispatchOptions? options = null)
     {
         try
         {
@@ -1453,6 +3228,9 @@ public class PromotionService
                 candidate.Version,
                 candidate.FromRevision,
                 candidate.ToRevision,
+                // What the target env was running when the promotion was created — the baseline the
+                // references below are the change set for.
+                candidate.FromVersion,
                 status = candidate.Status.ToString(),
                 candidate.ApprovedAt,
                 // Who approved this candidate — approvals and any admin bypass, tagged by `via`.
@@ -1464,15 +3242,17 @@ public class PromotionService
                 change,
             };
 
-            var filters = new WebhookEventFilters(Product: candidate.Product, Environment: candidate.TargetEnv);
+            var filters = new WebhookEventFilters(
+                Product: candidate.Product, Environment: candidate.TargetEnv, Service: candidate.Service);
 
-            await _webhookDispatcher.DispatchAsync(eventType, payload, filters);
+            return await _webhookDispatcher.DispatchAsync(eventType, payload, filters, options);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "Webhook dispatch '{EventType}' failed for candidate {Id}",
                 eventType, candidate.Id);
+            return 0;
         }
     }
 
@@ -1482,7 +3262,10 @@ public class PromotionService
 
     /// <summary>
     /// Non-throwing version of the approval authorization check — used by endpoints to return a
-    /// <c>canApprove</c> flag per candidate so the UI can disable buttons.
+    /// <c>canApprove</c> flag per candidate so the UI can disable buttons. True while the user has
+    /// at least one open requirement left to approve as (see
+    /// <see cref="GetEligibleRequirementsAsync"/>) — so somebody in two gates who has cleared one
+    /// still reads as able to approve until the other is done.
     /// </summary>
     public async Task<bool> CanUserApproveAsync(PromotionCandidate candidate, CancellationToken ct = default)
     {
@@ -1491,59 +3274,142 @@ public class PromotionService
         var snapshot = ReadSnapshot(candidate);
         if (snapshot.IsAutoApprove) return false; // nothing to approve
 
-        // Already decided? Can't approve again. Match the canonical stored form.
-        var normalizedEmail = NormalizeEmail(_currentUser.Email);
-        var already = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidate.Id && a.ApproverEmail == normalizedEmail, ct);
-        if (already) return false;
-
-        // Authorized for some requirement of this candidate's rule tree.
-        return await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct);
+        return (await GetEligibleRequirementsAsync(candidate, ct)).Count > 0;
     }
 
     /// <summary>
-    /// Bulk capability probe — resolves the approver group once per distinct group, then tests
-    /// each candidate against the cached membership set. This avoids N+1 Graph calls when the
-    /// UI lists dozens of candidates.
+    /// Bulk capability probe — "can the current user approve this candidate <b>right now</b>?" for a
+    /// whole list. Resolves each distinct approver group once, then tests every candidate against the
+    /// cached membership set, so listing dozens of candidates costs a bounded number of Graph calls.
+    ///
+    /// <para>The answer is the same condition <see cref="ApproveAsync"/> will accept, because the UI
+    /// spends it on claims the user can act ("Awaiting your approval", the my-approvals tab, the bulk
+    /// selection, the my-tasks badge). Being a member of an approver group is <b>not</b> that
+    /// condition. A candidate is approvable only when all of the following hold:</para>
+    /// <list type="number">
+    ///   <item>It is Pending and not auto-approve.</item>
+    ///   <item>The user hasn't already decided on it.</item>
+    ///   <item>At least one requirement the user is authorized for is still <b>open</b>. A colleague
+    ///         satisfying the last slot of the only requirement you match leaves you nothing to
+    ///         approve — <see cref="ApproveAsync"/> answers that with
+    ///         <see cref="RequirementAlreadySatisfiedException"/>.</item>
+    ///   <item>The policy's work-item gate isn't holding it back
+    ///         (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/> with items still
+    ///         outstanding). This is the one <see cref="ApproveAsync"/> refuses outright.</item>
+    /// </list>
+    ///
+    /// <para>Conditions 3 and 4 used to be missing here, so every group member saw every Pending
+    /// candidate as theirs to approve — including ones the server would have rejected. The detail view
+    /// got this right via <see cref="GetEligibleRequirementsAsync"/> and its progress panel; the list
+    /// had neither, so it could only report group membership.</para>
     /// </summary>
     public async Task<IReadOnlyDictionary<Guid, bool>> CanUserApproveManyAsync(
         IEnumerable<PromotionCandidate> candidates, CancellationToken ct = default)
     {
-        var result = new Dictionary<Guid, bool>();
-        var list = candidates.ToList();
+        var approvable = await GetApprovableRequirementsManyAsync(candidates, ct: ct);
+        return approvable.ToDictionary(kv => kv.Key, kv => kv.Value.Count > 0);
+    }
 
-        // Precompute "already decided" set for the current user across all candidates in one query.
-        // Match the canonical stored form so casing can't cause a missed dedup.
+    /// <summary>
+    /// The requirements the current user could approve <b>right now</b>, per candidate, for a whole
+    /// list — what <see cref="CanUserApproveManyAsync"/> reduces to a yes/no, kept whole so the list can
+    /// also say <i>which</i> gates are yours ("you can sign Release Approval here, not QA Review"). Mass
+    /// approve picks one gate across a whole environment and needs exactly that per row.
+    ///
+    /// <para>Same conditions as <see cref="CanUserApproveManyAsync"/>: a candidate that isn't Pending,
+    /// is auto-approve, carries this user's legacy decision or is held by its work-item gate maps to an
+    /// empty list. Otherwise it lists every requirement the user is authorized for, hasn't approved, and
+    /// is still open — in policy order, like <see cref="GetEligibleRequirementsAsync"/>.</para>
+    ///
+    /// <para><paramref name="gateStatuses"/> is what <see cref="GetGateStatusesAsync"/> already said
+    /// about these candidates, when the caller has it (the promotions list asks both). Its
+    /// <see cref="PromotionGateStatus.WorkItemsOutstanding"/> is the same work-item-gate answer this
+    /// method would otherwise query for, so passing it evaluates that gate once per request instead
+    /// of twice. It must cover every candidate; one missing from it reads as not held.</para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<RequirementRef>>> GetApprovableRequirementsManyAsync(
+        IEnumerable<PromotionCandidate> candidates,
+        IReadOnlyDictionary<Guid, PromotionGateStatus>? gateStatuses = null,
+        CancellationToken ct = default)
+    {
+        var result = new Dictionary<Guid, IReadOnlyList<RequirementRef>>();
+        var list = candidates.ToList();
+        if (list.Count == 0) return result;
+
+        // Precompute what the current user has already decided across all candidates in one query.
+        // Match the canonical stored form so casing can't cause a missed dedup. A legacy unattributed
+        // row closes the whole candidate to this user; an attributed row closes only its own gate.
         var ids = list.Select(c => c.Id).ToList();
         var normalizedEmail = NormalizeEmail(_currentUser.Email);
-        var alreadyDecided = await _db.PromotionApprovals.AsNoTracking()
+        var myRows = await _db.PromotionApprovals.AsNoTracking()
             .Where(a => ids.Contains(a.CandidateId) && a.ApproverEmail == normalizedEmail)
-            .Select(a => a.CandidateId)
+            .Select(a => new { a.CandidateId, a.StepName, a.RequirementName })
             .ToListAsync(ct);
-        var decidedSet = alreadyDecided.ToHashSet();
+        var decidedSet = myRows
+            .Where(a => a.StepName is null && a.RequirementName is null)
+            .Select(a => a.CandidateId)
+            .ToHashSet();
+        var myGates = myRows
+            .Where(a => a.StepName is not null || a.RequirementName is not null)
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(a => (Step: a.StepName ?? "", Req: a.RequirementName ?? "")).ToHashSet());
+
+        // Every Approved row across the whole list, in one query — the input the matcher needs to tell
+        // an open requirement from a satisfied one. Batched for the same reason group membership is.
+        var approvalsByCandidate = (await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.CandidateId) && a.Decision == PromotionDecision.Approved)
+                .Select(a => new { a.CandidateId, a.ApproverEmail, a.StepName, a.RequirementName })
+                .ToListAsync(ct))
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<RecordedApproval>)g
+                    .Select(a => new RecordedApproval(a.ApproverEmail, a.StepName, a.RequirementName))
+                    .ToList());
+
+        // Candidates whose work-item gate is currently holding approval back. Two queries for the
+        // whole list — none when the caller already has the gate statuses.
+        var gateBlocked = gateStatuses is null
+            ? await GetWorkItemGateBlockedAsync(list, ct)
+            : list.Where(c => gateStatuses.GetValueOrDefault(c.Id)?.WorkItemsOutstanding == true)
+                .Select(c => c.Id)
+                .ToHashSet();
 
         // Cache group membership lookups: one Graph call per unique approver group across all
-        // candidates' requirement trees. The current user matches a requirement when they're in any
-        // of its groups OR listed in its users — so a candidate is approvable when ≥1 requirement
-        // matches.
+        // candidates' requirement trees.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var email = _currentUser.Email;
 
         foreach (var c in list)
         {
-            if (c.Status != PromotionStatus.Pending) { result[c.Id] = false; continue; }
+            result[c.Id] = Array.Empty<RequirementRef>();
+            if (c.Status != PromotionStatus.Pending) continue;
             var snapshot = ReadSnapshot(c);
-            if (snapshot.IsAutoApprove) { result[c.Id] = false; continue; }
-            if (decidedSet.Contains(c.Id)) { result[c.Id] = false; continue; }
+            if (snapshot.IsAutoApprove) continue;
+            if (decidedSet.Contains(c.Id)) continue;
+            // The work-item gate outranks everything below: while it holds, no requirement is
+            // approvable, so which ones the user matches doesn't matter.
+            if (gateBlocked.Contains(c.Id)) continue;
 
-            var canApprove = false;
-            foreach (var req in snapshot.AllRequirements)
+            // Which requirements this user is authorized for and hasn't approved yet. Collected by
+            // index rather than short-circuiting on the first hit, because the open-ness test below
+            // needs all of them: one matched requirement being satisfied says nothing about another.
+            var approvedByMe = myGates.GetValueOrDefault(c.Id);
+            var authorized = new List<(int Index, RequirementRef Ref)>();
+            var ri = -1;
+            foreach (var step in snapshot.ApprovalSteps)
+            foreach (var req in step.Requirements)
             {
+                ri++;
+                if (approvedByMe is not null && approvedByMe.Contains((step.Name ?? "", req.Name ?? ""))) continue;
+                var reqRef = new RequirementRef(step.Name ?? "", req.Name ?? "");
                 // User-list match is free; check it first.
                 if (req.Users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase)))
                 {
-                    canApprove = true;
-                    break;
+                    authorized.Add((ri, reqRef));
+                    continue;
                 }
                 foreach (var group in req.Groups)
                 {
@@ -1552,15 +3418,316 @@ public class PromotionService
                         member = await _auth.IsInApproverGroupAsync(group, ct);
                         groupMembership[group.Id] = member;
                     }
-                    if (member) { canApprove = true; break; }
+                    if (member) { authorized.Add((ri, reqRef)); break; }
                 }
-                if (canApprove) break;
             }
-            result[c.Id] = canApprove;
+            if (authorized.Count == 0) continue;
+
+            // Nobody has approved yet ⇒ nothing can be satisfied ⇒ every matched requirement is open.
+            // Skip the matcher for what is by far the common case on a pending list.
+            var recorded = approvalsByCandidate.GetValueOrDefault(c.Id);
+            if (recorded is null or { Count: 0 })
+            {
+                result[c.Id] = authorized.Select(a => a.Ref).ToList();
+                continue;
+            }
+
+            var match = MatchRecorded(snapshot, recorded);
+            result[c.Id] = authorized
+                .Where(a => !match.Requirements[a.Index].Satisfied)
+                .Select(a => a.Ref)
+                .ToList();
         }
 
         return result;
     }
+
+    /// <summary>
+    /// Which approval gates each candidate is still <b>short of approvals on</b>, for a whole list at
+    /// once — the input the promotions list filters "waiting for Release Approval" on, and the per-row
+    /// chips that say so. Whether those gates are open or held behind the work-item gate is the other
+    /// half of the answer, carried alongside them; <see cref="PromotionGateStatus"/> draws that line.
+    ///
+    /// <para>A gate here is an <see cref="ApprovalStep"/>, named as the admin named it (an unnamed step
+    /// reads as "Approval", the same label <see cref="GetApprovalProgressAsync"/> gives it). A step is
+    /// outstanding while any requirement in it is short of approvals; satisfaction comes from the same
+    /// matcher the real gate uses (<see cref="MatchRecorded"/>), so this can never disagree with what
+    /// the detail page's progress panel shows.</para>
+    ///
+    /// <para>Only a Pending candidate can be waiting on anything — an approved, deployed, rejected or
+    /// superseded one is past its gates and maps to <see cref="PromotionGateStatus.None"/>, as does an
+    /// auto-approve edge (no human gate to wait on). Batched like
+    /// <see cref="CanUserApproveManyAsync"/>: one query for every approval row across the list, plus
+    /// the two <see cref="GetWorkItemGateBlockedAsync"/> runs, and no Graph calls at all — attribution
+    /// of an already-recorded approval doesn't need live membership.</para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, PromotionGateStatus>> GetGateStatusesAsync(
+        IReadOnlyCollection<PromotionCandidate> candidates, CancellationToken ct = default)
+    {
+        var result = new Dictionary<Guid, PromotionGateStatus>();
+        foreach (var c in candidates) result[c.Id] = PromotionGateStatus.None;
+
+        var pending = candidates.Where(c => c.Status == PromotionStatus.Pending).ToList();
+        if (pending.Count == 0) return result;
+
+        var ids = pending.Select(c => c.Id).ToList();
+        var approvalsByCandidate = (await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.CandidateId) && a.Decision == PromotionDecision.Approved)
+                .Select(a => new { a.CandidateId, a.ApproverEmail, a.StepName, a.RequirementName })
+                .ToListAsync(ct))
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<RecordedApproval>)g
+                    .Select(a => new RecordedApproval(a.ApproverEmail, a.StepName, a.RequirementName))
+                    .ToList());
+
+        // The work-item gate is not an approval step, but it is another thing the promotion is waiting
+        // on — and that is exactly what "waiting ONLY for Release Approval" has to rule out.
+        var workItemBlocked = await GetWorkItemGateBlockedAsync(pending, ct);
+
+        foreach (var c in pending)
+        {
+            var snapshot = ReadSnapshot(c);
+            var outstanding = new List<string>();
+
+            if (!snapshot.IsAutoApprove && snapshot.AllRequirements.Count > 0)
+            {
+                var recorded = approvalsByCandidate.GetValueOrDefault(c.Id);
+                // Nobody has approved yet ⇒ nothing is satisfied ⇒ every step is outstanding. Skipping
+                // the matcher for the common case on a pending list, as CanUserApproveManyAsync does.
+                if (recorded is null or { Count: 0 })
+                {
+                    outstanding.AddRange(snapshot.ApprovalSteps
+                        .Where(s => s.Requirements.Count > 0)
+                        .Select(StepDisplayName));
+                }
+                else
+                {
+                    var match = MatchRecorded(snapshot, recorded);
+                    // The matcher's outcomes are index-aligned to AllRequirements (steps flattened in
+                    // order), so walking the steps in the same order consumes them 1:1.
+                    var cursor = 0;
+                    foreach (var step in snapshot.ApprovalSteps)
+                    {
+                        var stepSatisfied = true;
+                        foreach (var _ in step.Requirements)
+                        {
+                            if (!match.Requirements[cursor++].Satisfied) stepSatisfied = false;
+                        }
+                        if (step.Requirements.Count > 0 && !stepSatisfied)
+                            outstanding.Add(StepDisplayName(step));
+                    }
+                }
+            }
+
+            result[c.Id] = new PromotionGateStatus(outstanding, workItemBlocked.Contains(c.Id));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The vocabulary of approval gates the promotions list can filter on: every step name appearing on
+    /// a Pending candidate's own policy snapshot. Derived from the candidates rather than from the
+    /// policy table on purpose — a gate nothing is waiting on is an option that can only ever produce an
+    /// empty list, and a Pending candidate's snapshot is kept current with its policy anyway (see
+    /// <see cref="RefreshPolicySnapshotsAsync"/>), so the two agree wherever it matters.
+    /// </summary>
+    private async Task<List<string>> GetGateOptionsAsync(IQueryable<PromotionCandidate> scope, CancellationToken ct)
+    {
+        var snapshots = await scope
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Select(c => c.ResolvedPolicyJson)
+            .ToListAsync(ct);
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var json in snapshots)
+        {
+            // Lenient: one unparseable snapshot costs its gates from the dropdown, not the whole page.
+            var snapshot = ResolvedPolicySnapshot.TryRead(json);
+            if (snapshot is null) continue;
+            foreach (var step in snapshot.ApprovalSteps)
+            {
+                if (step.Requirements.Count == 0) continue; // nothing to wait for
+                names.Add(StepDisplayName(step));
+            }
+        }
+
+        return names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// How a step is named everywhere it is shown — its own name, or "Approval" when the admin left it
+    /// blank. Shared by the progress panel, the gate statuses and the filter vocabulary so a filter
+    /// value always matches the label the reader saw.
+    /// </summary>
+    private static string StepDisplayName(ApprovalStep step) => GateName(step.Name);
+
+    /// <summary>
+    /// <see cref="StepDisplayName"/> for a bare step name — what a recorded or eligible
+    /// <see cref="RequirementRef"/> carries — so a gate named in the list and a gate named in a bulk
+    /// approval are the same string.
+    /// </summary>
+    public static string GateName(string? stepName)
+        => string.IsNullOrEmpty(stepName) ? "Approval" : stepName;
+
+    /// <summary>
+    /// Of <paramref name="candidates"/>, those whose policy holds human approval back until every work
+    /// item is signed off and which still have one outstanding — exactly the condition
+    /// <see cref="ApproveAsync"/> refuses on. Two queries for the whole list, so the promotions list
+    /// can ask this per row without an N+1.
+    /// </summary>
+    private async Task<HashSet<Guid>> GetWorkItemGateBlockedAsync(
+        IReadOnlyList<PromotionCandidate> candidates, CancellationToken ct)
+    {
+        var blocked = new HashSet<Guid>();
+
+        // Only candidates whose own snapshot gates on work items can be blocked by one.
+        var gated = candidates
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Select(c => (Candidate: c, Snapshot: ReadSnapshot(c)))
+            .Where(t => t.Snapshot.RequireAllWorkItemsApproved && t.Snapshot.TracksWorkItems)
+            .ToList();
+        if (gated.Count == 0) return blocked;
+
+        var gatedIds = gated.Select(t => t.Candidate.Id).ToList();
+        var workItems = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => gatedIds.Contains(w.CandidateId))
+            .Select(w => new { w.CandidateId, w.WorkItemKey })
+            .ToListAsync(ct);
+        if (workItems.Count == 0) return blocked; // nothing to gate on
+
+        // Sign-offs key on (key, product, service, targetEnv), so fetch by the keys in play and
+        // re-match the identity in memory. Over-fetches rows for a key shared across products or
+        // services; cheap and bounded.
+        var keys = workItems.Select(w => w.WorkItemKey).Distinct().ToList();
+        var products = gated.Select(t => t.Candidate.Product).Distinct().ToList();
+        var services = gated.Select(t => t.Candidate.Service).Distinct().ToList();
+        var envs = gated.Select(t => t.Candidate.TargetEnv).Distinct().ToList();
+        var decisions = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && products.Contains(a.Product)
+                     && services.Contains(a.Service)
+                     && envs.Contains(a.TargetEnv))
+            .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision })
+            .ToListAsync(ct);
+
+        // Any verdict clears the item — an issue is a flag on a change that still ships. Only a block
+        // holds it, and it holds regardless of a sibling approval: the same precedence
+        // AreAllWorkItemsClearedAsync applies.
+        var decidedTuples = decisions
+            .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
+            .ToHashSet();
+        var blockedTuples = decisions
+            .Where(d => d.Decision == WorkItemDecision.Blocked)
+            .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
+            .ToHashSet();
+
+        var keysByCandidate = workItems
+            .GroupBy(w => w.CandidateId)
+            .ToDictionary(g => g.Key, g => g.Select(w => w.WorkItemKey).Distinct().ToList());
+
+        // Candidates gating on the ticket's overall status need the roll-up across every service's
+        // instance, not just their own rows. One batch for all of them.
+        var overallIds = gated
+            .Where(t => t.Snapshot.RequireAllWorkItemInstancesApproved)
+            .SelectMany(t => (keysByCandidate.GetValueOrDefault(t.Candidate.Id) ?? new())
+                .Select(k => new WorkItemTicketId(k, t.Candidate.Product, t.Candidate.TargetEnv)))
+            .ToList();
+        var overall = overallIds.Count == 0
+            ? new Dictionary<WorkItemTicketId, WorkItemOverallStatus>()
+            : await WorkItemOverallStatus.LoadAsync(_db, overallIds, ct);
+
+        foreach (var (candidate, snapshot) in gated)
+        {
+            var candidateKeys = keysByCandidate.GetValueOrDefault(candidate.Id);
+            if (candidateKeys is null or { Count: 0 }) continue; // no work items ⇒ nothing to wait for
+            var allResolved = snapshot.RequireAllWorkItemInstancesApproved
+                ? candidateKeys.All(k =>
+                    overall.GetValueOrDefault(new WorkItemTicketId(k, candidate.Product, candidate.TargetEnv))
+                        ?.ClearsGateEverywhere == true)
+                : candidateKeys.All(k =>
+                    decidedTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv))
+                    && !blockedTuples.Contains((k, candidate.Product, candidate.Service, candidate.TargetEnv)));
+            if (!allResolved) blocked.Add(candidate.Id);
+        }
+
+        return blocked;
+    }
+
+    /// <summary>
+    /// Runs <see cref="ApprovalMatcher"/> over already-loaded approval rows — the pure, no-IO half of
+    /// <see cref="EvaluateRequirementMatchAsync"/>, for callers that batched the query themselves.
+    ///
+    /// <para>Eligibility for a recorded approver uses the same approximation documented on
+    /// <see cref="EvaluateRequirementMatchAsync"/>: explicit user-list match, or "the requirement
+    /// carries groups, and membership can't be disproven". No live check for the current user is needed
+    /// here — a candidate they have already decided on never reaches the matcher.</para>
+    /// </summary>
+    private static MatchResult MatchRecorded(
+        ResolvedPolicySnapshot snapshot, IReadOnlyList<RecordedApproval> recorded)
+    {
+        var requirements = snapshot.AllRequirements;
+
+        // Map (StepName, RequirementName) → flattened index, to resolve pinned attributions.
+        var indexByName = new Dictionary<(string Step, string Req), int>();
+        var cursor = 0;
+        foreach (var step in snapshot.ApprovalSteps)
+        {
+            foreach (var req in step.Requirements)
+            {
+                indexByName[(step.Name ?? "", req.Name ?? "")] = cursor;
+                cursor++;
+            }
+        }
+
+        return ApprovalMatcher.Match(
+            requirements,
+            ToDecisions(recorded, indexByName),
+            (recordedEmail, req) => ApprovedRowMatchesRequirement(req, recordedEmail));
+    }
+
+    /// <summary>
+    /// Turns recorded Approved rows into matcher decisions: one <b>pinned</b> decision per
+    /// (approver, requirement) whose attribution resolves to a requirement in the snapshot, plus at
+    /// most one <b>unpinned</b> decision per approver for rows with no (or stale) attribution. An
+    /// approver who approved two gates therefore reaches the matcher twice and counts on both.
+    /// </summary>
+    private static List<ApproverDecision> ToDecisions(
+        IEnumerable<RecordedApproval> recorded, IReadOnlyDictionary<(string Step, string Req), int> indexByName)
+    {
+        var decisions = new List<ApproverDecision>();
+        var pinnedSeen = new HashSet<(string Email, int Index)>();
+        var unpinnedSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in recorded)
+        {
+            if (string.IsNullOrEmpty(row.ApproverEmail)) continue;
+            var email = row.ApproverEmail.ToLowerInvariant();
+            if (!string.IsNullOrEmpty(row.RequirementName)
+                && indexByName.TryGetValue((row.StepName ?? "", row.RequirementName), out var idx))
+            {
+                if (pinnedSeen.Add((email, idx))) decisions.Add(new ApproverDecision(row.ApproverEmail, idx));
+                continue;
+            }
+            if (unpinnedSeen.Add(email)) decisions.Add(new ApproverDecision(row.ApproverEmail, null));
+        }
+        return decisions;
+    }
+
+    /// <summary>
+    /// Whether a <b>recorded</b> approval by <paramref name="approverEmail"/> can be attributed to
+    /// <paramref name="requirement"/>. Not an authorization check — the approval was authorized when it
+    /// was recorded; this only decides which requirement it counts towards. See
+    /// <see cref="EvaluateRequirementMatchAsync"/> for why group membership is assumed rather than
+    /// resolved for other users.
+    /// </summary>
+    private static bool ApprovedRowMatchesRequirement(ApproverRequirement requirement, string approverEmail)
+        => requirement.Users.Any(u => string.Equals(u, approverEmail, StringComparison.OrdinalIgnoreCase))
+           || requirement.Groups.Count > 0;
+
+    /// <summary>One recorded approval, flattened for the pure matcher.</summary>
+    private readonly record struct RecordedApproval(string ApproverEmail, string? StepName, string? RequirementName);
 
     // ---------------------------------------------------------------------
     // Private helpers
@@ -1580,6 +3747,55 @@ public class PromotionService
     public Task<PromotionFreeze?> FindFreezeAsync(string product, string targetEnv, CancellationToken ct)
         => _db.PromotionFreezes.AsNoTracking()
             .FirstOrDefaultAsync(f => f.Product == product && f.TargetEnv == targetEnv, ct);
+    /// <summary>
+    /// System entries record what the platform did, not discussion — so nobody rewrites them,
+    /// admin included. Mirrors the same rule on work-item comments.
+    /// </summary>
+    private static void EnsureNotSystemComment(PromotionComment comment, string verb)
+    {
+        if (string.Equals(comment.AuthorEmail, PromotionComment.SystemAuthor, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"This entry is a system record and cannot be {verb}");
+    }
+
+    /// <summary>
+    /// Resolves the policy that applies to <paramref name="candidate"/> <i>right now</i>, alongside
+    /// the snapshot frozen onto it. Cancel-approval is the one caller that has to reason about both:
+    /// the frozen snapshot records the rules the candidate was approved under, while the live
+    /// resolution records the rules its edge is governed by today.
+    ///
+    /// <para>Why they can differ: <see cref="RefreshPolicySnapshotsAsync"/> deliberately re-snapshots
+    /// only Pending candidates, so a policy tightened after a candidate reached Approved never reaches
+    /// it. That rail is right — a policy edit must not silently un-approve work — but it leaves the
+    /// frozen snapshot the wrong basis for deciding whether an approval is still worth having. A
+    /// candidate auto-approved under an empty gate, whose edge has since grown an approver
+    /// requirement, is carrying an approval no human ever gave.</para>
+    ///
+    /// <para>Falls back to the stored snapshot when no policy resolves at all (edge un-enrolled),
+    /// mirroring <see cref="RefreshPolicySnapshotsAsync"/>: deleting a gate's configuration must not
+    /// change what happens to candidates that were waiting on it.</para>
+    /// </summary>
+    /// <returns>
+    /// <c>Stored</c> is the frozen snapshot; <c>Current</c> is the live resolution (or <c>Stored</c>
+    /// again when none resolves); <c>Json</c> is <c>Current</c> serialized and ready to persist, or
+    /// <c>null</c> when the resolution is unchanged from what the candidate already carries.
+    /// </returns>
+    private async Task<CurrentPolicy> ResolveCurrentPolicyAsync(
+        PromotionCandidate candidate, CancellationToken ct)
+    {
+        var stored = ReadSnapshot(candidate);
+
+        var live = await _resolver.SnapshotAsync(
+            candidate.Product, candidate.Service, candidate.SourceEnv, candidate.TargetEnv, ct);
+        if (live.PolicyId is null) return new CurrentPolicy(stored, stored, candidate.PolicyId, null);
+
+        var json = JsonSerializer.Serialize(live, JsonOptions);
+        return json == candidate.ResolvedPolicyJson
+            ? new CurrentPolicy(stored, stored, candidate.PolicyId, null)
+            : new CurrentPolicy(stored, live, live.PolicyId, json);
+    }
+
+    private readonly record struct CurrentPolicy(
+        ResolvedPolicySnapshot Stored, ResolvedPolicySnapshot Current, Guid? PolicyId, string? Json);
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)
     {
@@ -1605,14 +3821,26 @@ public class PromotionService
             throw new UnauthorizedAccessException("You are not authorized to approve this promotion");
     }
 
-    private async Task EnsureNotAlreadyDecidedAsync(Guid candidateId, string email, CancellationToken ct)
+    /// <summary>
+    /// Every decision the current user has recorded on <paramref name="candidateId"/>, matched on the
+    /// canonical stored email form so a differently-cased claim (UPN vs Graph mail) can't slip past
+    /// the dedup. One row per gate approved, plus any rejection or legacy unattributed row.
+    /// </summary>
+    private async Task<IReadOnlyList<MyDecision>> LoadMyDecisionsAsync(Guid candidateId, CancellationToken ct)
     {
-        var normalizedEmail = NormalizeEmail(email);
-        var dup = await _db.PromotionApprovals.AsNoTracking()
-            .AnyAsync(a => a.CandidateId == candidateId && a.ApproverEmail == normalizedEmail, ct);
-        if (dup)
-            throw new InvalidOperationException("You have already made a decision on this promotion");
+        var normalizedEmail = NormalizeEmail(_currentUser.Email);
+        return await _db.PromotionApprovals.AsNoTracking()
+            .Where(a => a.CandidateId == candidateId && a.ApproverEmail == normalizedEmail)
+            .Select(a => new MyDecision(a.Decision, a.StepName, a.RequirementName))
+            .ToListAsync(ct);
     }
+
+    private readonly record struct MyDecision(PromotionDecision Decision, string? StepName, string? RequirementName);
+
+    /// <summary>Whether a recorded decision is attributed to the given (step, requirement) pair.</summary>
+    private static bool SameRequirement(MyDecision decision, string? stepName, string? requirementName)
+        => string.Equals(decision.StepName ?? "", stepName ?? "", StringComparison.OrdinalIgnoreCase)
+           && string.Equals(decision.RequirementName ?? "", requirementName ?? "", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Canonical form used for storing and comparing approver emails: trimmed + lower-invariant.
@@ -1628,6 +3856,18 @@ public class PromotionService
 /// Filter args for <see cref="PromotionService.GetAsync"/>. All fields are optional; omitted
 /// filters are treated as "don't narrow".
 /// </summary>
+/// <summary>
+/// Vocabulary for the promotions list filters. Ordering is alphabetical here; the client re-orders
+/// environments into the configured deployment order, which it knows and the API does not.
+/// </summary>
+public record PromotionFilterOptions(
+    IReadOnlyList<string> Products,
+    IReadOnlyList<string> TargetEnvs,
+    // Approval-step names currently outstanding-or-not on Pending candidates — the gate filter's
+    // vocabulary. See PromotionService.GetGateOptionsAsync for why it comes from the candidates
+    // rather than from the policy table.
+    IReadOnlyList<string> Gates);
+
 public record PromotionQuery(
     PromotionStatus? Status = null,
     string? Product = null,
@@ -1642,6 +3882,17 @@ public record PromotionQuery(
 /// not a structured machine-consumable shape.
 /// </summary>
 public record GateResult(bool Satisfied, IReadOnlyList<string> Blockers);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.CancelApprovalAsync"/>. The two counters exist for the
+/// user, not the caller's control flow: how many sign-offs the undo wiped, and — the question anyone
+/// undoing a mistake actually has — whether the <c>promotion.approved</c> webhook was caught before
+/// it left.
+/// </summary>
+public record CancelApprovalResult(
+    PromotionCandidate Candidate,
+    int ClearedApprovals,
+    bool ApprovedWebhookStopped);
 
 /// <summary>
 /// Structured approval progress for the detail view, produced by
@@ -1666,10 +3917,76 @@ public record ApprovalProgress(
     string? BlockedReason = null);
 
 /// <summary>
-/// Progress of the "all work items resolved/approved" gate condition for a candidate:
-/// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off.
+/// Progress of the "all work items resolved" gate condition for a candidate:
+/// <paramref name="Approved"/> of <paramref name="Total"/> distinct work items signed off, plus the
+/// <paramref name="Issues"/> that are cleared with a flag on them and the <paramref name="Blocked"/>
+/// that are not cleared at all.
 /// </summary>
-public record WorkItemGateProgress(bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false);
+/// <param name="Required">
+/// True when the policy holds human approval back until every work item is signed off
+/// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>). Combined with
+/// <paramref name="Satisfied"/> this is exactly the condition that makes
+/// <see cref="PromotionService.ApproveAsync"/> refuse, so the UI can disable its Approve button on
+/// the same terms rather than letting the approver find out from an error.
+/// </param>
+/// <param name="AutoApprove">
+/// True when resolving every work item promotes the candidate on its own. An accelerator, not a
+/// gate — it never blocks a human approval, so it must not be confused with <paramref name="Required"/>.
+/// </param>
+public record WorkItemGateProgress(
+    bool Required, int Total, int Approved, bool Satisfied, bool AutoApprove = false,
+    // Work items carrying an Issue. Counted apart from Approved so the UI can say "2 of 5 approved,
+    // 1 with an issue" — these clear the gate (Satisfied counts them in), they just say something is
+    // wrong with what is shipping.
+    int Issues = 0,
+    // Work items somebody has blocked — the only verdict that holds the gate. The rest of the
+    // shortfall (Total - Approved - Issues - Blocked) is items nobody has ruled on yet.
+    int Blocked = 0,
+    // True when the policy judges each work item by the ticket's overall status across every
+    // service instance (RequireAllWorkItemInstancesApproved) rather than by this promotion's own
+    // instance — so "approved" above means "approved everywhere", and the UI can say so.
+    bool AllInstances = false);
+
+/// <summary>
+/// What one candidate is still waiting on, as <see cref="PromotionService.GetGateStatusesAsync"/>
+/// reports it for a whole list: the approval steps that are short of approvals, plus whether the
+/// policy's work-item gate is also holding it.
+///
+/// <para><b>Outstanding is not the same as waiting.</b> When the policy holds human approval back
+/// until every work item is signed off, the steps in <see cref="OutstandingSteps"/> are not open —
+/// nobody may approve them yet, and <see cref="PromotionService.ApproveAsync"/> refuses if they try.
+/// Such a promotion is waiting on its work items, not on QA Review, and the detail page says so
+/// (the steps render held: padlocked, no Approve button, "opens once all work items are resolved").
+/// Both predicates here agree with that page, so a gate filter never offers an approver a promotion
+/// their signature cannot move.</para>
+///
+/// <para>What the two predicates still distinguish is how much is left. "Waiting for Release
+/// Approval" (<see cref="IsWaitingFor"/>) includes a promotion that is waiting for three other steps
+/// as well; "waiting <i>only</i> for Release Approval" (<see cref="IsWaitingOnlyFor"/>) is the one an
+/// approver can actually finish off.</para>
+/// </summary>
+public record PromotionGateStatus(IReadOnlyList<string> OutstandingSteps, bool WorkItemsOutstanding)
+{
+    /// <summary>A candidate with nothing left to wait on — every non-Pending one, and auto-approve edges.</summary>
+    public static readonly PromotionGateStatus None = new(Array.Empty<string>(), false);
+
+    /// <summary>
+    /// Whether the promotion is waiting on the named approval step: the step is short of approvals
+    /// <i>and</i> the work-item gate isn't holding the whole promotion behind it. A held promotion is
+    /// waiting on its work items — naming a step it cannot reach yet would send an approver to a
+    /// padlocked gate.
+    /// </summary>
+    public bool IsWaitingFor(string step)
+        => !WorkItemsOutstanding
+        && OutstandingSteps.Any(s => string.Equals(s, step, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether the named step is the <b>last</b> thing outstanding: it is open (see
+    /// <see cref="IsWaitingFor"/>) and no other approval step is short.
+    /// </summary>
+    public bool IsWaitingOnlyFor(string step)
+        => OutstandingSteps.Count == 1 && IsWaitingFor(step);
+}
 
 /// <summary>One approval step's progress: satisfied once all its requirements are.</summary>
 public record StepProgress(string Name, bool Satisfied, IReadOnlyList<RequirementProgress> Requirements);
@@ -1686,6 +4003,76 @@ public record RequirementProgress(
 /// recorded on a <see cref="PromotionApproval"/> and the choice an approver can pin when approving.
 /// </summary>
 public record RequirementRef(string StepName, string RequirementName);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ApproveGateAsync"/>: the candidate after the last approval
+/// (Approved when that satisfied its gate, otherwise still Pending) and the requirements approved.
+/// </summary>
+public record GateApprovalResult(PromotionCandidate Candidate, IReadOnlyList<RequirementRef> Approved);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ReconcileCompletionsAsync"/>. <c>Examined</c> counts every
+/// open candidate looked at; the ones left untouched — examined minus closed minus superseded — are
+/// promotions that are correctly still waiting, and that gap is as much the point of the report as the
+/// repairs are.
+/// </summary>
+public record ReconcileCompletionsResult(
+    int Examined,
+    int Closed,
+    int Superseded,
+    bool DryRun,
+    IReadOnlyList<ReconciledCandidate> Candidates);
+
+/// <param name="Action">"closed" (its version shipped) or "superseded" (a newer version overtook it).</param>
+/// <param name="At">When the deciding deploy landed.</param>
+/// <param name="LandedVersion">For a supersede, the newer version now in the target. Null for a close.</param>
+public record ReconciledCandidate(
+    Guid Id,
+    string Product,
+    string Service,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    string PreviousStatus,
+    string Action,
+    DateTimeOffset At,
+    string? LandedVersion);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ResendApprovedWebhooksAsync"/>. <c>Examined</c> is every
+/// approved-but-undeployed promotion in scope; <c>Resent</c> and <c>Skipped</c> account for all of
+/// them. <c>Deliveries</c> is the honest measure of whether anything actually left the building —
+/// promotions can be re-sent and still queue nothing when no active subscription listens for
+/// <c>promotion.approved</c>, which is worth telling the admin rather than reporting success.
+/// Always 0 on a dry run.
+/// </summary>
+public record ResendApprovedWebhooksResult(
+    int Examined,
+    int Resent,
+    int Skipped,
+    int Deliveries,
+    bool DryRun,
+    IReadOnlyList<ResentPromotion> Promotions);
+
+/// <param name="LastDeliveryStatus">
+/// Status of the most recent approval delivery on record — delivered, failed, cancelled, pending —
+/// or "none" when the platform has no attributable delivery for this approval at all.
+/// </param>
+/// <param name="LastDeliveryAt">When that delivery landed, or was queued if it never did.</param>
+/// <param name="Deliveries">Rows queued by this resend. 0 on a dry run and on a skipped row.</param>
+/// <param name="SkippedReason">Why this promotion was left alone; null when it was (or would be) re-sent.</param>
+public record ResentPromotion(
+    Guid Id,
+    string Product,
+    string Service,
+    string SourceEnv,
+    string TargetEnv,
+    string Version,
+    DateTimeOffset? ApprovedAt,
+    string LastDeliveryStatus,
+    DateTimeOffset? LastDeliveryAt,
+    int Deliveries,
+    string? SkippedReason);
 
 /// <summary>
 /// Thrown by <see cref="PromotionService.ApproveAsync"/> when the caller did not specify which

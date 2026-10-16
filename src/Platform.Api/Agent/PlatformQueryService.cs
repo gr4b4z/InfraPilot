@@ -257,19 +257,16 @@ public class PlatformQueryService
             };
         }).ToList();
 
-        // Build URL params for navigation link
-        var urlParams = new List<string> { "tab=activity" };
-        if (!string.IsNullOrWhiteSpace(environment))
-            urlParams.Add($"env={environment}");
-
         return new DeploymentActivityCardData
         {
             Product = product,
             Environment = environment,
             Since = since,
             Items = items,
-            NavigationUrl = product != null
-                ? $"/deployments/{product}?{string.Join("&", urlParams)}"
+            // Built by PortalRoutes rather than by hand: portal links are assembled in exactly one
+            // place, so a route change cannot leave a second copy behind pointing somewhere stale.
+            NavigationUrl = product is not null
+                ? PortalRoutes.ProductActivity(product, environment)
                 : null,
         };
     }

@@ -3,8 +3,12 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Loader2, ScrollText, Eye, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { marked } from 'marked';
+import { KeyboardList } from '@/components/ui/KeyboardList';
+import { useKeyboardListRow } from '@/hooks/keyboardList';
+import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { api, type ReleaseNoteFeedItem } from '@/lib/api';
 import { useDeploymentStore } from '@/stores/deploymentStore';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 // Content originates from our own server-side template engine, so we render the
 // stored markdown synchronously without further sanitisation (same as the detail page).
@@ -36,8 +40,12 @@ export function ReleaseNotesPage() {
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
-  async function load() {
-    setLoading(true);
+  useDocumentTitle([product, environment, 'Release notes']);
+
+  // A silent load (realtime) keeps the current page of notes mounted and swaps the response in;
+  // only a new product/environment/page shows the spinner.
+  async function load({ silent = false } = {}) {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await api.listReleaseNotes({
@@ -61,10 +69,15 @@ export function ReleaseNotesPage() {
     setPage(1);
   }, [product, environment]);
 
+  const releaseNotesTick = useEntityRefresh(['release-note'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+  const isBackgroundRefresh = useIsBackgroundRefresh();
+
   useEffect(() => {
-    load();
+    load({ silent: isBackgroundRefresh(`${product}|${environment}|${page}`) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product, environment, page]);
+  }, [product, environment, page, releaseNotesTick]);
 
   const productEntry = products.find((p) => p.product === product);
   const envsFromProduct = productEntry ? Object.keys(productEntry.environments) : [];
@@ -108,7 +121,7 @@ export function ReleaseNotesPage() {
         <div className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
           New release note
         </div>
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3" data-guide-anchor="release-notes-range">
           <div className="flex flex-col gap-1">
             <label className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Environment</label>
             <select
@@ -153,8 +166,9 @@ export function ReleaseNotesPage() {
             <button
               onClick={openDraft}
               disabled={!environment}
+              data-guide-anchor="release-notes-preview-button"
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium disabled:opacity-50"
-              style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+              style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
               <Eye size={14} />
               Preview
@@ -180,13 +194,20 @@ export function ReleaseNotesPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {items.map((note) => (
-            <ReleaseNoteCard
-              key={note.id}
-              note={note}
-              onOpen={() => navigate(`/release-notes/${product}/${note.id}`)}
-            />
-          ))}
+          <KeyboardList
+            className="space-y-6"
+            count={items.length}
+            ariaLabel={`${product ?? 'Product'} release notes`}
+          >
+            {items.map((note, index) => (
+              <ReleaseNoteCard
+                key={note.id}
+                index={index}
+                note={note}
+                onOpen={() => navigate(`/release-notes/${product}/${note.id}`)}
+              />
+            ))}
+          </KeyboardList>
 
           <div className="flex items-center justify-between pt-2">
             <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -217,10 +238,23 @@ export function ReleaseNotesPage() {
   );
 }
 
-function ReleaseNoteCard({ note, onOpen }: { note: ReleaseNoteFeedItem; onOpen: () => void }) {
+function ReleaseNoteCard({
+  index,
+  note,
+  onOpen,
+}: {
+  /** Position in the list, for the roving tabindex. */
+  index: number;
+  note: ReleaseNoteFeedItem;
+  onOpen: () => void;
+}) {
   const html = useMemo(() => marked.parse(note.renderedContent) as string, [note.renderedContent]);
+  const rowProps = useKeyboardListRow(index, onOpen, {
+    label: `${note.environment} release notes, ${note.servicesCount} service(s). Open note.`,
+  });
   return (
     <div
+      {...rowProps}
       className="rounded-xl border overflow-hidden"
       style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
     >
@@ -250,7 +284,7 @@ function ReleaseNoteCard({ note, onOpen }: { note: ReleaseNoteFeedItem; onOpen: 
         </button>
       </div>
       <div
-        className="release-notes-prose px-5 py-4 text-[14px] overflow-x-auto"
+        className="release-notes-prose px-5 py-4 text-[14px] overflow-x-auto max-w-[80ch]"
         style={{ color: 'var(--text-primary)' }}
         dangerouslySetInnerHTML={{ __html: html }}
       />

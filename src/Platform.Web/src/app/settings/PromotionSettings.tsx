@@ -1,14 +1,29 @@
-import { useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useAuthStore } from '@/stores/authStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { roleDisplay, useConfiguredRoles, useResolveRoleKey } from '@/lib/roleLabel';
 import {
   api,
   type PromotionPolicy,
   type PromotionPolicyStep,
   type PromotionPolicyRequirement,
-  type PromotionPolicyGroupRef,
   type UpsertPromotionPolicyPayload,
 } from '@/lib/api';
-import { Plus, Trash2, Check, Pencil, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Package, Plus, Trash2, Check, Pencil, X } from 'lucide-react';
+// Directory pickers and form styling are shared with the rollback policy editor — both configure
+// approvers from the same group/user vocabulary under the same server-side matching rules.
+import { UserPicker, GroupPicker } from './approverPickers';
+import { ComboBox, type ComboOption } from '@/components/ui/ComboBox';
+import { Dialog } from '@/components/ui/Dialog';
+import { EnvBadge } from '@/components/environments/EnvBadge';
+import { envColorStyles } from '@/lib/envColor';
+import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
+
+/** The synthetic source env for promotions straight from the build registry. */
+const BUILD_SOURCE_ENV = 'build';
+
+/** The branch patterns an admin is most likely to want on a build → dev edge. */
+const SUGGESTED_BRANCH_PATTERNS = ['refs/heads/main', 'refs/heads/master', 'refs/heads/release/*'];
 
 const emptyRequirement = (): PromotionPolicyRequirement => ({
   name: '',
@@ -28,40 +43,149 @@ const emptyForm: UpsertPromotionPolicyPayload = {
   sourceEnv: '',
   targetEnv: '',
   steps: [],
-  timeoutHours: 24,
+  tracksWorkItems: true,
+  requiredWorkItemRoles: [],
   escalationGroup: null,
   requireAllWorkItemsApproved: false,
+  requireAllWorkItemInstancesApproved: false,
   autoApproveOnAllWorkItemsApproved: false,
   autoApproveWhenNoWorkItems: false,
+  sourceRequiresDeploy: true,
+  deploysOnApproval: true,
+  autoCreateFromBranches: [],
+  approvedWebhookDelaySeconds: null,
 };
 
-const inputClass =
-  'px-2.5 py-1.5 rounded-lg border text-[13px] outline-none transition-colors focus:border-[var(--accent)]';
-const inputStyle = {
-  borderColor: 'var(--border-color)',
-  backgroundColor: 'var(--bg-primary)',
-  color: 'var(--text-primary)',
-};
+/** Who has to sign one step off, as one line: `Platform Admins, ada@x.com (2) + SREs (1)`. */
+function describeRequirements(step: PromotionPolicyStep): string {
+  return step.requirements
+    .map((r) => {
+      const approvers = [...r.groups.map((g) => g.name), ...r.users];
+      const who = approvers.length > 0 ? approvers.join(', ') : '—';
+      return `${who} (${r.minApprovers})`;
+    })
+    .join(' + ');
+}
 
-const labelClass = 'text-[11px] font-medium uppercase tracking-wider';
-const labelStyle = { color: 'var(--text-muted)' };
+const stepName = (step: PromotionPolicyStep, index: number) =>
+  step.name?.trim() || `Step ${index + 1}`;
 
-/** Summarise a step tree for the policy table. */
+/** The whole step tree as plain text — the table renders it as chips, this is its tooltip. */
 function summarizeSteps(steps: PromotionPolicyStep[]): string {
   if (!steps || steps.length === 0) return 'auto-approve';
   return steps
-    .map((s, i) => {
-      const reqs = s.requirements
-        .map((r) => {
-          const approvers = [...r.groups.map((g) => g.name), ...r.users];
-          const who = approvers.length > 0 ? approvers.join(', ') : '—';
-          return `${who} (${r.minApprovers})`;
-        })
-        .join(' + ');
-      const name = s.name?.trim() || `Step ${i + 1}`;
-      return `${name}: ${reqs}`;
-    })
+    .map((s, i) => `${stepName(s, i)}: ${describeRequirements(s)}`)
     .join('  →  ');
+}
+
+/**
+ * Small tinted pill, mixed the same way {@link EnvBadge} mixes an environment colour, so a role
+ * chip and an environment badge in neighbouring columns read as one family rather than two
+ * unrelated badge styles. Takes any CSS colour — the theme tokens (`var(--accent)`) included.
+ */
+function Chip({
+  color,
+  title,
+  children,
+}: {
+  color: string;
+  title?: string;
+  children: ReactNode;
+}) {
+  const { fg, bg, border } = envColorStyles(color);
+  return (
+    <span
+      className="inline-flex items-center gap-1 font-semibold rounded-full whitespace-nowrap"
+      title={title}
+      style={{
+        fontSize: 10,
+        padding: '1px 6px',
+        lineHeight: '16px',
+        letterSpacing: '0.02em',
+        color: fg,
+        backgroundColor: bg,
+        border: `1px solid ${border}`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The edge a policy gates, as coloured pills: `[Staging] → [Production]`. Environments are the axis
+ * an admin scans this table by ("which policies guard prod?"), and the colours are the ones they
+ * already picked in Settings → Environments, so the answer is available without reading.
+ *
+ * The synthetic `build` source gets its own chip rather than an `EnvBadge`: it is not an environment
+ * anybody configures, and dressing it as one sends admins looking for it in the environment list.
+ */
+function PolicyEdge({ sourceEnv, targetEnv }: { sourceEnv: string; targetEnv: string }) {
+  const fromBuild = sourceEnv.trim().toLowerCase() === BUILD_SOURCE_ENV;
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      {fromBuild ? (
+        <Chip color="var(--accent)" title="The build registry — promotes registered builds directly">
+          <Package size={10} />
+          Build
+        </Chip>
+      ) : (
+        <EnvSlot env={sourceEnv} />
+      )}
+      <ArrowRight size={12} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
+      <EnvSlot env={targetEnv} />
+    </span>
+  );
+}
+
+/** `staging → production`, for the labels screen readers get in place of the pills. */
+const describeEdge = (sourceEnv: string, targetEnv: string) =>
+  `${sourceEnv.trim() || 'unset'} → ${targetEnv.trim() || 'unset'}`;
+
+/**
+ * One side of an edge. A blank environment says so rather than rendering an empty pill: the API
+ * requires both ends, so a policy missing one came in around the form and matches no promotion at
+ * all — worth seeing in the table instead of reading as a stray space.
+ */
+function EnvSlot({ env }: { env: string }) {
+  if (!env.trim()) {
+    return (
+      <Chip color="var(--danger)" title="No environment set — this policy matches no promotion">
+        <AlertTriangle size={10} />
+        not set
+      </Chip>
+    );
+  }
+  return <EnvBadge env={env} size="xs" />;
+}
+
+/** Approval steps as a chain of named chips, each followed by who signs it off. */
+function StepsSummary({ steps }: { steps: PromotionPolicyStep[] }) {
+  if (!steps || steps.length === 0) {
+    return (
+      <Chip color="var(--success)" title="No approval steps — promotions on this edge auto-approve">
+        auto-approve
+      </Chip>
+    );
+  }
+  return (
+    <span
+      className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-1"
+      title={summarizeSteps(steps)}
+    >
+      {steps.map((s, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <ArrowRight size={11} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
+          )}
+          <Chip color="var(--accent)">{stepName(s, i)}</Chip>
+          <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            {describeRequirements(s)}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
 }
 
 /** Per-requirement validation errors keyed by `${stepIdx}:${reqIdx}`. */
@@ -80,291 +204,162 @@ function validateSteps(steps: PromotionPolicyStep[]): Record<string, string> {
   return errors;
 }
 
-/** Removable chip row shared by the group/user pickers. `label(v)` resolves a display label. */
-function ChipRow({
+/**
+ * Which participant roles every work item on this edge must have somebody in. Toggle buttons over the
+ * configured role vocabulary (Settings → Participant Roles) rather than a typeahead: the vocabulary is
+ * short, curated, and already on screen elsewhere on this page, so free text would only ever produce a
+ * requirement no work item can satisfy.
+ *
+ * A role that was picked before an admin removed it from the vocabulary is still rendered — as its raw
+ * canonical key — so an existing requirement can be seen and cleared instead of silently persisting
+ * through every save. One picked under a name that has since become an alias (`qa`, folded into
+ * `qa-owner`) selects the role it names, which is what the server requires for it.
+ */
+function RequiredRolesPicker({
   values,
-  label,
-  onRemove,
+  onChange,
+  disabled = false,
 }: {
   values: string[];
-  label: (v: string) => string;
-  onRemove: (v: string) => void;
+  onChange: (next: string[]) => void;
+  /** Set while the edge creates no work items — the picks are kept, just not editable. */
+  disabled?: boolean;
 }) {
-  if (values.length === 0) return null;
+  const configured = useConfiguredRoles();
+  const resolve = useResolveRoleKey();
+  const selectedKeys = useMemo(() => new Set(values.map((v) => resolve(v))), [values, resolve]);
+  const options = useMemo(() => {
+    const out = configured.map((r) => ({ key: r.key, label: r.displayName, known: true }));
+    for (const key of selectedKeys) {
+      if (!key || out.some((o) => o.key === key)) continue;
+      out.push({ key, label: key, known: false });
+    }
+    return out;
+  }, [configured, selectedKeys]);
+
+  // Matched through the aliases both ways, so turning a role off also drops a pick saved under one of
+  // its other names.
+  const toggle = (key: string) => {
+    onChange(
+      selectedKeys.has(key) ? values.filter((v) => resolve(v) !== key) : [...values, key],
+    );
+  };
+
+  if (options.length === 0) {
+    return (
+      <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        No participant roles are configured yet — add some under Settings → Participant Roles first.
+      </p>
+    );
+  }
+
   return (
     <div className="flex flex-wrap gap-1.5">
-      {values.map((v) => (
-        <span
-          key={v}
-          className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-full border"
-          style={{
-            borderColor: 'var(--border-color)',
-            backgroundColor: 'var(--bg-secondary)',
-            color: 'var(--text-primary)',
-          }}
-          title={label(v) !== v ? v : undefined}
-        >
-          {label(v)}
+      {options.map((o) => {
+        const selected = selectedKeys.has(o.key);
+        return (
           <button
+            key={o.key}
             type="button"
-            onClick={() => onRemove(v)}
-            className="hover:opacity-80 transition-colors"
-            style={{ color: 'var(--text-muted)' }}
+            onClick={() => toggle(o.key)}
+            aria-pressed={selected}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 text-[12px] font-medium px-2.5 py-1 rounded-full border transition-colors disabled:cursor-not-allowed"
+            style={{
+              borderColor: selected ? 'var(--accent)' : 'var(--border-color)',
+              backgroundColor: selected ? 'var(--accent-bg)' : 'var(--bg-primary)',
+              color: selected ? 'var(--accent)' : 'var(--text-secondary)',
+            }}
+            title={o.known ? o.key : `${o.key} — not a configured participant role`}
           >
-            <X size={12} />
+            {selected && <Check size={11} />}
+            {o.label}
+            {!o.known && <AlertTriangle size={11} />}
           </button>
-        </span>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
 /**
- * Typeahead picker for user emails. Debounced search against /promotions/users/search; selecting
- * a hit adds the user's *email* to `values` (that's what the gate matches on). Falls back to
- * manual entry of an unmatched email so local-dev / edge cases still work.
+ * Chip editor for auto-create branch patterns. The three suggestions cover what admins actually
+ * configure (trunk + release lines); anything else is typed and added with Enter. Free text stays
+ * possible because branch layouts vary per repo — the server only normalises, never restricts.
  */
-function UserPicker({
+function BranchPatternsEditor({
   values,
   onChange,
 }: {
   values: string[];
   onChange: (next: string[]) => void;
 }) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<
-    Array<{ id: string; displayName: string; email: string }>
-  >([]);
-  const [searching, setSearching] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [draft, setDraft] = useState('');
 
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users || []);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query]);
-
-  const add = (email: string) => {
-    const v = email.trim();
-    if (!v || values.includes(v)) return;
-    onChange([...values, v]);
-    setQuery('');
-    setResults([]);
+  const add = (pattern: string) => {
+    const p = pattern.trim();
+    if (!p || values.includes(p)) return;
+    onChange([...values, p]);
+    setDraft('');
   };
-
-  const remove = (v: string) => onChange(values.filter((x) => x !== v));
-
-  const trimmed = query.trim();
-  const manualOk = trimmed.includes('@') && trimmed.includes('.');
 
   return (
     <div className="space-y-1.5">
-      <ChipRow values={values} label={(v) => v} onRemove={remove} />
-      <div className="relative">
+      {values.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {values.map((v) => (
+            <span
+              key={v}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[12px] font-mono"
+              style={{
+                borderColor: 'var(--accent)',
+                backgroundColor: 'var(--accent-bg)',
+                color: 'var(--accent)',
+              }}
+            >
+              {v}
+              <button
+                type="button"
+                onClick={() => onChange(values.filter((x) => x !== v))}
+                aria-label={`Remove ${v}`}
+                className="transition-opacity hover:opacity-70"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5">
         <input
           type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => {
-            blurTimer.current = setTimeout(() => setFocused(false), 150);
-          }}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              if (results.length === 0 && manualOk) add(trimmed);
+              add(draft);
             }
           }}
-          placeholder="Search directory (name or email)..."
-          className={`${inputClass} w-full`}
+          placeholder="refs/heads/… (Enter to add)"
+          aria-label="Add branch pattern"
+          className={`${inputClass} w-64`}
           style={inputStyle}
         />
-        {focused && trimmed.length >= 2 && (
-          <div
-            className="absolute z-20 mt-1 top-full left-0 right-0 max-h-48 overflow-y-auto rounded-lg border shadow-lg"
-            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
-            onMouseDown={() => {
-              if (blurTimer.current) clearTimeout(blurTimer.current);
-            }}
-          >
-            {searching && (
-              <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                Searching...
-              </div>
-            )}
-            {!searching && results.length === 0 && (
-              <button
-                type="button"
-                onClick={() => add(trimmed)}
-                disabled={!manualOk}
-                className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80 disabled:opacity-40"
-                style={{ color: 'var(--text-primary)' }}
-              >
-                <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as email</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
-                </span>
-              </button>
-            )}
-            {!searching &&
-              results.map((u) => (
-                <button
-                  key={u.id}
-                  type="button"
-                  onClick={() => add(u.email)}
-                  className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-primary)' }}
-                >
-                  <span className="font-medium truncate">{u.displayName}</span>
-                  <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-                    {u.email}
-                  </span>
-                </button>
-              ))}
-          </div>
-        )}
       </div>
-    </div>
-  );
-}
-
-/**
- * Typeahead picker for AD groups. Debounced search against /promotions/groups/search; selecting a
- * hit stores both the group's object *id* (the approval-time Graph lookup keys off the id) and its
- * display *name* as `{ id, name }`. The chip label shows the name, so a saved policy reloads showing
- * group names rather than raw object GUIDs. Unmatched manual entries are stored as `{id, name}` with
- * the typed text used for both. Falls back to manual entry too.
- */
-function GroupPicker({
-  values,
-  onChange,
-}: {
-  values: PromotionPolicyGroupRef[];
-  onChange: (next: PromotionPolicyGroupRef[]) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Array<{ id: string; displayName: string }>>([]);
-  const [searching, setSearching] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionGroups(q);
-        if (!cancelled) setResults(res.groups || []);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query]);
-
-  const add = (id: string, displayName?: string) => {
-    const trimmedId = id.trim();
-    if (!trimmedId || values.some((g) => g.id === trimmedId)) return;
-    onChange([...values, { id: trimmedId, name: (displayName ?? trimmedId).trim() }]);
-    setQuery('');
-    setResults([]);
-  };
-
-  const remove = (id: string) => onChange(values.filter((g) => g.id !== id));
-
-  const trimmed = query.trim();
-
-  return (
-    <div className="space-y-1.5">
-      <ChipRow values={values.map((g) => g.id)} label={(id) => values.find((g) => g.id === id)?.name ?? id} onRemove={remove} />
-      <div className="relative">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => {
-            blurTimer.current = setTimeout(() => setFocused(false), 150);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              if (results.length === 0 && trimmed) add(trimmed);
-            }
-          }}
-          placeholder="Search groups..."
-          className={`${inputClass} w-full`}
-          style={inputStyle}
-        />
-        {focused && trimmed.length >= 2 && (
-          <div
-            className="absolute z-20 mt-1 top-full left-0 right-0 max-h-48 overflow-y-auto rounded-lg border shadow-lg"
-            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
-            onMouseDown={() => {
-              if (blurTimer.current) clearTimeout(blurTimer.current);
-            }}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {SUGGESTED_BRANCH_PATTERNS.filter((s) => !values.includes(s)).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => add(s)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-mono transition-colors hover:opacity-80"
+            style={{ borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}
           >
-            {searching && (
-              <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                Searching...
-              </div>
-            )}
-            {!searching && results.length === 0 && (
-              <button
-                type="button"
-                onClick={() => add(trimmed)}
-                className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-                style={{ color: 'var(--text-primary)' }}
-              >
-                <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as group</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  No directory matches — added as-is.
-                </span>
-              </button>
-            )}
-            {!searching &&
-              results.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => add(g.id, g.displayName)}
-                  className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-                  style={{ color: 'var(--text-primary)' }}
-                >
-                  <span className="font-medium truncate">{g.displayName}</span>
-                </button>
-              ))}
-          </div>
-        )}
+            <Plus size={10} />
+            {s}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -378,16 +373,36 @@ export function PromotionSettings() {
   const [polLoading, setPolLoading] = useState(true);
   const [polError, setPolError] = useState<string | null>(null);
   const [polSaved, setPolSaved] = useState(false);
+  // How many pending promotions the last save re-gated (null until a save reports it).
+  const [reapplied, setReapplied] = useState<number | null>(null);
 
-  // ── Form state (inline add/edit) ──
+  // ── Form state (add/edit dialog) ──
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<UpsertPromotionPolicyPayload>(emptyForm);
   const [formSaving, setFormSaving] = useState(false);
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
+  // A failed save has to report inside the dialog: the list's own error line sits behind the
+  // overlay, where the person who just pressed Save will never see it.
+  const [formError, setFormError] = useState<string | null>(null);
 
   // ── Delete confirm ──
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  // ── Scope-field suggestions ──
+  // Values the scope combo boxes offer. Products come from the deployment overview (anything that
+  // has ever reported a deploy); services from the selected product's state matrix. Both stay free
+  // text — a policy is often created before its product's first deploy or build.
+  const [knownProducts, setKnownProducts] = useState<string[]>([]);
+  // Keyed by the product they were fetched for, so a mid-edit product change renders no stale
+  // suggestions while the refetch is in flight (and an empty product renders none at all).
+  const [knownServices, setKnownServices] = useState<{ product: string; services: string[] }>({
+    product: '',
+    services: [],
+  });
+  const environments = useSettingsStore((s) => s.environments);
+  const activeEnvironments = useSettingsStore((s) => s.activeEnvironments);
+  const getOrderedEnvironments = useSettingsStore((s) => s.getOrderedEnvironments);
 
   // ── Load data ──
   useEffect(() => {
@@ -399,13 +414,130 @@ export function PromotionSettings() {
       .finally(() => setPolLoading(false));
   }, [isAdmin]);
 
+  useEffect(() => {
+    if (!isAdmin || !showForm) return;
+    let cancelled = false;
+    api
+      .getDeploymentProducts()
+      .then((products) => {
+        if (!cancelled) setKnownProducts(products.map((p) => p.product));
+      })
+      .catch(() => {
+        // Suggestions only — the field still takes free text.
+        if (!cancelled) setKnownProducts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, showForm]);
+
+  const formProduct = form.product.trim();
+  useEffect(() => {
+    if (!isAdmin || !showForm || !formProduct) return;
+    let cancelled = false;
+    // Debounced: the product field is typeable, and each keystroke would otherwise hit the state
+    // endpoint for a product that doesn't exist yet.
+    const timer = setTimeout(() => {
+      api
+        .getDeploymentStateSummary({ product: formProduct })
+        .then((rows) => {
+          if (cancelled) return;
+          setKnownServices({
+            product: formProduct,
+            services: Array.from(new Set(rows.map((r) => r.service))).sort(),
+          });
+        })
+        .catch(() => {
+          if (!cancelled) setKnownServices({ product: formProduct, services: [] });
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isAdmin, showForm, formProduct]);
+
+  // ── Table order ──
+  // Rank an environment on the pipeline order an admin configured in Settings → Environments
+  // (unconfigured keys fall back to the name-based stage order), with the synthetic `build` source
+  // ahead of every real environment: a `build → dev` edge is where the pipeline starts, and ranking
+  // it by name would drop it somewhere in the middle.
+  const envRank = useMemo(() => {
+    const isBuild = (key: string) => key.trim().toLowerCase() === BUILD_SOURCE_ENV;
+    // Configured environments seed the order too, so the ranking is the full pipeline rather than
+    // whichever subset of it happens to have a policy.
+    const keys = Array.from(
+      new Set([
+        ...environments.map((e) => e.key),
+        ...policies.flatMap((p) => [p.sourceEnv, p.targetEnv]),
+      ]),
+    ).filter((k) => !isBuild(k));
+    const order = new Map(getOrderedEnvironments(keys).map((k, i) => [k, i + 1]));
+    return (key: string) => (isBuild(key) ? 0 : (order.get(key) ?? order.size + 1));
+  }, [environments, policies, getOrderedEnvironments]);
+
+  // Product → service → edge. The list is read as "everything that governs this product", so the
+  // product blocks come first and the edges inside one run in pipeline order — the same order the
+  // versions themselves travel in.
+  const sortedPolicies = useMemo(
+    () =>
+      [...policies].sort(
+        (a, b) =>
+          a.product.localeCompare(b.product) ||
+          // The product default (no service) heads its product's block: it's the rule every
+          // service below it falls back to.
+          Number(Boolean(a.service)) - Number(Boolean(b.service)) ||
+          (a.service ?? '').localeCompare(b.service ?? '') ||
+          envRank(a.sourceEnv) - envRank(b.sourceEnv) ||
+          envRank(a.targetEnv) - envRank(b.targetEnv) ||
+          // Two environments the settings rank equally (both unconfigured, same stage) still need a
+          // stable order, or the rows shuffle between renders.
+          a.sourceEnv.localeCompare(b.sourceEnv) ||
+          a.targetEnv.localeCompare(b.targetEnv),
+      ),
+    [policies, envRank],
+  );
+
   if (!isAdmin) return null;
+
+  // ── Combo-box option lists ──
+  // Union with values already used by saved policies, so anything configured before (or outside)
+  // the deploy history still shows up as a pick.
+  const productOptions: ComboOption[] = Array.from(
+    new Set([...knownProducts, ...policies.map((p) => p.product)]),
+  )
+    .sort()
+    .map((p) => ({ value: p, hint: knownProducts.includes(p) ? 'reports deployments' : 'used by an existing policy' }));
+
+  const serviceOptions: ComboOption[] =
+    knownServices.product === formProduct
+      ? knownServices.services.map((s) => ({ value: s }))
+      : [];
+
+  // Retired environments are not offered for a new edge — nothing deploys there any more. They
+  // still rank the table above, so an old policy on one keeps its place in the pipeline.
+  const envOptions: ComboOption[] = activeEnvironments.map((e) => ({
+    value: e.key,
+    hint: e.displayName !== e.key ? e.displayName : undefined,
+  }));
+  // "build" first on the source side: it's the option people won't guess — the synthetic source
+  // for deploying registered builds (main auto-deploys, feature-branch deploys on demand).
+  const sourceEnvOptions: ComboOption[] = [
+    {
+      value: BUILD_SOURCE_ENV,
+      hint: 'the build registry — promote registered builds (no source deploys needed)',
+    },
+    ...envOptions.filter((o) => o.value !== BUILD_SOURCE_ENV),
+  ];
+
+  const isBuildEdge = form.sourceEnv.trim().toLowerCase() === BUILD_SOURCE_ENV;
 
   // ── Policy handlers ──
 
   const openAddForm = () => {
     setForm(emptyForm);
     setStepErrors({});
+    setFormError(null);
     setEditingId(null);
     setShowForm(true);
   };
@@ -426,13 +558,20 @@ export function PromotionSettings() {
           minApprovers: r.minApprovers,
         })),
       })),
-      timeoutHours: p.timeoutHours,
+      tracksWorkItems: p.tracksWorkItems ?? true,
+      requiredWorkItemRoles: [...(p.requiredWorkItemRoles ?? [])],
       escalationGroup: p.escalationGroup,
       requireAllWorkItemsApproved: p.requireAllWorkItemsApproved ?? false,
+      requireAllWorkItemInstancesApproved: p.requireAllWorkItemInstancesApproved ?? false,
       autoApproveOnAllWorkItemsApproved: p.autoApproveOnAllWorkItemsApproved ?? false,
       autoApproveWhenNoWorkItems: p.autoApproveWhenNoWorkItems ?? false,
+      sourceRequiresDeploy: p.sourceRequiresDeploy ?? true,
+      deploysOnApproval: p.deploysOnApproval ?? true,
+      autoCreateFromBranches: [...(p.autoCreateFromBranches ?? [])],
+      approvedWebhookDelaySeconds: p.approvedWebhookDelaySeconds ?? null,
     });
     setStepErrors({});
+    setFormError(null);
     setEditingId(p.id);
     setShowForm(true);
   };
@@ -442,6 +581,7 @@ export function PromotionSettings() {
     setEditingId(null);
     setForm(emptyForm);
     setStepErrors({});
+    setFormError(null);
   };
 
   const handleSavePolicy = async () => {
@@ -452,6 +592,7 @@ export function PromotionSettings() {
     }
     setStepErrors({});
     setFormSaving(true);
+    setFormError(null);
     setPolError(null);
     setPolSaved(false);
     try {
@@ -463,9 +604,12 @@ export function PromotionSettings() {
       }
       cancelForm();
       setPolSaved(true);
-      setTimeout(() => setPolSaved(false), 2000);
+      // The save re-gated any pending promotions on this edge; say how many so the operator knows
+      // the change reached in-flight work and isn't only forward-looking.
+      setReapplied(result.reappliedCandidates ?? 0);
+      setTimeout(() => setPolSaved(false), 4000);
     } catch (e) {
-      setPolError(e instanceof Error ? e.message : 'Failed to save policy');
+      setFormError(e instanceof Error ? e.message : 'Failed to save policy');
     } finally {
       setFormSaving(false);
     }
@@ -491,6 +635,22 @@ export function PromotionSettings() {
     value: UpsertPromotionPolicyPayload[K],
   ) => {
     setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // Picking the synthetic "build" source also unchecks "require a source deploy": nothing is ever
+  // deployed *to* the build registry, so leaving it on would make every promotion on the edge fail.
+  // One-shot on the transition, not enforced — an admin who re-checks it keeps their choice.
+  const setSourceEnv = (value: string) => {
+    setForm((prev) => {
+      const becameBuild =
+        value.trim().toLowerCase() === BUILD_SOURCE_ENV &&
+        prev.sourceEnv.trim().toLowerCase() !== BUILD_SOURCE_ENV;
+      return {
+        ...prev,
+        sourceEnv: value,
+        sourceRequiresDeploy: becameBuild ? false : prev.sourceRequiresDeploy,
+      };
+    });
   };
 
   // ── Step / requirement mutators ──
@@ -578,36 +738,93 @@ export function PromotionSettings() {
                       <th className="pb-2 pr-3">Service</th>
                       <th className="pb-2 pr-3">Edge</th>
                       <th className="pb-2 pr-3">Approval Steps</th>
+                      <th className="pb-2 pr-3">Required Roles</th>
                       <th className="pb-2">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {policies.map((p) => (
+                    {sortedPolicies.map((p, i) => {
+                      // Sorting groups a product's policies together, so only the first row of each
+                      // block repeats the name — the rest would be the same word four times down a
+                      // column, which is what makes a grouped table hard to scan rather than easy.
+                      const startsProduct = i === 0 || sortedPolicies[i - 1].product !== p.product;
+                      return (
                       <tr
                         key={p.id}
                         className="border-t"
-                        style={{ borderColor: 'var(--border-color)' }}
+                        style={{
+                          borderColor: 'var(--border-color)',
+                          // A thicker rule where a new product starts, so the blocks are visible
+                          // before the (dimmed) repeated names are read.
+                          borderTopWidth: startsProduct && i > 0 ? 2 : 1,
+                        }}
                       >
-                        <td className="py-2 pr-3">{p.product}</td>
                         <td
-                          className="py-2 pr-3"
-                          style={{ color: p.service ? undefined : 'var(--text-muted)' }}
+                          className="py-2 pr-3 font-medium"
+                          // Repeats stay readable but recede, so a product's policies read as one
+                          // block without the name shouting four times down the column.
+                          style={{ opacity: startsProduct ? 1 : 0.35 }}
                         >
-                          {p.service || '—'}
+                          {p.product}
                         </td>
-                        <td className="py-2 pr-3">{p.sourceEnv} → {p.targetEnv}</td>
-                        <td
-                          className="py-2 pr-3"
-                          style={{
-                            color: p.steps?.length ? undefined : 'var(--text-muted)',
-                          }}
-                        >
-                          {summarizeSteps(p.steps)}
+                        <td className="py-2 pr-3">
+                          {p.service ? (
+                            p.service
+                          ) : (
+                            <Chip
+                              color="var(--text-muted)"
+                              title="Covers every service of this product that has no policy of its own"
+                            >
+                              product default
+                            </Chip>
+                          )}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <PolicyEdge sourceEnv={p.sourceEnv} targetEnv={p.targetEnv} />
+                            {/* Only the exception is chipped. "Deploys on approval" is the default and
+                               the majority, and a chip on nearly every row says nothing. */}
+                            {p.deploysOnApproval === false && (
+                              <Chip
+                                color="var(--info)"
+                                title="An approval here does not deploy: the run it starts stops at an approval outside InfraPortal"
+                              >
+                                external approval
+                              </Chip>
+                            )}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3">
+                          <StepsSummary steps={p.steps} />
+                        </td>
+                        {/* "No work items" wins over the role list: it's the reason the roles don't
+                           apply, and it's the row's most important property when set. */}
+                        <td className="py-2 pr-3">
+                          {p.tracksWorkItems === false ? (
+                            <Chip
+                              color="var(--text-muted)"
+                              title="This edge creates no work items, so required roles don't apply"
+                            >
+                              no work items
+                            </Chip>
+                          ) : p.requiredWorkItemRoles?.length ? (
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              {p.requiredWorkItemRoles.map((r) => (
+                                <Chip key={r} color="var(--warning)" title={r}>
+                                  {roleDisplay({ role: r })}
+                                </Chip>
+                              ))}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
                         </td>
                         <td className="py-2">
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => openEditForm(p)}
+                              aria-label={`Edit the ${describeEdge(p.sourceEnv, p.targetEnv)} policy for ${p.product}`}
+                              title="Edit policy"
                               className="p-1 rounded-lg transition-colors hover:opacity-80"
                               style={{ color: 'var(--text-muted)' }}
                             >
@@ -615,12 +832,16 @@ export function PromotionSettings() {
                             </button>
                             <button
                               onClick={() => handleDeletePolicy(p.id)}
-                              className="p-1 rounded-lg transition-colors hover:opacity-80"
+                              aria-label={`Delete the ${describeEdge(p.sourceEnv, p.targetEnv)} policy for ${p.product}`}
+                              title="Delete policy"
+                              className="inline-flex items-center p-1 rounded-lg transition-colors hover:opacity-80"
                               style={{
                                 color:
                                   deleteConfirm === p.id
-                                    ? 'var(--danger, #dc2626)'
+                                    ? 'var(--danger)'
                                     : 'var(--text-muted)',
+                                backgroundColor:
+                                  deleteConfirm === p.id ? 'var(--danger-bg)' : undefined,
                               }}
                             >
                               <Trash2 size={14} />
@@ -631,7 +852,8 @@ export function PromotionSettings() {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -644,44 +866,78 @@ export function PromotionSettings() {
             )}
 
             {/* Add Policy button */}
-            {!showForm && (
-              <button
-                onClick={openAddForm}
-                className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-                style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
-              >
-                <Plus size={14} />
-                Add Policy
-              </button>
-            )}
+            <button
+              onClick={openAddForm}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }}
+            >
+              <Plus size={14} />
+              Add Policy
+            </button>
 
-            {/* Inline form */}
+            {/* Editor — a modal rather than a panel grown out of the button. The form is long
+                enough (four scope fields, a step tree, three option blocks) that inline it pushed
+                the table it belongs to off-screen, and left no answer to "which row am I editing?".
+                Over the page it keeps one job on screen at a time and Escape/backdrop cancel it. */}
             {showForm && (
-              <div
-                className="rounded-lg border p-4 space-y-3"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-primary)',
-                }}
+              <Dialog
+                onClose={formSaving ? () => {} : cancelForm}
+                ariaLabel={editingId ? 'Edit promotion policy' : 'New promotion policy'}
+                width={760}
               >
-                <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {editingId ? 'Edit Policy' : 'New Policy'}
-                </h4>
+              <div className="p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <div>
+                    <h4
+                      className="text-[14px] font-semibold"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      {editingId ? 'Edit Policy' : 'New Policy'}
+                    </h4>
+                    {/* The edge is the policy's identity — on an edit it says which of a product's
+                        several policies this dialog is actually changing. */}
+                    {form.sourceEnv.trim() && form.targetEnv.trim() && (
+                      <div className="mt-1">
+                        <PolicyEdge sourceEnv={form.sourceEnv} targetEnv={form.targetEnv} />
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={cancelForm}
+                    disabled={formSaving}
+                    aria-label="Close"
+                    className="ml-auto p-1 rounded transition-opacity hover:opacity-80 disabled:opacity-40"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                  A policy gates one promotion edge: who may move <em>this product</em> (optionally
+                  one service) from <em>source</em> to <em>target</em>. Names must match what
+                  pipelines report — every field suggests known values, but new ones can be typed
+                  before their first deploy or build arrives.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {/* Product */}
                   <div className="space-y-1">
                     <label className={labelClass} style={labelStyle}>
                       Product *
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.product}
-                      onChange={(e) => setField('product', e.target.value)}
+                      onChange={(v) => setField('product', v)}
+                      options={productOptions}
                       placeholder="e.g. my-product"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      ariaLabel="Product"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Exactly as pipelines report it in deploy events and build registrations —
+                      the suggestions are products the platform has already seen.
+                    </p>
                   </div>
 
                   {/* Service */}
@@ -689,14 +945,17 @@ export function PromotionSettings() {
                     <label className={labelClass} style={labelStyle}>
                       Service
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.service ?? ''}
-                      onChange={(e) => setField('service', e.target.value || null)}
+                      onChange={(v) => setField('service', v || null)}
+                      options={serviceOptions}
                       placeholder="empty = product-default"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      ariaLabel="Service"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Leave empty to make this the product default, covering every service that has
+                      no policy of its own. A service-specific policy always wins over the default.
+                    </p>
                   </div>
 
                   {/* Source Env */}
@@ -704,14 +963,19 @@ export function PromotionSettings() {
                     <label className={labelClass} style={labelStyle}>
                       Source Env *
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.sourceEnv}
-                      onChange={(e) => setField('sourceEnv', e.target.value)}
-                      placeholder="e.g. staging"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      onChange={setSourceEnv}
+                      options={sourceEnvOptions}
+                      placeholder="e.g. staging — or build"
+                      ariaLabel="Source environment"
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Where versions are promoted <em>from</em>. Pick{' '}
+                      <code>build</code> to promote registered builds directly — that enables
+                      &ldquo;Deploy a build&rdquo; on the service page and the branch-based
+                      auto-create below.
+                    </p>
                   </div>
 
                   {/* Target Env */}
@@ -719,29 +983,17 @@ export function PromotionSettings() {
                     <label className={labelClass} style={labelStyle}>
                       Target Env *
                     </label>
-                    <input
-                      type="text"
+                    <ComboBox
                       value={form.targetEnv}
-                      onChange={(e) => setField('targetEnv', e.target.value)}
+                      onChange={(v) => setField('targetEnv', v)}
+                      options={envOptions}
                       placeholder="e.g. production"
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
+                      ariaLabel="Target environment"
                     />
-                  </div>
-
-                  {/* Timeout Hours */}
-                  <div className="space-y-1">
-                    <label className={labelClass} style={labelStyle}>
-                      Timeout Hours
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={form.timeoutHours}
-                      onChange={(e) => setField('timeoutHours', Number(e.target.value))}
-                      className={`${inputClass} w-full`}
-                      style={inputStyle}
-                    />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      The environment this policy guards — promotions landing here wait for the
+                      approvals configured below. Suggestions come from Settings → Environments.
+                    </p>
                   </div>
 
                   {/* Escalation Group */}
@@ -757,8 +1009,79 @@ export function PromotionSettings() {
                       className={`${inputClass} w-full`}
                       style={inputStyle}
                     />
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Optional group to notify when a pending promotion sits unapproved too long.
+                    </p>
                   </div>
                 </div>
+
+                {/* ── Build promotions ── only meaningful on a build → * edge, so only shown there.
+                    (Hidden rather than dimmed, unlike the work-item blocks: on a non-build edge these
+                    settings aren't dormant, they're meaningless — the hook never reads them.) */}
+                {isBuildEdge && (
+                  <div
+                    className="rounded-lg border p-3 space-y-2"
+                    style={{
+                      borderColor: 'var(--border-color)',
+                      backgroundColor: 'var(--bg-secondary)',
+                    }}
+                  >
+                    <p
+                      className="text-[11px] font-semibold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      Build promotions
+                    </p>
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      This edge promotes straight from the build registry. Builds from the branch
+                      patterns below open a promotion here <em>automatically</em> the moment they
+                      register (with an empty approval list that means auto-deploy — the main → dev
+                      pattern). Builds from any other branch wait until somebody picks them via
+                      &ldquo;Deploy a build&rdquo;.
+                    </p>
+
+                    <div className="space-y-1">
+                      <label className={labelClass} style={labelStyle}>
+                        Auto-create from branches
+                      </label>
+                      <BranchPatternsEditor
+                        values={form.autoCreateFromBranches}
+                        onChange={(next) => setField('autoCreateFromBranches', next)}
+                      />
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        Full git refs; <code>*</code> matches anything (e.g.{' '}
+                        <code>refs/heads/release/*</code>). Leave empty while rolling out — builds
+                        then only deploy when explicitly picked.
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className={labelClass} style={labelStyle}>
+                        Approved-webhook delay (seconds)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        value={form.approvedWebhookDelaySeconds ?? ''}
+                        onChange={(e) =>
+                          setField(
+                            'approvedWebhookDelaySeconds',
+                            e.target.value === '' ? null : Math.max(0, Number(e.target.value)),
+                          )
+                        }
+                        placeholder="default (10)"
+                        className={`${inputClass} w-32`}
+                        style={inputStyle}
+                      />
+                      <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        How long an approval can be undone before the deploy webhook fires. Set{' '}
+                        <code>0</code> on auto-approved edges — an undo window on an automatic
+                        deploy is pure latency.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* ── Approval steps ── */}
                 <div
@@ -865,7 +1188,7 @@ export function PromotionSettings() {
                                 </button>
                               </div>
 
-                              <div className="grid grid-cols-2 gap-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div className="space-y-1">
                                   <label className={labelClass} style={labelStyle}>
                                     AD Groups
@@ -932,7 +1255,10 @@ export function PromotionSettings() {
                   ))}
                 </div>
 
-                {/* ── Work-item-gate options ── */}
+                {/* ── What the approval releases ──
+                    Not a gate setting: it changes nothing about who approves or when the gate opens,
+                    only what InfraPortal tells the approver is about to happen. Kept next to the
+                    approval steps because that is the question it answers about them. */}
                 <div
                   className="rounded-lg border p-3 space-y-2"
                   style={{
@@ -944,23 +1270,152 @@ export function PromotionSettings() {
                     className="text-[11px] font-semibold uppercase tracking-wider"
                     style={{ color: 'var(--text-muted)' }}
                   >
+                    After approval
+                  </p>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.deploysOnApproval}
+                      onChange={(e) => setField('deploysOnApproval', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      An approval here deploys — this is the last gate
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Leave checked for edges the release automation deploys straight off the
+                        approval (the mpt-release path) — the promotion page then warns approvers that
+                        pressing Approve ships it. Uncheck for edges released by a pipeline that stops
+                        at an approval of its own, outside InfraPortal: the SDP pipeline (marketplace
+                        repo) queues a run whose staging and prod stages each wait on an Azure DevOps
+                        environment check, so the approval here is necessary but not sufficient.
+                        Display only — nothing about who approves, or when the gate opens, changes.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
+                {/* ── Work-item tracking ──
+                    The switch everything else in this section hangs off: an edge that creates no work
+                    items has nothing to require people on and nothing to gate. Its own block, first,
+                    so the two blocks below read as consequences of it. */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Work items
+                  </p>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.tracksWorkItems}
+                      onChange={(e) => setField('tracksWorkItems', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      Create work items for promotions on this edge
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Uncheck for edges whose target isn&rsquo;t ready for QA — a developer
+                        integration environment, a CI test ring (e.g. dev &rarr; test). No work items
+                        are created, so nothing reaches the work-items queue and nothing needs a
+                        sign-off. The promotion still records which work items it carries.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
+                {/* ── Required work-item roles ──
+                    Who has to be named on each work item. Its own block, above the gate options,
+                    because it isn't a gate: nothing here blocks an approval — it marks work items as
+                    incomplete and asks somebody to fill the role. */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                    // Dimmed rather than hidden when work items are off: the settings are still stored
+                    // and come back the moment tracking is re-enabled, so hiding them would make a
+                    // saved configuration look lost.
+                    opacity: form.tracksWorkItems ? 1 : 0.55,
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Required work-item roles
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    {form.tracksWorkItems ? (
+                      <>
+                        Every work item promoted over this edge must have somebody in each role picked
+                        here. Items missing one are flagged as needing attention across the promotions
+                        list, the promotion page and the work-items queue, and show up under its
+                        &ldquo;Not assigned&rdquo; tab until they are signed off. This does not block
+                        approval.
+                      </>
+                    ) : (
+                      <>Not applicable — this edge creates no work items.</>
+                    )}
+                  </p>
+                  <RequiredRolesPicker
+                    values={form.requiredWorkItemRoles}
+                    onChange={(next) => setField('requiredWorkItemRoles', next)}
+                    disabled={!form.tracksWorkItems}
+                  />
+                </div>
+
+                {/* ── Work-item-gate options ── */}
+                <div
+                  className="rounded-lg border p-3 space-y-2"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundColor: 'var(--bg-secondary)',
+                    opacity: form.tracksWorkItems ? 1 : 0.55,
+                  }}
+                >
+                  <p
+                    className="text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
                     Work-item-gate options
                   </p>
+                  {!form.tracksWorkItems && (
+                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      The first three don&rsquo;t apply — this edge creates no work items.
+                    </p>
+                  )}
 
                   <label className="flex items-start gap-2.5 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={form.requireAllWorkItemsApproved}
                       onChange={(e) => setField('requireAllWorkItemsApproved', e.target.checked)}
+                      disabled={!form.tracksWorkItems}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      All work items must be approved before promotion can be approved
+                      All work items must be signed off before promotion can be approved
                       <span
                         className="block text-[11px] mt-0.5"
                         style={{ color: 'var(--text-muted)' }}
                       >
-                        Blocks the Approve button until every work item has a sign-off.
+                        Blocks the Approve button until every work item has a decision on it and none
+                        is blocked. An issue counts as signed off — only a block holds the promotion.
                       </span>
                     </span>
                   </label>
@@ -972,16 +1427,49 @@ export function PromotionSettings() {
                       onChange={(e) =>
                         setField('autoApproveOnAllWorkItemsApproved', e.target.checked)
                       }
+                      disabled={!form.tracksWorkItems}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-                      Auto-approve promotion when all work items are approved
+                      Auto-approve promotion when all work items are signed off
                       <span
                         className="block text-[11px] mt-0.5"
                         style={{ color: 'var(--text-muted)' }}
                       >
                         Promotion is automatically approved the moment the last work item gets its
-                        sign-off.
+                        decision, with nothing blocked — raising an issue on the last one approves it
+                        too.
+                      </span>
+                    </span>
+                  </label>
+
+                  {/* Qualifies the two flags above. A work item is per service, so those normally
+                      wait for this service's instance of each ticket; this makes them wait for the
+                      ticket as a whole. Inert without either of them, which the copy says. */}
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.requireAllWorkItemInstancesApproved}
+                      onChange={(e) =>
+                        setField('requireAllWorkItemInstancesApproved', e.target.checked)
+                      }
+                      disabled={
+                        !form.tracksWorkItems
+                        || (!form.requireAllWorkItemsApproved && !form.autoApproveOnAllWorkItemsApproved)
+                      }
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      A work item counts as signed off only when every service&rsquo;s instance is
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        The same ticket carried by several services is one work item per service. By
+                        default this promotion waits only for its own service&rsquo;s instance; with
+                        this on it waits for the ticket&rsquo;s overall status — decided on every
+                        service in the target environment, with no block anywhere. Only applies
+                        together with one of the two options above.
                       </span>
                     </span>
                   </label>
@@ -991,6 +1479,7 @@ export function PromotionSettings() {
                       type="checkbox"
                       checked={form.autoApproveWhenNoWorkItems}
                       onChange={(e) => setField('autoApproveWhenNoWorkItems', e.target.checked)}
+                      disabled={!form.tracksWorkItems}
                       className="mt-0.5 rounded"
                     />
                     <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
@@ -1004,7 +1493,37 @@ export function PromotionSettings() {
                       </span>
                     </span>
                   </label>
+
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.sourceRequiresDeploy}
+                      onChange={(e) => setField('sourceRequiresDeploy', e.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
+                      Require a succeeded deploy in the source environment
+                      <span
+                        className="block text-[11px] mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Uncheck for edges whose source never receives deployments — the{' '}
+                        <code>build</code> registry (unchecked automatically when you pick it) or a
+                        CI landing zone / release track. Also disables the source-drift check for
+                        this edge.
+                      </span>
+                    </span>
+                  </label>
                 </div>
+
+                {formError && (
+                  <div
+                    className="text-[13px] rounded-lg px-3 py-2"
+                    style={{ color: 'var(--danger)', backgroundColor: 'var(--danger-bg)' }}
+                  >
+                    {formError}
+                  </div>
+                )}
 
                 {/* Form actions */}
                 <div className="flex items-center gap-2 pt-1">
@@ -1025,7 +1544,14 @@ export function PromotionSettings() {
                     Cancel
                   </button>
                 </div>
+
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  Saving re-applies these settings to promotions that are still pending on this edge,
+                  not just future ones. Promotions that are already approved or deploying keep the
+                  rules they were approved under.
+                </p>
               </div>
+              </Dialog>
             )}
 
             {polSaved && (
@@ -1034,6 +1560,12 @@ export function PromotionSettings() {
                 style={{ color: 'var(--success)' }}
               >
                 <Check size={14} /> Saved
+                {reapplied ? (
+                  <>
+                    {' — re-applied to '}
+                    {reapplied} pending promotion{reapplied === 1 ? '' : 's'}
+                  </>
+                ) : null}
               </span>
             )}
 

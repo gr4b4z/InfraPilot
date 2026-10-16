@@ -1,0 +1,6 @@
+# Files the container image reads, always checked out with LF. On Windows Git converts text files to
+# CRLF by default (core.autocrlf=true), and `docker build .` copies them as they are: /start.sh then
+# starts "#!/bin/bash\r" and the container never starts ("exec /start.sh: no such file or directory").
+*.sh        text eol=lf
+*.conf      text eol=lf
+Dockerfile  text eol=lf

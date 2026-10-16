@@ -1,13 +1,20 @@
+using System.Buffers.Text;
+using System.Globalization;
+using System.Linq.Expressions;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Users;
+using Platform.Api.Features.Settings;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
+using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.Features.Promotions;
 
@@ -15,15 +22,26 @@ namespace Platform.Api.Features.Promotions;
 /// Records ticket-level (work-item) approvals. Persistent state only —
 /// the gate evaluator that auto-promotes candidates when all tickets are
 /// signed lives in PR3. Approvals carry across superseded builds because
-/// they key on (workItemKey, product, targetEnv), not on the candidate.
+/// they key on (workItemKey, product, service, targetEnv), not on the candidate.
 ///
-/// <para>Authority: a user can decide on a ticket if a Pending PromotionCandidate
-/// in the same (product, targetEnv) carries the ticket and the user
-/// satisfies that candidate's policy snapshot — i.e. they're in the
-/// approver group and not on the excluded role for the source event.
-/// One signoff per ticket per (product, env, approver) — enforced by
-/// unique index plus an in-app duplicate check that returns a friendly
-/// 400 instead of a DB exception.</para>
+/// <para><b>The service is part of a work item's identity.</b> One Jira ticket carried by three
+/// services of a product is three work items — <c>mpt-helpdesk/MPT-1</c>, <c>mpt-platform/MPT-1</c>,
+/// <c>mpt-currency/MPT-1</c> — each signed off, discussed and assigned separately, because each is a
+/// different change to a different deployable. Promotions of the <i>same</i> service (a newer version,
+/// or a second source edge into the same target) still share one work item, so a sign-off survives a
+/// supersede exactly as before.</para>
+///
+/// <para>Authority: work-item sign-off is the QA role's jurisdiction (Admin included), on any work
+/// item the platform has seen for that (product, service, targetEnv) — including one whose promotion
+/// has died, since an orphaned item still needs resolving. The only refusal is an auto-approve
+/// policy, where there is no human gate to sign against. One signoff per ticket per
+/// (product, service, env, approver) — enforced by unique index plus an in-app duplicate check that
+/// returns a friendly 400 instead of a DB exception.</para>
+///
+/// <para>No decision cascades to the promotion. Approve and Issue both clear the item and feed the
+/// gate (and so can auto-promote); Block leaves it unresolved, which stalls the gate without
+/// terminating the candidate. All three are reversible. Vetoing a promotion is a candidate-level
+/// action (<see cref="PromotionService.RejectAsync"/>), never something done to a single ticket.</para>
 /// </summary>
 public class WorkItemApprovalService
 {
@@ -33,8 +51,11 @@ public class WorkItemApprovalService
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhookDispatcher;
     private readonly PromotionService _promotion;
-    private readonly PromotionAssigneeRoleSettings _assigneeRoles;
+    private readonly UserPreferencesService _userPrefs;
     private readonly ILogger<WorkItemApprovalService> _logger;
+    private readonly IPlatformEventPublisher _events;
+    private readonly ParticipantRoleCatalog _roles;
+    private readonly EnvironmentAliasResolver _environments;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -42,8 +63,15 @@ public class WorkItemApprovalService
         PropertyNameCaseInsensitive = true,
     };
 
-    // PromotionService is injected so ticket signoffs can drive candidate state transitions
-    // (auto-promote on approve, veto-cascade on reject). The dependency is one-way:
+    /// <summary>
+    /// How far back the orphan scan reaches when rebuilding the queue. Bounds the "promotion died,
+    /// work item didn't" pass so an old graveyard of superseded candidates can't turn one inbox
+    /// read into a full-table scan.
+    /// </summary>
+    private const int OrphanScanLimit = 500;
+
+    // PromotionService is injected so a ticket approval can drive the candidate side
+    // (re-evaluate the gate, which may auto-promote). The dependency is one-way:
     // PromotionService does NOT pull WorkItemApprovalService, so DI resolution is unambiguous.
     public WorkItemApprovalService(
         PlatformDbContext db,
@@ -52,8 +80,11 @@ public class WorkItemApprovalService
         IAuditLogger audit,
         IWebhookDispatcher webhookDispatcher,
         PromotionService promotion,
-        PromotionAssigneeRoleSettings assigneeRoles,
-        ILogger<WorkItemApprovalService> logger)
+        UserPreferencesService userPrefs,
+        ILogger<WorkItemApprovalService> logger,
+        IPlatformEventPublisher events,
+        ParticipantRoleCatalog roles,
+        EnvironmentAliasResolver environments)
     {
         _db = db;
         _auth = auth;
@@ -61,8 +92,11 @@ public class WorkItemApprovalService
         _audit = audit;
         _webhookDispatcher = webhookDispatcher;
         _promotion = promotion;
-        _assigneeRoles = assigneeRoles;
+        _userPrefs = userPrefs;
         _logger = logger;
+        _events = events;
+        _roles = roles;
+        _environments = environments;
     }
 
     // ---------------------------------------------------------------------
@@ -70,131 +104,244 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     public Task<WorkItemApproval> ApproveAsync(
-        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Approved, ct);
-
-    public Task<WorkItemApproval> RejectAsync(
-        string workItemKey, string product, string targetEnv, string? comment, CancellationToken ct = default)
-        => RecordAsync(workItemKey, product, targetEnv, comment, PromotionDecision.Rejected, ct);
+        string workItemKey, string product, string service, string targetEnv, string? comment,
+        CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Approved, ct);
 
     /// <summary>
-    /// Records a ticket-level decision after authority + duplicate checks. Does not transition
-    /// any candidate — that's PR3's gate evaluator.
+    /// Flags something wrong with the work item without holding it back: the gate counts the item as
+    /// cleared, so this can be the decision that satisfies it. The same user can switch to Approved
+    /// or Blocked later. <see cref="BlockAsync"/> is the decision that actually stops a release.
+    /// </summary>
+    public Task<WorkItemApproval> RaiseIssueAsync(
+        string workItemKey, string product, string service, string targetEnv, string? comment,
+        CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Issue, ct);
+
+    /// <summary>
+    /// Holds the work item back — the only decision that stalls the promotion gate. Still no cascade
+    /// to the candidate, and reversible: this is <i>not</i> a veto, which is
+    /// <see cref="PromotionService.RejectAsync"/> and terminates a candidate.
+    /// </summary>
+    public Task<WorkItemApproval> BlockAsync(
+        string workItemKey, string product, string service, string targetEnv, string? comment,
+        CancellationToken ct = default)
+        => RecordAsync(workItemKey, product, service, targetEnv, comment, WorkItemDecision.Blocked, ct);
+
+    /// <summary>
+    /// Records a ticket-level decision after authority checks, then drives the candidate side:
+    /// an approval or an issue re-evaluates the gate (which may auto-promote, since both clear the
+    /// item), a Block does nothing to the candidate — it just leaves the item unresolved, which
+    /// stalls the gate.
     ///
-    /// <para>Throws <see cref="InvalidOperationException"/> for "no pending candidate carries
-    /// this ticket", "already decided", or "auto-approve policy" so endpoints map them to 400.
-    /// Throws <see cref="UnauthorizedAccessException"/> for excluded role / not in approver
-    /// group so endpoints map them to 403.</para>
+    /// <para>A user who already decided may change their mind: the existing row is updated in
+    /// place (the unique index permits one row per approver) and <c>UpdatedAt</c> is stamped.
+    /// Re-recording the <i>same</i> decision is a no-op error. Every decision also appends a
+    /// decision entry to the work item's comment thread, so the discussion carries the full
+    /// sequence of sign-offs inline.</para>
+    ///
+    /// <para>A missing Pending candidate is <i>not</i> a blocker: an orphaned work item (its
+    /// promotion superseded or rejected) still needs resolving, and refusing the sign-off would
+    /// strand it in the queue forever. The item does have to be one the platform has seen for that
+    /// (product, service, targetEnv), so an arbitrary key can't seed rows.</para>
+    ///
+    /// <para>Throws <see cref="InvalidOperationException"/> for "unknown work item", "already
+    /// recorded that decision", or "auto-approve policy" so endpoints map them to 400. Throws
+    /// <see cref="UnauthorizedAccessException"/> for the missing QA/Admin role so endpoints map it
+    /// to 403.</para>
     /// </summary>
     private async Task<WorkItemApproval> RecordAsync(
-        string workItemKey, string product, string targetEnv,
-        string? comment, PromotionDecision decision, CancellationToken ct)
+        string workItemKey, string product, string service, string targetEnv,
+        string? comment, WorkItemDecision decision, CancellationToken ct)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
         if (string.IsNullOrEmpty(key))
             throw new InvalidOperationException("workItemKey is required");
         if (string.IsNullOrEmpty(prod))
             throw new InvalidOperationException("product is required");
+        if (string.IsNullOrEmpty(svc))
+            throw new InvalidOperationException("service is required");
         if (string.IsNullOrEmpty(env))
             throw new InvalidOperationException("targetEnv is required");
 
-        var candidate = await FindPendingCandidateForTicketAsync(key, prod, env, ct)
-            ?? throw new InvalidOperationException("No Pending promotion candidate references this ticket");
-
-        var snapshot = ReadSnapshot(candidate);
-
+        var candidate = await FindPendingCandidateForTicketAsync(key, prod, svc, env, ct);
+        if (candidate is null)
+        {
+            // Orphaned sign-off — no live promotion needs the item. Allowed, but only for items the
+            // platform actually knows about in this (product, service, env).
+            if (!await IsKnownWorkItemAsync(key, prod, svc, env, ct))
+                throw new InvalidOperationException(
+                    $"Work item '{key}' is not known for {prod}/{svc}/{env}");
+        }
         // Auto-approve has no human gate; a ticket signoff against it is meaningless.
-        if (snapshot.IsAutoApprove)
+        else if (ReadSnapshot(candidate).IsAutoApprove)
+        {
             throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
+        }
 
-        // Separation-of-duties (ExcludeRole) removed (D17): anyone authorized for any requirement on
-        // the promotion's rule tree may decide on its tickets.
-        if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
-            throw new UnauthorizedAccessException("You are not authorized to approve this promotion");
+        // Work-item sign-off is the QA role's jurisdiction (Admin included) — distinct from promotion
+        // approval, which is governed by the policy's approver requirements. Any QA/Admin may decide
+        // any candidate's tickets, regardless of whether they're an approver of the promotion itself.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
 
-        // Duplicate guard. The unique index enforces this at the DB; the in-app check turns the
-        // race-loser case into a clean 400 instead of a 500 with an obscure constraint message.
-        var alreadyDecided = await _db.WorkItemApprovals.AsNoTracking()
-            .AnyAsync(a =>
+        // The unique index holds one row per (ticket, product, service, env, approver). Load the
+        // caller's row (tracked) so a change of mind updates it rather than colliding with the
+        // constraint.
+        var existing = await _db.WorkItemApprovals
+            .FirstOrDefaultAsync(a =>
                 a.WorkItemKey == key &&
                 a.Product == prod &&
+                a.Service == svc &&
                 a.TargetEnv == env &&
                 a.ApproverEmail == _currentUser.Email, ct);
-        if (alreadyDecided)
-            throw new InvalidOperationException("You have already made a decision on this ticket");
+        if (existing is not null && existing.Decision == decision)
+            throw new InvalidOperationException(
+                $"You have already recorded '{decision}' on this work item");
 
-        var row = new WorkItemApproval
+        WorkItemApproval row;
+        if (existing is null)
+        {
+            row = new WorkItemApproval
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = prod,
+                Service = svc,
+                TargetEnv = env,
+                ApproverEmail = _currentUser.Email,
+                ApproverName = _currentUser.Name,
+                Decision = decision,
+                Comment = comment,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            _db.WorkItemApprovals.Add(row);
+        }
+        else
+        {
+            existing.Decision = decision;
+            existing.Comment = comment;
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+            row = existing;
+        }
+
+        // Mirror the decision into the comment thread. The decision trail already lists who decided
+        // what, but the thread is where the conversation lives — a sign-off that doesn't appear
+        // there reads as if nothing happened between two comments.
+        _db.WorkItemComments.Add(new WorkItemComment
         {
             Id = Guid.NewGuid(),
             WorkItemKey = key,
             Product = prod,
+            Service = svc,
             TargetEnv = env,
-            ApproverEmail = _currentUser.Email,
-            ApproverName = _currentUser.Name,
+            AuthorEmail = _currentUser.Email,
+            AuthorName = _currentUser.Name,
             Decision = decision,
-            Comment = comment,
+            Body = DescribeDecision(decision, comment),
             CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.WorkItemApprovals.Add(row);
+        });
+
         await _db.SaveChangesAsync(ct);
 
         // Legacy granular row-level audit kept for backward compatibility with existing callers
         // (dashboards, alerts, integration tests). The new ticket-level audit + webhook events
         // emitted below are the canonical events for downstream consumers.
-        var legacyAction = decision == PromotionDecision.Approved ? "work-item.approved" : "work-item.rejected";
+        //
+        // Note for anyone reading old rows: "work-item.blocked" used to mean what is now an issue,
+        // and today's block used to be "work-item.rejected". Rows written before the rename keep
+        // their original action names — the decision values in the tables were migrated, the audit
+        // history was not (rewriting an audit trail to say something it didn't say is worse than a
+        // documented discontinuity).
+        var legacyAction = decision switch
+        {
+            WorkItemDecision.Approved => "work-item.approved",
+            WorkItemDecision.Issue => "work-item.issue-raised",
+            _ => "work-item.blocked",
+        };
         await _audit.Log(
             "promotions", legacyAction,
             _currentUser.Id, _currentUser.Name, "user",
             "WorkItemApproval", row.Id, null,
-            new { workItemKey = key, product = prod, targetEnv = env, candidateId = candidate.Id, comment });
+            new { workItemKey = key, product = prod, service = svc, targetEnv = env, candidateId = candidate?.Id, comment });
 
-        // Ticket-level audit + webhook: independent of any candidate cascade. We emit even when
-        // there's no live candidate carrying the ticket — but in this path RecordAsync requires
-        // a Pending candidate, so candidateId is always non-null here. The orphan-signoff case
-        // (separate from RecordAsync) doesn't exist today; if it ever does, the helper accepts a
-        // null candidateId.
-        await EmitTicketEventsAsync(decision, key, prod, env, candidate.Id, comment, ct);
+        // Ticket-level audit + webhook: attached to the live candidate when there is one, and emitted
+        // with a null candidate id for an orphaned sign-off — the payload identifies the ticket by
+        // (workItemKey, product, service, targetEnv) either way.
+        await EmitTicketEventsAsync(decision, key, prod, svc, env, candidate?.Id, comment, ct);
 
         _logger.LogInformation(
-            "Work-item decision recorded: {Decision} on {Key} ({Product}/{Env}) by {Email}; candidate {CandidateId}",
-            decision, key, prod, env, _currentUser.Email, candidate.Id);
+            "Work-item decision recorded: {Decision} on {Key} ({Product}/{Service}/{Env}) by {Email}; candidate {CandidateId}",
+            decision, LogSanitizer.Clean(key), LogSanitizer.Clean(prod), LogSanitizer.Clean(svc),
+            LogSanitizer.Clean(env), LogSanitizer.Clean(_currentUser.Email), candidate?.Id);
 
-        // Drive the candidate side. Approve → re-evaluate the gate (may auto-promote when
-        // WorkItemsOnly / WorkItemsAndManual conditions are met). Reject → veto cascade: terminate
-        // the candidate directly with the rejecting user as the actor.
-        if (decision == PromotionDecision.Approved)
+        // Drive the candidate side. Approve or Issue → re-evaluate the gate (may auto-promote when
+        // WorkItemsOnly / WorkItemsAndManual conditions are met): both clear the item, so either can
+        // be the verdict that completes the bundle. Block → nothing at all: it does not cascade to
+        // the promotion, it simply leaves the item unresolved, which is enough to stall the gate
+        // until someone changes the decision or the next version resets it. (A block that displaces
+        // an earlier approval needs no re-evaluation either: re-evaluation only ever promotes.)
+        if (decision != WorkItemDecision.Blocked)
         {
-            await TryReevaluateCandidateAsync(candidate.Id, ct);
-        }
-        else
-        {
-            await CascadeRejectCandidateAsync(candidate, comment, ct);
+            // A ticket decision is shared across every candidate of this service carrying it
+            // (WorkItemApproval is keyed by key+product+service+targetEnv, not by candidate), so
+            // re-evaluate ALL pending candidates that reference this ticket — not just the one the
+            // row was attributed to — so every gate the sign-off satisfies auto-promotes immediately.
+            // Other services' candidates are included too: a policy gating on the ticket's overall
+            // status may have been waiting for exactly this instance. ReevaluateAsync is idempotent
+            // and no-ops for candidates that aren't Pending or whose gate isn't met.
+            var affected = await FindPendingCandidateIdsForTicketAsync(key, prod, env, ct);
+            foreach (var affectedId in affected)
+                await TryReevaluateCandidateAsync(affectedId, ct);
         }
 
         return row;
     }
 
     /// <summary>
-    /// Emits the ticket-level audit + webhook for an Approve / Reject. Independent of any
-    /// candidate cascade so the ticket signoff itself is always observable, even if the
-    /// candidate is no longer live (orphaned signoff path — RecordAsync rejects this today
-    /// but the shape is here for future use).
+    /// The comment-thread wording for a decision. The operator's own note is appended verbatim so
+    /// the thread reads as one narrative rather than pointing at the decision trail for the detail.
+    /// </summary>
+    private static string DescribeDecision(WorkItemDecision decision, string? comment)
+    {
+        var headline = decision switch
+        {
+            WorkItemDecision.Approved => "Approved this work item.",
+            WorkItemDecision.Issue => "Raised an issue on this work item.",
+            _ => "Blocked this work item.",
+        };
+        var note = (comment ?? "").Trim();
+        return note.Length == 0 ? headline : $"{headline}\n\n{note}";
+    }
+
+    /// <summary>
+    /// Emits the ticket-level audit + webhook for a decision. Independent of the candidate, so the
+    /// ticket signoff is always observable — including the orphaned path where no live candidate
+    /// carries the item and <paramref name="candidateId"/> is null.
     /// </summary>
     private async Task EmitTicketEventsAsync(
-        PromotionDecision decision,
-        string workItemKey, string product, string targetEnv,
+        WorkItemDecision decision,
+        string workItemKey, string product, string service, string targetEnv,
         Guid? candidateId, string? comment, CancellationToken ct)
     {
-        var action = decision == PromotionDecision.Approved
-            ? "promotion.ticket.approved"
-            : "promotion.ticket.rejected";
+        // Subscriber-visible contract. As with the audit actions above, the two non-approval names
+        // shifted meaning in the rename: a subscriber that was matching promotion.ticket.blocked now
+        // receives today's block (the stronger call) and needs promotion.ticket.issue-raised for what
+        // it used to get. Both still mean "not approved, promotion still pending".
+        var action = decision switch
+        {
+            WorkItemDecision.Approved => "promotion.ticket.approved",
+            WorkItemDecision.Issue => "promotion.ticket.issue-raised",
+            _ => "promotion.ticket.blocked",
+        };
 
         // No dedicated ticket entity exists; the audit row attaches to the candidate when one
         // is known so the UI can deep-link. When the cascade has no live candidate (future),
         // entityType remains "PromotionCandidate" with a null entity id — the payload still
-        // identifies the ticket via workItemKey + product + targetEnv.
+        // identifies the ticket via workItemKey + product + service + targetEnv.
         await _audit.Log(
             "promotions", action,
             _currentUser.Id, _currentUser.Name, "user",
@@ -203,6 +350,7 @@ public class WorkItemApprovalService
             {
                 workItemKey,
                 product,
+                service,
                 targetEnv,
                 candidateId,
                 approver = _currentUser.Email,
@@ -215,6 +363,7 @@ public class WorkItemApprovalService
             {
                 workItemKey,
                 product,
+                service,
                 targetEnv,
                 candidateId,
                 approver = _currentUser.Email,
@@ -226,8 +375,9 @@ public class WorkItemApprovalService
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
-                "Webhook dispatch '{EventType}' failed for ticket {Key} ({Product}/{Env})",
-                action, workItemKey, product, targetEnv);
+                "Webhook dispatch '{EventType}' failed for ticket {Key} ({Product}/{Service}/{Env})",
+                action, LogSanitizer.Clean(workItemKey), LogSanitizer.Clean(product),
+                LogSanitizer.Clean(service), LogSanitizer.Clean(targetEnv));
         }
     }
 
@@ -251,142 +401,81 @@ public class WorkItemApprovalService
         }
     }
 
-    /// <summary>
-    /// Veto cascade: a ticket rejection terminates the candidate directly without going through
-    /// the gate evaluator. The rejecting user is the actor on the resulting
-    /// <c>promotion.rejected</c> audit + webhook so the audit chain stays attributable.
-    /// Idempotent in the soft sense: if the candidate has already moved on (Approved, Rejected,
-    /// Superseded, etc.) we skip the cascade rather than fight a state machine.
-    /// </summary>
-    private async Task CascadeRejectCandidateAsync(
-        PromotionCandidate candidate, string? comment, CancellationToken ct)
-    {
-        // Reload tracked. RecordAsync's `candidate` was fetched from the same DbContext but as
-        // part of a query that may or may not be tracked; safer to fetch a tracked instance.
-        var tracked = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidate.Id, ct);
-        if (tracked is null) return;
-        if (tracked.Status != PromotionStatus.Pending) return;
-
-        // PromotionCandidate doesn't carry a generic "decided at" timestamp; the existing
-        // PromotionService.RejectAsync flow only flips Status. Mirror that here so the rejection
-        // shape matches the manual-reject path. (CreatedAt remains the audit anchor; the audit
-        // entry timestamp is the canonical "when did this rejection happen".)
-        tracked.Status = PromotionStatus.Rejected;
-        await _db.SaveChangesAsync(ct);
-
-        await _audit.Log(
-            "promotions", "promotion.rejected",
-            _currentUser.Id, _currentUser.Name, "user",
-            "PromotionCandidate", tracked.Id, null,
-            new { trigger = "ticket-veto", comment });
-
-        _logger.LogInformation(
-            "Candidate {Id} rejected via ticket-veto cascade by {Email}",
-            tracked.Id, _currentUser.Email);
-
-        try
-        {
-            var payload = new
-            {
-                candidateId = tracked.Id,
-                tracked.Product,
-                tracked.Service,
-                tracked.SourceEnv,
-                tracked.TargetEnv,
-                tracked.Version,
-                tracked.FromRevision,
-                tracked.ToRevision,
-                status = tracked.Status.ToString(),
-                tracked.ApprovedAt,
-                participants = tracked.Participants,
-                references = tracked.References,
-                change = new { trigger = "ticket-veto" },
-            };
-            var filters = new WebhookEventFilters(Product: tracked.Product, Environment: tracked.TargetEnv);
-            await _webhookDispatcher.DispatchAsync("promotion.rejected", payload, filters);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Webhook dispatch 'promotion.rejected' failed for candidate {Id}", tracked.Id);
-        }
-    }
-
     // ---------------------------------------------------------------------
     // Queries
     // ---------------------------------------------------------------------
 
     public async Task<List<WorkItemApproval>> GetForKeyAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
     {
         return await _db.WorkItemApprovals.AsNoTracking()
-            .Where(a => a.WorkItemKey == workItemKey && a.Product == product && a.TargetEnv == targetEnv)
+            .Where(a => a.WorkItemKey == workItemKey && a.Product == product && a.Service == service
+                     && a.TargetEnv == targetEnv)
             .OrderBy(a => a.CreatedAt)
             .ToListAsync(ct);
     }
 
     /// <summary>
     /// Snapshot of a ticket's authority state for the current user — used by the GET endpoint
-    /// to drive the UI button state. Returns <c>null</c> only when input is malformed; an absent
-    /// pending candidate is represented by <see cref="TicketContext.PendingCandidateId"/> being
-    /// null with <c>BlockedReason = "No pending promotion needs this ticket"</c>.
+    /// to drive the UI button state. An absent pending candidate leaves
+    /// <see cref="TicketContext.PendingCandidateId"/> null but does not block the sign-off: an
+    /// orphaned item is still decidable, so <c>CanApprove</c> stays true for a QA/Admin as long as
+    /// the platform knows the item.
     /// </summary>
     public async Task<TicketContext> GetTicketContextAsync(
-        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
     {
         var key = (workItemKey ?? "").Trim();
         var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
         var env = (targetEnv ?? "").Trim();
+        var complete = key.Length > 0 && prod.Length > 0 && svc.Length > 0 && env.Length > 0;
 
-        var approvals = (key.Length == 0 || prod.Length == 0 || env.Length == 0)
-            ? new List<WorkItemApproval>()
-            : await GetForKeyAsync(key, prod, env, ct);
+        var approvals = complete
+            ? await GetForKeyAsync(key, prod, svc, env, ct)
+            : new List<WorkItemApproval>();
 
-        var candidate = (key.Length == 0 || prod.Length == 0 || env.Length == 0)
-            ? null
-            : await FindPendingCandidateForTicketAsync(key, prod, env, ct);
+        var candidate = complete
+            ? await FindPendingCandidateForTicketAsync(key, prod, svc, env, ct)
+            : null;
 
         // Build BlockedReason in the same order as the throwing path so the UI message matches
-        // what the user would see if they tried to act.
-        var alreadyDecidedByMe = approvals.Any(a =>
+        // what the user would see if they tried to act. An existing decision by the caller is NOT
+        // a blocker — re-deciding is allowed (see RecordAsync) — it's surfaced as MyDecision so the
+        // UI can render "you approved this; switch to Block?" rather than a dead end.
+        var mine = approvals.FirstOrDefault(a =>
             string.Equals(a.ApproverEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase));
 
         bool canApprove = false;
         string? blockedReason = null;
 
-        if (candidate is null)
+        if (candidate is not null && ReadSnapshot(candidate).IsAutoApprove)
         {
-            blockedReason = "No pending promotion needs this ticket";
+            blockedReason = "Auto-approve policy";
+        }
+        else if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+        {
+            blockedReason = "Work-item sign-off requires the QA or Admin role";
+        }
+        else if (candidate is null && !await IsKnownWorkItemAsync(key, prod, svc, env, ct))
+        {
+            blockedReason = "This work item is not known for that product, service and environment";
         }
         else
         {
-            var snapshot = ReadSnapshot(candidate);
-            if (snapshot.IsAutoApprove)
-            {
-                blockedReason = "Auto-approve policy";
-            }
-            else if (alreadyDecidedByMe)
-            {
-                blockedReason = "Already decided";
-            }
-            else if (!await _auth.IsAuthorizedForAnyRequirementAsync(snapshot, _currentUser.Email, ct))
-            {
-                blockedReason = "Not authorized to approve this promotion";
-            }
-            else
-            {
-                canApprove = true;
-            }
+            canApprove = true;
         }
 
         return new TicketContext(
             WorkItemKey: key,
             Product: prod,
+            Service: svc,
             TargetEnv: env,
             PendingCandidateId: candidate?.Id,
             CanApprove: canApprove,
             BlockedReason: blockedReason,
-            Approvals: approvals);
+            Approvals: approvals,
+            MyDecision: mine?.Decision.ToString());
     }
 
     /// <summary>
@@ -395,39 +484,96 @@ public class WorkItemApprovalService
     /// <c>BlockingPromotions</c> count when the same ticket appears across multiple Pending edges.
     ///
     /// <para>Strategy: load all Pending candidates, group their bundles' work-items, then filter
-    /// in-memory after caching one approver-group lookup per distinct group. This is O(N) over
-    /// Pending candidates × tickets-per-candidate which is small in practice (the Pending queue
-    /// is bounded by the number of services × envs, not historical events). The distinct group
-    /// cache mirrors <see cref="PromotionService.CanUserApproveManyAsync"/>.</para>
+    /// in-memory. This is O(N) over Pending candidates × tickets-per-candidate which is small in
+    /// practice (the Pending queue is bounded by the number of services × envs, not historical
+    /// events).</para>
+    ///
+    /// <para>Every open "my tasks" view polls this, so the reads are shaped to what a row renders:
+    /// candidates and work items come back as their display columns only (never a change set or a
+    /// ticket body), decisions only for the tickets in play, and a candidate's references and
+    /// participants are loaded — and parsed once — only when it ends up owning a row. Id lists go
+    /// to the database as one array parameter, so a queue of any size is one cached plan.</para>
+    ///
+    /// <para>The queue also carries <b>orphaned</b> work items: those whose promotion died
+    /// (superseded without the replacement picking the ticket up, or rejected outright) and which
+    /// nobody has approved. Dropping them would silently lose the work, so they stay — their row
+    /// reports the dead candidate's status so the UI can flag it. The scan over dead candidates is
+    /// capped at <see cref="OrphanScanLimit"/> newest-first; a Pending candidate always wins the
+    /// row for a given ticket, because Pending is iterated first and rows dedupe on the
+    /// (key, product, service, env) identity.</para>
     ///
     /// <para>Returns the rendered ticket list along with the (email, role) → count assignee
-    /// summary built from the authorized list <i>before</i> the role/person filter is applied.
-    /// The summary feeds the front-end's role + person dropdowns so the picker only ever
-    /// surfaces choices the user can actually narrow to. Filtering first then collecting would
-    /// hide every alternative — pre-filter is the correct anchor.</para>
+    /// summary built from the authorized list <i>before</i> the person filter is applied.
+    /// The summary feeds the front-end's person dropdown so the picker only ever surfaces choices
+    /// the user can actually narrow to. Filtering first then collecting would hide every
+    /// alternative — pre-filter is the correct anchor. It counts only people holding a
+    /// <b>policy-required</b> role on the item: the queue's person filter matches against those
+    /// roles (<c>roleRequirement=assigned</c>), so anyone else would be a pick that returns
+    /// nothing.</para>
+    ///
+    /// <para>Person narrowing reads <b>the work item's own participants</b> — the people on its
+    /// work-item reference, plus the promotion-level fallback — which is exactly the set the row
+    /// displays. It deliberately does not consider the participants of the promotion's other
+    /// references (commits, pull requests): a commit author on an unrelated change in the same build
+    /// is not an assignee of this ticket, and counting them made "assigned to &lt;person&gt;" return
+    /// work items that person had nothing to do with.</para>
+    ///
+    /// <para><paramref name="roleRequirement"/> narrows by the promotion policy's work-item role
+    /// requirement (<see cref="WorkItemRoleRequirements"/>) — the roles that make somebody answerable
+    /// for an item: <see cref="WorkItemRoleRequirementFilter.Assigned"/> answers "which items is this
+    /// person <i>responsible</i> for" by matching the person only against the roles the policy
+    /// requires (the queue's person filter and the "Assigned to me" tab), and
+    /// <see cref="WorkItemRoleRequirementFilter.Missing"/> answers "which items has nobody been put on"
+    /// — the "Not assigned" tab. Both are per-item: the required roles come from the candidate's
+    /// own policy snapshot, so two rows in the same list can be judged against different roles.</para>
     /// </summary>
     public async Task<PendingQueueResult> GetPendingForCurrentUserAsync(
         CancellationToken ct = default,
         string? assigneeFilter = null,
-        string? roleFilter = null)
+        WorkItemRoleRequirementFilter roleRequirement = WorkItemRoleRequirementFilter.Any)
     {
-        var pending = await _db.PromotionCandidates.AsNoTracking()
-            .Where(c => c.Status == PromotionStatus.Pending)
-            .ToListAsync(ct);
-
-        // Always resolve the canonical assignee-role set — the response surfaces it directly so
-        // the front-end can populate the role dropdown without an extra round trip, even when
-        // the caller didn't pass a filter.
-        var assigneeRoles = await _assigneeRoles.GetAsync(ct);
-        var assigneeRoleSet = new HashSet<string>(assigneeRoles, StringComparer.OrdinalIgnoreCase);
-
-        if (pending.Count == 0)
+        // Work-item management (view / assign / sign off) is the QA role's jurisdiction (Admin
+        // included) — independent of the promotion's approver requirements. A user without it has no
+        // work-item queue at all, so there is nothing to look up.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
         {
-            return new PendingQueueResult(new(), new(), assigneeRoles);
+            return new PendingQueueResult(new(), new());
         }
 
-        // Filter inputs. `roleFilter` narrows to a single canonicalised role; `assigneeFilter`
-        // narrows to a specific email or to "unassigned". Both are optional and combine per the
+        // The viewer's hidden products drop out of the queue entirely — including the assignee
+        // rollup below, which is computed from these rows, so the "who has work" dropdown never
+        // offers a person whose only items are on a hidden product.
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+
+        // Retired services drop out on the same principle: the queue is a list of work to do, and
+        // nobody is signing off tickets for a component that has been migrated away.
+        var pending = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Where(c => !hidden.Contains(c.Product))
+            .ExcludingDeletedServices(_db)
+            .OrderByDescending(c => c.CreatedAt)
+            .Select(QueueCandidate.Columns)
+            .ToListAsync(ct);
+
+        // Dead candidates whose work items may have been stranded. Iterated after the Pending set so
+        // a ticket still carried by a live promotion always renders from that promotion instead.
+        var stranded = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status == PromotionStatus.Superseded || c.Status == PromotionStatus.Rejected)
+            .Where(c => !hidden.Contains(c.Product))
+            .ExcludingDeletedServices(_db)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(OrphanScanLimit)
+            .Select(QueueCandidate.Columns)
+            .ToListAsync(ct);
+
+        var queueCandidates = pending.Concat(stranded).ToList();
+
+        if (queueCandidates.Count == 0)
+        {
+            return new PendingQueueResult(new(), new());
+        }
+
+        // Filter input. `assigneeFilter` narrows to a specific email or to "unassigned" — see the
         // matrix documented on WorkItemEndpoints.
         var trimmedAssignee = assigneeFilter?.Trim();
         var assigneeFilterActive = !string.IsNullOrEmpty(trimmedAssignee);
@@ -437,47 +583,62 @@ public class WorkItemApprovalService
             ? trimmedAssignee!.ToLowerInvariant()
             : null;
 
-        var canonicalRoleFilter = string.IsNullOrWhiteSpace(roleFilter)
-            ? null
-            : RoleNormalizer.Normalize(roleFilter);
-        var roleFilterActive = !string.IsNullOrEmpty(canonicalRoleFilter);
-
-        // Effective role set used for matching — single role when role-filter is active,
-        // otherwise the full assignee-role set (the "any role" semantics).
-        HashSet<string> effectiveRoleSet = roleFilterActive
-            ? new HashSet<string>(new[] { canonicalRoleFilter! }, StringComparer.OrdinalIgnoreCase)
-            : assigneeRoleSet;
-
         // Candidate-scoped work-item index — the candidate is self-contained, so its tickets come
-        // from PromotionWorkItem by candidate id (not from deploy-event bundles).
-        var candidateIds = pending.Select(c => c.Id).ToList();
+        // from PromotionWorkItem by candidate id (not from deploy-event bundles). Display columns
+        // only: the ticket body is the detail page's, not the queue's.
+        var candidateIds = queueCandidates.Select(c => c.Id).ToList();
         var workItems = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => candidateIds.Contains(w.CandidateId))
+            .Where(w => EF.Parameter(candidateIds).Contains(w.CandidateId))
+            .Select(QueueWorkItem.Columns)
             .ToListAsync(ct);
         if (workItems.Count == 0)
         {
-            return new PendingQueueResult(new(), new(), assigneeRoles);
+            return new PendingQueueResult(new(), new());
         }
 
-        // Group user's existing decisions: (key, product, env) tuples to skip.
-        var decided = await _db.WorkItemApprovals.AsNoTracking()
-            .Where(a => a.ApproverEmail == _currentUser.Email)
-            .Select(a => new { a.WorkItemKey, a.Product, a.TargetEnv })
+        // Decisions on the tickets in play — matched on key here (index-backed, and a superset), on
+        // the full (key, product, service, env) identity by the sets below. Three uses:
+        //  - the user's own decisions: (key, product, service, env) tuples to skip. "Own" is decided by
+        //    the database's comparison, as it always was.
+        //  - approved-by-anyone retires orphans: an item whose promotion is dead but which someone
+        //    already signed off is finished, not stranded. Rows still carried by a Pending candidate
+        //    keep the existing behaviour (visible until *this* user decides).
+        //  - decided-by-anyone suppresses role completeness (see WorkItemRoleRequirements): a ruled-on
+        //    item isn't waiting for an assignment, so it reports no missing roles and drops out of the
+        //    "Not assigned" narrowing below.
+        var keysInPlay = workItems.Select(w => w.WorkItemKey).Distinct().ToList();
+        var myEmail = _currentUser.Email;
+        var decisions = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => EF.Parameter(keysInPlay).Contains(a.WorkItemKey))
+            .Select(a => new
+            {
+                a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision,
+                Mine = a.ApproverEmail == myEmail,
+            })
             .ToListAsync(ct);
-        var decidedSet = decided
-            .Select(d => (d.WorkItemKey, d.Product, d.TargetEnv))
+        var decidedSet = decisions
+            .Where(d => d.Mine)
+            .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
+            .ToHashSet();
+        var approvedByAnyone = decisions
+            .Where(a => a.Decision == WorkItemDecision.Approved)
+            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
+            .ToHashSet();
+        var decidedByAnyone = decisions
+            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
             .ToHashSet();
 
-        // Cache approver-group membership across distinct groups.
-        var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        // Role aliases, so a ticket whose QA owner arrived as `qa` counts as having one for the
+        // completeness check, the role narrowings and the person filter alike.
+        var aliases = await _roles.MapAsync(ct);
 
         // Index work-items by their candidate for fast lookup.
         var workItemsByCandidate = workItems
             .GroupBy(w => w.CandidateId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // Build (key, product, targetEnv) -> count of Pending candidates carrying it.
-        var blockingCount = new Dictionary<(string Key, string Product, string Env), int>();
+        // Build (key, product, service, targetEnv) -> count of Pending candidates carrying it.
+        var blockingCount = new Dictionary<(string Key, string Product, string Service, string Env), int>();
         foreach (var c in pending)
         {
             var keys = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
@@ -485,136 +646,213 @@ public class WorkItemApprovalService
                 .Distinct();
             foreach (var k in keys)
             {
-                var tup = (k, c.Product, c.TargetEnv);
+                var tup = (k, c.Product, c.Service, c.TargetEnv);
                 blockingCount[tup] = blockingCount.GetValueOrDefault(tup) + 1;
             }
         }
 
-        var result = new List<PendingTicketView>();
-        var emitted = new HashSet<(string Key, Guid CandidateId)>();
+        // Dedup by (key, product, service, targetEnv) — the grain at which a work-item sign-off
+        // actually happens (WorkItemApproval is keyed the same way). One shared decision ⇒ one row,
+        // even when the ticket backs several Pending candidates of that service; the row's
+        // BlockingPromotions surfaces the count. The same ticket on a second SERVICE is a second row:
+        // it is a different work item with its own sign-off.
+        var emitted = new HashSet<(string Key, string Product, string Service, string Env)>();
+        var owned = new List<(QueueCandidate Candidate, IReadOnlyList<string> RequiredRoles,
+            HashSet<string>? RequiredRoleSet, List<QueueWorkItem> Items)>();
 
-        // (email, role) → count + best displayName seen. Counts feed the assignee summary;
-        // displayName is taken from the first non-empty value seen.
-        var assigneeAccumulator = new Dictionary<(string Email, string Role), AssigneeAccumulator>();
-
-        // Order Pending candidates newest-first so the most recent candidate "owns" the inbox row
-        // when the same ticket appears in multiple — keeps the list deterministic and surfaces
-        // the freshest version/promotion to the approver.
-        foreach (var c in pending.OrderByDescending(p => p.CreatedAt))
+        // Pending candidates first, each set newest-first, so the most recent live candidate "owns"
+        // the inbox row when the same ticket appears in several — keeps the list deterministic and
+        // surfaces the freshest version/promotion to the approver. Dead candidates trail behind and
+        // only ever contribute rows for tickets no live promotion claimed. Ownership needs nothing
+        // but the policy snapshot and the decisions, so it is settled before any change set is read.
+        foreach (var c in queueCandidates)
         {
-            var snapshot = ReadSnapshot(c);
+            var isOrphanSource = c.Status != PromotionStatus.Pending;
+            var snapshot = ReadSnapshot(c.Id, c.ResolvedPolicyJson);
             if (snapshot.IsAutoApprove) continue;
 
-            // Authorized for at least one requirement on this candidate's rule tree? Group membership
-            // is cached per distinct group across all candidates to avoid N+1 Graph calls; the
-            // explicit user-list check is free.
-            var authorized = false;
-            foreach (var req in snapshot.AllRequirements)
-            {
-                if (req.Users.Any(u => string.Equals(u, _currentUser.Email, StringComparison.OrdinalIgnoreCase)))
-                {
-                    authorized = true;
-                    break;
-                }
-                foreach (var group in req.Groups)
-                {
-                    if (!groupMembership.TryGetValue(group.Id, out var member))
-                    {
-                        member = await _auth.IsInApproverGroupAsync(group, ct);
-                        groupMembership[group.Id] = member;
-                    }
-                    if (member) { authorized = true; break; }
-                }
-                if (authorized) break;
-            }
-            if (!authorized) continue;
-
-            // Separation-of-duties (ExcludeRole) removed (D17) — no per-candidate exclusion check.
+            // Roles the policy says every work item on this candidate must have somebody in. Read from
+            // the snapshot we already deserialised, so the per-row completeness check costs nothing.
+            var requiredRoles = WorkItemRoleRequirements.RequiredRoles(snapshot, aliases);
+            var requiredRoleSet = requiredRoles.Count == 0
+                ? null
+                : new HashSet<string>(requiredRoles, StringComparer.OrdinalIgnoreCase);
 
             // Distinct work items on this candidate.
             var bundleItems = (workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
                 .GroupBy(w => w.WorkItemKey)
                 .Select(g => g.First());
 
-            // Merged participant view comes from the candidate's own data: reference-level
-            // participants nested under each reference, plus promotion-level participants.
-            var bundleAssignees = BuildMergedAssignees(c, assigneeRoleSet);
-
-            // Update the assignee summary BEFORE narrowing — computed against the unfiltered
-            // authorized list. Dedupe per (email, role) within a candidate.
-            var seenInCandidate = new HashSet<(string Email, string Role)>();
-            foreach (var p in bundleAssignees)
-            {
-                var key = (p.Email, p.Role);
-                if (!seenInCandidate.Add(key)) continue;
-                if (!assigneeAccumulator.TryGetValue(key, out var acc))
-                {
-                    acc = new AssigneeAccumulator(p.DisplayName, 0);
-                }
-                else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(p.DisplayName))
-                {
-                    // Prefer the first non-empty displayName we encounter; once set, keep it.
-                    acc = acc with { DisplayName = p.DisplayName };
-                }
-                acc = acc with { Count = acc.Count + 1 };
-                assigneeAccumulator[key] = acc;
-            }
-
-            // Apply role/person matrix narrowing. Empty merged view => "unassigned" by
-            // definition (legacy data, no participants, all tombstoned). The unassigned branch
-            // keys off the merged-view subset matching the effective role set.
-            if (assigneeFilterActive || roleFilterActive)
-            {
-                bool keep;
-                var inEffectiveRole = bundleAssignees
-                    .Where(p => effectiveRoleSet.Contains(p.Role))
-                    .ToList();
-
-                if (assigneeIsUnassigned)
-                {
-                    // No participant whose role ∈ effectiveRoleSet exists.
-                    keep = inEffectiveRole.Count == 0;
-                }
-                else if (assigneeFilterActive)
-                {
-                    // Specific email + role narrows.
-                    keep = inEffectiveRole.Any(p =>
-                        !string.IsNullOrEmpty(p.Email)
-                        && string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
-                }
-                else
-                {
-                    // role only (no person filter) — keep candidates with at least one
-                    // participant in the role.
-                    keep = inEffectiveRole.Count > 0;
-                }
-
-                if (!keep) continue;
-            }
-
+            var ownedItems = new List<QueueWorkItem>();
             foreach (var w in bundleItems)
             {
-                var tup = (w.WorkItemKey, c.Product, c.TargetEnv);
+                var tup = (w.WorkItemKey, c.Product, c.Service, c.TargetEnv);
                 if (decidedSet.Contains(tup)) continue;
-                if (!emitted.Add((w.WorkItemKey, c.Id))) continue;
+                // An orphan someone already approved is resolved, not stranded — retire it.
+                if (isOrphanSource && approvedByAnyone.Contains(tup)) continue;
+                // Dedupe BEFORE the person/role narrowing so the newest candidate always owns the
+                // row, and the participants the filter reads are the ones the row will display. The
+                // other order would let an older candidate's copy of the ticket answer the filter
+                // while the row still rendered the newest one's people.
+                if (!emitted.Add(tup)) continue;
+                ownedItems.Add(w);
+            }
+            if (ownedItems.Count > 0) owned.Add((c, requiredRoles, requiredRoleSet, ownedItems));
+        }
 
-                var ticketParticipants = GetWorkItemParticipants(c, w.WorkItemKey);
+        // The change set and promotion-level people of the candidates that own a row — and of no
+        // other. Each is parsed once here rather than once per work item.
+        var ownerIds = owned.Select(o => o.Candidate.Id).ToList();
+        var people = ownerIds.Count == 0
+            ? new Dictionary<Guid, CarrierPeople>()
+            : (await _db.PromotionCandidates.AsNoTracking()
+                .Where(c => EF.Parameter(ownerIds).Contains(c.Id))
+                .Select(c => new PromotionCandidate
+                {
+                    Id = c.Id, ReferencesJson = c.ReferencesJson, ParticipantsJson = c.ParticipantsJson,
+                })
+                .ToListAsync(ct))
+              .ToDictionary(c => c.Id, CarrierPeople.Of);
 
-                result.Add(new PendingTicketView(
-                    WorkItemKey: w.WorkItemKey,
-                    Product: c.Product,
-                    TargetEnv: c.TargetEnv,
-                    Provider: w.Provider,
-                    Url: w.Url,
-                    Title: w.Title,
-                    CandidateId: c.Id,
-                    Service: c.Service,
-                    Version: c.Version,
-                    SourceEnv: c.SourceEnv,
-                    BlockingPromotions: blockingCount.GetValueOrDefault(tup, 1),
-                    Participants: ticketParticipants));
+        // (email, role) → count + best displayName seen. Counts feed the assignee summary;
+        // displayName is taken from the first non-empty value seen.
+        var assigneeAccumulator = new Dictionary<(string Email, string Role), AssigneeAccumulator>();
+        var rows = new List<(QueueCandidate Candidate, QueueWorkItem Item, IReadOnlyList<ParticipantDto> Participants,
+            IReadOnlyList<string> RequiredRoles, List<string> MissingRoles)>();
+
+        foreach (var (c, requiredRoles, requiredRoleSet, ownedItems) in owned)
+        {
+            var carrier = people.GetValueOrDefault(c.Id);
+            foreach (var w in ownedItems)
+            {
+                var tup = (w.WorkItemKey, c.Product, c.Service, c.TargetEnv);
+
+                // The people on THIS work item — its own reference participants, with the
+                // promotion-level fallback — which is exactly what the row shows.
+                var ticketParticipants = GetWorkItemParticipants(carrier, w.WorkItemKey, aliases);
+                // Any role counts as an assignment — see AssignableParticipants.
+                var ticketAssignees = AssignableParticipants(ticketParticipants, roleSet: null, aliases);
+
+                // Update the assignee summary BEFORE narrowing — computed against the unfiltered
+                // authorized list. Only people in a role this item's policy REQUIRES count: the
+                // person dropdown this feeds narrows with roleRequirement=assigned, so a name in
+                // any other role would be a choice that filters to nothing. An item whose policy
+                // requires no roles contributes nobody. Dedupe per (email, role) within the item.
+                var rollupAssignees = requiredRoleSet is null
+                    ? new List<MergedParticipant>()
+                    : AssignableParticipants(ticketParticipants, requiredRoleSet, aliases);
+                var seenOnItem = new HashSet<(string Email, string Role)>();
+                foreach (var p in rollupAssignees)
+                {
+                    var key = (p.Email, p.Role);
+                    if (!seenOnItem.Add(key)) continue;
+                    if (!assigneeAccumulator.TryGetValue(key, out var acc))
+                    {
+                        acc = new AssigneeAccumulator(p.DisplayName, 0);
+                    }
+                    else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(p.DisplayName))
+                    {
+                        // Prefer the first non-empty displayName we encounter; once set, keep it.
+                        acc = acc with { DisplayName = p.DisplayName };
+                    }
+                    acc = acc with { Count = acc.Count + 1 };
+                    assigneeAccumulator[key] = acc;
+                }
+
+                // Policy-required roles nobody holds on this item — what makes it "incomplete". Always
+                // computed (the row reports it), and the basis of the two roleRequirement narrowings.
+                // An item somebody has already ruled on reports none: the warning asks for an
+                // assignment, and the sign-off it was waiting for has happened.
+                var missingRoles = WorkItemRoleRequirements.MissingRoles(
+                    ticketParticipants, requiredRoles, decided: decidedByAnyone.Contains(tup), aliases);
+
+                // "Not assigned": at least one role the policy requires has nobody in it. Decided
+                // items are excluded by the empty missingRoles above.
+                if (roleRequirement == WorkItemRoleRequirementFilter.Missing && missingRoles.Count == 0)
+                    continue;
+
+                // Which roles the person filter is matched against. Any role normally; under
+                // roleRequirement=Assigned it's the policy-required roles instead — being named as,
+                // say, the reporter of a ticket is not being made answerable for it. An item whose
+                // policy requires nothing therefore matches nobody in that mode.
+                HashSet<string>? matchRoleSet = null;
+                if (roleRequirement == WorkItemRoleRequirementFilter.Assigned)
+                {
+                    if (requiredRoleSet is null) continue;
+                    matchRoleSet = requiredRoleSet;
+                }
+
+                // Apply person narrowing. No participant in the match role set =>
+                // "unassigned" by definition (legacy data, no participants, all tombstoned).
+                if (assigneeFilterActive || matchRoleSet is not null)
+                {
+                    // Under roleRequirement=Assigned, narrow to the policy-required roles; otherwise
+                    // every named person counts (ticketAssignees is already the any-role set).
+                    var inMatchRoles = matchRoleSet is not null
+                        ? AssignableParticipants(ticketParticipants, matchRoleSet, aliases)
+                        : ticketAssignees;
+
+                    bool keep;
+                    if (assigneeIsUnassigned)
+                    {
+                        // No participant whose role ∈ matchRoleSet exists.
+                        keep = inMatchRoles.Count == 0;
+                    }
+                    else if (assigneeFilterActive)
+                    {
+                        // Specific email narrows.
+                        keep = inMatchRoles.Any(p =>
+                            string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
+                    }
+                    else
+                    {
+                        // roleRequirement=assigned with no person — keep work items with at least
+                        // one participant in a required role.
+                        keep = inMatchRoles.Count > 0;
+                    }
+
+                    if (!keep) continue;
+                }
+
+                rows.Add((c, w, ticketParticipants, requiredRoles, missingRoles));
             }
         }
+
+        // Where each row's version actually landed, so the rows can answer "which environments can I
+        // test this in?" without a query per row — and the ticket's roll-up across every service
+        // instance, for the "2 of 3 services" the row shows beside its own state. One batch each,
+        // for the rows that survived the narrowing.
+        var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
+            rows.Select(r => new DeployedVersionKey(r.Candidate.Product, r.Candidate.Service, r.Candidate.Version)), ct);
+        var overall = await WorkItemOverallStatus.LoadAsync(_db,
+            rows.Select(r => new WorkItemTicketId(r.Item.WorkItemKey, r.Item.Product, r.Item.TargetEnv)), ct);
+
+        var result = rows.Select(r => new PendingTicketView(
+                WorkItemKey: r.Item.WorkItemKey,
+                Product: r.Candidate.Product,
+                TargetEnv: r.Candidate.TargetEnv,
+                Provider: r.Item.Provider,
+                Url: r.Item.Url,
+                Title: r.Item.Title,
+                SubTitle: r.Item.SubTitle,
+                Priority: r.Item.Priority,
+                WorkItemType: r.Item.WorkItemType,
+                CandidateId: r.Candidate.Id,
+                Service: r.Candidate.Service,
+                Version: r.Candidate.Version,
+                Environments: deployedEnvironments.GetValueOrDefault(
+                    new DeployedVersionKey(r.Candidate.Product, r.Candidate.Service, r.Candidate.Version)) ?? new(),
+                BlockingPromotions: blockingCount.GetValueOrDefault(
+                    (r.Item.WorkItemKey, r.Candidate.Product, r.Candidate.Service, r.Candidate.TargetEnv), 1),
+                Participants: r.Participants,
+                // "Pending" for a live promotion; the dead candidate's status for an orphan, which
+                // is what tells the UI to render it as stranded rather than actionable-as-usual.
+                CandidateStatus: r.Candidate.Status.ToString(),
+                RequiredRoles: r.RequiredRoles,
+                MissingRoles: r.MissingRoles,
+                Overall: overall.GetValueOrDefault(
+                    new WorkItemTicketId(r.Item.WorkItemKey, r.Candidate.Product, r.Candidate.TargetEnv))?.ToSummary()))
+            .ToList();
 
         // Sort: count desc, then displayName asc (case-insensitive). DisplayName falls back to
         // email when missing so the secondary sort is always meaningful.
@@ -628,73 +866,202 @@ public class WorkItemApprovalService
             .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return new PendingQueueResult(result, assigneeRows, assigneeRoles);
+        return new PendingQueueResult(result, assigneeRows);
     }
+
+    /// <summary>Rows per decided-view page when the caller doesn't say.</summary>
+    public const int DecidedPageSize = 100;
+
+    /// <summary>The most rows one decided-view page returns, whatever the caller asks for.</summary>
+    public const int DecidedPageSizeMax = 500;
 
     /// <summary>
     /// Returns rows representing recent ticket decisions across the platform — both approvals
-    /// and rejections by anyone. Use <paramref name="decision"/> to narrow to Approved or
-    /// Rejected; pass <c>null</c> for both. <paramref name="since"/> caps the query to recent
-    /// decisions (recommended — full history is unbounded).
+    /// and non-approvals by anyone. Use <paramref name="decision"/> to narrow to a single
+    /// decision; pass <c>null</c> for all of them. <paramref name="since"/> caps the query to recent
+    /// decisions; <c>null</c> is all time.
     ///
-    /// <para>For each <see cref="WorkItemApproval"/>, picks the most recent candidate that carries
-    /// the ticket (any candidate status — including Approved, Deployed, Rejected, Superseded). The
-    /// returned <see cref="PendingQueueResult.Assignees"/> and <see cref="PendingQueueResult.Roles"/>
-    /// are empty — those dropdowns only narrow the pending inbox.</para>
+    /// <para>Keyset-paged, newest decision first: at most <paramref name="limit"/> rows (clamped to
+    /// 1..<see cref="DecidedPageSizeMax"/>) strictly after <paramref name="after"/>, ordered by
+    /// <c>(CreatedAt DESC, Id DESC)</c> — the id only breaks ties, so the order is total and a
+    /// position never moves. Every window is paged, bounded ones included: a busy month of
+    /// decisions is as unbounded as "all time" is.</para>
+    ///
+    /// <para>For each <see cref="WorkItemApproval"/> on the page, picks the most recent candidate
+    /// that carries the ticket (any candidate status — including Approved, Deployed, Rejected,
+    /// Superseded). The returned <see cref="DecidedQueueResult.Assignees"/> carries the decider
+    /// rollup rather than work-item participants — the decided view's "who decided" dropdown — and,
+    /// like <see cref="DecidedQueueResult.Total"/>, covers the whole window, not just the page.</para>
     /// </summary>
-    public async Task<PendingQueueResult> GetDecidedAsync(
-        PromotionDecision? decision,
+    public async Task<DecidedQueueResult> GetDecidedAsync(
+        WorkItemDecision? decision,
         DateTimeOffset? since,
+        string? decidedBy = null,
+        int limit = DecidedPageSize,
+        DecidedCursor? after = null,
         CancellationToken ct = default)
     {
+        limit = Math.Clamp(limit, 1, DecidedPageSizeMax);
         var query = _db.WorkItemApprovals.AsNoTracking().AsQueryable();
+
+        var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        if (hidden.Count > 0) query = query.Where(a => !hidden.Contains(a.Product));
+
         if (decision is { } d) query = query.Where(a => a.Decision == d);
         if (since is { } cutoff) query = query.Where(a => a.CreatedAt >= cutoff);
 
+        // Decider rollup — computed BEFORE the decidedBy narrowing (mirrors the pending path's
+        // pre-narrow assignee summary) so the front-end "who decided" dropdown never offers a
+        // zero-result person. Aggregated in the database, one row per (email, name) as spelled, so
+        // its size is the number of deciders however long the window; it also yields the total.
+        var deciders = await query
+            .GroupBy(a => new { a.ApproverEmail, a.ApproverName })
+            .Select(g => new
+            {
+                Email = g.Key.ApproverEmail,
+                Name = g.Key.ApproverName,
+                Count = g.Count(),
+                Latest = g.Max(a => a.CreatedAt),
+            })
+            .ToListAsync(ct);
+        if (deciders.Count == 0)
+            return new DecidedQueueResult(new(), new(), Total: 0, NextCursor: null);
+
+        // Deciders carry no role, so Role is left empty. One row per email (case-insensitive); the
+        // email as most recently spelled and the most recent non-empty name win — walking the
+        // groups newest-first reproduces what a newest-first walk over the rows themselves picks.
+        var deciderAccumulator = new Dictionary<string, AssigneeAccumulator>(StringComparer.OrdinalIgnoreCase);
+        foreach (var g in deciders.OrderByDescending(g => g.Latest))
+        {
+            if (string.IsNullOrEmpty(g.Email)) continue;
+            if (!deciderAccumulator.TryGetValue(g.Email, out var acc))
+                acc = new AssigneeAccumulator(g.Name, 0);
+            else if (string.IsNullOrEmpty(acc.DisplayName) && !string.IsNullOrEmpty(g.Name))
+                acc = acc with { DisplayName = g.Name };
+            deciderAccumulator[g.Email] = acc with { Count = acc.Count + g.Count };
+        }
+        var deciderRows = deciderAccumulator
+            .Select(kv => new PendingAssigneeView(
+                Email: kv.Key,
+                DisplayName: string.IsNullOrEmpty(kv.Value.DisplayName) ? kv.Key : kv.Value.DisplayName!,
+                Role: "",
+                Count: kv.Value.Count))
+            .OrderByDescending(a => a.Count)
+            .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Narrow to a single decider when requested. Case-insensitive, matching the pending
+        // path's email comparison: the rollup knows every spelling of the email in the window, so
+        // the database matches those exactly rather than lower-casing the column.
+        var total = deciders.Sum(g => g.Count);
+        var trimmedDecider = decidedBy?.Trim();
+        if (!string.IsNullOrEmpty(trimmedDecider))
+        {
+            var spellings = deciders
+                .Where(g => string.Equals(g.Email, trimmedDecider, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (spellings.Count == 0)
+                return new DecidedQueueResult(new(), deciderRows, Total: 0, NextCursor: null);
+            total = spellings.Sum(g => g.Count);
+            var emails = spellings.Select(g => g.Email).Distinct().ToList();
+            query = query.Where(a => EF.Parameter(emails).Contains(a.ApproverEmail));
+        }
+
+        // The page. A decision's CreatedAt never changes (a change of mind rewrites the decision on
+        // the same row), and new decisions land at the top, so the rows after a cursor are the same
+        // rows however many decisions arrive between two requests.
+        if (after is { } position)
+        {
+            var at = position.DecidedAt;
+            var id = position.Id;
+            query = query.Where(a => a.CreatedAt < at || (a.CreatedAt == at && a.Id.CompareTo(id) < 0));
+        }
         var approvals = await query
             .OrderByDescending(a => a.CreatedAt)
+            .ThenByDescending(a => a.Id)
+            .Take(limit + 1)
             .ToListAsync(ct);
+        DecidedCursor? next = null;
+        if (approvals.Count > limit)
+        {
+            approvals.RemoveAt(limit);
+            next = new DecidedCursor(approvals[^1].CreatedAt, approvals[^1].Id);
+        }
         if (approvals.Count == 0)
-            return new PendingQueueResult(new(), new(), Array.Empty<string>());
+            return new DecidedQueueResult(new(), deciderRows, total, NextCursor: null);
 
-        // Candidate-scoped work-item rows for every (key, product, targetEnv) the decisions touch.
+        // Candidate-scoped work-item rows for every (key, product, service, targetEnv) the page's
+        // decisions touch, each with the identity columns of the candidate carrying it — enough to
+        // pick the newest carrier below. The filters are coarse (a cross product, re-checked exactly
+        // below), and each list is one array parameter, so every page is one cached plan.
         var keys = approvals.Select(a => a.WorkItemKey).Distinct().ToList();
         var products = approvals.Select(a => a.Product).Distinct().ToList();
+        var services = approvals.Select(a => a.Service).Distinct().ToList();
         var envs = approvals.Select(a => a.TargetEnv).Distinct().ToList();
-        var workItems = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => keys.Contains(w.WorkItemKey) && products.Contains(w.Product) && envs.Contains(w.TargetEnv))
+        var carried = await (
+                from w in _db.PromotionWorkItems.AsNoTracking()
+                where EF.Parameter(keys).Contains(w.WorkItemKey) && EF.Parameter(products).Contains(w.Product)
+                   && EF.Parameter(services).Contains(w.Service) && EF.Parameter(envs).Contains(w.TargetEnv)
+                join c in _db.PromotionCandidates.AsNoTracking() on w.CandidateId equals c.Id
+                select new
+                {
+                    Row = new QueueWorkItem(w.CandidateId, w.WorkItemKey, w.Product, w.Service, w.TargetEnv,
+                        w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType),
+                    Candidate = new { c.Id, c.Product, c.Service, c.Version, c.Status, c.CreatedAt },
+                })
             .ToListAsync(ct);
+        var carriedByKey = carried.ToLookup(t => t.Row.WorkItemKey, StringComparer.OrdinalIgnoreCase);
 
-        // The candidates referenced by those rows — pulled in full (small set) so we can pick the
-        // most recent one carrying each (key, product, env) regardless of status.
-        var candidateIds = workItems.Select(w => w.CandidateId).Distinct().ToList();
-        var candidatesById = candidateIds.Count == 0
-            ? new Dictionary<Guid, PromotionCandidate>()
+        // Per decision, the most recent candidate carrying its exact (key, product, service, env),
+        // regardless of status.
+        var picks = approvals
+            .Select(a => carriedByKey[a.WorkItemKey]
+                .Where(t => string.Equals(t.Row.Product, a.Product, StringComparison.Ordinal)
+                         && string.Equals(t.Row.Service, a.Service, StringComparison.Ordinal)
+                         && string.Equals(t.Row.TargetEnv, a.TargetEnv, StringComparison.Ordinal))
+                .OrderByDescending(t => t.Candidate.CreatedAt)
+                .FirstOrDefault())
+            .ToList();
+
+        // The picked carriers' policy snapshot, change set and promotion-level people — parsed once
+        // per candidate, and only for those.
+        var aliases = await _roles.MapAsync(ct);
+        var pickedIds = picks.Where(p => p is not null).Select(p => p!.Candidate.Id).Distinct().ToList();
+        var carriers = pickedIds.Count == 0
+            ? new Dictionary<Guid, (CarrierPeople People, IReadOnlyList<string> RequiredRoles)>()
             : (await _db.PromotionCandidates.AsNoTracking()
-                .Where(c => candidateIds.Contains(c.Id))
+                .Where(c => EF.Parameter(pickedIds).Contains(c.Id))
+                .Select(c => new PromotionCandidate
+                {
+                    Id = c.Id, ResolvedPolicyJson = c.ResolvedPolicyJson,
+                    ReferencesJson = c.ReferencesJson, ParticipantsJson = c.ParticipantsJson,
+                })
                 .ToListAsync(ct))
-              .ToDictionary(c => c.Id);
+              .ToDictionary(c => c.Id,
+                  c => (People: CarrierPeople.Of(c), RequiredRoles: WorkItemRoleRequirements.RequiredRoles(c, aliases)));
+
+        var deployedEnvironments = await ResolveDeployedEnvironmentsAsync(
+            picks.Where(p => p is not null)
+                .Select(p => new DeployedVersionKey(p!.Candidate.Product, p.Candidate.Service, p.Candidate.Version)), ct);
+
+        var overall = await WorkItemOverallStatus.LoadAsync(_db,
+            approvals.Select(a => new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv)), ct);
 
         var result = new List<PendingTicketView>();
-        foreach (var a in approvals)
+        for (var i = 0; i < approvals.Count; i++)
         {
-            // Candidate rows carrying this exact (key, product, env), newest candidate first.
-            var rows = workItems
-                .Where(w => string.Equals(w.WorkItemKey, a.WorkItemKey, StringComparison.OrdinalIgnoreCase)
-                         && string.Equals(w.Product, a.Product, StringComparison.Ordinal)
-                         && string.Equals(w.TargetEnv, a.TargetEnv, StringComparison.Ordinal))
-                .Select(w => (Row: w, Candidate: candidatesById.GetValueOrDefault(w.CandidateId)))
-                .Where(t => t.Candidate is not null)
-                .OrderByDescending(t => t.Candidate!.CreatedAt)
-                .ToList();
-
-            var c2 = rows.FirstOrDefault().Candidate;
-            var wi = rows.FirstOrDefault().Row;
+            var a = approvals[i];
+            var c2 = picks[i]?.Candidate;
+            var wi = picks[i]?.Row;
+            var carrier = c2 is null ? default : carriers.GetValueOrDefault(c2.Id);
 
             // Participants (best-effort — only meaningful when we have a candidate).
-            IReadOnlyList<ParticipantDto> ticketParticipants = c2 is null
-                ? Array.Empty<ParticipantDto>()
-                : GetWorkItemParticipants(c2, a.WorkItemKey);
+            var ticketParticipants = GetWorkItemParticipants(carrier.People, a.WorkItemKey, aliases);
+
+            // The roles the item's policy asks for, for the row's own reporting. No missing ones are
+            // reported on this path: every row here IS a decision, and a ruled-on item is not waiting
+            // for anybody to be assigned (see WorkItemRoleRequirements).
+            var requiredRoles = carrier.RequiredRoles ?? Array.Empty<string>();
 
             result.Add(new PendingTicketView(
                 WorkItemKey: a.WorkItemKey,
@@ -703,21 +1070,491 @@ public class WorkItemApprovalService
                 Provider: wi?.Provider,
                 Url: wi?.Url,
                 Title: wi?.Title,
+                SubTitle: wi?.SubTitle,
+                Priority: wi?.Priority,
+                WorkItemType: wi?.WorkItemType,
                 CandidateId: c2?.Id ?? Guid.Empty,
-                Service: c2?.Service ?? "",
+                // Identity, so it comes from the decision row — the candidate (when found) agrees.
+                Service: a.Service,
                 Version: c2?.Version ?? "",
-                SourceEnv: c2?.SourceEnv ?? "",
+                Environments: c2 is null
+                    ? new List<WorkItemEnvironmentView>()
+                    : deployedEnvironments.GetValueOrDefault(
+                          new DeployedVersionKey(c2.Product, c2.Service, c2.Version)) ?? new(),
                 BlockingPromotions: 0,
                 Participants: ticketParticipants,
                 CandidateStatus: c2?.Status.ToString() ?? "Unknown",
+                RequiredRoles: requiredRoles,
+                MissingRoles: WorkItemRoleRequirements.MissingRoles(
+                    ticketParticipants, requiredRoles, decided: true, aliases),
                 Decision: a.Decision.ToString(),
                 DecidedAt: a.CreatedAt,
                 DecidedByEmail: a.ApproverEmail,
                 DecidedByName: a.ApproverName,
-                DecisionComment: a.Comment));
+                DecisionComment: a.Comment,
+                Overall: overall.GetValueOrDefault(
+                    new WorkItemTicketId(a.WorkItemKey, a.Product, a.TargetEnv))?.ToSummary()));
         }
 
-        return new PendingQueueResult(result, new(), Array.Empty<string>());
+        return new DecidedQueueResult(result, deciderRows, total, next);
+    }
+
+    /// <summary>
+    /// Everything the work-item detail page renders for one <c>(key, product, service, targetEnv)</c>:
+    /// display fields, the people assigned to it, the decision trail, the comment thread, and every
+    /// promotion candidate of that service that carries it. Returns <c>null</c> when no candidate has
+    /// ever carried the ticket in that product/service/env — the caller maps that to 404.
+    ///
+    /// <para>The <i>primary</i> candidate is the newest Pending one, falling back to the newest that
+    /// isn't superseded, then to the newest of any status. It's the candidate that participant
+    /// assignments write to (participants live on a candidate's reference, not on the ticket) and the
+    /// one whose reference supplies title/url.</para>
+    ///
+    /// <para>Superseded candidates are left out of the returned <see cref="WorkItemDetail.Candidates"/>
+    /// list: a build that was replaced before it shipped is noise on a page about the work item, and
+    /// the promotion that replaced it is in the list anyway. They still participate in primary
+    /// resolution, so a ticket whose only candidates are superseded keeps a write target for people.</para>
+    /// </summary>
+    public async Task<WorkItemDetail?> GetDetailAsync(
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        if (key.Length == 0 || prod.Length == 0 || svc.Length == 0 || env.Length == 0) return null;
+
+        var rows = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.WorkItemKey == key && w.Product == prod && w.Service == svc && w.TargetEnv == env)
+            .ToListAsync(ct);
+        if (rows.Count == 0) return null;
+
+        var candidateIds = rows.Select(w => w.CandidateId).Distinct().ToList();
+        var candidates = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => candidateIds.Contains(c.Id))
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return null;
+
+        var ordered = candidates.OrderByDescending(c => c.CreatedAt).ToList();
+        var primary = ordered.FirstOrDefault(c => c.Status == PromotionStatus.Pending)
+            ?? ordered.FirstOrDefault(c => c.Status != PromotionStatus.Superseded)
+            ?? ordered[0];
+
+        // Display fields: prefer the primary candidate's own row, then any row that has them —
+        // an older candidate may carry a title the newest ingest omitted.
+        var primaryRow = rows.FirstOrDefault(w => w.CandidateId == primary.Id);
+        var title = primaryRow?.Title ?? rows.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t));
+        var subTitle = primaryRow?.SubTitle ?? rows.Select(w => w.SubTitle).FirstOrDefault(s => !string.IsNullOrEmpty(s));
+        var content = primaryRow?.Content ?? rows.Select(w => w.Content).FirstOrDefault(c => !string.IsNullOrEmpty(c));
+        var priority = primaryRow?.Priority ?? rows.Select(w => w.Priority).FirstOrDefault(p => !string.IsNullOrEmpty(p));
+        var workItemType = primaryRow?.WorkItemType ?? rows.Select(w => w.WorkItemType).FirstOrDefault(t => !string.IsNullOrEmpty(t));
+        var url = primaryRow?.Url ?? rows.Select(w => w.Url).FirstOrDefault(u => !string.IsNullOrEmpty(u));
+        var provider = primaryRow?.Provider ?? rows.Select(w => w.Provider).FirstOrDefault(p => !string.IsNullOrEmpty(p));
+
+        var ctx = await GetTicketContextAsync(key, prod, svc, env, ct);
+        var comments = await GetCommentsAsync(key, prod, svc, env, ct);
+        // The ticket across every service — what "is MPT-1 done" means to somebody who does not
+        // think per service. Shown beside this instance's own state.
+        var overall = await WorkItemOverallStatus.LoadOneAsync(_db, key, prod, env, ct);
+
+        // The change that carried this ticket. Resolved from the primary candidate, falling back to
+        // the newest candidate that actually records commits for the ticket — same "prefer primary,
+        // else whoever has the data" rule the display fields above use, because an older ingest may
+        // have supplied commits that a later one omitted.
+        var changeSource = ResolvesCommits(primary, key)
+            ? primary
+            : ordered.FirstOrDefault(c => ResolvesCommits(c, key)) ?? primary;
+        var (commits, pullRequests) = ResolveChangeSet(changeSource, key);
+
+        // Environments the change is actually running in, unioned across every version that carried
+        // the ticket — superseded builds included, because an environment may still be sitting on one
+        // of them, and that's where someone would go to exercise the change.
+        var environments = (await ResolveDeployedEnvironmentsAsync(
+                ordered.Select(c => new DeployedVersionKey(c.Product, c.Service, c.Version)), ct))
+            .Values
+            .SelectMany(v => v)
+            .GroupBy(v => v.Environment, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(v => v.DeployedAt).First())
+            .OrderByDescending(v => v.DeployedAt)
+            .ToList();
+
+        // Role completeness is judged against the primary candidate — the same one whose reference
+        // supplies the display fields and receives participant writes, so what the page asks for is
+        // what the assign control can actually fill. Once anybody has ruled on the item there is
+        // nothing to ask for: the page keeps its Assign controls but stops warning
+        // (see WorkItemRoleRequirements).
+        var aliases = await _roles.MapAsync(ct);
+        var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key, aliases);
+        var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary, aliases);
+        var decided = ctx.Approvals.Count > 0;
+
+        return new WorkItemDetail(
+            WorkItemKey: key,
+            Product: prod,
+            Service: svc,
+            TargetEnv: env,
+            Environments: environments,
+            Title: title,
+            // The rows already went through WorkItemDisplay, which drops a repeat — but the two
+            // values can come from different rows here, so the guard is re-applied.
+            SubTitle: string.Equals(subTitle, title, StringComparison.Ordinal) ? null : subTitle,
+            // Blank-to-null so the client has one emptiness check ("no content") rather than two.
+            Content: string.IsNullOrWhiteSpace(content) ? null : content,
+            Priority: string.IsNullOrWhiteSpace(priority) ? null : priority,
+            WorkItemType: string.IsNullOrWhiteSpace(workItemType) ? null : workItemType,
+            Url: url,
+            Provider: provider,
+            PendingCandidateId: ctx.PendingCandidateId,
+            PrimaryCandidateId: primary.Id,
+            CanApprove: ctx.CanApprove,
+            CanManage: _currentUser.IsQA || _currentUser.IsAdmin,
+            BlockedReason: ctx.BlockedReason,
+            MyDecision: ctx.MyDecision,
+            Participants: participants,
+            RequiredRoles: requiredRoles,
+            MissingRoles: WorkItemRoleRequirements.MissingRoles(participants, requiredRoles, decided, aliases),
+            Approvals: ctx.Approvals,
+            Comments: comments,
+            Commits: commits,
+            PullRequests: pullRequests,
+            Candidates: ordered
+                .Where(c => c.Status != PromotionStatus.Superseded)
+                .Select(c => new WorkItemCandidateRef(
+                    c.Id, c.Service, c.Version, c.SourceEnv, c.TargetEnv,
+                    c.Status.ToString(), c.CreatedAt, c.Id == primary.Id))
+                .ToList(),
+            Overall: overall?.ToSummary(),
+            GateRequiresAllInstances: WorkItemRoleRequirements.RequiresAllInstances(primary));
+    }
+
+    // ---------------------------------------------------------------------
+    // Maintenance: stranded work items ("No live promotion")
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Signs off every work item stranded in the "No live promotion" state — the queue rows whose
+    /// only promotions were superseded or rejected without a replacement picking the ticket up.
+    /// Nothing resolves them on its own (no future gate needs them, and no deploy retires them), so
+    /// they accumulate as permanently pending work; this is the sweep that clears them.
+    ///
+    /// <para>The scan mirrors the orphan branch of <see cref="GetPendingForCurrentUserAsync"/> —
+    /// dead candidate, live service, human gate — with two deliberate differences. It is
+    /// <b>global</b>, not narrowed by the caller's hidden products: a maintenance pass repairs the
+    /// install, and one admin's view preference is not a scope. And it skips any item that already
+    /// carries <i>any</i> decision by anyone, not just an approval: an Issue or a Block is a
+    /// deliberate human hold, and a bulk sweep has no business overruling one.</para>
+    ///
+    /// <para>Each item is signed off through the ordinary <see cref="ApproveAsync"/> path, so every
+    /// one gets its audit row, its <c>promotion.ticket.approved</c> webhook and its entry in the
+    /// work item's comment thread — a bulk repair should leave the same trail as the clicks it
+    /// replaces. Gate re-evaluation is a no-op by construction: nothing Pending carries these items.
+    /// A single failure is recorded on its row and the sweep continues.</para>
+    ///
+    /// <para><paramref name="dryRun"/> reports the list without writing. The scan is capped at
+    /// <see cref="OrphanScanLimit"/> dead candidates, the same ceiling the queue reads.</para>
+    /// </summary>
+    public async Task<OrphanedWorkItemSweepResult> ApproveOrphanedWorkItemsAsync(
+        bool dryRun, CancellationToken ct = default)
+    {
+        // Same jurisdiction as a single sign-off. Checked up front rather than per item so an
+        // unauthorized caller gets one clear refusal instead of N identical row-level failures.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
+
+        var items = await FindOrphanedWorkItemsAsync(ct);
+        if (dryRun || items.Count == 0)
+            return new OrphanedWorkItemSweepResult(items.Count, 0, 0, DryRun: dryRun, Items: items);
+
+        var results = new List<OrphanedWorkItemView>(items.Count);
+        var approved = 0;
+        var failed = 0;
+        foreach (var item in items)
+        {
+            try
+            {
+                await ApproveAsync(item.WorkItemKey, item.Product, item.Service, item.TargetEnv, SweepComment, ct);
+                approved++;
+                results.Add(item);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                // Row-level refusal — the item raced into a state the sign-off will not accept
+                // (someone decided it, a new promotion picked it up). Reported, not fatal.
+                failed++;
+                results.Add(item with { Error = ex.Message });
+                _logger.LogWarning(ex,
+                    "Orphan sweep could not sign off {Key} ({Product}/{Service}/{Env})",
+                    LogSanitizer.Clean(item.WorkItemKey), LogSanitizer.Clean(item.Product),
+                    LogSanitizer.Clean(item.Service), LogSanitizer.Clean(item.TargetEnv));
+            }
+        }
+
+        await _audit.Log(
+            "promotions", "work-item.orphans-swept",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemApproval", null, null,
+            new { examined = items.Count, approved, failed });
+
+        _logger.LogInformation(
+            "Orphaned work-item sweep by {Email}: {Approved} approved, {Failed} failed of {Examined}",
+            LogSanitizer.Clean(_currentUser.Email), approved, failed, items.Count);
+
+        return new OrphanedWorkItemSweepResult(items.Count, approved, failed, DryRun: false, Items: results);
+    }
+
+    /// <summary>The note attached to a swept sign-off, in the approval row and the comment thread.</summary>
+    private const string SweepComment =
+        "Approved by maintenance sweep — no live promotion carries this work item.";
+
+    /// <summary>
+    /// The undecided work items whose only promotions are dead. Shared by the preview and the apply
+    /// halves of <see cref="ApproveOrphanedWorkItemsAsync"/> so the reviewed list is the applied one.
+    /// Ordered newest dead candidate first, matching the queue.
+    /// </summary>
+    private async Task<List<OrphanedWorkItemView>> FindOrphanedWorkItemsAsync(CancellationToken ct)
+    {
+        // Dead candidates, newest first — the newest one owns the row when several carry the ticket.
+        // Retired services drop out on the queue's principle: nobody signs off tickets for a
+        // component that has been migrated away, and those rows are in nobody's queue to begin with.
+        var stranded = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status == PromotionStatus.Superseded || c.Status == PromotionStatus.Rejected)
+            .ExcludingDeletedServices(_db)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(OrphanScanLimit)
+            .ToListAsync(ct);
+        if (stranded.Count == 0) return new();
+
+        var strandedIds = stranded.Select(c => c.Id).ToList();
+        var workItems = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => strandedIds.Contains(w.CandidateId))
+            .ToListAsync(ct);
+        if (workItems.Count == 0) return new();
+
+        // Tuples a live promotion still carries. Those items are ordinary pending work — a sweep
+        // must not touch them, and signing one off would feed a gate that could auto-promote.
+        var liveIds = await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        var live = (await _db.PromotionWorkItems.AsNoTracking()
+                .Where(w => liveIds.Contains(w.CandidateId))
+                .Select(w => new { w.WorkItemKey, w.Product, w.Service, w.TargetEnv })
+                .ToListAsync(ct))
+            .Select(w => (w.WorkItemKey, w.Product, w.Service, w.TargetEnv))
+            .ToHashSet();
+
+        // Any decision at all — an approval or an issue means resolved, a Block means someone is
+        // deliberately holding the item. All are left alone: somebody already ruled on them.
+        var decided = (await _db.WorkItemApprovals.AsNoTracking()
+                .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv })
+                .ToListAsync(ct))
+            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
+            .ToHashSet();
+
+        var workItemsByCandidate = workItems
+            .GroupBy(w => w.CandidateId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var emitted = new HashSet<(string Key, string Product, string Service, string Env)>();
+        var result = new List<OrphanedWorkItemView>();
+        foreach (var c in stranded)
+        {
+            // Auto-approve has no human gate, so its tickets are not sign-off work — the queue
+            // skips them and they never show as "No live promotion".
+            if (ReadSnapshot(c).IsAutoApprove) continue;
+
+            foreach (var w in workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
+            {
+                var tup = (w.WorkItemKey, c.Product, c.Service, c.TargetEnv);
+                if (live.Contains(tup)) continue;
+                if (decided.Contains(tup)) continue;
+                if (!emitted.Add(tup)) continue;
+
+                result.Add(new OrphanedWorkItemView(
+                    WorkItemKey: w.WorkItemKey,
+                    Title: w.Title,
+                    Product: c.Product,
+                    TargetEnv: c.TargetEnv,
+                    Service: c.Service,
+                    Version: c.Version,
+                    CandidateStatus: c.Status.ToString()));
+            }
+        }
+
+        return result;
+    }
+
+    // ---------------------------------------------------------------------
+    // Comments
+    //
+    // Keyed by (workItemKey, product, service, targetEnv) — the same grain as the decision rows — so
+    // the thread outlives the candidate that happened to be live when it started.
+    // ---------------------------------------------------------------------
+
+    public async Task<List<WorkItemComment>> GetCommentsAsync(
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        if (key.Length == 0 || prod.Length == 0 || svc.Length == 0 || env.Length == 0) return new();
+
+        return await _db.WorkItemComments.AsNoTracking()
+            .Where(c => c.WorkItemKey == key && c.Product == prod && c.Service == svc && c.TargetEnv == env)
+            .OrderBy(c => c.CreatedAt)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Posts a comment on a work item. Unlike a decision this needs no live Pending candidate —
+    /// discussing a ticket whose promotion already shipped (or was superseded) is legitimate — but
+    /// the ticket must be one the platform has actually seen, so an arbitrary key can't seed rows.
+    /// </summary>
+    public async Task<WorkItemComment> AddCommentAsync(
+        string workItemKey, string product, string service, string targetEnv, string body,
+        CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var svc = (service ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        var trimmed = (body ?? "").Trim();
+        if (key.Length == 0) throw new InvalidOperationException("workItemKey is required");
+        if (prod.Length == 0) throw new InvalidOperationException("product is required");
+        if (svc.Length == 0) throw new InvalidOperationException("service is required");
+        if (env.Length == 0) throw new InvalidOperationException("targetEnv is required");
+        if (trimmed.Length == 0) throw new InvalidOperationException("Comment body is required");
+
+        if (!await IsKnownWorkItemAsync(key, prod, svc, env, ct))
+            throw new KeyNotFoundException($"Work item '{key}' is not known for {prod}/{svc}/{env}");
+
+        var comment = new WorkItemComment
+        {
+            Id = Guid.NewGuid(),
+            WorkItemKey = key,
+            Product = prod,
+            Service = svc,
+            TargetEnv = env,
+            AuthorEmail = _currentUser.Email,
+            AuthorName = _currentUser.Name,
+            Body = trimmed,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        _db.WorkItemComments.Add(comment);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.comment.added",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemComment", comment.Id, null,
+            new { workItemKey = key, product = prod, service = svc, targetEnv = env });
+
+        // Comments are conversation, not a subscriber-facing contract event — realtime only,
+        // so an open work-item view shows the new entry without a reload.
+        await _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "work-item", Action = "commented",
+            Key = key, Product = prod, Service = svc, Environment = env,
+        });
+
+        return comment;
+    }
+
+    public async Task<WorkItemComment> UpdateCommentAsync(
+        Guid commentId, string body, CancellationToken ct = default)
+    {
+        var trimmed = (body ?? "").Trim();
+        if (trimmed.Length == 0) throw new InvalidOperationException("Comment body is required");
+
+        var comment = await _db.WorkItemComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
+            ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+        EnsureCommentEditable(comment, "edit");
+
+        comment.Body = trimmed;
+        comment.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.comment.updated",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemComment", comment.Id, null,
+            new { comment.WorkItemKey, comment.Product, comment.Service, comment.TargetEnv });
+
+        await _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "work-item", Action = "commented",
+            Key = comment.WorkItemKey, Product = comment.Product, Service = comment.Service,
+            Environment = comment.TargetEnv,
+        });
+
+        return comment;
+    }
+
+    public async Task DeleteCommentAsync(Guid commentId, CancellationToken ct = default)
+    {
+        var comment = await _db.WorkItemComments.FirstOrDefaultAsync(c => c.Id == commentId, ct)
+            ?? throw new KeyNotFoundException($"Comment {commentId} not found");
+        EnsureCommentEditable(comment, "delete");
+
+        _db.WorkItemComments.Remove(comment);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(
+            "promotions", "work-item.comment.deleted",
+            _currentUser.Id, _currentUser.Name, "user",
+            "WorkItemComment", commentId, null,
+            new { comment.WorkItemKey, comment.Product, comment.Service, comment.TargetEnv });
+
+        await _events.PublishEntityChanged(new EntityChangedEvent
+        {
+            Entity = "work-item", Action = "commented",
+            Key = comment.WorkItemKey, Product = comment.Product, Service = comment.Service,
+            Environment = comment.TargetEnv,
+        });
+    }
+
+    private void EnsureCommentEditable(WorkItemComment comment, string verb)
+    {
+        // Decision entries are the record of a sign-off, and system entries record what the platform
+        // did — neither is discussion, so nobody edits them, admin included. The way to change a
+        // decision is to record a new one.
+        if (comment.Decision is not null
+            || string.Equals(comment.AuthorEmail, WorkItemComment.SystemAuthor, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"This entry is a system record and cannot be {verb}d");
+        if (string.Equals(comment.AuthorEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase)) return;
+        if (_currentUser.IsAdmin) return;
+        throw new UnauthorizedAccessException($"Only the author (or an admin) can {verb} this comment");
+    }
+
+    /// <summary>
+    /// Whether the platform has ever seen this work item on a promotion for that
+    /// (product, service, env). The gate on writing anything — a decision or a comment — against an
+    /// arbitrary key.
+    /// </summary>
+    private async Task<bool> IsKnownWorkItemAsync(
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct)
+        => await _db.PromotionWorkItems.AsNoTracking()
+            .AnyAsync(w => w.WorkItemKey == workItemKey && w.Product == product && w.Service == service
+                        && w.TargetEnv == targetEnv, ct);
+
+    /// <summary>
+    /// The ticket's overall status in one <c>(product, targetEnv)</c>: every service instance with its
+    /// own sign-off state, and the roll-up across them (<see cref="WorkItemOverallStatus"/>). Every
+    /// instance page shows this beside the instance's own state, and it is what a policy with
+    /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> gates on. Also the
+    /// resolver for links minted before the service joined the identity —
+    /// <c>/work-items/{key}?product=&amp;targetEnv=</c> — which the client resolves to one instance (or
+    /// offers the list). Null when the ticket is unknown for that product/env.
+    /// </summary>
+    public async Task<WorkItemOverallStatus?> GetOverallStatusAsync(
+        string workItemKey, string product, string targetEnv, CancellationToken ct = default)
+    {
+        var key = (workItemKey ?? "").Trim();
+        var prod = (product ?? "").Trim();
+        var env = (targetEnv ?? "").Trim();
+        if (key.Length == 0 || prod.Length == 0 || env.Length == 0) return null;
+        return await WorkItemOverallStatus.LoadOneAsync(_db, key, prod, env, ct);
     }
 
     // ---------------------------------------------------------------------
@@ -725,136 +1562,491 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Picks the candidate whose policy will gate the decision. A ticket can appear on multiple
-    /// Pending candidates (different services or envs); we pick the most recently created Pending
-    /// candidate in <c>(product, targetEnv)</c> whose <see cref="PromotionWorkItem"/> rows include
-    /// the ticket. Most-recent because it represents the freshest state of the world.
+    /// All Pending candidates in the ticket's (product, targetEnv) that carry this ticket — on any
+    /// service. A ticket can back several promotions of one service at once (a second source edge
+    /// into the same target), and one shared approval counts for all of them; a promotion of another
+    /// service may be gating on the ticket's overall status
+    /// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) and be waiting for
+    /// this very instance. This is the fan-out used to re-evaluate every affected gate after a
+    /// sign-off; re-evaluation is idempotent, so over-reaching is harmless.
     /// </summary>
-    private async Task<PromotionCandidate?> FindPendingCandidateForTicketAsync(
+    private async Task<IReadOnlyList<Guid>> FindPendingCandidateIdsForTicketAsync(
         string workItemKey, string product, string targetEnv, CancellationToken ct)
     {
-        // 1. Candidate ids whose work-item index carries this ticket for (product, targetEnv).
         var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
             .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.TargetEnv == targetEnv)
             .Select(w => w.CandidateId)
             .Distinct()
             .ToListAsync(ct);
-        if (candidateIds.Count == 0) return null;
+        if (candidateIds.Count == 0) return Array.Empty<Guid>();
 
-        // 2. Among those, the most recently created Pending candidate in (product, targetEnv).
         return await _db.PromotionCandidates.AsNoTracking()
             .Where(c => candidateIds.Contains(c.Id)
                      && c.Product == product
+                     && c.TargetEnv == targetEnv
+                     && c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+    }
+
+    private async Task<PromotionCandidate?> FindPendingCandidateForTicketAsync(
+        string workItemKey, string product, string service, string targetEnv, CancellationToken ct)
+    {
+        // 1. Candidate ids whose work-item index carries this ticket for (product, service, targetEnv).
+        var candidateIds = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.WorkItemKey == workItemKey && w.Product == product && w.Service == service
+                     && w.TargetEnv == targetEnv)
+            .Select(w => w.CandidateId)
+            .Distinct()
+            .ToListAsync(ct);
+        if (candidateIds.Count == 0) return null;
+
+        // 2. Among those, the most recently created Pending candidate in (product, service, targetEnv).
+        return await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => candidateIds.Contains(c.Id)
+                     && c.Product == product
+                     && c.Service == service
                      && c.TargetEnv == targetEnv
                      && c.Status == PromotionStatus.Pending)
             .OrderByDescending(c => c.CreatedAt)
             .FirstOrDefaultAsync(ct);
     }
 
-    /// <summary>
-    /// Returns the effective participant list for <paramref name="workItemKey"/> on the candidate.
-    /// The candidate is self-contained, so people come from its own data (no deploy-event join, no
-    /// operator overrides):
-    /// <list type="bullet">
-    ///   <item>Reference-level participants nested in the matching work-item entry of
-    ///         <see cref="PromotionCandidate.References"/>.</item>
-    ///   <item>Promotion-level participants (<see cref="PromotionCandidate.Participants"/>) — for
-    ///         any role not already resolved by the reference-level layer.</item>
-    /// </list>
-    /// Each canonical role appears at most once.
-    /// </summary>
-    private static IReadOnlyList<ParticipantDto> GetWorkItemParticipants(
-        PromotionCandidate candidate, string workItemKey)
-    {
-        var merged = new List<ParticipantDto>();
-        var seenCanonical = new HashSet<string>(StringComparer.Ordinal);
+    /// <summary>Whether the candidate records any source commits for this work item.</summary>
+    private static bool ResolvesCommits(PromotionCandidate candidate, string workItemKey)
+        => FindWorkItemReference(candidate, workItemKey)?.Commits is { Count: > 0 };
 
-        // ── Layer 1: reference-level participants on the matching work-item reference ──
-        var matchedRef = candidate.References.FirstOrDefault(r =>
+    private static ReferenceDto? FindWorkItemReference(PromotionCandidate candidate, string workItemKey)
+        => candidate.References.FirstOrDefault(r =>
             string.Equals(r.Key, workItemKey, StringComparison.OrdinalIgnoreCase)
             && string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase));
-        if (matchedRef?.Participants is { Count: > 0 } refParticipants)
+
+    /// <summary>
+    /// Resolves the change set behind a work item: the commits whose messages referenced the ticket,
+    /// and the pull requests those commits merged.
+    ///
+    /// <para>The producer supplies the linkage as bare hashes on the work-item reference's
+    /// <see cref="ReferenceDto.Commits"/>. This walks the candidate's other references to hydrate
+    /// them: a <c>commit</c> reference matches on <see cref="ReferenceDto.Key"/>, and a
+    /// <c>pull-request</c> reference matches on <see cref="ReferenceDto.Revision"/> — the merge commit
+    /// it produced. That indirection (ticket → commit → PR) is why the PR list is derived rather than
+    /// declared: the payload never states which PR belongs to which ticket, only which commit does.</para>
+    ///
+    /// <para>A hash with no matching <c>commit</c> reference still yields a row carrying just the hash.
+    /// The hash is real information — the producer saw that commit — and silently dropping it would
+    /// make the change set look smaller than it is. Output order follows the declared hash order so
+    /// it stays stable and mirrors the payload.</para>
+    /// </summary>
+    private static (List<WorkItemCommitRef> Commits, List<WorkItemPullRequestRef> PullRequests)
+        ResolveChangeSet(PromotionCandidate candidate, string workItemKey)
+    {
+        var commits = new List<WorkItemCommitRef>();
+        var pullRequests = new List<WorkItemPullRequestRef>();
+
+        var declared = FindWorkItemReference(candidate, workItemKey)?.Commits;
+        if (declared is not { Count: > 0 }) return (commits, pullRequests);
+
+        var references = candidate.References;
+        var seenCommits = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenPrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var raw in declared)
         {
-            foreach (var p in refParticipants)
+            var hash = (raw ?? "").Trim();
+            if (hash.Length == 0 || !seenCommits.Add(hash)) continue;
+
+            var commitRef = references.FirstOrDefault(r =>
+                string.Equals(r.Type, "commit", StringComparison.OrdinalIgnoreCase)
+                && GitHash.Matches(r.Key, hash));
+
+            commits.Add(new WorkItemCommitRef(
+                Hash: hash,
+                Title: commitRef?.Title,
+                Url: commitRef?.Url,
+                Provider: commitRef?.Provider,
+                Participants: commitRef?.Participants ?? Array.Empty<ParticipantDto>()));
+
+            foreach (var pr in references.Where(r =>
+                string.Equals(r.Type, "pull-request", StringComparison.OrdinalIgnoreCase)
+                && GitHash.Matches(r.Revision, hash)))
             {
-                var canonical = RoleNormalizer.Normalize(p.Role);
-                if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
-                merged.Add(p);
+                // Key is a PR number and the natural identity; fall back to the URL for a producer
+                // that omitted it, so an unkeyed PR still renders once instead of on every commit.
+                var prIdentity = string.IsNullOrWhiteSpace(pr.Key) ? pr.Url ?? "" : pr.Key;
+                if (prIdentity.Length == 0 || !seenPrs.Add(prIdentity)) continue;
+                pullRequests.Add(new WorkItemPullRequestRef(
+                    Key: pr.Key ?? "",
+                    Title: pr.Title,
+                    Url: pr.Url,
+                    Provider: pr.Provider,
+                    Revision: pr.Revision,
+                    Participants: pr.Participants ?? Array.Empty<ParticipantDto>()));
             }
         }
 
-        // ── Layer 2: promotion-level participants for any role not yet covered ──
-        foreach (var p in candidate.Participants)
-        {
-            var canonical = RoleNormalizer.Normalize(p.Role);
-            if (canonical.Length == 0 || !seenCanonical.Add(canonical)) continue;
-            merged.Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
-        }
-
-        return merged;
+        return (commits, pullRequests);
     }
 
     /// <summary>
-    /// Builds the merged assignee view for a candidate from its own data: reference-level
-    /// participants nested under each work-item reference, plus promotion-level participants. Only
-    /// participants whose role canonicalises into <paramref name="assigneeRoleSet"/> are returned.
+    /// The effective participant list for <paramref name="workItemKey"/> on the candidate — see
+    /// <see cref="WorkItemRoleRequirements.ResolveParticipants(IReadOnlyList{ReferenceDto}, IReadOnlyList{PromotionParticipant}, string, RoleAliasMap?)"/>.
+    /// Kept as a thin alias because it is read on every row of the queue and the shared name reads
+    /// less clearly at those call sites. Nobody, for a candidate whose people were not loaded.
     /// </summary>
-    private static List<MergedParticipant> BuildMergedAssignees(
-        PromotionCandidate candidate, HashSet<string> assigneeRoleSet)
+    private static IReadOnlyList<ParticipantDto> GetWorkItemParticipants(
+        CarrierPeople? carrier, string workItemKey, RoleAliasMap aliases)
+        => carrier is null
+            ? Array.Empty<ParticipantDto>()
+            : WorkItemRoleRequirements.ResolveParticipants(
+                carrier.References, carrier.Participants, workItemKey, aliases);
+
+    /// <summary>
+    /// The columns of a candidate the queue reads up front: identity, status, ordering and the policy
+    /// snapshot — not its change set (<see cref="PromotionCandidate.ReferencesJson"/>, which carries
+    /// every ticket, PR and commit body) nor its participants, which only the candidates that own a
+    /// row need (<see cref="CarrierPeople"/>).
+    /// </summary>
+    private sealed record QueueCandidate(
+        Guid Id, string Product, string Service, string TargetEnv, string Version,
+        PromotionStatus Status, DateTimeOffset CreatedAt, string? ResolvedPolicyJson)
+    {
+        public static readonly Expression<Func<PromotionCandidate, QueueCandidate>> Columns = c =>
+            new QueueCandidate(c.Id, c.Product, c.Service, c.TargetEnv, c.Version, c.Status, c.CreatedAt,
+                c.ResolvedPolicyJson);
+    }
+
+    /// <summary>
+    /// The columns of a work-item row a queue row renders — never its
+    /// <see cref="PromotionWorkItem.Content"/>, the unbounded ticket body only the detail page shows.
+    /// </summary>
+    private sealed record QueueWorkItem(
+        Guid CandidateId, string WorkItemKey, string Product, string Service, string TargetEnv,
+        string? Provider, string? Url, string? Title, string? SubTitle, string? Priority, string? WorkItemType)
+    {
+        public static readonly Expression<Func<PromotionWorkItem, QueueWorkItem>> Columns = w =>
+            new QueueWorkItem(w.CandidateId, w.WorkItemKey, w.Product, w.Service, w.TargetEnv,
+                w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType);
+    }
+
+    /// <summary>
+    /// A candidate's change set and promotion-level participants, deserialised once. The entity's
+    /// <see cref="PromotionCandidate.References"/> and <see cref="PromotionCandidate.Participants"/>
+    /// parse their JSON column on every read, which across the work items of a large change set was
+    /// most of what a queue read allocated.
+    ///
+    /// <para>The references are read only as far as naming people needs — type, key and participants,
+    /// which is all <see cref="WorkItemRoleRequirements.ResolveParticipants(IReadOnlyList{ReferenceDto}, IReadOnlyList{PromotionParticipant}, string, RoleAliasMap?)"/>
+    /// looks at. The bodies (<see cref="ReferenceDto.Content"/>) are most of the column and are skipped
+    /// rather than held for the length of the request.</para>
+    /// </summary>
+    private sealed record CarrierPeople(List<ReferenceDto> References, List<PromotionParticipant> Participants)
+    {
+        public static CarrierPeople Of(PromotionCandidate candidate)
+        {
+            var people = string.IsNullOrEmpty(candidate.ReferencesJson)
+                ? new()
+                : JsonSerializer.Deserialize<List<ReferencePeople>>(candidate.ReferencesJson, JsonOptions) ?? new();
+            return new(
+                people.Select(r => new ReferenceDto(r.Type, Key: r.Key, Participants: r.Participants)).ToList(),
+                candidate.Participants);
+        }
+
+        /// <summary>The members of a <see cref="ReferenceDto"/> that say who is on it.</summary>
+        private sealed record ReferencePeople(string Type, string? Key, IReadOnlyList<ParticipantDto>? Participants);
+    }
+
+    /// <summary>
+    /// Narrows a work item's effective participants (see
+    /// <see cref="GetWorkItemParticipants"/>) to the ones that can be treated as an assignment:
+    /// a non-empty email and, when <paramref name="roleSet"/> is supplied, a role that canonicalises
+    /// into it. This — not the candidate's full participant graph — is what the person filter
+    /// matches against, so filtering and display can't disagree about who a work item is assigned to.
+    ///
+    /// <para>Pass <c>null</c> for <paramref name="roleSet"/> to accept <b>any</b> role. That is what
+    /// a plain <c>assignee</c> filter means: being named on a work item at all matches, whether you
+    /// are its assignee, its QA owner, or its reporter. Restricting that to a privileged subset of
+    /// roles hid items from the very people recorded against them.</para>
+    ///
+    /// <para>"Any role" excludes <see cref="PipelineMetadataRoles"/> — see there for why. An explicit
+    /// role set (the policy-required roles, under <c>roleRequirement=assigned</c>) still honours
+    /// them: a policy that requires a role is asking for somebody in it, whatever it is called.</para>
+    /// </summary>
+    private static List<MergedParticipant> AssignableParticipants(
+        IReadOnlyList<ParticipantDto> participants, HashSet<string>? roleSet, RoleAliasMap aliases)
     {
         var result = new List<MergedParticipant>();
-        if (assigneeRoleSet.Count == 0) return result;
 
-        void Add(ParticipantDto p)
+        foreach (var p in participants)
         {
-            var canon = RoleNormalizer.Normalize(p.Role);
-            if (canon.Length == 0 || !assigneeRoleSet.Contains(canon)) return;
-            if (string.IsNullOrEmpty(p.Email)) return;
+            // Alias-resolved, so the assignee summary reports a `qa` participant under the role it
+            // names and the person dropdown built from it filters to something.
+            var canon = aliases.Resolve(p.Role);
+            if (canon.Length == 0) continue;
+            if (roleSet is null ? PipelineMetadataRoles.Contains(canon) : !roleSet.Contains(canon)) continue;
+            if (string.IsNullOrEmpty(p.Email)) continue;
             result.Add(new MergedParticipant(canon, p.Email!.Trim().ToLowerInvariant(), p.DisplayName));
         }
-
-        // Reference-level participants nested under each reference.
-        foreach (var r in candidate.References)
-        {
-            if (r.Participants is not { Count: > 0 } refParticipants) continue;
-            foreach (var p in refParticipants) Add(p);
-        }
-
-        // Promotion-level participants.
-        foreach (var p in candidate.Participants)
-            Add(new ParticipantDto(p.Role, p.DisplayName, p.Email));
 
         return result;
     }
 
+    /// <summary>
+    /// Roles that record how a build happened rather than who is answerable for the change in it. They
+    /// are the one exception to "any role counts as an assignment": whoever clicked run on a pipeline
+    /// would otherwise become the assignee of every work item that build carried, and the
+    /// "nobody assigned" filter — which exists to find unowned work — would never match anything.
+    /// </summary>
+    private static readonly HashSet<string> PipelineMetadataRoles =
+        new(new[] { RoleNormalizer.Normalize("triggered-by") }, StringComparer.OrdinalIgnoreCase);
+
     private readonly record struct MergedParticipant(string Role, string Email, string? DisplayName);
+
+    /// <summary>
+    /// The environments a given (product, service, version) has actually been deployed to, keyed by
+    /// that triple. This is the answer to "where can someone see and test this work item?" — a
+    /// question the promotion's source/target env never answered: the target env is where the build
+    /// is <i>asking</i> to go, not where the change is running.
+    ///
+    /// <para>Only succeeded deploys count, and each environment appears once with its most recent
+    /// deploy of that version (a version can be redeployed, or rolled back to). Retired environments
+    /// don't count at all: nobody can test anything in an environment nothing runs in any more, and
+    /// "testable in" one is exactly the stale answer retiring it is meant to stop.</para>
+    ///
+    /// <para>One query for the whole batch: the <c>Contains</c> predicates span the cross product of
+    /// the distinct products / services / versions asked for, and the exact triples are re-checked in
+    /// memory. That over-fetches rows for combinations that happen to share a version string across
+    /// services, which is cheap and bounded — a query per row would not be. Each list goes as one
+    /// array parameter, so the batch size never mints a new query plan.</para>
+    /// </summary>
+    private async Task<Dictionary<DeployedVersionKey, List<WorkItemEnvironmentView>>>
+        ResolveDeployedEnvironmentsAsync(
+            IEnumerable<DeployedVersionKey> versions, CancellationToken ct)
+    {
+        var wanted = versions
+            .Where(v => v.Product.Length > 0 && v.Service.Length > 0 && v.Version.Length > 0)
+            .ToHashSet();
+        if (wanted.Count == 0) return new();
+
+        var products = wanted.Select(v => v.Product).Distinct().ToList();
+        var services = wanted.Select(v => v.Service).Distinct().ToList();
+        var versionStrings = wanted.Select(v => v.Version).Distinct().ToList();
+
+        var events = await _db.DeployEvents.AsNoTracking()
+            .ExcludingRetiredEnvironments(await _environments.RetiredKeysAsync(ct))
+            .Where(e => e.Status == "succeeded"
+                     && EF.Parameter(products).Contains(e.Product)
+                     && EF.Parameter(services).Contains(e.Service)
+                     && EF.Parameter(versionStrings).Contains(e.Version))
+            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt })
+            .ToListAsync(ct);
+
+        var byVersion = new Dictionary<DeployedVersionKey, Dictionary<string, WorkItemEnvironmentView>>();
+        foreach (var e in events)
+        {
+            var key = new DeployedVersionKey(e.Product, e.Service, e.Version);
+            if (!wanted.Contains(key)) continue;
+
+            if (!byVersion.TryGetValue(key, out var envs))
+                byVersion[key] = envs = new Dictionary<string, WorkItemEnvironmentView>(StringComparer.OrdinalIgnoreCase);
+            if (envs.TryGetValue(e.Environment, out var seen) && seen.DeployedAt >= e.DeployedAt) continue;
+            envs[e.Environment] = new WorkItemEnvironmentView(
+                Environment: e.Environment,
+                Service: e.Service,
+                Version: e.Version,
+                DeployedAt: e.DeployedAt);
+        }
+
+        return byVersion.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value.Values.OrderByDescending(v => v.DeployedAt).ToList());
+    }
 
     private record struct AssigneeAccumulator(string? DisplayName, int Count);
 
     private static ResolvedPolicySnapshot ReadSnapshot(PromotionCandidate candidate)
+        => ReadSnapshot(candidate.Id, candidate.ResolvedPolicyJson);
+
+    private static ResolvedPolicySnapshot ReadSnapshot(Guid candidateId, string? resolvedPolicyJson)
     {
-        if (string.IsNullOrEmpty(candidate.ResolvedPolicyJson))
+        if (string.IsNullOrEmpty(resolvedPolicyJson))
             throw new InvalidOperationException(
-                $"Candidate {candidate.Id} has no policy snapshot — data corruption?");
-        return JsonSerializer.Deserialize<ResolvedPolicySnapshot>(candidate.ResolvedPolicyJson, JsonOptions)
+                $"Candidate {candidateId} has no policy snapshot — data corruption?");
+        return JsonSerializer.Deserialize<ResolvedPolicySnapshot>(resolvedPolicyJson, JsonOptions)
             ?? throw new InvalidOperationException(
-                $"Failed to deserialize policy snapshot for candidate {candidate.Id}");
+                $"Failed to deserialize policy snapshot for candidate {candidateId}");
     }
 }
 
 /// <summary>
-/// Authority + history snapshot for a single ticket × (product, targetEnv) pair.
+/// Narrowing of the work-item queue by the promotion policy's work-item role requirement — the two
+/// tabs that ask about responsibility rather than about sign-off state. See
+/// <see cref="WorkItemRoleRequirements"/> for what "required" means.
+/// </summary>
+public enum WorkItemRoleRequirementFilter
+{
+    /// <summary>No narrowing: the person filter behaves exactly as it always has.</summary>
+    Any,
+
+    /// <summary>
+    /// Only work items where the person filter matches somebody in a role the item's policy
+    /// <i>requires</i> — "assigned to me" in the sense of being answerable for it. Items whose policy
+    /// requires no role can never match.
+    /// </summary>
+    Assigned,
+
+    /// <summary>
+    /// Only work items missing somebody in at least one policy-required role — the "Not assigned" tab.
+    /// </summary>
+    Missing,
+}
+
+/// <summary>
+/// Authority + history snapshot for a single ticket × (product, service, targetEnv).
 /// <para><c>BlockedReason</c> mirrors the failure modes of the throwing decision path so the
 /// UI can surface the same wording it would see on a failed POST.</para>
 /// </summary>
 public record TicketContext(
     string WorkItemKey,
     string Product,
+    string Service,
     string TargetEnv,
     Guid? PendingCandidateId,
     bool CanApprove,
     string? BlockedReason,
-    List<WorkItemApproval> Approvals);
+    List<WorkItemApproval> Approvals,
+    /// <summary>The current user's own decision ("Approved" / "Rejected" / "Blocked"), or null.</summary>
+    string? MyDecision = null);
+
+/// <summary>
+/// Full state of one work item for the detail page. <see cref="PrimaryCandidateId"/> is the
+/// candidate participant assignments write to; <see cref="Candidates"/> lists every promotion the
+/// ticket appears on so the page can link out to each.
+/// </summary>
+public record WorkItemDetail(
+    string WorkItemKey,
+    string Product,
+    /// <summary>
+    /// The service whose change this work item is. Part of the identity: the same ticket on another
+    /// service of the product is a different work item with its own page.
+    /// </summary>
+    string Service,
+    /// <summary>
+    /// The promotion edge this sign-off gates. Part of the work item's identity (decisions and
+    /// comments key on it) but not something the page presents as a property of the work item —
+    /// <see cref="Environments"/> is what tells a reviewer where the change can be exercised.
+    /// </summary>
+    string TargetEnv,
+    /// <summary>Environments the change is deployed to, newest deploy first. See
+    /// <see cref="WorkItemEnvironmentView"/>.</summary>
+    IReadOnlyList<WorkItemEnvironmentView> Environments,
+    string? Title,
+    /// <summary>
+    /// Secondary display line under <see cref="Title"/>: the messages of every commit this item was
+    /// carried by, joined (see <c>Deployments.WorkItemDisplay</c>). <see cref="Title"/> names the
+    /// ticket, this says what changed. Null when no commit message is known, or when the item's one
+    /// commit is named the same thing as the ticket.
+    /// </summary>
+    string? SubTitle,
+    /// <summary>
+    /// The work item's body as the producer sent it — the Jira description, PR description, or
+    /// commit message body. Null (or blank) when the payload carried none, in which case the
+    /// detail page shows no Content section at all rather than an empty one.
+    /// </summary>
+    string? Content,
+    /// <summary>
+    /// The tracker's priority label ("High") and issue type ("Bug", "Story"), as the producer read
+    /// them. Shown as chips beside the title; null when the producer sent none, in which case no chip
+    /// is rendered rather than an "Unknown" one.
+    /// </summary>
+    string? Priority,
+    string? WorkItemType,
+    string? Url,
+    string? Provider,
+    Guid? PendingCandidateId,
+    Guid? PrimaryCandidateId,
+    bool CanApprove,
+    /// <summary>Whether the caller may assign/remove people (QA or Admin).</summary>
+    bool CanManage,
+    string? BlockedReason,
+    string? MyDecision,
+    IReadOnlyList<ParticipantDto> Participants,
+    /// <summary>
+    /// Participant roles the primary candidate's policy requires somebody in on this work item
+    /// (<see cref="WorkItemRoleRequirements"/>). Empty when the policy asks for none.
+    /// </summary>
+    IReadOnlyList<string> RequiredRoles,
+    /// <summary>
+    /// The subset of <see cref="RequiredRoles"/> nobody holds — the work item is incomplete until they
+    /// are filled, and the page asks for someone to be put on each.
+    /// </summary>
+    IReadOnlyList<string> MissingRoles,
+    List<WorkItemApproval> Approvals,
+    List<WorkItemComment> Comments,
+    /// <summary>The commits whose messages referenced this ticket, newest-declared-first.</summary>
+    IReadOnlyList<WorkItemCommitRef> Commits,
+    /// <summary>The pull requests those commits merged. Derived via commit → PR revision.</summary>
+    IReadOnlyList<WorkItemPullRequestRef> PullRequests,
+    IReadOnlyList<WorkItemCandidateRef> Candidates,
+    /// <summary>
+    /// The ticket's status across every service instance in this product/env — see
+    /// <see cref="WorkItemOverallStatus"/>. Null only when no instance is indexed, which the 404
+    /// above already rules out.
+    /// </summary>
+    WorkItemOverallSummary? Overall = null,
+    /// <summary>
+    /// Whether the primary candidate's policy gates on <see cref="Overall"/> rather than on this
+    /// instance alone (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) — the
+    /// page says so, or a sign-off here that does not release the promotion reads as a bug.
+    /// </summary>
+    bool GateRequiresAllInstances = false);
+
+/// <summary>
+/// One commit that carried a work item. <see cref="Hash"/> is always present — it's what the producer
+/// declared. Everything else is hydrated from the matching <c>commit</c> reference and is null when
+/// the payload didn't include one, in which case the row is hash-only.
+/// </summary>
+public record WorkItemCommitRef(
+    string Hash,
+    string? Title,
+    string? Url,
+    string? Provider,
+    IReadOnlyList<ParticipantDto> Participants);
+
+/// <summary>One pull request behind a work item, reached through the commit it merged.</summary>
+public record WorkItemPullRequestRef(
+    string Key,
+    string? Title,
+    string? Url,
+    string? Provider,
+    /// <summary>The merge commit that tied this PR to the work item.</summary>
+    string? Revision,
+    IReadOnlyList<ParticipantDto> Participants);
+
+/// <summary>
+/// One environment a work item's change is deployed to, resolved from the deploy events that shipped
+/// the carrying version rather than from the promotion edge. <see cref="DeployedAt"/> is the most
+/// recent succeeded deploy of that version in that environment.
+/// </summary>
+public record WorkItemEnvironmentView(
+    string Environment,
+    string Service,
+    string Version,
+    DateTimeOffset DeployedAt);
+
+/// <summary>Identity of a shipped build — the grain deploy environments are resolved at.</summary>
+public readonly record struct DeployedVersionKey(string Product, string Service, string Version);
+
+
+/// <summary>One promotion candidate carrying a work item, as listed on the detail page.</summary>
+public record WorkItemCandidateRef(
+    Guid Id,
+    string Service,
+    string Version,
+    string SourceEnv,
+    string TargetEnv,
+    string Status,
+    DateTimeOffset CreatedAt,
+    bool IsPrimary);
 
 /// <summary>
 /// One row of the "tickets I can sign off right now" inbox. Includes the work-item display
@@ -864,14 +2056,25 @@ public record TicketContext(
 public record PendingTicketView(
     string WorkItemKey,
     string Product,
+    /// <summary>The promotion edge the sign-off gates — identity, not display. See
+    /// <see cref="WorkItemDetail.TargetEnv"/>.</summary>
     string TargetEnv,
     string? Provider,
     string? Url,
     string? Title,
+    /// <summary>Secondary display line — see <see cref="WorkItemDetail.SubTitle"/>.</summary>
+    string? SubTitle,
+    /// <summary>Tracker labels — see <see cref="WorkItemDetail.Priority"/> / <see cref="WorkItemDetail.WorkItemType"/>.</summary>
+    string? Priority,
+    string? WorkItemType,
     Guid CandidateId,
+    /// <summary>Part of the work item's identity (see <see cref="WorkItemDetail.Service"/>), and
+    /// the service of the candidate the row represents — the two always agree.</summary>
     string Service,
     string Version,
-    string SourceEnv,
+    /// <summary>Environments the carrying version is deployed to, newest deploy first — where the
+    /// work item can actually be seen and tested.</summary>
+    IReadOnlyList<WorkItemEnvironmentView> Environments,
     int BlockingPromotions,
     IReadOnlyList<ParticipantDto> Participants,
     // Status of the candidate this row represents. "Pending" for the inbox; for decision-history
@@ -884,13 +2087,30 @@ public record PendingTicketView(
     DateTimeOffset? DecidedAt = null,
     string? DecidedByEmail = null,
     string? DecidedByName = null,
-    string? DecisionComment = null);
+    string? DecisionComment = null,
+    /// <summary>
+    /// Participant roles the carrying promotion's policy requires somebody in on this work item
+    /// (<see cref="WorkItemRoleRequirements"/>). Empty when the policy asks for none.
+    /// </summary>
+    IReadOnlyList<string>? RequiredRoles = null,
+    /// <summary>
+    /// The subset of <see cref="RequiredRoles"/> nobody holds. Non-empty ⇒ the work item is incomplete
+    /// and the UI asks for someone to be put on those roles.
+    /// </summary>
+    IReadOnlyList<string>? MissingRoles = null,
+    /// <summary>
+    /// The ticket's roll-up across every service instance (<see cref="WorkItemOverallStatus"/>) — the
+    /// "2 of 3 services" beside the row's own state. Null when it could not be resolved.
+    /// </summary>
+    WorkItemOverallSummary? Overall = null);
 
 /// <summary>
 /// One row of the assignee summary for the My-queue endpoint. Aggregated by (email, role)
-/// across the user's authorized list <i>before</i> the role/person filter is applied, so the
-/// front-end always knows the full set of choices the user can narrow to. <see cref="Count"/>
-/// is the number of distinct candidates the (email, role) pair appears on.
+/// across the user's authorized list <i>before</i> the person filter is applied, so the
+/// front-end always knows the full set of choices the user can narrow to. On the pending path
+/// the role is always one the item's policy requires — the only assignments the queue's person
+/// filter matches. <see cref="Count"/> is the number of distinct candidates the (email, role)
+/// pair appears on.
 /// </summary>
 public record PendingAssigneeView(
     string Email,
@@ -899,11 +2119,91 @@ public record PendingAssigneeView(
     int Count);
 
 /// <summary>
-/// Composite return for <c>GET /api/work-items/me/pending</c>. Carries the rendered ticket
-/// list plus the unfiltered (email, role) summary and the canonical assignee-role set so
-/// the front-end's role + person dropdowns can be populated without a second call.
+/// Composite return for <c>GET /api/work-items/me/pending</c>'s pending views. Carries the rendered
+/// ticket list plus the person dropdown's contents, so it can be populated without a second call.
+/// The decided view returns a <see cref="DecidedQueueResult"/> page instead.
 /// </summary>
 public record PendingQueueResult(
     List<PendingTicketView> Tickets,
+    /// <summary>Unfiltered (email, required-role) rollup — the person dropdown's contents.</summary>
+    List<PendingAssigneeView> Assignees);
+
+/// <summary>
+/// One page of <c>GET /api/work-items/me/pending?status=decided</c>: the decisions on the page, plus
+/// what describes the whole window rather than the page — the decider rollup and the total.
+/// </summary>
+public record DecidedQueueResult(
+    List<PendingTicketView> Tickets,
+    /// <summary>Decider rollup over the whole window, before the decider narrowing.</summary>
     List<PendingAssigneeView> Assignees,
-    IReadOnlyList<string> Roles);
+    /// <summary>Decisions in the window after the decider narrowing — every page, not this one.</summary>
+    int Total,
+    /// <summary>Where the next page starts; null when this page is the last.</summary>
+    DecidedCursor? NextCursor);
+
+/// <summary>
+/// A position in the decided view: the last row of a page, by the view's sort key
+/// <c>(CreatedAt DESC, Id DESC)</c>. Travels as an opaque string — clients hand back what a page
+/// returned and never build one.
+/// </summary>
+public readonly record struct DecidedCursor(DateTimeOffset DecidedAt, Guid Id)
+{
+    public string Encode()
+        => Base64Url.EncodeToString(Encoding.ASCII.GetBytes($"{DecidedAt.UtcTicks}.{Id:N}"));
+
+    /// <summary>Reads a cursor <see cref="Encode"/> produced; false for anything else.</summary>
+    public static bool TryParse(string? value, out DecidedCursor cursor)
+    {
+        cursor = default;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        string text;
+        try
+        {
+            text = Encoding.ASCII.GetString(Base64Url.DecodeFromChars(value.Trim()));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        var dot = text.IndexOf('.');
+        if (dot <= 0
+            || !long.TryParse(text.AsSpan(0, dot), NumberStyles.None, CultureInfo.InvariantCulture, out var ticks)
+            || ticks > DateTimeOffset.MaxValue.UtcTicks
+            || !Guid.TryParseExact(text.AsSpan(dot + 1), "N", out var id))
+            return false;
+        // UTC, as the database hands times back — Npgsql refuses a timestamptz parameter with an offset.
+        cursor = new DecidedCursor(new DateTimeOffset(ticks, TimeSpan.Zero), id);
+        return true;
+    }
+}
+
+/// <summary>
+/// One work item the "No live promotion" sweep found, or acted on. Carries the dead promotion's
+/// coordinates because that is what the queue row shows the reviewer — the service and version the
+/// item was last riding, and which terminal state stranded it.
+/// </summary>
+public record OrphanedWorkItemView(
+    string WorkItemKey,
+    string? Title,
+    string Product,
+    /// <summary>The promotion edge the sign-off is keyed to. See <see cref="WorkItemDetail.TargetEnv"/>.</summary>
+    string TargetEnv,
+    string Service,
+    string Version,
+    /// <summary>"Superseded" or "Rejected" — the terminal state of the promotion that left it stranded.</summary>
+    string CandidateStatus,
+    /// <summary>Why this row was not signed off. Null on a preview and on every successful sweep row.</summary>
+    string? Error = null);
+
+/// <summary>
+/// Outcome of <see cref="WorkItemApprovalService.ApproveOrphanedWorkItemsAsync"/>.
+/// <see cref="Examined"/> is what the scan found; on a dry run nothing else moves. On an apply,
+/// <c>Approved + Failed == Examined</c>, and the per-row <see cref="OrphanedWorkItemView.Error"/>
+/// says what went wrong on each of the failures.
+/// </summary>
+public record OrphanedWorkItemSweepResult(
+    int Examined,
+    int Approved,
+    int Failed,
+    bool DryRun,
+    List<OrphanedWorkItemView> Items);

@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Loader2, RotateCcw, Send } from 'lucide-react';
 import { marked } from 'marked';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/lib/pageTitle';
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -22,6 +23,10 @@ export function ReleaseNoteDraftPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+
+  // The window is in the URL, so this draft is bookmarkable and re-openable — the environment names
+  // which draft it is. Above the loading early-return, so the hook order holds.
+  useDocumentTitle(['New release note', product, environment]);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,7 +121,7 @@ export function ReleaseNoteDraftPage() {
             onClick={publish}
             disabled={publishing || !markdown.trim()}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium disabled:opacity-50"
-            style={{ backgroundColor: 'var(--accent)', color: 'white' }}
+            style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {publishing ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
             Publish

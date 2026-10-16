@@ -1,0 +1,40 @@
+id: approve-rollback
+title: Approve or reject a rollback
+group: Rollbacks
+summary: >-
+  Act on a pending rollback request — approve it, reject it, or override the gate when you are an
+  administrator and the situation warrants bypassing the normal approver.
+aliases:
+  - approve a rollback
+  - reject a rollback
+  - sign off a rollback
+  - who approves rollbacks
+  - override a rollback gate
+  - bypass rollback approval
+route: /rollbacks
+requires:
+  feature_flag: Rollbacks
+  roles: []
+steps:
+  - text: Open **Rollbacks**. Pending requests appear in the open list at the top of the page.
+    anchor: nav-rollbacks
+  - text: >-
+      Narrow the list with the **status filter** if it is long — set it to *Pending* to see only
+      what is waiting on someone.
+    anchor: rollbacks-status-filter
+  - text: >-
+      Find the request and read its detail — the services and versions it moves, the target
+      environment, and the reason the requester gave.
+    anchor: rollbacks-open-list
+  - text: Click **Approve** to let it proceed, or **Reject** to turn it down.
+    anchor: rollback-approve-button
+    note: >-
+      Approve and Reject only appear on requests you are the approver for. If you cannot see them,
+      the policy for that product and environment names someone else.
+  - text: >-
+      Administrators also see **Override**, which bypasses the gate. It asks for a reason, and it
+      is recorded distinctly from an approval so the audit trail can tell a bypass apart.
+    anchor: rollback-override-button
+related:
+  - request-rollback
+  - configure-rollback-policy

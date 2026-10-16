@@ -66,7 +66,6 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             sourceEnv = "dev",
             targetEnv = "staging",
             steps = Array.Empty<object>(),
-            timeoutHours = 24,
             escalationGroup = (string?)null,
         });
 
@@ -94,7 +93,6 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
                     },
                 },
             },
-            timeoutHours = 48,
             escalationGroup = (string?)null,
         });
     }
@@ -128,7 +126,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         string targetEnv,
         string version,
         string product = "acme",
-        string service = "api")
+        string service = "api",
+        object[]? references = null)
     {
         // Source validation now requires a succeeded deploy of this exact version in the source env.
         await _apiKeyClient.PostAsJsonAsync(
@@ -142,6 +141,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
             sourceEnv,
             targetEnv,
             version,
+            references = references ?? Array.Empty<object>(),
             participants = new[]
             {
                 new { role = "PR Author", displayName = "Bob Builder", email = "bob@example.com" },
@@ -150,6 +150,434 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     // ── Tests ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A block is a judgement about a specific build. When a new version arrives carrying the same
+    /// work item, that judgement no longer describes anything, so it's cleared and the item goes back
+    /// to undecided — otherwise the new promotion would stall on a stale objection nobody is looking
+    /// at. The operator whose block vanished finds out from a system entry in the comment thread.
+    /// </summary>
+    [Fact]
+    public async Task Create_NewVersion_ResetsHeldWorkItemDecisions()
+    {
+        await SeedPoliciesAsync();
+
+        var workItemRef = new object[]
+        {
+            new { type = "work-item", key = "RESET-1", provider = "azure-devops", title = "Held item" },
+        };
+
+        var first = await CreatePromotionAsync("staging", "prod", "v9.0.0", references: workItemRef);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        // Hold the item back on that build.
+        var block = await _adminClient.PostAsJsonAsync("/api/work-items/RESET-1/blocks",
+            new { product = "acme", service = "api", targetEnv = "prod" });
+        Assert.Equal(HttpStatusCode.OK, block.StatusCode);
+
+        var beforeCtx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/RESET-1?product=acme&service=api&targetEnv=prod");
+        Assert.Single(beforeCtx.GetProperty("approvals").EnumerateArray());
+
+        // A new version carrying the same work item lands.
+        var second = await CreatePromotionAsync("staging", "prod", "v9.1.0", references: workItemRef);
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+
+        var afterCtx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/RESET-1?product=acme&service=api&targetEnv=prod");
+        Assert.Empty(afterCtx.GetProperty("approvals").EnumerateArray());
+        Assert.True(afterCtx.GetProperty("canApprove").GetBoolean());
+
+        // The thread carries both the block and the reset that undid it.
+        var thread = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/RESET-1/comments?product=acme&service=api&targetEnv=prod");
+        var bodies = thread.GetProperty("comments").EnumerateArray()
+            .Select(c => c.GetProperty("body").GetString() ?? "")
+            .ToList();
+        Assert.Contains(bodies, b => b.Contains("Blocked this work item"));
+        Assert.Contains(bodies, b => b.Contains("Reset to pending") && b.Contains("v9.1.0"));
+    }
+
+    /// <summary>
+    /// The counterpart: an approval is defined to carry across builds, so a new version must leave it
+    /// alone. Re-asking for every sign-off on every version would make the gate unusable.
+    /// </summary>
+    [Fact]
+    public async Task Create_NewVersion_KeepsWorkItemApprovals()
+    {
+        await SeedPoliciesAsync();
+
+        var workItemRef = new object[]
+        {
+            new { type = "work-item", key = "KEEP-1", provider = "azure-devops", title = "Signed item" },
+        };
+
+        await CreatePromotionAsync("staging", "prod", "v8.0.0", references: workItemRef);
+        var approve = await _adminClient.PostAsJsonAsync("/api/work-items/KEEP-1/approvals",
+            new { product = "acme", service = "api", targetEnv = "prod" });
+        Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
+
+        await CreatePromotionAsync("staging", "prod", "v8.1.0", references: workItemRef);
+
+        var ctx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/KEEP-1?product=acme&service=api&targetEnv=prod");
+        Assert.Single(ctx.GetProperty("approvals").EnumerateArray());
+        Assert.Equal("Approved", ctx.GetProperty("myDecision").GetString());
+    }
+
+    /// <summary>
+    /// A work item is discovered by parsing commit messages, so the producer declares the commit
+    /// hashes that mentioned it on the work-item reference. The detail projection hydrates those into
+    /// the commits themselves and — through each commit's merge revision — the pull requests behind
+    /// them, which is the only way the ticket→PR link exists: the payload never states it directly.
+    ///
+    /// <para>Shaped after a real mpt-extensions payload: two tickets, each with one commit, each
+    /// commit merged by its own PR, plus repository and pipeline references that must not leak in.</para>
+    /// </summary>
+    [Fact]
+    public async Task Create_WithCommitLinkedWorkItems_ResolvesCommitsAndPullRequests()
+    {
+        await SeedPoliciesAsync();
+
+        const string shaA = "19a22406ddec682782c02f051b2303b4f3758a22";
+        const string shaB = "32a0a09aa2f8f1711d781b802074f44974c8973c";
+
+        var references = new object[]
+        {
+            new { type = "repository", provider = "azure-devops", revision = shaA,
+                  url = "https://example.visualstudio.com/MPT/_git/svc", title = "svc" },
+            new { type = "pipeline", provider = "azure-devops", key = "8688281",
+                  url = "https://example.visualstudio.com/MPT/_build/results?buildId=8688281" },
+            new { type = "commit", provider = "azure-devops", key = shaA,
+                  title = "Merged PR 149502: Add CLI command",
+                  url = $"https://example.com/_git/svc/commit/{shaA}",
+                  participants = new[] { new { role = "author", displayName = "A Author", email = "a@example.com" } } },
+            new { type = "work-item", provider = "jira", key = "MPT-23574",
+                  url = "https://example.atlassian.net/browse/MPT-23574",
+                  title = "Add CLI command to execute offboarding",
+                  commits = new[] { shaA } },
+            new { type = "pull-request", provider = "azure-devops", key = "149502", revision = shaA,
+                  title = "Add CLI command",
+                  url = "https://example.visualstudio.com/MPT/_git/svc/pullrequest/149502" },
+            new { type = "commit", provider = "azure-devops", key = shaB,
+                  title = "Merged PR 149496: Fix templates mapping",
+                  url = $"https://example.com/_git/svc/commit/{shaB}" },
+            new { type = "work-item", provider = "jira", key = "MPT-23640",
+                  url = "https://example.atlassian.net/browse/MPT-23640",
+                  title = "Invalid notification data",
+                  commits = new[] { shaB } },
+            new { type = "pull-request", provider = "azure-devops", key = "149496", revision = shaB,
+                  title = "Fix templates mapping",
+                  url = "https://example.visualstudio.com/MPT/_git/svc/pullrequest/149496" },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.0.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        // Ticket A: its own commit and its own PR — not the other ticket's.
+        var a = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-23574/detail?product=acme&service=api&targetEnv=prod");
+
+        var aCommits = a.GetProperty("commits").EnumerateArray().ToList();
+        Assert.Single(aCommits);
+        Assert.Equal(shaA, aCommits[0].GetProperty("hash").GetString());
+        Assert.Equal("Merged PR 149502: Add CLI command", aCommits[0].GetProperty("title").GetString());
+        Assert.Equal($"https://example.com/_git/svc/commit/{shaA}", aCommits[0].GetProperty("url").GetString());
+        Assert.Equal("A Author",
+            aCommits[0].GetProperty("participants").EnumerateArray().First().GetProperty("displayName").GetString());
+
+        var aPrs = a.GetProperty("pullRequests").EnumerateArray().ToList();
+        Assert.Single(aPrs);
+        Assert.Equal("149502", aPrs[0].GetProperty("key").GetString());
+        Assert.Equal("Add CLI command", aPrs[0].GetProperty("title").GetString());
+        Assert.Equal(shaA, aPrs[0].GetProperty("revision").GetString());
+
+        // Ticket B resolves to the other pair — no cross-contamination between tickets.
+        var b = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-23640/detail?product=acme&service=api&targetEnv=prod");
+        Assert.Equal(shaB, b.GetProperty("commits").EnumerateArray().Single().GetProperty("hash").GetString());
+        Assert.Equal("149496", b.GetProperty("pullRequests").EnumerateArray().Single().GetProperty("key").GetString());
+
+        // The Jira link the header now promotes to a labelled button.
+        Assert.Equal("jira", b.GetProperty("provider").GetString());
+        Assert.Equal("https://example.atlassian.net/browse/MPT-23640", b.GetProperty("url").GetString());
+    }
+
+    /// <summary>
+    /// A work item is named by its tracker and described by its commits: the Jira summary is the
+    /// title, and the messages of <b>every</b> commit that mentioned the ticket make up the second
+    /// line, with the squash-merge bookkeeping Azure DevOps prepends ("Merged PR 150001: ") dropped —
+    /// the PR is a reference of its own, and in front of the sentence it is noise. All of it must
+    /// survive the create → projection → detail round trip. The payload here uses the older two-line
+    /// producer shape (commit subject on `title`, Jira summary on `subTitle`), which resolves to the
+    /// same display as a producer sending the summary as the title.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemOnSeveralCommits_TitlesItByTrackerAndListsEveryCommitMessage()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "MPT-24001",
+                  url = "https://example.atlassian.net/browse/MPT-24001",
+                  title = "Merged PR 150001: Reject duplicate offboarding requests",
+                  subTitle = "Duplicate offboarding requests",
+                  commits = new[] { "aa11bb22cc33", "dd44ee55ff66" } },
+            new { type = "commit", provider = "github", key = "aa11bb22cc33",
+                  url = "https://github.com/o/r/commit/aa11bb22cc33",
+                  title = "Merged PR 150001: Reject duplicate offboarding requests" },
+            new { type = "commit", provider = "github", key = "dd44ee55ff66",
+                  url = "https://github.com/o/r/commit/dd44ee55ff66",
+                  title = "test: cover a second offboarding request for the same account" },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.2.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-24001/detail?product=acme&service=api&targetEnv=prod");
+        Assert.Equal("Duplicate offboarding requests", detail.GetProperty("title").GetString());
+        // "Merged PR 150001: " is gone; the commit's own subject is not.
+        Assert.Equal(
+            "Reject duplicate offboarding requests"
+            + " • test: cover a second offboarding request for the same account",
+            detail.GetProperty("subTitle").GetString());
+    }
+
+    /// <summary>
+    /// The same two lines on the promotion page. It renders the candidate's own references
+    /// (<c>sourceEventReferences</c>) rather than the work-item projection, so the read path resolves
+    /// them there too — otherwise a reviewer would see one name for a ticket on the promotion and a
+    /// different one on the ticket's own page.
+    /// </summary>
+    [Fact]
+    public async Task GetCandidate_ResolvesWorkItemReferenceDisplayLines()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "MPT-24002",
+                  url = "https://example.atlassian.net/browse/MPT-24002",
+                  title = "fix: reject the second offboarding request",
+                  subTitle = "Duplicate offboarding requests",
+                  commits = new[] { "aa11bb22cc33", "dd44ee55ff66" } },
+            new { type = "commit", provider = "github", key = "aa11bb22cc33",
+                  title = "fix: reject the second offboarding request" },
+            new { type = "commit", provider = "github", key = "dd44ee55ff66",
+                  title = "test: cover a second offboarding request for the same account" },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.3.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var candidateId = (await created.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetString();
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>($"/api/promotions/{candidateId}");
+        var candidate = detail.GetProperty("candidate");
+        var expectedSubTitle =
+            "fix: reject the second offboarding request"
+            + " • test: cover a second offboarding request for the same account";
+
+        var workItem = candidate.GetProperty("sourceEventReferences").EnumerateArray()
+            .Single(r => r.GetProperty("type").GetString() == "work-item");
+
+        Assert.Equal("Duplicate offboarding requests", workItem.GetProperty("title").GetString());
+        Assert.Equal(expectedSubTitle, workItem.GetProperty("subTitle").GetString());
+
+        // The same list again under `sourceEvent` — a second copy of the change set, and the one the
+        // detail page's work-item and reference cards actually render, so it has to agree.
+        var onSourceEvent = detail.GetProperty("sourceEvent").GetProperty("references").EnumerateArray()
+            .Single(r => r.GetProperty("type").GetString() == "work-item");
+
+        Assert.Equal("Duplicate offboarding requests", onSourceEvent.GetProperty("title").GetString());
+        Assert.Equal(expectedSubTitle, onSourceEvent.GetProperty("subTitle").GetString());
+
+        // Other reference types are passed through untouched.
+        var commit = candidate.GetProperty("sourceEventReferences").EnumerateArray()
+            .First(r => r.GetProperty("type").GetString() == "commit");
+        Assert.Equal("fix: reject the second offboarding request", commit.GetProperty("title").GetString());
+    }
+
+    /// <summary>
+    /// A work item the producer reports as closed in its tracker gets that fact on its thread — the
+    /// status, the date, and who closed it — and stays <b>pending</b>. A ticket closed in Jira says
+    /// the work is finished; it does not say this release is fit to ship, which is what the gate asks.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemClosedUpstream_NotesItOnTheThreadAndStaysPending()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "DONE-1",
+                  title = "Merged PR 150103: order the answer parameters",
+                  subTitle = "Answers should display ordered parameters",
+                  resolution = new
+                  {
+                      resolved = true,
+                      status = "Done",
+                      at = "2026-08-14T09:12:00Z",
+                      by = new { displayName = "Farkas, Dariusz", email = "dariusz.farkas@example.com" },
+                  } },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.5.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/DONE-1/detail?product=acme&service=api&targetEnv=prod");
+
+        // Still somebody's to sign off: nothing was decided on their behalf.
+        Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
+        Assert.True(detail.GetProperty("canApprove").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, detail.GetProperty("myDecision").ValueKind);
+
+        // ...but the tracker's verdict is on the thread, as context rather than as a decision.
+        var note = Assert.Single(detail.GetProperty("comments").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, note.GetProperty("decision").ValueKind);
+        var body = note.GetProperty("body").GetString();
+        Assert.Contains("Done", body);
+        Assert.Contains("Farkas, Dariusz", body);
+        Assert.Contains("14 Aug 2026", body);
+        Assert.Contains("still outstanding", body);
+    }
+
+    /// <summary>
+    /// Re-posting the same closed work item does not fill its thread with copies: the source system
+    /// re-pushes a change set on every refresh.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemClosedUpstream_NotesItOnceAcrossRefreshes()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "IDEM-1", title = "Closed twice",
+                  resolution = new { resolved = true, status = "Done" } },
+        };
+
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(HttpStatusCode.Created,
+                (await CreatePromotionAsync("staging", "prod", "v7.7.0", references: references)).StatusCode);
+        }
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/IDEM-1/detail?product=acme&service=api&targetEnv=prod");
+        Assert.Single(detail.GetProperty("comments").EnumerateArray());
+        Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
+    }
+
+    /// <summary>
+    /// A decision somebody already recorded is not disturbed by the tracker closing the ticket
+    /// afterwards: a blocked item stays blocked, and the close is added as context beneath it.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemClosedUpstream_LeavesAnExistingDecisionAlone()
+    {
+        await SeedPoliciesAsync();
+
+        var open = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "HELD-1", title = "Held item" },
+        };
+        Assert.Equal(HttpStatusCode.Created,
+            (await CreatePromotionAsync("staging", "prod", "v7.6.0", references: open)).StatusCode);
+
+        var block = await _adminClient.PostAsJsonAsync("/api/work-items/HELD-1/blocks",
+            new { product = "acme", service = "api", targetEnv = "prod", comment = "not going out" });
+        Assert.Equal(HttpStatusCode.OK, block.StatusCode);
+
+        // Same version re-posted, now reported closed upstream. Re-posting the same version is an
+        // update, so the block is not cleared by a version change either.
+        var closed = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "HELD-1", title = "Held item",
+                  resolution = new { resolved = true, status = "Done" } },
+        };
+        Assert.Equal(HttpStatusCode.Created,
+            (await CreatePromotionAsync("staging", "prod", "v7.6.0", references: closed)).StatusCode);
+
+        var ctx = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/HELD-1?product=acme&service=api&targetEnv=prod");
+        var decision = Assert.Single(ctx.GetProperty("approvals").EnumerateArray());
+        Assert.Equal("Blocked", decision.GetProperty("decision").GetString());
+        Assert.Equal("admin@localhost", decision.GetProperty("approverEmail").GetString());
+    }
+
+    /// <summary>
+    /// <c>resolved: false</c> is "still open": nothing is noted, and the item is signed off as usual.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithWorkItemOpenUpstream_NotesNothing()
+    {
+        await SeedPoliciesAsync();
+
+        var references = new object[]
+        {
+            new { type = "work-item", provider = "jira", key = "OPEN-1", title = "Still open",
+                  resolution = new { resolved = false, status = "In Progress" } },
+        };
+
+        Assert.Equal(HttpStatusCode.Created,
+            (await CreatePromotionAsync("staging", "prod", "v7.8.0", references: references)).StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/OPEN-1/detail?product=acme&service=api&targetEnv=prod");
+        Assert.Empty(detail.GetProperty("comments").EnumerateArray());
+        Assert.Empty(detail.GetProperty("approvals").EnumerateArray());
+        Assert.True(detail.GetProperty("canApprove").GetBoolean());
+    }
+
+    /// <summary>
+    /// A declared hash with no matching <c>commit</c> reference still renders — the producer saw that
+    /// commit, and dropping it would understate the change set. Abbreviated hashes match the full
+    /// reference, because commit messages and version strings routinely carry the short form.
+    /// </summary>
+    [Fact]
+    public async Task Create_WithUnresolvableAndAbbreviatedHashes_StillListsThem()
+    {
+        await SeedPoliciesAsync();
+
+        const string full = "a7ce996fb64bf76bf2c51f38208a2c1fd35740ab";
+        var references = new object[]
+        {
+            new { type = "commit", provider = "azure-devops", key = full, title = "Add command",
+                  url = $"https://example.com/_git/svc/commit/{full}" },
+            new { type = "pull-request", provider = "azure-devops", key = "149478", revision = full,
+                  title = "Add OffboardAgreementsCommand", url = "https://example.com/pr/149478" },
+            new { type = "work-item", provider = "jira", key = "MPT-23508", title = "Create command",
+                  url = "https://example.atlassian.net/browse/MPT-23508",
+                  // First is abbreviated, second was never included as a `commit` reference.
+                  commits = new[] { "a7ce996", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" } },
+        };
+
+        var created = await CreatePromotionAsync("staging", "prod", "v7.1.0", references: references);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var detail = await _adminClient.GetFromJsonAsync<JsonElement>(
+            "/api/work-items/MPT-23508/detail?product=acme&service=api&targetEnv=prod");
+
+        var commits = detail.GetProperty("commits").EnumerateArray().ToList();
+        Assert.Equal(2, commits.Count);
+
+        // Abbreviated hash hydrated from the full-hash reference.
+        Assert.Equal("a7ce996", commits[0].GetProperty("hash").GetString());
+        Assert.Equal("Add command", commits[0].GetProperty("title").GetString());
+
+        // Unresolvable hash survives as a bare row with no link.
+        Assert.Equal("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", commits[1].GetProperty("hash").GetString());
+        Assert.Equal(JsonValueKind.Null, commits[1].GetProperty("url").ValueKind);
+        Assert.Equal(JsonValueKind.Null, commits[1].GetProperty("title").ValueKind);
+
+        // The PR is reached via the abbreviated hash matching its full revision.
+        Assert.Equal("149478",
+            detail.GetProperty("pullRequests").EnumerateArray().Single().GetProperty("key").GetString());
+    }
 
     [Fact]
     public async Task Ingest_DispatchesDeploymentCreatedWebhook()
@@ -190,34 +618,16 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Create_WithoutPolicy_IsRejected()
-    {
-        // Was Ingest_WithoutPolicy_DoesNotCreateCandidate. With topology gone, the policy-resolution
-        // miss is the edge guard: a create for a product with no policy is rejected (422) rather
-        // than silently dropped, and no candidate is recorded.
-        await SeedPoliciesAsync();
-
-        var createResponse = await CreatePromotionAsync(
-            sourceEnv: "dev", targetEnv: "staging", version: "v3.0.0", product: "no-policy-product");
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, createResponse.StatusCode);
-
-        // Assert: no candidates for this product.
-        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=no-policy-product");
-        listResponse.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(listResponse);
-        var candidates = body.GetProperty("candidates");
-        Assert.Equal(0, candidates.GetArrayLength());
-    }
-
-    [Fact]
     public async Task Create_WithoutSucceededSourceDeploy_IsRejected()
     {
-        // The other cross-API guard: even for a policy-enrolled edge, you can only promote a version
-        // that actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded
-        // deploy of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound)
-        // and no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
+        // The cross-API guard: even for a policy-enrolled edge, you can only promote a version that
+        // actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded deploy
+        // of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound) and
+        // no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
         // CreatePromotionAsync helper, which would seed the source deploy that this test omits.)
+        // The policy is created without sourceRequiresDeploy, so this is also what pins that the
+        // flag defaults to true over the admin API — IngestIdempotencyAndSourcePolicyTests always
+        // sends it explicitly.
         await SeedPoliciesAsync();
 
         var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", new
@@ -253,7 +663,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         await _factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -287,7 +698,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         await _factory.WebhookDispatcher.Received().DispatchAsync(
             "promotion.approved",
             Arg.Any<object>(),
-            Arg.Any<WebhookEventFilters>());
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
     }
 
     [Fact]
@@ -361,6 +773,384 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
         Assert.Equal("Deployed", status);
     }
 
+    /// <summary>
+    /// Same landing, but nobody approved the candidate first: the version got to prod out-of-band.
+    /// The change is live either way, so the candidate still closes as Deployed — with a system
+    /// comment saying it happened outside this promotion.
+    /// </summary>
+    [Fact]
+    public async Task Create_ThenDeployInTargetEnvWhilePending_ClosesPromotionAsDeployed()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"oob-svc-{Guid.NewGuid():N}"[..20];
+
+        // 1. Create a Pending candidate for prod (staging → prod is gated, so it stays Pending).
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.5.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.5.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        // 2. The same version lands in prod without this promotion ever being approved.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.5.0", service: service));
+
+        // 3. Assert: closed as Deployed, with the explanatory system comment.
+        var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await Deserialize(detailResponse);
+        Assert.Equal("Deployed", detail.GetProperty("candidate").GetProperty("status").GetString());
+
+        var bodies = detail.GetProperty("comments").EnumerateArray()
+            .Select(c => c.GetProperty("body").GetString()!).ToList();
+        Assert.Contains(bodies, b => b.Contains("outside this promotion"));
+    }
+
+    /// <summary>
+    /// A promotion describes a move from one version to another, and it has to keep saying so after
+    /// it lands. The target env's live version is no help there: the moment the promotion deploys,
+    /// "what prod runs" IS the promoted version, so history rendered off it reads "v6.1.0 → v6.1.0"
+    /// and forgets where the change came from. The candidate records the version it was created
+    /// against and reports it as <c>fromVersion</c>, while <c>targetCurrentVersion</c> goes on
+    /// meaning live state.
+    /// </summary>
+    [Fact]
+    public async Task DeployedPromotion_StillReportsTheVersionItWasCreatedAgainst()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"basel-svc-{Guid.NewGuid():N}"[..20];
+
+        // prod is running v6.0.0 — the version the promotion below replaces.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v6.0.0", service: service));
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v6.1.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var listed = FindCandidate((await Deserialize(listResponse)).GetProperty("candidates"), "v6.1.0", "prod");
+        Assert.NotNull(listed);
+        var candidateId = listed.Value.GetProperty("id").GetString()!;
+
+        // While it is open the two agree — nothing has moved yet.
+        Assert.Equal("v6.0.0", listed.Value.GetProperty("fromVersion").GetString());
+        Assert.Equal("v6.0.0", listed.Value.GetProperty("targetCurrentVersion").GetString());
+
+        await _adminClient.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { comment = "ship it" });
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v6.1.0", service: service));
+
+        // Landed: prod now runs the promoted version, and the promotion still names its baseline.
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        var candidate = detail.GetProperty("candidate");
+        Assert.Equal("Deployed", candidate.GetProperty("status").GetString());
+        Assert.Equal("v6.1.0", candidate.GetProperty("targetCurrentVersion").GetString());
+        Assert.Equal("v6.0.0", candidate.GetProperty("fromVersion").GetString());
+
+        // …and the list says the same thing, which is where the misleading "v6.1.0 → v6.1.0" showed.
+        var deployedList = await Deserialize(
+            await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Deployed"));
+        var historical = FindCandidate(deployedList.GetProperty("candidates"), "v6.1.0", "prod");
+        Assert.NotNull(historical);
+        Assert.Equal("v6.0.0", historical.Value.GetProperty("fromVersion").GetString());
+    }
+
+    /// <summary>
+    /// Promotions created before the baseline was recorded have nothing stored, and they are exactly
+    /// the history this fix is about. For a closed one the read path reconstructs it from the target's
+    /// deploy history — the last version live there before the promotion landed — so existing rows
+    /// read correctly without a backfill.
+    /// </summary>
+    [Fact]
+    public async Task DeployedPromotion_WithNoRecordedBaseline_ReconstructsItFromDeployHistory()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"legacy-svc-{Guid.NewGuid():N}"[..20];
+
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v5.0.0", service: service));
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v5.1.0", service: service);
+
+        var listed = FindCandidate(
+            (await Deserialize(await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending")))
+                .GetProperty("candidates"), "v5.1.0", "prod");
+        Assert.NotNull(listed);
+        var candidateId = Guid.Parse(listed.Value.GetProperty("id").GetString()!);
+
+        // Age the row into a pre-FromVersion one.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.PromotionCandidates.FirstAsync(c => c.Id == candidateId);
+            row.FromVersion = null;
+            await db.SaveChangesAsync();
+        }
+
+        await _adminClient.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { comment = "ship it" });
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v5.1.0", service: service));
+
+        var candidate = (await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}")))
+            .GetProperty("candidate");
+        Assert.Equal("Deployed", candidate.GetProperty("status").GetString());
+        Assert.Equal("v5.1.0", candidate.GetProperty("targetCurrentVersion").GetString());
+        Assert.Equal("v5.0.0", candidate.GetProperty("fromVersion").GetString());
+    }
+
+    /// <summary>
+    /// A closed candidate says the change shipped; <c>deploymentEventId</c> says <i>where</i> — the
+    /// deploy event that put the version live in the target environment, which the detail page links
+    /// "Deployed" to. Nothing stores that link (completion is matched on product/service/env/version),
+    /// so the read path re-derives it; this pins that it resolves to the real event.
+    /// </summary>
+    [Fact]
+    public async Task DeployedPromotion_ExposesTheDeployEventThatClosedIt()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"depev-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.9.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.9.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        // Still open — there is no landing to point at yet.
+        var openDetail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal(JsonValueKind.Null, openDetail.GetProperty("deploymentEventId").ValueKind);
+
+        // The version lands in prod, closing the candidate.
+        var ingest = await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.9.0", service: service));
+        ingest.EnsureSuccessStatusCode();
+
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Deployed", detail.GetProperty("candidate").GetProperty("status").GetString());
+
+        var eventId = detail.GetProperty("deploymentEventId").GetString();
+        Assert.False(string.IsNullOrEmpty(eventId));
+
+        // …and it is the prod landing of this exact version, not just any event.
+        var eventDetail = await Deserialize(await _adminClient.GetAsync($"/api/deployments/events/{eventId}"));
+        var evt = eventDetail.GetProperty("event");
+        Assert.Equal(service, evt.GetProperty("service").GetString());
+        Assert.Equal("prod", evt.GetProperty("environment").GetString());
+        Assert.Equal("v7.9.0", evt.GetProperty("version").GetString());
+    }
+
+    /// <summary>
+    /// A failed deploy never completes a promotion, so the detail reports the attempt instead.
+    /// Otherwise a promotion whose deploy failed would sit open with no sign it was ever tried. The
+    /// attempt stays listed after a later deploy ships the version, as history.
+    /// </summary>
+    [Fact]
+    public async Task PromotionDetail_ListsFailedDeployAttempts_AndStaysOpenUntilOneSucceeds()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"faildep-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.1.0", service: service);
+        var candidate = FindCandidate(
+            (await Deserialize(await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending")))
+                .GetProperty("candidates"), "v8.1.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var untried = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Empty(untried.GetProperty("failedDeployments").EnumerateArray());
+
+        var failed = await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.1.0", status: "failed", service: service));
+        failed.EnsureSuccessStatusCode();
+        var failedId = (await Deserialize(failed)).GetProperty("id").GetString();
+        // A failed deploy of another version is not an attempt at this one.
+        (await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.0.9", status: "failed", service: service))).EnsureSuccessStatusCode();
+
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Pending", detail.GetProperty("candidate").GetProperty("status").GetString());
+        var attempt = Assert.Single(detail.GetProperty("failedDeployments").EnumerateArray());
+        Assert.Equal(failedId, attempt.GetProperty("id").GetString());
+
+        (await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.1.0", service: service))).EnsureSuccessStatusCode();
+        var shipped = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Deployed", shipped.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.Single(shipped.GetProperty("failedDeployments").EnumerateArray());
+    }
+
+    /// <summary>
+    /// A rejection says the version should not ship. If it ships anyway, the candidate has to record
+    /// that — it closes as Deployed, the rejection stays in the approval trail, and the thread
+    /// explains the contradiction rather than leaving someone to puzzle it out.
+    /// </summary>
+    [Fact]
+    public async Task Rejected_ThenDeployInTargetEnv_ClosesPromotionAsDeployed()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"rejdep-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.7.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.7.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var reject = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/reject", new { comment = "not ready" });
+        reject.EnsureSuccessStatusCode();
+
+        // It ships anyway.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.7.0", service: service));
+
+        var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await Deserialize(detailResponse);
+        Assert.Equal("Deployed", detail.GetProperty("candidate").GetProperty("status").GetString());
+
+        // The rejection is still on the record.
+        Assert.Contains(detail.GetProperty("approvals").EnumerateArray(),
+            a => a.GetProperty("decision").GetString() == "Rejected");
+
+        var bodies = detail.GetProperty("comments").EnumerateArray()
+            .Select(c => c.GetProperty("body").GetString()!).ToList();
+        Assert.Contains(bodies, b => b.Contains("rejected") && b.Contains("not ready"));
+        Assert.Contains(bodies, b => b.Contains("after it had been rejected"));
+    }
+
+    /// <summary>
+    /// A failed deploy of the candidate's version did not put it live, so nothing completes — the
+    /// promotion must stay Pending.
+    /// </summary>
+    [Fact]
+    public async Task Create_ThenFailedDeployInTargetEnv_LeavesPromotionPending()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"oobfail-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v7.6.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v7.6.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v7.6.0", status: "failed", service: service));
+
+        var detailResponse = await _adminClient.GetAsync($"/api/promotions/{candidateId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await Deserialize(detailResponse);
+        Assert.Equal("Pending", detail.GetProperty("candidate").GetProperty("status").GetString());
+    }
+
+    /// <summary>
+    /// The undo, over HTTP: approve, change your mind, and the queue has the promotion back as if the
+    /// approval had never happened — same person able to approve it again.
+    /// </summary>
+    [Fact]
+    public async Task Approve_ThenCancelApproval_ReturnsCandidateToPending()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"undo-svc-{Guid.NewGuid():N}"[..20];
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.1.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v8.1.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var approveResponse = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/approve", new { comment = "ship it" });
+        approveResponse.EnsureSuccessStatusCode();
+
+        var beforeUndo = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Approved", beforeUndo.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.True(beforeUndo.GetProperty("canCancelApproval").GetBoolean());
+
+        _factory.WebhookDispatcher.ClearReceivedCalls();
+
+        var cancelResponse = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/cancel-approval", new { comment = "wrong service" });
+        cancelResponse.EnsureSuccessStatusCode();
+        var cancelBody = await Deserialize(cancelResponse);
+        Assert.Equal("Pending", cancelBody.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.Equal(1, cancelBody.GetProperty("clearedApprovals").GetInt32());
+
+        await _factory.WebhookDispatcher.Received().DispatchAsync(
+            "promotion.approval.cancelled",
+            Arg.Any<object>(),
+            Arg.Any<WebhookEventFilters>(),
+            Arg.Any<WebhookDispatchOptions?>());
+
+        // The trail is empty again and the same approver can approve — the undo is real, not a label.
+        var afterUndo = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Empty(afterUndo.GetProperty("approvals").EnumerateArray());
+        Assert.False(afterUndo.GetProperty("canCancelApproval").GetBoolean());
+
+        var reapprove = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/approve", new { comment = "meant this one" });
+        reapprove.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// The window closes at dispatch: a promotion the executor already has cannot be un-approved,
+    /// because un-approving it would not stop anything.
+    /// </summary>
+    [Fact]
+    public async Task CancelApproval_OnADeployedPromotion_Is400()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"undo-late-{Guid.NewGuid():N}"[..20];
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.2.0", service: service);
+
+        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending");
+        var body = await Deserialize(listResponse);
+        var candidate = FindCandidate(body.GetProperty("candidates"), "v8.2.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        await _adminClient.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { comment = "ok" });
+        // The version lands in prod, which closes the candidate as Deployed.
+        await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.2.0", service: service));
+
+        var cancelResponse = await _adminClient.PostAsJsonAsync(
+            $"/api/promotions/{candidateId}/cancel-approval", new { comment = "too late" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, cancelResponse.StatusCode);
+    }
+
     // ── Utility ─────────────────────────────────────────────────────────────
 
     private HttpClient CreateAuthenticatedClient(string email, string password)
@@ -413,14 +1203,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         public FlowFactory()
         {
-            _connection = new SqliteConnection("DataSource=:memory:");
-            _connection.Open();
-
-            var options = new DbContextOptionsBuilder<SqliteTestDbContext>()
-                .UseSqlite(_connection)
-                .Options;
-            using var db = new SqliteTestDbContext(options);
-            db.Database.EnsureCreated();
+            _connection = TestDatabase.Open();
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -450,6 +1233,8 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
                 // Replace the webhook dispatcher with our captured mock.
                 RemoveService<IWebhookDispatcher>(services);
                 services.AddSingleton(WebhookDispatcher);
+
+                TestHostIsolation.Apply(services);
             });
         }
 

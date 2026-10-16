@@ -5,8 +5,14 @@ namespace Platform.Api.Features.Promotions.Models;
 
 /// <summary>
 /// A promotion candidate: "service X version V in source env should move forward to target env."
-/// Lifecycle is Pending → Approved → Deploying → Deployed, with Superseded / Rejected as terminal
-/// off-ramps.
+/// Lifecycle is Pending → Approved → Deploying → Deployed, with Superseded / Rejected as
+/// terminal off-ramps. <see cref="PromotionStatus.Deployed"/> is the one state reality can force:
+/// once the version lands in the target environment the change IS live, so ingestion closes the
+/// candidate there from any open state — including Rejected.
+///
+/// <para>Approved → Pending is the one backwards edge, and only while the candidate is still
+/// undispatched: <see cref="PromotionService.CancelApprovalAsync"/> undoes an approval given by
+/// mistake. From Deploying onwards the pipeline owns the change and the answer is a rollback.</para>
 ///
 /// <para>Candidates are created externally via <see cref="PromotionService.CreateExternalCandidateAsync"/>
 /// (an external system POSTs the authoritative net change set) and closed by either approval +
@@ -30,10 +36,28 @@ public class PromotionCandidate
     public string? FromRevision { get; set; }
     public string? ToRevision { get; set; }
 
+    /// <summary>
+    /// The version the target environment was running when this candidate was created — the
+    /// baseline its <see cref="References"/> were computed against, and the left-hand side of the
+    /// "v1 → v2" the promotion describes. Captured server-side (latest succeeded deploy in
+    /// <see cref="TargetEnv"/>), refreshed alongside <see cref="FromRevision"/> when the source
+    /// system re-pushes the same candidate, and frozen from then on.
+    ///
+    /// <para>Stored rather than re-read at display time because the target env moves on: once a
+    /// promotion lands, the target's <i>current</i> version is the promoted one, so a historical
+    /// candidate rendered off live state forgets where it came from and reads as "v2 → v2".
+    /// Null on a first deploy into the target, and on candidates created before this was
+    /// recorded — read paths fall back to live state for those.</para>
+    /// </summary>
+    public string? FromVersion { get; set; }
+
     public PromotionStatus Status { get; set; } = PromotionStatus.Pending;
 
-    // Policy snapshot at creation time — preserves audit integrity even if the policy row
-    // is edited or deleted between candidate creation and approval.
+    // Resolved policy snapshot: the rules this candidate is actually gated on. Taken at creation
+    // time, and re-taken for still-Pending candidates when the policy is edited (see
+    // PromotionService.RefreshPolicySnapshotsAsync) so a settings change applies to in-flight
+    // promotions. Frozen from Approved onwards — the decision that fired keeps the rules it was
+    // judged under.
     public Guid? PolicyId { get; set; }
     public string? ResolvedPolicyJson { get; set; }
 

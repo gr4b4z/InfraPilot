@@ -2,7 +2,9 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
@@ -19,17 +21,37 @@ public static class PromotionEndpoints
 {
     public static RouteGroupBuilder MapPromotionEndpoints(this RouteGroupBuilder group)
     {
+        // Vocabulary for the list page's filter dropdowns. Deliberately takes no filter arguments:
+        // options derived from a filtered list collapse to whatever is already selected.
+        group.MapGet("/filter-options", async (PromotionService svc, CancellationToken ct) =>
+        {
+            var options = await svc.GetFilterOptionsAsync(ct);
+            return Results.Ok(new
+            {
+                products = options.Products,
+                targetEnvs = options.TargetEnvs,
+                // Approval-step names to offer the gate filter. Empty on an instance whose edges are
+                // all auto-approve — the UI hides the control rather than offering an empty dropdown.
+                gates = options.Gates,
+            });
+        });
+
         // List candidates with filters + capability flags.
         group.MapGet("/", async (
             PromotionService svc,
             PromotionFreezeService freezes,
             PlatformDbContext db,
+            EnvironmentAliasResolver environments,
+            ParticipantRoleCatalog roleCatalog,
             string? status,
             string? product,
             string? service,
             string? targetEnv,
             string? reference,
-            int? limit) =>
+            string? gate,
+            bool? gateOnly,
+            int? limit,
+            string? view) =>
         {
             PromotionStatus? parsed = null;
             if (!string.IsNullOrEmpty(status))
@@ -38,6 +60,15 @@ public static class PromotionEndpoints
                     return Results.BadRequest(new { error = $"Unknown status '{status}'" });
                 parsed = s;
             }
+
+            // `view=summary` is the list views' opt-in to a lighter payload — see SummaryReference for
+            // what it leaves out. Anything else that reads this list keeps the full shape by default:
+            // release automation re-POSTs the references it reads here, so a slimmed default would
+            // quietly strip them on the next upsert.
+            var resolvedView = string.IsNullOrEmpty(view) ? "full" : view.ToLowerInvariant();
+            if (!ListViews.Contains(resolvedView))
+                return Results.BadRequest(new { error = "'view' must be one of: full, summary" });
+            var summary = resolvedView == "summary";
 
             // Different defaults when the UI is showing everything vs a single status.
             // - All-statuses view: cap the resolved tail at 25 (Pending is always uncapped).
@@ -48,7 +79,9 @@ public static class PromotionEndpoints
                 Status: parsed,
                 Product: product,
                 Service: service,
-                TargetEnv: targetEnv,
+                // Alias-resolved so filtering by "prod" finds the candidates stored against
+                // whichever key an admin made canonical.
+                TargetEnv: await environments.ResolveFilterAsync(targetEnv),
                 Limit: limit is > 0 ? limit.Value : defaultLimit);
 
             var candidates = await svc.GetAsync(query);
@@ -69,21 +102,60 @@ public static class PromotionEndpoints
                 candidates = candidates.Where(c => c.References.Any(RefMatches)).ToList();
             }
 
-            var capability = await svc.CanUserApproveManyAsync(candidates);
+            // Which approval gates each candidate is still waiting on. Computed for the whole list in
+            // one batch (see GetGateStatusesAsync) — it backs both the `gate` filter below and the
+            // per-row `pendingGates` the list renders.
+            var gateStatuses = await svc.GetGateStatusesAsync(candidates);
+
+            // "Show me the promotions waiting for Release Approval" — and, with `gateOnly`, only the
+            // ones where it is the last thing outstanding, i.e. the ones an approver of that gate can
+            // actually finish. Only a Pending candidate waits on anything, so a gate filter narrows
+            // the list to Pending by construction; nothing extra is needed to say so. A promotion the
+            // work-item gate is holding waits on no step at all (see PromotionGateStatus): asking for
+            // Release Approval must not return one whose Release Approval nobody may sign yet.
+            var gateName = (gate ?? "").Trim();
+            if (gateName.Length > 0)
+            {
+                candidates = candidates
+                    .Where(c =>
+                    {
+                        var status = gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None);
+                        return gateOnly == true
+                            ? status.IsWaitingOnlyFor(gateName)
+                            : status.IsWaitingFor(gateName);
+                    })
+                    .ToList();
+            }
+
+            // Handed the gate statuses so the work-item gate behind both is evaluated once per request.
+            var approvable = await svc.GetApprovableRequirementsManyAsync(candidates, gateStatuses);
             var heldByFreeze = await freezes.GetHeldByFreezeAsync(candidates);
-            var targetVersions = await LoadTargetCurrentVersionsAsync(db, candidates);
+            var targetVersions = await LoadTargetVersionsAsync(db, candidates);
+            var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
+            var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
+            var roleAliases = await roleCatalog.MapAsync();
 
             return Results.Ok(new
             {
                 candidates = candidates.Select(c =>
                 {
-                    targetVersions.TryGetValue((c.Product, c.Service, c.TargetEnv), out var targetCurrent);
+                    targetVersions.TryGetValue(c.Id, out var target);
+                    sourceBranches.TryGetValue((c.Product, c.Service, c.Version), out var sourceBranch);
+                    decidedWorkItems.TryGetValue((c.Product, c.Service, c.TargetEnv), out var decidedKeys);
                     // sourceEventReferences carries the candidate's own net change set so the list
                     // card keeps rendering refs without a deploy-event join (D14 dropped the link).
-                    return ToDto(c, capability.GetValueOrDefault(c.Id),
+                    var mine = approvable.GetValueOrDefault(c.Id) ?? Array.Empty<RequirementRef>();
+                    return ToDto(c, mine.Count > 0,
+                        approvableGates: ApprovableGates(mine),
                         sourceEventParticipants: Array.Empty<ParticipantDto>(),
                         sourceEventReferences: c.References,
-                        targetCurrentVersion: targetCurrent,
+                        targetCurrentVersion: target.Current,
+                        fromVersion: target.Baseline,
+                        sourceBranch: sourceBranch,
+                        decidedWorkItemKeys: decidedKeys,
+                        gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None),
+                        roleAliases: roleAliases,
+                        summaryReferences: summary,
                         frozen: heldByFreeze.Contains(c.Id));
                 }),
             });
@@ -91,24 +163,39 @@ public static class PromotionEndpoints
 
         // Single candidate — includes the full approval trail for the detail view.
         group.MapGet("/{id:guid}", async (
-            PromotionService svc, PlatformDbContext db, Guid id) =>
+            PromotionService svc, PlatformDbContext db, ParticipantRoleCatalog roleCatalog, Guid id) =>
         {
             var c = await svc.GetByIdAsync(id);
             if (c is null) return Results.NotFound();
             var approvals = await svc.GetApprovalsAsync(id);
             var eligibleRequirements = await svc.GetEligibleRequirementsAsync(c);
-            // canApprove stays a bool for back-compat: true iff the user can approve as ≥1 requirement.
-            var canApprove = eligibleRequirements.Count > 0;
+            var progress = await svc.GetApprovalProgressAsync(c);
+            // canApprove means "can approve right now", the same thing it means on the list (see
+            // CanUserApproveManyAsync): an open requirement the user is authorized for AND no work-item
+            // gate holding the promotion back. The approve card is rendered off eligibleRequirements
+            // instead, so a blocked approver still gets the button — disabled, with the reason.
+            var gateBlocking = progress.WorkItems is { Required: true, Satisfied: false };
+            var canApprove = eligibleRequirements.Count > 0 && !gateBlocking;
+            // Offered on an Approved candidate that hasn't been dispatched yet; mirrors the service's
+            // own guards so the button appears exactly when the action would go through.
+            var canCancelApproval = await svc.CanUserCancelApprovalAsync(c);
 
-            var targetCurrent = await db.DeployEvents
-                .AsNoTracking()
-                .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv)
-                .OrderByDescending(e => e.DeployedAt)
-                .Select(e => e.Version)
-                .FirstOrDefaultAsync();
+            var target = (await LoadTargetVersionsAsync(db, new[] { c })).GetValueOrDefault(c.Id);
+
+            // Build-sourced candidates only — see the `sourceBranch` note on ToDto.
+            var sourceBranch = c.SourceEnv == Builds.BuildPromotions.SourceEnv
+                ? await db.Builds
+                    .AsNoTracking()
+                    .Where(b => b.Product == c.Product && b.Service == c.Service && b.Version == c.Version)
+                    .Select(b => b.Branch)
+                    .FirstOrDefaultAsync()
+                : null;
 
             var comments = await svc.GetCommentsAsync(id);
-            var approvalProgress = await svc.GetApprovalProgressAsync(c);
+
+            // Work items on this edge that have already been ruled on — they report no role gap.
+            var decidedWorkItems = (await LoadDecidedWorkItemKeysAsync(db, new[] { c }))
+                .GetValueOrDefault((c.Product, c.Service, c.TargetEnv));
 
             // The active Promotion Freeze holding this candidate, if any. A freeze holds only Pending
             // candidates (ADR-0001), so decided candidates never carry one.
@@ -132,6 +219,15 @@ public static class PromotionEndpoints
                 .OrderByDescending(a => a.Timestamp)
                 .Select(a => new { a.ActorName, a.Timestamp, a.AfterState })
                 .FirstOrDefaultAsync();
+            // …but a bypass that was subsequently cancelled is history, not the current state. Both
+            // actions are audit entries on the same candidate, so the later one wins.
+            var cancelledAt = await db.AuditLog.AsNoTracking()
+                .Where(a => a.Action == "promotion.approval.cancelled" && a.EntityId == id)
+                .OrderByDescending(a => a.Timestamp)
+                .Select(a => (DateTimeOffset?)a.Timestamp)
+                .FirstOrDefaultAsync();
+            if (bypassEntry is not null && cancelledAt is { } cancelled && cancelled > bypassEntry.Timestamp)
+                bypassEntry = null;
             object? bypass = null;
             if (bypassEntry is not null)
             {
@@ -148,6 +244,46 @@ public static class PromotionEndpoints
                 bypass = new { byName = bypassEntry.ActorName, at = bypassEntry.Timestamp, reason };
             }
 
+            // The deploy event that put this version live in the target environment. Nothing in
+            // storage links a candidate to the deploy that closed it — completion is matched on
+            // (product, service, targetEnv, version), see PromotionIngestHook.MatchCompletionAsync —
+            // so the read path resolves it with that same rule. Only for a closed candidate: while one
+            // is still open there is no landing to point at.
+            Guid? deploymentEventId = null;
+            if (c.Status == PromotionStatus.Deployed && c.DeployedAt is { } landedAt)
+            {
+                deploymentEventId = await db.DeployEvents
+                    .AsNoTracking()
+                    .Where(e => e.Product == c.Product
+                             && e.Service == c.Service
+                             && e.Environment == c.TargetEnv
+                             && e.Version == c.Version
+                             && e.Status == "succeeded")
+                    // The landing whose timestamp the close stamped on the candidate is the one that
+                    // closed it. Failing that (a candidate closed with no event timestamp to hand) the
+                    // earliest succeeded landing — the same "when did this version go live" answer
+                    // AssessAgainstDeployHistoryAsync gives.
+                    .OrderByDescending(e => e.DeployedAt == landedAt)
+                    .ThenBy(e => e.DeployedAt)
+                    .Select(e => (Guid?)e.Id)
+                    .FirstOrDefaultAsync();
+            }
+
+            // Failed attempts to deploy this version to the target environment, newest first. A failed
+            // deploy never completes a promotion (PromotionIngestHook.MatchCompletionAsync), so without
+            // this a promotion whose deploy failed would sit Approved with no sign it was ever tried.
+            var failedDeployments = await db.DeployEvents
+                .AsNoTracking()
+                .Where(e => e.Product == c.Product
+                         && e.Service == c.Service
+                         && e.Environment == c.TargetEnv
+                         && e.Version == c.Version
+                         && e.Status == "failed")
+                .OrderByDescending(e => e.DeployedAt)
+                .Take(20)
+                .Select(e => new { e.Id, e.DeployedAt, e.Source })
+                .ToListAsync();
+
             // The candidate is self-contained (D14): no source deploy event. The change set lives
             // on the candidate's own References, surfaced as `sourceEvent` so the detail view keeps
             // rendering work items / PRs without a join.
@@ -156,7 +292,11 @@ public static class PromotionEndpoints
                 candidate = ToDto(c, canApprove,
                     sourceEventParticipants: Array.Empty<ParticipantDto>(),
                     sourceEventReferences: c.References,
-                    targetCurrentVersion: targetCurrent,
+                    targetCurrentVersion: target.Current,
+                    fromVersion: target.Baseline,
+                    sourceBranch: sourceBranch,
+                    decidedWorkItemKeys: decidedWorkItems,
+                    roleAliases: await roleCatalog.MapAsync(),
                     frozen: activeFreeze is not null),
                 approvals = approvals.Select(a => new
                 {
@@ -179,14 +319,21 @@ public static class PromotionEndpoints
                     id = (Guid?)null,
                     deployedAt = c.CreatedAt,
                     source = "external",
-                    references = c.References,
+                    // The same list as the candidate's `sourceEventReferences`, and resolved the same
+                    // way (see ToDto): this is what the detail page's work-item and reference cards
+                    // actually render, so an unresolved copy here would name a ticket by its commit
+                    // subject on the page that matters most.
+                    references = Deployments.WorkItemDisplay.ApplyToReferences(c.References),
                     participants = c.Participants,
                     enrichment = (object?)null,
                 },
                 comments = comments.Select(ToCommentDto),
-                approvalProgress,
+                approvalProgress = progress,
                 bypass,
                 freeze,
+                canCancelApproval,
+                deploymentEventId,
+                failedDeployments,
             });
         });
 
@@ -195,7 +342,10 @@ public static class PromotionEndpoints
         group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
             Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
 
-        // Known participant roles (distinct, frequency-ordered) for the assign-participant picker.
+        // Participant roles actually *observed* in the data (distinct, frequency-ordered). Note this
+        // is the opposite question from "which roles may I assign?" — that one is answered by the
+        // configured vocabulary (Settings → Participant Roles), which is what the pickers list. This
+        // route reports what producers have sent, including roles nobody configured.
         group.MapGet("/roles", async (PromotionService svc) =>
         {
             var roles = await svc.GetKnownRolesAsync();
@@ -205,10 +355,18 @@ public static class PromotionEndpoints
         // User search for the assign-participant picker. Proxies to IIdentityService — hits Entra
         // Graph when configured, falls back to local users otherwise. Returns empty list for
         // short queries so we don't flood Graph on every keystroke.
+        //
+        // `role` names the participant role the person is being picked for. When an admin restricted
+        // that role to directory groups (Settings → Participant Roles → Assignee groups, resolved
+        // through the role's aliases) only their members are returned, and `restrictedTo` names the
+        // groups so the picker can say why someone is missing. No role, or a role without groups,
+        // searches the whole directory as before.
         group.MapGet("/users/search", async (
             IIdentityService identity,
+            ParticipantRoleCatalog roleCatalog,
             ILoggerFactory loggerFactory,
             string? q,
+            string? role,
             CancellationToken ct) =>
         {
             var log = loggerFactory.CreateLogger("PromotionEndpoints.UserSearch");
@@ -216,19 +374,27 @@ public static class PromotionEndpoints
             // Sanitise any user-provided value before logging — strips CR/LF and other control
             // characters so a crafted query string can't inject fake log lines (log forging).
             var loggableQuery = SanitizeForLog(query);
+            var groups = string.IsNullOrWhiteSpace(role)
+                ? Array.Empty<GroupRef>()
+                : await roleCatalog.GetAssigneeGroupsAsync(role, ct);
+            var restrictedTo = groups.Select(g => new { id = g.Id, name = g.Name }).ToList();
+
             if (query.Length < 2)
             {
                 log.LogInformation("User search skipped (query too short, length={Length})", query.Length);
-                return Results.Ok(new { users = Array.Empty<object>() });
+                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo });
             }
 
             log.LogInformation(
-                "User search started (provider={Provider}, query='{Query}')",
-                identity.GetType().Name, loggableQuery);
+                "User search started (provider={Provider}, query='{Query}', groups={GroupCount})",
+                identity.GetType().Name, loggableQuery, groups.Count);
 
             try
             {
-                var users = await identity.SearchUsers(query, ct);
+                var users = groups.Count == 0
+                    ? await identity.SearchUsers(query, ct)
+                    : await identity.SearchUsersInGroups(
+                        query, groups.Select(g => new GroupInfo(g.Id, g.Name)).ToList(), ct);
                 log.LogInformation(
                     "User search returned {Count} result(s) for query '{Query}' via {Provider}",
                     users.Count, loggableQuery, identity.GetType().Name);
@@ -241,6 +407,7 @@ public static class PromotionEndpoints
                         displayName = u.DisplayName,
                         email = u.Email,
                     }),
+                    restrictedTo,
                 });
             }
             catch (Exception ex)
@@ -250,7 +417,7 @@ public static class PromotionEndpoints
                 log.LogWarning(ex,
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
-                return Results.Ok(new { users = Array.Empty<object>() });
+                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo });
             }
         });
 
@@ -304,9 +471,21 @@ public static class PromotionEndpoints
 
         // Upsert a participant on the candidate. Role is canonicalised to lower-kebab-case;
         // display is controlled by the admin-managed role dictionary on the frontend.
+        //
+        // The role must be one the operator has configured (Settings → Participant Roles). Ingest is
+        // exempt — a producer's payload is recorded as sent — but a hand-made assignment onto an
+        // unknown role only ever produces a slot nothing can filter, label, or route on.
         group.MapPost("/{id:guid}/participants", async (
-            PromotionService svc, Guid id, UpsertParticipantRequest body) =>
+            PromotionService svc, ParticipantRoleCatalog roleCatalog, Guid id, UpsertParticipantRequest body) =>
         {
+            if (!await roleCatalog.IsConfiguredAsync(body.Role))
+            {
+                return Results.BadRequest(new
+                {
+                    error = ParticipantRoleCatalog.RejectionMessage(
+                        body.Role, await roleCatalog.GetCanonicalKeysAsync()),
+                });
+            }
             try
             {
                 var participant = new PromotionParticipant(
@@ -330,6 +509,79 @@ public static class PromotionEndpoints
                 return Results.Ok(new { participants = candidate.Participants });
             }
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+        });
+
+        // Assign / reassign / clear a participant on a specific work-item reference of a candidate.
+        // This is what the work-items queue's "Assign" writes to (candidates are self-contained, so
+        // there is no deploy event to override). Body: { role, assignee: { email, displayName } | null }.
+        // Clearing a slot (assignee == null) is allowed on any role, configured or not: an ingested
+        // payload can put someone on a role nobody configured, and that assignment has to remain
+        // removable. Only naming a person requires a configured role.
+        group.MapPatch("/{id:guid}/references/{referenceKey}/participants", async (
+            PromotionService svc, ParticipantRoleCatalog roleCatalog,
+            Guid id, string referenceKey, AssignReferenceParticipantRequest body) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Role))
+                return Results.BadRequest(new { error = "role is required" });
+            if (body.Assignee is not null && !await roleCatalog.IsConfiguredAsync(body.Role))
+            {
+                return Results.BadRequest(new
+                {
+                    error = ParticipantRoleCatalog.RejectionMessage(
+                        body.Role, await roleCatalog.GetCanonicalKeysAsync()),
+                });
+            }
+            try
+            {
+                var assignee = body.Assignee is null
+                    ? null
+                    : new ParticipantDto(body.Role, body.Assignee.DisplayName, body.Assignee.Email);
+                var participants = await svc.UpsertReferenceParticipantAsync(id, referenceKey, body.Role, assignee);
+                return Results.Ok(new { participants });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        // The same assignment on every work item of the candidate at once — the promotion page's
+        // "Assign to all". Body: { role, assignee: { email, displayName } | null, onlyMissing? }.
+        // Writes reference-level participants, so it replaces whoever each ticket had in the role
+        // (aliases included) rather than sitting underneath them the way a promotion-level participant
+        // does. `onlyMissing` leaves tickets that already have somebody in the role alone. Same role
+        // and permission rules as the per-reference route above.
+        group.MapPatch("/{id:guid}/work-items/participants", async (
+            PromotionService svc, ParticipantRoleCatalog roleCatalog,
+            Guid id, AssignWorkItemsParticipantRequest body) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Role))
+                return Results.BadRequest(new { error = "role is required" });
+            if (body.Assignee is not null && !await roleCatalog.IsConfiguredAsync(body.Role))
+            {
+                return Results.BadRequest(new
+                {
+                    error = ParticipantRoleCatalog.RejectionMessage(
+                        body.Role, await roleCatalog.GetCanonicalKeysAsync()),
+                });
+            }
+            try
+            {
+                var assignee = body.Assignee is null
+                    ? null
+                    : new ParticipantDto(body.Role, body.Assignee.DisplayName, body.Assignee.Email);
+                var result = await svc.AssignWorkItemsParticipantAsync(
+                    id, body.Role, assignee, body.OnlyMissing ?? false);
+                return Results.Ok(new
+                {
+                    role = result.Role,
+                    updated = result.Updated,
+                    unchanged = result.Unchanged,
+                    skipped = result.Skipped,
+                });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
         // List comments.
@@ -405,52 +657,215 @@ public static class PromotionEndpoints
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
-        });
+        }).DenyPersonalTokens();
 
         // Reject.
         group.MapPost("/{id:guid}/reject", async (
             PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
         {
             return await RunDecisionAsync(() => svc.RejectAsync(id, body?.Comment));
-        });
+        }).DenyPersonalTokens();
+
+        // Cancel approval — Approved back to Pending, for the wrong row approved by mistake. Only
+        // while the candidate hasn't been dispatched; the service refuses everything else. Returns
+        // whether the held promotion.approved webhook was caught in time, which is what the person
+        // undoing wants to know.
+        group.MapPost("/{id:guid}/cancel-approval", async (
+            PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
+        {
+            try
+            {
+                var result = await svc.CancelApprovalAsync(id, body?.Comment);
+                return Results.Ok(new
+                {
+                    candidate = ToDto(result.Candidate, canApprove: false),
+                    clearedApprovals = result.ClearedApprovals,
+                    approvedWebhookStopped = result.ApprovedWebhookStopped,
+                });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        }).DenyPersonalTokens();
 
         // Bulk approve — succeeds partially: returns per-id outcome so the UI can show
         // which ones went through and which failed. Rejecting in bulk is intentionally
         // omitted — treating mass-reject as a lighter action is a UX footgun.
+        //
+        // With `gate`, each row approves that gate ("Release Approval") — every requirement of it the
+        // caller is eligible for (PromotionService.ApproveGateAsync). That is what mass approve sends:
+        // one gate across an environment, the same question for every row. Without it, each row is a
+        // plain approve, which needs the caller to be eligible for exactly one open requirement.
         group.MapPost("/bulk/approve", async (
-            PromotionService svc, PromotionBulkRequest body) =>
+            PromotionService svc, PlatformDbContext db, PromotionBulkRequest body) =>
         {
-            var results = new List<object>();
+            var gate = body.Gate?.Trim();
+            var outcomes = new List<(Guid Id, PromotionCandidate? Candidate, IReadOnlyList<RequirementRef> ApprovedAs, string? Error)>();
             foreach (var id in body.Ids ?? Array.Empty<Guid>())
             {
                 try
                 {
-                    var candidate = await svc.ApproveAsync(id, body.Comment);
-                    results.Add(new { id, ok = true, status = candidate.Status.ToString() });
+                    if (string.IsNullOrEmpty(gate))
+                    {
+                        var candidate = await svc.ApproveAsync(id, body.Comment);
+                        outcomes.Add((id, candidate, Array.Empty<RequirementRef>(), null));
+                    }
+                    else
+                    {
+                        var result = await svc.ApproveGateAsync(id, gate, body.Comment);
+                        outcomes.Add((id, result.Candidate, result.Approved, null));
+                    }
                 }
-                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or UnauthorizedAccessException)
+                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException
+                                               or UnauthorizedAccessException or ArgumentException)
                 {
-                    results.Add(new { id, ok = false, error = ex.Message });
+                    outcomes.Add((id, null, Array.Empty<RequirementRef>(), ex.Message));
+                }
+                catch (DbUpdateException)
+                {
+                    // A concurrent decision on the same row (the unique approval index). The failed
+                    // insert is still tracked and would fail every save after it, so drop it and carry on.
+                    db.ChangeTracker.Clear();
+                    outcomes.Add((id, null, Array.Empty<RequirementRef>(),
+                        "Somebody else decided on this promotion at the same moment — refresh and try again."));
                 }
             }
 
-            return Results.Ok(new { results });
+            // What each approved row still waits on, in one batch. A row whose gate was not the last
+            // stays Pending, and saying which gates are left is what makes that read as progress.
+            var gateStatuses = await svc.GetGateStatusesAsync(
+                outcomes.Where(o => o.Candidate is not null).Select(o => o.Candidate!).ToList());
+
+            return Results.Ok(new
+            {
+                results = outcomes.Select(o => o.Candidate is null
+                    ? (object)new { id = o.Id, ok = false, error = o.Error }
+                    : new
+                    {
+                        id = o.Id,
+                        ok = true,
+                        status = o.Candidate.Status.ToString(),
+                        approvedAs = o.ApprovedAs.Select(r => r.RequirementName),
+                        pendingGates = gateStatuses.GetValueOrDefault(o.Id, PromotionGateStatus.None).OutstandingSteps,
+                        workItemsOutstanding = gateStatuses.GetValueOrDefault(o.Id, PromotionGateStatus.None).WorkItemsOutstanding,
+                    }),
+            });
+        }).DenyPersonalTokens();
+
+        // The target envs a registered build can be promoted to for this service: every edge whose
+        // source is the synthetic "build" env and whose policy resolves (service-specific row wins
+        // over product default, same as PromotionPolicyResolver). Powers the deploy-a-build picker's
+        // env selector; an empty list means the product isn't enrolled in build promotions.
+        group.MapGet("/build-targets", async (
+            PlatformDbContext db, string? product, string? service, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(product) || string.IsNullOrWhiteSpace(service))
+                return Results.BadRequest(new { error = "'product' and 'service' are required" });
+
+            var rows = await db.PromotionPolicies.AsNoTracking()
+                .Where(p => p.Product == product
+                         && p.SourceEnv == Builds.BuildPromotions.SourceEnv
+                         && (p.Service == service || p.Service == null))
+                .ToListAsync(ct);
+
+            var targets = rows
+                .GroupBy(p => p.TargetEnv)
+                .Select(g => g.OrderBy(p => p.Service == null ? 1 : 0).First())
+                .OrderBy(p => p.TargetEnv)
+                .Select(p => new
+                {
+                    targetEnv = p.TargetEnv,
+                    // Whether picking this target deploys without further ceremony — the picker
+                    // says so up front rather than surprising people with an approval queue.
+                    autoApprove = PromotionPolicyResolver.Project(p).IsAutoApprove,
+                });
+            return Results.Ok(new { targets });
+        });
+
+        // Create a candidate from a registered build — the human path ("deploy this build"), where
+        // POST / below is the machine path. The server builds the change set from the build row
+        // (same projection the auto-create hook uses), so the browser never assembles references,
+        // and the caller is stamped as triggered-by. Any authenticated user may ask; the resolved
+        // policy's approval gate is the control point, exactly as for external creates.
+        group.MapPost("/from-build", async (
+            PromotionService svc, PlatformDbContext db, ICurrentUser user,
+            CreateFromBuildRequest req, CancellationToken ct) =>
+        {
+            if (req.BuildId == Guid.Empty || string.IsNullOrWhiteSpace(req.TargetEnv))
+                return Results.BadRequest(new { error = "'buildId' and 'targetEnv' are required" });
+
+            var build = await db.Builds.AsNoTracking().FirstOrDefaultAsync(b => b.Id == req.BuildId, ct);
+            if (build is null)
+                return Results.NotFound(new { error = $"Build {req.BuildId} is not registered" });
+
+            var dto = new CreatePromotionDto(
+                Product: build.Product,
+                Service: build.Service,
+                SourceEnv: Builds.BuildPromotions.SourceEnv,
+                TargetEnv: req.TargetEnv.Trim(),
+                Version: build.Version,
+                FromRevision: null,
+                ToRevision: build.CommitSha,
+                References: Builds.BuildPromotions.BuildReferences(build),
+                Participants: [new ParticipantDto("triggered-by", user.Name, user.Email)]);
+
+            PromotionCandidate? candidate;
+            try
+            {
+                candidate = await svc.CreateExternalCandidateAsync(dto, ct);
+            }
+            catch (SourceDeploymentNotFoundException)
+            {
+                // The policy on this edge still demands a source deploy, but nothing is ever
+                // deployed to "build" — an edge misconfiguration, not a bad request.
+                return Results.UnprocessableEntity(new
+                {
+                    code = "source_deploy_missing",
+                    error = $"The '{Builds.BuildPromotions.SourceEnv}' → '{req.TargetEnv}' policy requires a "
+                        + "source deployment, which the build source env never has. "
+                        + "Set sourceRequiresDeploy=false on that policy.",
+                });
+            }
+            catch (TargetAlreadyAtVersionException ex)
+            {
+                return Results.UnprocessableEntity(new { code = "target_already_at_version", error = ex.Message });
+            }
+            if (candidate is null)
+            {
+                return Results.UnprocessableEntity(new
+                {
+                    code = "policy_missing",
+                    error = $"No promotion policy is configured for '{build.Product}'/'{build.Service}' "
+                        + $"'{Builds.BuildPromotions.SourceEnv}' → '{req.TargetEnv}'",
+                });
+            }
+
+            return Results.Created(
+                $"/api/promotions/{candidate.Id}",
+                new { id = candidate.Id, status = candidate.Status.ToString() });
         });
 
         // Create a promotion candidate from an external system (CI). The external computes the
         // authoritative net change set (env-to-env diff) and POSTs it; the tool records it verbatim.
         // Secured with API key + per-key rate limit + product scope — mirrors /api/deployments/events.
-        // TODO(D16): gate behind a distinct promotion:create scope so a key can be granted deploy
-        // ingestion without the ability to open gated releases. Reusing the product-scope guard for
-        // now — adding a real scope to the API-key system is out of scope for Workstream A.
+        // D16: keys that declare a Scopes list must hold promotion:create — separates "may report
+        // deploys" from "may open gated releases". Keys without a Scopes list stay unrestricted.
         group.MapPost("/", async (
-            PromotionService svc, ClaimsPrincipal user, CreatePromotionDto dto, CancellationToken ct) =>
+            PromotionService svc, ServiceProductOverrideService productOverrides,
+            ClaimsPrincipal user, CreatePromotionDto dto, CancellationToken ct) =>
         {
+            if (!ApiKeyAuthHandler.HasScope(user, ApiKeyScopes.PromotionCreate))
+                return Results.Forbid();
+
             var errors = ValidateCreate(dto);
             if (errors.Count > 0)
                 return Results.BadRequest(new { errors });
 
-            // Enforce product scope when the key restricts which products it can post for.
+            // Enforce product scope when the key restricts which products it can post for. Checked
+            // against the product the key SENT, not the one a ServiceProductOverride redirects it to:
+            // the claim says what this key is entitled to talk about, and the redirect is an admin
+            // decision the key neither chose nor can influence. Scoping on the resolved product would
+            // instead break every pipeline whose key still names the product it is migrating off.
             var allowedProducts = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
             if (allowedProducts.Count > 0 &&
                 !allowedProducts.Contains(dto.Product, StringComparer.OrdinalIgnoreCase))
@@ -463,23 +878,30 @@ public static class PromotionEndpoints
             {
                 candidate = await svc.CreateExternalCandidateAsync(dto, ct);
             }
+            // Each 422 carries a stable machine-readable `code` alongside the human `error` so
+            // pipeline callers can branch (skip / remediate / alert) without parsing messages.
             catch (SourceDeploymentNotFoundException ex)
             {
                 // The (product, service, sourceEnv, version) has no succeeded deployment — cannot
                 // promote an unknown source.
-                return Results.UnprocessableEntity(new { error = ex.Message });
+                return Results.UnprocessableEntity(new { code = "source_deploy_missing", error = ex.Message });
             }
             catch (TargetAlreadyAtVersionException ex)
             {
                 // The target env already runs this version — nothing to promote.
-                return Results.UnprocessableEntity(new { error = ex.Message });
+                return Results.UnprocessableEntity(new { code = "target_already_at_version", error = ex.Message });
             }
             if (candidate is null)
             {
-                // No policy resolved for this source→target edge — the product isn't enrolled.
+                // No policy resolved for this source→target edge — the product isn't enrolled. Name the
+                // product the policy lookup actually used: when an override redirected this service,
+                // echoing the sent product sends the caller off to configure a policy on a product that
+                // was never consulted. The resolver memoises per request, so this costs nothing.
+                var resolvedProduct = await productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
                 return Results.UnprocessableEntity(new
                 {
-                    error = $"No promotion policy is configured for '{dto.Product}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
+                    code = "policy_missing",
+                    error = $"No promotion policy is configured for '{resolvedProduct}'/'{dto.Service}' '{dto.SourceEnv}' → '{dto.TargetEnv}'",
                 });
             }
 
@@ -537,12 +959,70 @@ public static class PromotionEndpoints
         return JsonSerializer.Deserialize<T>(json, SourceEventJsonOptions);
     }
 
+    /// <summary>
+    /// The gates a set of approvable requirements belongs to, named as the list names them (see
+    /// <see cref="PromotionService.GateName"/>), each once, in policy order.
+    /// </summary>
+    private static IReadOnlyList<string> ApprovableGates(IReadOnlyList<RequirementRef> requirements)
+        => requirements
+            .Select(r => PromotionService.GateName(r.StepName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>The list's <c>view</c> values. <c>full</c> is the default.</summary>
+    private static readonly string[] ListViews = ["full", "summary"];
+
+    private static object ShapeReferences(List<ReferenceDto> references, bool summary)
+        => summary ? references.Select(SummaryReference).ToList() : references;
+
+    /// <summary>
+    /// A reference as the <c>view=summary</c> list carries it: what a list row names, links and labels
+    /// it by, in the order the full shape has them. Left out are the fields no list view reads, which
+    /// are also the heavy ones — <c>content</c> (a ticket's or PR's whole description), the
+    /// reference-scoped <c>participants</c>, the <c>commits</c> a work item was derived from (already
+    /// folded into <c>subTitle</c> by WorkItemDisplay), <c>resolution</c> and <c>occurredAt</c>.
+    /// Absent rather than null, so a reader can't mistake "not sent" for "empty".
+    /// </summary>
+    private static object SummaryReference(ReferenceDto r) => new
+    {
+        type = r.Type,
+        url = r.Url,
+        provider = r.Provider,
+        key = r.Key,
+        revision = r.Revision,
+        title = r.Title,
+        subTitle = r.SubTitle,
+        priority = r.Priority,
+        workItemType = r.WorkItemType,
+    };
+
     private static object ToDto(
         PromotionCandidate c,
         bool canApprove,
+        // Which of the candidate's gates the current user could approve right now — see
+        // GetApprovableRequirementsManyAsync. Supplied by the list only, like gateStatus below.
+        IReadOnlyList<string>? approvableGates = null,
         IReadOnlyList<ParticipantDto>? sourceEventParticipants = null,
         IReadOnlyList<ReferenceDto>? sourceEventReferences = null,
         string? targetCurrentVersion = null,
+        string? fromVersion = null,
+        string? sourceBranch = null,
+        // Work items on this edge that already carry a decision — see LoadDecidedWorkItemKeysAsync.
+        // Supplied by the read paths (list, detail), which is where completeness is rendered; the
+        // decision responses below omit it, and the UI refetches the candidate after acting anyway.
+        IReadOnlySet<string>? decidedWorkItemKeys = null,
+        // Which approval gates the candidate is still waiting on — see PromotionGateStatus. Supplied
+        // by the list, which computes it for every row in one batch; null everywhere else, and read
+        // as "nothing outstanding" rather than fetched per candidate.
+        PromotionGateStatus? gateStatus = null,
+        // The configured role vocabulary, so completeness counts a participant sent under an alias
+        // (`qa`) as the role it names (`qa-owner`). Null ⇒ plain canonicalisation; the read paths that
+        // render completeness (list, detail) always supply it.
+        RoleAliasMap? roleAliases = null,
+        // True ⇒ references go out in the list's `view=summary` shape (see SummaryReference). Only the
+        // list asks for it, and only when the caller opted in.
+        bool summaryReferences = false,
+        // Pending and held by an active Promotion Freeze on (product, targetEnv).
         bool frozen = false) => new
     {
         id = c.Id,
@@ -554,9 +1034,20 @@ public static class PromotionEndpoints
         // Display/traceability only — the target env's current SHA and the promoted SHA.
         fromRevision = c.FromRevision,
         toRevision = c.ToRevision,
-        // Version currently deployed in the target environment (what this promotion
-        // would replace). Null when the target has no prior deploy for this service.
+        // Version currently deployed in the target environment, right now. Null when the target
+        // has no prior deploy for this service. Note this is live state, not the promotion's:
+        // once a promotion lands it equals `version`, which is why history renders `fromVersion`.
         targetCurrentVersion,
+        // The version the target ran when this promotion was created — the left-hand side of the
+        // "v1 → v2" it describes, and the baseline its change set was computed against. Frozen, so
+        // a Deployed or Rejected promotion still says where it came from. See
+        // LoadTargetVersionsAsync for how it is resolved on candidates predating the stored field.
+        fromVersion,
+        // Git ref the promoted build was produced from. Only build-sourced candidates have one:
+        // "build" is a synthetic source env — nothing runs there — so the branch is the only thing
+        // that says where the version actually came from. Null on every other edge, and on a
+        // build-sourced candidate whose registry row has since been removed.
+        sourceBranch,
         status = c.Status.ToString(),
         externalRunUrl = c.ExternalRunUrl,
         createdAt = c.CreatedAt,
@@ -565,44 +1056,240 @@ public static class PromotionEndpoints
         supersededById = c.SupersededById,
         participants = c.Participants,
         sourceEventParticipants = sourceEventParticipants ?? Array.Empty<ParticipantDto>(),
-        sourceEventReferences = sourceEventReferences ?? Array.Empty<ReferenceDto>(),
+        // Work-item references go out with their display lines resolved (tracker name on top, the
+        // messages of the ticket's commits underneath — see Deployments.WorkItemDisplay), so the
+        // promotion page names a ticket the same way the work-item queue and detail page do. Every
+        // other reference is passed through untouched.
+        sourceEventReferences = ShapeReferences(
+            Deployments.WorkItemDisplay.ApplyToReferences(sourceEventReferences ?? Array.Empty<ReferenceDto>()),
+            summaryReferences),
         canApprove,
         // Pending and held by an active Promotion Freeze on (product, targetEnv).
         frozen,
+        // The approval steps this promotion is still short of approvals on, named as the policy names
+        // them ("Release Approval"). Empty on anything that isn't Pending, on auto-approve edges, and
+        // on responses that don't compute it. Short of approvals is not the same as open: read it
+        // together with workItemsOutstanding below, which says the steps are held rather than waiting.
+        pendingGates = gateStatus?.OutstandingSteps ?? Array.Empty<string>(),
+        // The subset of those the current user could approve right now: authorized, not yet signed by
+        // them, still open, and not held by the work-item gate. canApprove is "this is non-empty".
+        // Mass approve reads it per row to tell "yours to approve as Release Approval" apart from
+        // "waiting on Release Approval, but not on you". Empty on responses that don't compute it.
+        approvableGates = approvableGates ?? Array.Empty<string>(),
+        // True when the policy's work-item gate is holding this promotion back — nobody may approve
+        // any of the steps above until every work item is signed off. It is what the promotion is
+        // actually waiting on, so the card says "work items" rather than naming a padlocked gate, and
+        // the gate filter passes it over.
+        workItemsOutstanding = gateStatus?.WorkItemsOutstanding ?? false,
+        // Whether approving is the last gate before the version is live. True (and the default for a
+        // candidate whose snapshot predates the flag) ⇒ the release automation deploys straight off
+        // the approval, so the approve button ships it; false ⇒ the run it starts stops at an
+        // approval outside InfraPortal. Read leniently: a display line is not worth failing the
+        // request over. See PromotionPolicy.DeploysOnApproval.
+        deploysOnApproval =
+            ResolvedPolicySnapshot.TryRead(c.ResolvedPolicyJson)?.DeploysOnApproval ?? true,
+        // False ⇒ this edge creates no work items, so the UI drops the whole work-item affordance
+        // (sign-off links, counts, completeness) and shows the references as change-set history only.
+        tracksWorkItems = WorkItemRoleRequirements.TracksWorkItems(c),
+        // Work-item completeness, derived from the candidate's own policy snapshot and participants
+        // (see WorkItemRoleRequirements) — automatically correct after a late work-item attachment, a
+        // reassignment, or a policy edit. Work items already signed off are not reported: the gap
+        // asks for somebody to be assigned, and a decided item is past that.
+        requiredWorkItemRoles = WorkItemRoleRequirements.RequiredRoles(c, roleAliases),
+        workItemRoleGaps = WorkItemRoleRequirements.Evaluate(c, decidedWorkItemKeys, roleAliases).Select(g => new
+        {
+            workItemKey = g.WorkItemKey,
+            title = g.Title,
+            missingRoles = g.MissingRoles,
+        }),
     };
 
-    // Batch-looks up the current (latest) deployed version per (product, service, targetEnv)
-    // triple across the candidate set. Single query; returns a dictionary keyed by the triple.
-    private static async Task<Dictionary<(string Product, string Service, string TargetEnv), string>> LoadTargetCurrentVersionsAsync(
+    /// <summary>
+    /// The two target-environment versions a promotion card shows, per candidate:
+    /// <list type="bullet">
+    ///   <item><c>Current</c> — what the target runs right now (live state).</item>
+    ///   <item><c>Baseline</c> — what it ran when the candidate was created, i.e. the "from" side of
+    ///   the promotion. This is <see cref="PromotionCandidate.FromVersion"/> when recorded.</item>
+    /// </list>
+    ///
+    /// <para>For a still-open candidate the two are the same thing. They diverge the moment the
+    /// promotion (or anything else) lands: a Deployed candidate's target now runs the promoted
+    /// version, so rendering history off <c>Current</c> reads as "v2 → v2" and loses where the
+    /// change came from — the bug this split fixes.</para>
+    ///
+    /// <para>Candidates created before <c>FromVersion</c> was recorded have no stored baseline, so
+    /// a closed one falls back to reconstructing it from deploy history: the last version deployed
+    /// to the target strictly before the candidate closed (Deployed) or was created (Rejected /
+    /// Superseded). Best-effort — deploy history is the only record left for those rows — but it is
+    /// the same answer the stored value would hold, and it makes existing history read correctly
+    /// without a backfill.</para>
+    ///
+    /// <para>One query for the whole candidate set, and it reads one deploy row per answer rather than
+    /// the target's history: each candidate row looks up its own newest deploy (and, for a legacy
+    /// closed one, its newest succeeded deploy before the close) as a correlated TOP 1 on the
+    /// <c>(product, service, environment, deployedAt)</c> index. Driving it from the candidates' own
+    /// rows keeps the only IN list on their primary keys; per-column product/service/env lists would
+    /// match their whole cross product and bring back every history row of it.</para>
+    /// </summary>
+    private static async Task<Dictionary<Guid, (string? Current, string? Baseline)>> LoadTargetVersionsAsync(
+        PlatformDbContext db,
+        IReadOnlyCollection<PromotionCandidate> candidates,
+        CancellationToken ct = default)
+    {
+        if (candidates.Count == 0) return new();
+
+        var ids = candidates.Select(c => c.Id).Distinct().ToList();
+        var rows = await TargetVersionsQuery(db, ids).ToDictionaryAsync(r => r.Id, ct);
+
+        var result = new Dictionary<Guid, (string? Current, string? Baseline)>();
+        foreach (var c in candidates)
+        {
+            rows.TryGetValue(c.Id, out var row);
+            var current = row?.Current;
+
+            string? baseline = c.FromVersion;
+            if (string.IsNullOrEmpty(baseline))
+            {
+                // No stored baseline. Closed candidates get one reconstructed as of the moment they
+                // closed (see TargetVersionsQuery); an open one is still measured against live state,
+                // which is correct for it.
+                baseline = c.Status is PromotionStatus.Deployed or PromotionStatus.Rejected or PromotionStatus.Superseded
+                    ? row?.Reconstructed
+                    : current;
+            }
+
+            result[c.Id] = (current, string.IsNullOrEmpty(baseline) ? null : baseline);
+        }
+
+        return result;
+    }
+
+    private sealed record TargetVersionRow(Guid Id, string? Current, string? Reconstructed);
+
+    /// <summary>
+    /// The SQL half of <see cref="LoadTargetVersionsAsync"/>, per candidate id:
+    /// <list type="bullet">
+    ///   <item><c>Current</c> — the target's newest deploy event, whatever became of it.</item>
+    ///   <item><c>Reconstructed</c> — only for a closed candidate with no stored
+    ///   <see cref="PromotionCandidate.FromVersion"/>: the newest <i>succeeded</i> deploy strictly
+    ///   before it closed (Deployed: its landing, else its creation) or was created (Rejected /
+    ///   Superseded). Succeeded only, matching how the stored value is captured on create: a failed
+    ///   deploy never changed what the environment was running. Null for every other row.</item>
+    /// </list>
+    /// Both are scalar subqueries ordered by <c>DeployedAt</c> and capped at one row, which SQL Server,
+    /// Postgres and SQLite all translate.
+    /// </summary>
+    private static IQueryable<TargetVersionRow> TargetVersionsQuery(PlatformDbContext db, List<Guid> ids)
+        => db.PromotionCandidates
+            .AsNoTracking()
+            .Where(c => ids.Contains(c.Id))
+            .Select(c => new TargetVersionRow(
+                c.Id,
+                db.DeployEvents
+                    .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv)
+                    .OrderByDescending(e => e.DeployedAt)
+                    .Select(e => e.Version)
+                    .FirstOrDefault(),
+                (c.FromVersion == null || c.FromVersion == "")
+                && (c.Status == PromotionStatus.Deployed
+                    || c.Status == PromotionStatus.Rejected
+                    || c.Status == PromotionStatus.Superseded)
+                    ? db.DeployEvents
+                        .Where(e => e.Product == c.Product && e.Service == c.Service && e.Environment == c.TargetEnv
+                                 && e.Status == "succeeded"
+                                 && e.DeployedAt < (c.Status == PromotionStatus.Deployed
+                                     ? c.DeployedAt ?? c.CreatedAt
+                                     : c.CreatedAt))
+                        .OrderByDescending(e => e.DeployedAt)
+                        .Select(e => e.Version)
+                        .FirstOrDefault()
+                    : null));
+
+    // Batch-looks up the branch each build-sourced candidate's version was built from, keyed by
+    // (product, service, version) — the build registry's own unique triple. Candidates promoted
+    // from a real environment are skipped: their provenance is the source env, not a git ref.
+    // One query, and none at all for a candidate set with no build-sourced rows in it.
+    private static async Task<Dictionary<(string Product, string Service, string Version), string>> LoadSourceBranchesAsync(
         PlatformDbContext db,
         IReadOnlyCollection<PromotionCandidate> candidates,
         CancellationToken ct = default)
     {
         var triples = candidates
-            .Select(c => new { c.Product, c.Service, c.TargetEnv })
+            .Where(c => c.SourceEnv == Builds.BuildPromotions.SourceEnv)
+            .Select(c => new { c.Product, c.Service, c.Version })
             .Distinct()
             .ToList();
         if (triples.Count == 0) return new();
 
         var products = triples.Select(t => t.Product).Distinct().ToList();
         var services = triples.Select(t => t.Service).Distinct().ToList();
-        var envs = triples.Select(t => t.TargetEnv).Distinct().ToList();
+        var versions = triples.Select(t => t.Version).Distinct().ToList();
 
-        // Over-fetch candidates with a coarse product/service/env IN filter, then
-        // reduce in-memory to (product, service, env) -> latest version.
-        var events = await db.DeployEvents
+        // A coarse IN filter, then the exact triples reduced in memory — the build registry holds
+        // one row per triple, so the extra rows a coarse filter drags in are cheap next to a query
+        // per candidate.
+        var builds = await db.Builds
             .AsNoTracking()
-            .Where(e => products.Contains(e.Product)
-                     && services.Contains(e.Service)
-                     && envs.Contains(e.Environment))
-            .Select(e => new { e.Product, e.Service, e.Environment, e.Version, e.DeployedAt })
+            .Where(b => products.Contains(b.Product)
+                     && services.Contains(b.Service)
+                     && versions.Contains(b.Version))
+            .Select(b => new { b.Product, b.Service, b.Version, b.Branch })
             .ToListAsync(ct);
 
-        var wanted = triples.Select(t => (t.Product, t.Service, t.TargetEnv)).ToHashSet();
-        return events
-            .Where(e => wanted.Contains((e.Product, e.Service, e.Environment)))
-            .GroupBy(e => (e.Product, e.Service, e.Environment))
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.DeployedAt).First().Version);
+        var wanted = triples.Select(t => (t.Product, t.Service, t.Version)).ToHashSet();
+        return builds
+            .Where(b => wanted.Contains((b.Product, b.Service, b.Version))
+                     && !string.IsNullOrWhiteSpace(b.Branch))
+            .GroupBy(b => (b.Product, b.Service, b.Version))
+            .ToDictionary(g => g.Key, g => g.First().Branch);
+    }
+
+    /// <summary>
+    /// The work items already ruled on, per <c>(product, service, targetEnv)</c> — the grain a
+    /// work-item decision keys on, and therefore shared by every candidate of that service on the
+    /// same edge. Feeds
+    /// <see cref="WorkItemRoleRequirements.Evaluate(PromotionCandidate, IReadOnlySet{string}?, RoleAliasMap?)"/>, which
+    /// drops a decided item from the "needs attention" gaps: the affordance asks for an assignment,
+    /// and a signed-off item is past needing one.
+    ///
+    /// <para>One query for the whole candidate set, the same coarse-IN-then-reduce shape as
+    /// <see cref="LoadSourceBranchesAsync"/>. The set may name tickets these candidates don't
+    /// carry (another promotion on the same edge decided them); harmless, because the consumer only
+    /// ever looks up keys the candidate actually references.</para>
+    /// </summary>
+    private static async Task<Dictionary<(string Product, string Service, string TargetEnv), HashSet<string>>> LoadDecidedWorkItemKeysAsync(
+        PlatformDbContext db,
+        IReadOnlyCollection<PromotionCandidate> candidates,
+        CancellationToken ct = default)
+    {
+        var triples = candidates
+            .Select(c => (c.Product, c.Service, c.TargetEnv))
+            .Distinct()
+            .ToList();
+        if (triples.Count == 0) return new();
+
+        var products = triples.Select(p => p.Product).Distinct().ToList();
+        var services = triples.Select(p => p.Service).Distinct().ToList();
+        var envs = triples.Select(p => p.TargetEnv).Distinct().ToList();
+
+        var decisions = await db.WorkItemApprovals
+            .AsNoTracking()
+            .Where(a => products.Contains(a.Product) && services.Contains(a.Service) && envs.Contains(a.TargetEnv))
+            .Select(a => new { a.Product, a.Service, a.TargetEnv, a.WorkItemKey })
+            .Distinct()
+            .ToListAsync(ct);
+
+        var wanted = triples.ToHashSet();
+        var result = new Dictionary<(string Product, string Service, string TargetEnv), HashSet<string>>();
+        foreach (var d in decisions)
+        {
+            var id = (d.Product, d.Service, d.TargetEnv);
+            if (!wanted.Contains(id)) continue;
+            if (!result.TryGetValue(id, out var keys))
+                result[id] = keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            keys.Add(d.WorkItemKey);
+        }
+        return result;
     }
 
     private static bool ContainsIgnoreCase(string? haystack, string needle)
@@ -656,7 +1343,25 @@ public record CreatePromotionDto(
     List<ReferenceDto>? References,
     List<ParticipantDto>? Participants);
 
+/// <summary>Body for the deploy-a-build endpoint: which registered build, to which target env.</summary>
+public record CreateFromBuildRequest(Guid BuildId, string TargetEnv);
+
 public record PromotionDecisionRequest(string? Comment, string? StepName = null, string? RequirementName = null);
-public record PromotionBulkRequest(Guid[] Ids, string? Comment);
+/// <summary>
+/// Body for bulk approve. <c>Gate</c> names the approval step every row approves ("Release
+/// Approval"). Omit it for a plain approve per row.
+/// </summary>
+public record PromotionBulkRequest(Guid[] Ids, string? Comment, string? Gate = null);
 public record UpsertParticipantRequest(string? Role, string? DisplayName, string? Email);
+
+/// <summary>Body for assigning a participant to a work-item reference of a candidate. A null
+/// <c>Assignee</c> clears the given role on that reference.</summary>
+public record AssignReferenceParticipantRequest(string? Role, AssignReferenceParticipantTarget? Assignee);
+public record AssignReferenceParticipantTarget(string? Email, string? DisplayName);
+
+/// <summary>Body for assigning one participant to every work item of a candidate at once. A null
+/// <c>Assignee</c> clears the role everywhere; <c>OnlyMissing</c> skips tickets that already have
+/// somebody in it.</summary>
+public record AssignWorkItemsParticipantRequest(
+    string? Role, AssignReferenceParticipantTarget? Assignee, bool? OnlyMissing);
 public record CommentRequest(string? Body);

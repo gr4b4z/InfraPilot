@@ -134,6 +134,8 @@ export interface EnvironmentSummary {
 }
 
 export interface DeploymentStateEntry {
+  /** The deploy event behind this entry — the key for linking to its detail page. */
+  id: string;
   product: string;
   service: string;
   environment: string;
@@ -146,11 +148,41 @@ export interface DeploymentStateEntry {
   references: DeployReference[];
   participants: DeployParticipant[];
   enrichment: DeployEnrichment | null;
+  run?: DeployRun | null;
 }
 
+/**
+ * A state row as `GET /deployments/state?view=summary` returns it: every scalar field of
+ * {@link DeploymentStateEntry}, without the nested `references`, `participants`, `enrichment` and
+ * `run` — the bulk of the full payload, and nothing a matrix cell or a service/environment picker
+ * reads.
+ */
+export type DeploymentStateSummary = Omit<DeploymentStateEntry, 'references' | 'participants' | 'enrichment' | 'run'>;
+
 export interface DeployEvent extends DeploymentStateEntry {
-  id: string;
   metadata: Record<string, unknown>;
+}
+
+/**
+ * The CI run that performed the deployment. Distinct from the `pipeline` reference, which points at
+ * the run that *built* the artifact — a component is built once and deployed many times, so only
+ * this can explain a particular deployment's outcome. `failureReason` is the one line the pipeline
+ * itself named as the cause, so the UI never has to guess which log line matters.
+ */
+export interface DeployRun {
+  provider?: string | null;
+  runId?: string | null;
+  runNumber?: string | null;
+  attempt?: number | null;
+  workflowName?: string | null;
+  jobName?: string | null;
+  runUrl?: string | null;
+  /** Deep link to this component's job inside the run; falls back to `runUrl` when unresolved. */
+  jobUrl?: string | null;
+  triggeredBy?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  failureReason?: string | null;
 }
 
 export interface DeployReference {
@@ -189,15 +221,158 @@ export function collectParticipants(evt: DeploymentStateEntry): DeployParticipan
   ];
 }
 
+// Deployment detail types
+
+/** A block of captured pipeline output, without its text — fetched separately, on expand. */
+export interface DeployLogSummary {
+  id: string;
+  name: string;
+  source?: string | null;
+  sequence: number;
+  byteCount: number;
+  lineCount: number;
+  /** True when only the tail was kept, either by the producer or by the ingest cap. */
+  truncated: boolean;
+  createdAt: string;
+}
+
+export interface DeployLogContent {
+  id: string;
+  name: string;
+  source?: string | null;
+  content: string;
+  truncated: boolean;
+  originalByteCount: number;
+}
+
+export interface DeployEventHistoryEntry {
+  id: string;
+  environment: string;
+  version: string;
+  previousVersion: string | null;
+  isRollback: boolean;
+  status: string;
+  source: string;
+  deployedAt: string;
+  failureReason: string | null;
+}
+
+/**
+ * A promotion carrying this deployment's version. `outbound` — this environment is the promotion's
+ * source, so this deploy is what may move forward. `inbound` — it is the target, so this deploy is
+ * what the promotion delivered.
+ */
+export interface RelatedPromotion {
+  id: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  status: string;
+  direction: 'outbound' | 'inbound';
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+}
+
+export interface RelatedWorkItem {
+  key: string;
+  provider?: string | null;
+  url?: string | null;
+  title?: string | null;
+  /** The messages of the commits behind the ticket, joined — shown under `title`. */
+  subTitle?: string | null;
+  /** Tracker labels — priority ("High") and issue type ("Bug") — absent when the producer sent none. */
+  priority?: string | null;
+  workItemType?: string | null;
+  /** Environments the ticket is gated for; a work-item link needs one of them. */
+  signOffTargetEnvs: string[];
+}
+
+export interface DeploymentDetail {
+  event: DeployEvent;
+  logs: DeployLogSummary[];
+  history: DeployEventHistoryEntry[];
+  promotions: RelatedPromotion[];
+  workItems: RelatedWorkItem[];
+}
+
+// Service search & detail types
+
+/**
+ * One hit from the cross-product service search. Identity is the (product, service) pair — the
+ * same name under two products is two hits — so the product always rides along.
+ */
+export interface ServiceSearchResult {
+  product: string;
+  service: string;
+  environments: ServiceSearchEnvironment[];
+  lastDeployedAt: string;
+}
+
+export interface ServiceSearchEnvironment {
+  environment: string;
+  lastDeployedAt: string;
+}
+
+/** One distinct version of a service and the environments it was deployed to. */
+export interface ServiceVersion {
+  version: string;
+  lastDeployedAt: string;
+  environments: ServiceVersionEnvironment[];
+}
+
+export interface ServiceVersionEnvironment {
+  /** The deploy event behind this entry — the key for linking to its detail page. */
+  eventId: string;
+  environment: string;
+  status: string;
+  isRollback: boolean;
+  deployedAt: string;
+}
+
+/** A promotion of this service, regardless of version — the service page's promotion feed. */
+export interface ServicePromotion {
+  id: string;
+  sourceEnv: string;
+  targetEnv: string;
+  version: string;
+  status: string;
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+}
+
+export interface ServiceDetail {
+  product: string;
+  service: string;
+  environments: DeploymentStateEntry[];
+  recentVersions: ServiceVersion[];
+  promotions: ServicePromotion[];
+}
+
 // Webhook types
 
 export interface WebhookSubscription {
   id: string;
   name: string;
   url: string;
-  secret?: string; // only returned on create
+  secret?: string; // only returned on create, and only for generic targets
   events: string[];
-  filters: { product: string | null; environment: string | null };
+  /**
+   * Each dimension is a set, and an empty one means "any". A dimension is only matched against
+   * events that carry it, so a service filter does not mute the product-wide events.
+   */
+  filters: WebhookFilters;
+  /** How the delivery is framed on the wire. Fixed at creation time. */
+  targetType: 'generic' | 'azure_devops' | 'github' | 'msteams' | 'msteams_html' | 'discord';
+  /** azure_devops only — the header carrying the HMAC-SHA1 checksum. */
+  signatureHeader?: string | null;
+  /** github only — overrides the repository_dispatch event_type. */
+  githubEventType?: string | null;
+  /** Messaging targets only — Handlebars template for the message body. Null uses the per-event default. */
+  messageTemplate?: string | null;
+  /** Messaging targets only — heading template. Null uses the per-event default; empty means no heading. */
+  messageTitle?: string | null;
   active: boolean;
   createdAt: string;
   updatedAt?: string;
@@ -212,10 +387,17 @@ export interface WebhookSubscription {
   recentDeliveries?: WebhookDelivery[];
 }
 
+export interface WebhookFilters {
+  products: string[];
+  services: string[];
+  environments: string[];
+}
+
 export interface WebhookDelivery {
   id: string;
   eventType: string;
-  status: 'pending' | 'delivered' | 'failed';
+  /** `cancelled` — the source event was retracted while the delivery was still held. */
+  status: 'pending' | 'delivered' | 'failed' | 'cancelled';
   attempts: number;
   httpStatus: number | null;
   responseBody: string | null;
@@ -224,4 +406,69 @@ export interface WebhookDelivery {
   createdAt: string;
   deliveredAt: string | null;
   nextRetryAt: string | null;
+}
+
+/**
+ * One environment a registered build actually reached — the deploy event that shipped this exact
+ * (product, service, version), newest one per environment.
+ *
+ * Computed by the API as a join against the deploy ledger, not reported by the publishing pipeline:
+ * a build knows nothing about deployment, which is what makes this the link between the two.
+ */
+export interface BuildDeployment {
+  /** The deploy event — the key for linking to its detail page. */
+  eventId: string;
+  environment: string;
+  status: string;
+  isRollback: boolean;
+  deployedAt: string;
+  /**
+   * Whether this event is still the environment's newest deploy for the service — the same
+   * "current" the state matrix shows. False means the environment has since moved to another
+   * version: this build ran there once, but is not what runs there now.
+   */
+  isCurrent: boolean;
+}
+
+/** One registered build — a row in the artifact registry (all published builds, any branch). */
+export interface BuildSummary {
+  id: string;
+  product: string;
+  service: string;
+  version: string;
+  /** Full git ref, e.g. `refs/heads/feature/MPT-1234-x`. */
+  branch: string;
+  commitSha: string | null;
+  buildId: string | null;
+  buildUrl: string | null;
+  artifactRef: string | null;
+  artifactDigest: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  /** Where this artifact was deployed. Absent on responses from an API that predates the join. */
+  deployments?: BuildDeployment[];
+}
+
+/** One value a build filter can take, with how many builds the current view holds for it. */
+export interface BuildFacetValue {
+  value: string;
+  count: number;
+}
+
+/**
+ * Pick lists for the build registry's filter combo boxes. Each list is counted with every other
+ * filter applied but not its own, so a selected product still shows the products you could switch
+ * to while narrowing the services and branches below it.
+ */
+export interface BuildFacets {
+  products: BuildFacetValue[];
+  services: BuildFacetValue[];
+  branches: BuildFacetValue[];
+}
+
+/** A target env a registered build can be promoted to (an edge with a resolving build → * policy). */
+export interface BuildTarget {
+  targetEnv: string;
+  /** True when picking this target deploys without an approval step. */
+  autoApprove: boolean;
 }

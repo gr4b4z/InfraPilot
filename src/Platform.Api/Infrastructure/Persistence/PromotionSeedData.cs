@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 
 namespace Platform.Api.Infrastructure.Persistence;
@@ -7,8 +8,13 @@ namespace Platform.Api.Infrastructure.Persistence;
 /// <summary>
 /// Generates deterministic demo promotion data that builds on top of
 /// <see cref="DeploymentSeedData"/>. Seeds policies, self-contained candidates
-/// in mixed lifecycle states, their work-item index rows, and approval trails so
-/// the Promotions UI has something to display on first run.
+/// in mixed lifecycle states, their work-item index rows, approval trails, and per-work-item sign-off
+/// state (approved / issue / blocked / undecided, with the matching comment thread) so the Promotions
+/// and work-items surfaces all have something to display on first run.
+///
+/// <para>The two seeded policies are the two shapes worth demonstrating: development → staging
+/// auto-approves and tracks no work items, staging → production needs an admin's approval and a
+/// <c>qa-owner</c> on every work item.</para>
 ///
 /// <para>Candidates are now self-contained (each carries its own References) and created
 /// externally in production — there is no topology to seed. For demo data we copy the
@@ -58,6 +64,35 @@ public static class PromotionSeedData
         "Needs load test results before production promotion.",
     ];
 
+    // Sign-off notes on individual work items. Deliberately narrower in scope than the promotion-level
+    // comments above: these are about one ticket, not about a release.
+    private static readonly string[] WorkItemApprovalComments =
+    [
+        "Tested on staging, behaves as described in the ticket.",
+        "Acceptance criteria all met. Good to go.",
+        "Regression suite green, no change to the public contract.",
+        "Verified the edge case from the bug report — fixed.",
+        "Checked with the reporter, they're happy with it.",
+    ];
+
+    private static readonly string[] WorkItemProblemComments =
+    [
+        "Repro still happens on the second attempt — needs another look.",
+        "Missing the migration for the new column; would fail on prod data.",
+        "This changes the response shape without a version bump.",
+        "Waiting on the security team to sign off the dependency bump.",
+        "No test covers the acceptance criteria in the ticket.",
+    ];
+
+    private static readonly string[] ThreadReplies =
+    [
+        "Picked this up — should have an answer by tomorrow.",
+        "Agreed, let's hold it for the next release train.",
+        "I can reproduce it too. Raised a follow-up ticket.",
+        "Fixed on the branch, waiting for CI.",
+        "Talked to QA, they'll re-test once staging is redeployed.",
+    ];
+
     public static async Task Seed(PlatformDbContext db)
     {
         // Guard: only seed if no candidates exist yet.
@@ -82,13 +117,32 @@ public static class PromotionSeedData
     /// <summary>
     /// Copies a deploy event's references onto a candidate (the self-contained net change set) and
     /// stages <see cref="PromotionWorkItem"/> rows for its work-item references.
+    ///
+    /// <para><paramref name="tracksWorkItems"/> mirrors the runtime's create path: when the resolved
+    /// policy opts the edge out of work items, the references are still copied (they are what shipped)
+    /// but no index rows are staged, so the seeded data can't contradict the flag on its own policy.</para>
     /// </summary>
-    private static void PopulateChangeSet(PlatformDbContext db, PromotionCandidate candidate, DeployEvent source)
+    private static void PopulateChangeSet(
+        PlatformDbContext db, PromotionCandidate candidate, DeployEvent source, bool tracksWorkItems = true)
     {
         var refs = string.IsNullOrEmpty(source.ReferencesJson)
             ? new List<ReferenceDto>()
             : JsonSerializer.Deserialize<List<ReferenceDto>>(source.ReferencesJson, JsonOptions) ?? new();
         candidate.References = refs;
+
+        // Commit-level provenance: real producers send the target env's current SHA and the SHA
+        // being promoted, and the detail page renders them as a compare link off the repository
+        // reference. Mirror that here (toRevision from the source event's repository reference,
+        // fromRevision synthesized) so the revision row shows up on a fresh database.
+        var repositoryRevision = refs.FirstOrDefault(r =>
+            string.Equals(r.Type, "repository", StringComparison.OrdinalIgnoreCase))?.Revision;
+        if (!string.IsNullOrWhiteSpace(repositoryRevision))
+        {
+            candidate.ToRevision = repositoryRevision;
+            candidate.FromRevision = Guid.NewGuid().ToString("N")[..12];
+        }
+
+        if (!tracksWorkItems) return;
 
         var workItems = refs
             .Where(r => string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase)
@@ -98,16 +152,23 @@ public static class PromotionSeedData
 
         foreach (var r in workItems)
         {
+            // Same resolver the ingest path uses, so a seeded row is named like a real one.
+            var (title, subTitle) = Platform.Api.Features.Deployments.WorkItemDisplay.Resolve(r, refs);
             db.PromotionWorkItems.Add(new PromotionWorkItem
             {
                 Id = Guid.NewGuid(),
                 CandidateId = candidate.Id,
                 WorkItemKey = r.Key!,
                 Product = candidate.Product,
+                Service = candidate.Service,
                 TargetEnv = candidate.TargetEnv,
                 Provider = r.Provider,
                 Url = r.Url,
-                Title = r.Title,
+                Title = title,
+                SubTitle = subTitle,
+                Content = r.Content,
+                Priority = r.Priority,
+                WorkItemType = r.WorkItemType,
                 Revision = r.Revision,
                 CreatedAt = candidate.CreatedAt,
             });
@@ -120,25 +181,34 @@ public static class PromotionSeedData
     /// </summary>
     private static List<PromotionPolicy> SeedPolicies(PlatformDbContext db, DateTimeOffset now)
     {
-        var products = new[] { "ticketing-platform", "marketplace", "identity-platform", "observability" };
+        // Must match DeploymentSeedData.Catalog — a policy for a product with no deploy events would
+        // never produce a candidate, and a product with no policy is silently skipped below.
+        var products = new[] { "mpt", "mpt-extentions", "extra" };
         var policies = new List<PromotionPolicy>();
 
         foreach (var product in products)
         {
-            // dev → staging: auto-approve (no approval steps)
+            // development → staging: auto-approve (no approval steps), and no work items. Staging is
+            // where a change lands to be integrated, not where QA signs it off — putting every dev
+            // promotion's tickets in the work-items queue would bury the ones that are actually
+            // somebody's to review. They become work items on the edge into production, below.
             policies.Add(new PromotionPolicy
             {
                 Id = Guid.NewGuid(),
                 Product = product,
                 TargetEnv = "staging",
                 ApprovalSteps = new(), // empty ⇒ auto-approve
-                TimeoutHours = 24,
+                TracksWorkItems = false,
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-28),
             });
 
-            // staging → production: a single "Release Approval" step requiring 2 distinct approvers
-            // from the admin group (multi-step tree replaces the legacy NOfM single group).
+            // staging → production: a single "Release Approval" step, approved by the admin group.
+            //
+            // MinApprovers is 1 because locally there is exactly one admin (admin@localhost, see
+            // SeedData.SeedLocalUsers). Asking for 2 distinct approvers from a group of one produces a
+            // queue of promotions that can be looked at and never approved, which makes the whole
+            // approve path untestable on a fresh database — the opposite of what demo data is for.
             policies.Add(new PromotionPolicy
             {
                 Id = Guid.NewGuid(),
@@ -152,11 +222,14 @@ public static class PromotionSeedData
                             Name: "Release managers",
                             Groups: new() { new GroupRef("InfraPortal.Admin", "InfraPortal.Admin") },
                             Users: new(),
-                            MinApprovers: 2),
+                            MinApprovers: 1),
                     }),
                 },
-                TimeoutHours = 48,
                 EscalationGroup = "SWO-PLT-TeamLeads",
+                // Production promotions must name a QA owner per work item. Seeded candidates carry no
+                // participants, so this is what makes the "needs attention" / "Not assigned" surfaces
+                // show something in a fresh dev database instead of looking unimplemented.
+                RequiredWorkItemRoles = new() { "qa-owner" },
                 CreatedAt = now.AddDays(-28),
                 UpdatedAt = now.AddDays(-14),
             });
@@ -202,13 +275,15 @@ public static class PromotionSeedData
             var snapshot = MakeSnapshot(policy);
             var candidateId = Guid.NewGuid();
 
-            // Distribute statuses for a realistic mix
+            // Distribute statuses for a realistic mix, weighted towards Pending. Pending is the state
+            // every queue, badge and approval surface reads from — at an even split there were a
+            // handful of live work items in the whole database and most tabs opened on an empty state.
             var roll = rand.NextDouble();
             var (status, approvedAt, deployedAt) = roll switch
             {
-                < 0.25 => (PromotionStatus.Pending, (DateTimeOffset?)null, (DateTimeOffset?)null),
-                < 0.40 => (PromotionStatus.Approved, (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 12)), (DateTimeOffset?)null),
-                < 0.55 => (PromotionStatus.Deploying, (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 6)), (DateTimeOffset?)null),
+                < 0.40 => (PromotionStatus.Pending, (DateTimeOffset?)null, (DateTimeOffset?)null),
+                < 0.50 => (PromotionStatus.Approved, (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 12)), (DateTimeOffset?)null),
+                < 0.58 => (PromotionStatus.Deploying, (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 6)), (DateTimeOffset?)null),
                 < 0.80 => (PromotionStatus.Deployed, (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(1, 6)),
                     (DateTimeOffset?)deploy.DeployedAt.AddHours(rand.Next(7, 24))),
                 < 0.90 => (PromotionStatus.Rejected, (DateTimeOffset?)null, (DateTimeOffset?)null),
@@ -233,7 +308,7 @@ public static class PromotionSeedData
                 ApprovedAt = approvedAt,
                 DeployedAt = deployedAt,
             };
-            PopulateChangeSet(db, candidate, deploy);
+            PopulateChangeSet(db, candidate, deploy, policy.TracksWorkItems);
 
             candidates.Add(candidate);
 
@@ -254,42 +329,22 @@ public static class PromotionSeedData
             }
             else if (status is PromotionStatus.Approved or PromotionStatus.Deploying or PromotionStatus.Deployed)
             {
-                // 2-of-N required — seed 2 approvals
-                var usedEmails = new HashSet<string>();
-                for (var i = 0; i < 2; i++)
+                // One approval, matching the policy's MinApprovers of 1 — a second row would describe
+                // a promotion that waited for an approver the policy never asked for.
+                var (name, email) = PickApprover(rand);
+                approvals.Add(new PromotionApproval
                 {
-                    var (name, email) = PickApprover(rand, usedEmails);
-                    usedEmails.Add(email);
-                    approvals.Add(new PromotionApproval
-                    {
-                        Id = Guid.NewGuid(),
-                        CandidateId = candidateId,
-                        ApproverEmail = email,
-                        ApproverName = name,
-                        Decision = PromotionDecision.Approved,
-                        Comment = ApprovalComments[rand.Next(ApprovalComments.Length)],
-                        CreatedAt = candidate.CreatedAt.AddHours(rand.Next(1, 6) + i),
-                    });
-                }
+                    Id = Guid.NewGuid(),
+                    CandidateId = candidateId,
+                    ApproverEmail = email,
+                    ApproverName = name,
+                    Decision = PromotionDecision.Approved,
+                    Comment = ApprovalComments[rand.Next(ApprovalComments.Length)],
+                    CreatedAt = candidate.CreatedAt.AddHours(rand.Next(1, 6)),
+                });
             }
-            else if (status is PromotionStatus.Pending)
-            {
-                // Some Pending candidates have 1 approval (waiting for second)
-                if (rand.NextDouble() < 0.4)
-                {
-                    var (name, email) = PickApprover(rand);
-                    approvals.Add(new PromotionApproval
-                    {
-                        Id = Guid.NewGuid(),
-                        CandidateId = candidateId,
-                        ApproverEmail = email,
-                        ApproverName = name,
-                        Decision = PromotionDecision.Approved,
-                        Comment = ApprovalComments[rand.Next(ApprovalComments.Length)],
-                        CreatedAt = candidate.CreatedAt.AddHours(rand.Next(1, 4)),
-                    });
-                }
-            }
+            // Pending candidates carry no approvals: one approval is all the policy asks for, so a
+            // Pending row with an Approved row against it would be a state the runtime can't produce.
         }
 
         // ── dev → staging candidates (auto-approve, most land as Deployed) ──
@@ -332,7 +387,7 @@ public static class PromotionSeedData
                 ApprovedAt = approvedAt,
                 DeployedAt = deployedAt,
             };
-            PopulateChangeSet(db, devCandidate, deploy);
+            PopulateChangeSet(db, devCandidate, deploy, policy.TracksWorkItems);
             candidates.Add(devCandidate);
 
             // Auto-approve means no PromotionApproval rows — the system approved it.
@@ -346,6 +401,185 @@ public static class PromotionSeedData
 
         db.PromotionCandidates.AddRange(candidates);
         db.PromotionApprovals.AddRange(approvals);
+
+        // Work-item sign-off state, once every candidate exists.
+        SeedWorkItemDecisions(db, candidates, rand);
+    }
+
+    /// <summary>
+    /// Puts work items into a spread of sign-off states — approved, flagged with an issue, blocked, or
+    /// still open — keyed off the state of the promotion carrying them, so the data doesn't contradict
+    /// itself (see <see cref="PickOutcome"/>).
+    ///
+    /// <para>Who decides matters as much as what. A work item the signed-in user has already decided
+    /// leaves their pending queue (see <c>WorkItemApprovalService.GetPendingForCurrentUserAsync</c>)
+    /// and appears under "Decided" instead, so the local accounts get a slice of the decisions on
+    /// promotions that are already through the gate and only a few on the live ones — the Decided tab
+    /// has content without the pending queue being drained to fill it.</para>
+    ///
+    /// <para>Each decision also writes the thread entry the runtime writes alongside it — the
+    /// work-item page reads the conversation from <c>WorkItemComments</c>, and a decision trail with
+    /// no matching entry reads as if nothing happened.</para>
+    /// </summary>
+    private static void SeedWorkItemDecisions(
+        PlatformDbContext db, List<PromotionCandidate> candidates, Random rand)
+    {
+        // A decision is keyed on (key, product, service, targetEnv) — not on the candidate — so the
+        // same ticket carried by two promotions of one service must not be decided twice. The same
+        // ticket on another service is a separate work item and gets its own decision.
+        var decided = new HashSet<(string Key, string Product, string Service, string Env)>();
+
+        // Pending first, so the spread below claims the tickets that drive the queue before a historic
+        // candidate carrying the same key can blanket-approve them.
+        var ordered = candidates
+            .Where(c => c.TargetEnv == "production")
+            .OrderBy(c => c.Status == PromotionStatus.Pending ? 0 : 1);
+
+        foreach (var candidate in ordered)
+        {
+            var keys = candidate.References
+                .Where(r => string.Equals(r.Type, "work-item", StringComparison.OrdinalIgnoreCase)
+                         && !string.IsNullOrWhiteSpace(r.Key))
+                .Select(r => r.Key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var key in keys)
+            {
+                var tuple = (key, candidate.Product, candidate.Service, candidate.TargetEnv);
+                if (!decided.Add(tuple)) continue;
+
+                var outcome = PickOutcome(candidate.Status, rand);
+                if (outcome is null) continue; // left awaiting a decision
+
+                var (decision, who) = outcome.Value;
+                var (name, email) = who;
+                var comment = decision == WorkItemDecision.Approved
+                    ? WorkItemApprovalComments[rand.Next(WorkItemApprovalComments.Length)]
+                    : WorkItemProblemComments[rand.Next(WorkItemProblemComments.Length)];
+                var decidedAt = candidate.CreatedAt.AddHours(rand.Next(1, 20));
+
+                db.WorkItemApprovals.Add(new WorkItemApproval
+                {
+                    Id = Guid.NewGuid(),
+                    WorkItemKey = key,
+                    Product = candidate.Product,
+                    Service = candidate.Service,
+                    TargetEnv = candidate.TargetEnv,
+                    ApproverEmail = email,
+                    ApproverName = name,
+                    Decision = decision,
+                    Comment = comment,
+                    CreatedAt = decidedAt,
+                });
+
+                db.WorkItemComments.Add(new WorkItemComment
+                {
+                    Id = Guid.NewGuid(),
+                    WorkItemKey = key,
+                    Product = candidate.Product,
+                    Service = candidate.Service,
+                    TargetEnv = candidate.TargetEnv,
+                    AuthorEmail = email,
+                    AuthorName = name,
+                    Decision = decision,
+                    Body = DescribeDecision(decision, comment),
+                    CreatedAt = decidedAt,
+                });
+
+                // A reply on some of them, so the thread is a conversation rather than a single
+                // system-shaped entry — and so the edit/delete affordances have a human comment to
+                // hang off (decision entries are immutable).
+                if (rand.NextDouble() < 0.4)
+                {
+                    var (replyName, replyEmail) = PickApprover(rand, new HashSet<string> { email });
+                    db.WorkItemComments.Add(new WorkItemComment
+                    {
+                        Id = Guid.NewGuid(),
+                        WorkItemKey = key,
+                        Product = candidate.Product,
+                        Service = candidate.Service,
+                        TargetEnv = candidate.TargetEnv,
+                        AuthorEmail = replyEmail,
+                        AuthorName = replyName,
+                        Body = ThreadReplies[rand.Next(ThreadReplies.Length)],
+                        CreatedAt = decidedAt.AddHours(rand.Next(1, 6)),
+                    });
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// What happened to a work item, given the state of the promotion carrying it — or null for "nobody
+    /// has decided yet". Reading the outcome off the promotion's own status is what keeps the data
+    /// self-consistent: a promotion that reached production got there because its work items were
+    /// signed off, and a promotion still Pending is the only place an open item makes sense.
+    /// </summary>
+    private static (WorkItemDecision Decision, (string Name, string Email) By)? PickOutcome(
+        PromotionStatus status, Random rand)
+    {
+        switch (status)
+        {
+            // Already through the gate ⇒ every work item on it was approved. These are what fill the
+            // "Decided" tab and give the work-item pages a finished trail to show.
+            case PromotionStatus.Approved:
+            case PromotionStatus.Deploying:
+            case PromotionStatus.Deployed:
+                return (WorkItemDecision.Approved, PickDecider(rand));
+
+            // The live queue. Mostly open — deciding these would empty the tab the demo data exists to
+            // fill — with enough decided to show every colour a row can take.
+            case PromotionStatus.Pending:
+                if (rand.NextDouble() < 0.55) return null;
+                // Two independent rolls, and even thirds. Reusing the first roll to pick the decision
+                // as well confined Blocked to the top slice of the same band, which on this fixed seed
+                // produced exactly one blocked item in the whole database — and blocked is the state
+                // whose effect on the promotion gate is the one worth seeing.
+                var decision = rand.NextDouble() switch
+                {
+                    < 0.34 => WorkItemDecision.Approved,
+                    < 0.67 => WorkItemDecision.Issue,
+                    _ => WorkItemDecision.Blocked,
+                };
+                return (decision, PickDecider(rand));
+
+            // Rejected or superseded: sometimes there's a block behind it, which is also what the
+            // queue's orphan handling has to cope with. Mostly left open.
+            default:
+                if (rand.NextDouble() > 0.3) return null;
+                return (
+                    rand.NextDouble() < 0.6 ? WorkItemDecision.Blocked : WorkItemDecision.Issue,
+                    Approvers[rand.Next(Approvers.Length)]);
+        }
+    }
+
+    /// <summary>
+    /// Who signed a work item off. Mostly colleagues; a slice goes to the local sign-in accounts so
+    /// their "Decided" tab isn't empty.
+    /// </summary>
+    private static (string Name, string Email) PickDecider(Random rand)
+    {
+        var roll = rand.NextDouble();
+        if (roll < 0.70) return Approvers[rand.Next(Approvers.Length)];
+        if (roll < 0.88) return ("Regular User", "user@localhost");
+        return ("Admin User", "admin@localhost");
+    }
+
+    /// <summary>
+    /// The thread entry the runtime writes for a decision. Mirrors
+    /// <c>WorkItemApprovalService.DescribeDecision</c> — same shape, so seeded threads and real ones
+    /// read identically.
+    /// </summary>
+    private static string DescribeDecision(WorkItemDecision decision, string? comment)
+    {
+        var headline = decision switch
+        {
+            WorkItemDecision.Approved => "Approved this work item.",
+            WorkItemDecision.Issue => "Raised an issue on this work item.",
+            _ => "Blocked this work item.",
+        };
+        var note = (comment ?? "").Trim();
+        return note.Length == 0 ? headline : $"{headline}\n\n{note}";
     }
 
     private static void SeedSupersedeChain(
@@ -411,7 +645,7 @@ public static class PromotionSeedData
                 ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
                 CreatedAt = ev.DeployedAt.AddMinutes(5),
             };
-            PopulateChangeSet(db, pred, ev);
+            PopulateChangeSet(db, pred, ev, policy.TracksWorkItems);
             candidates.Add(pred);
         }
 
@@ -428,21 +662,17 @@ public static class PromotionSeedData
             ResolvedPolicyJson = JsonSerializer.Serialize(snapshot, JsonOptions),
             CreatedAt = fresh.DeployedAt.AddMinutes(5),
         };
-        PopulateChangeSet(db, winner, fresh);
+        PopulateChangeSet(db, winner, fresh, policy.TracksWorkItems);
         candidates.Add(winner);
     }
 
+    /// <summary>
+    /// Snapshots a policy the same way the runtime does. Delegates to
+    /// <see cref="PromotionPolicyResolver.Project"/> rather than re-listing the fields: the local copy
+    /// this replaced had gone stale, so seeded candidates were missing settings their policy declared.
+    /// </summary>
     private static ResolvedPolicySnapshot MakeSnapshot(PromotionPolicy policy) =>
-        new(
-            PolicyId: policy.Id,
-            TimeoutHours: policy.TimeoutHours,
-            EscalationGroup: policy.EscalationGroup)
-        {
-            ApprovalSteps = policy.ApprovalSteps,
-            RequireAllWorkItemsApproved = policy.RequireAllWorkItemsApproved,
-            AutoApproveOnAllWorkItemsApproved = policy.AutoApproveOnAllWorkItemsApproved,
-            AutoApproveWhenNoWorkItems = policy.AutoApproveWhenNoWorkItems,
-        };
+        PromotionPolicyResolver.Project(policy);
 
     /// <summary>
     /// Picks a random approver, excluding anyone already in <paramref name="exclude"/>

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -55,7 +55,11 @@ public class PromotionApproverGroupTests : IDisposable
             _db, resolver, auth, _currentUser, _audit,
             Substitute.For<ILogger<PromotionService>>(),
             Substitute.For<IWebhookDispatcher>(),
-            TestOptions.Normalization());
+            TestOptions.Normalization(),
+            TestEnvironmentAliases.For(_db),
+            TestUserPreferences.For(_db),
+            TestProductOverrides.For(_db),
+            TestRoleCatalog.For(_db));
     }
 
     public void Dispose() => _db.Dispose();
@@ -97,7 +101,6 @@ public class PromotionApproverGroupTests : IDisposable
 
         var snapshot = new ResolvedPolicySnapshot(
             PolicyId: policy.Id,
-            TimeoutHours: 0,
             EscalationGroup: null)
         {
             ApprovalSteps = steps,
