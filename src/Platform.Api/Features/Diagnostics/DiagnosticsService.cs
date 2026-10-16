@@ -286,6 +286,9 @@ public class DiagnosticsService
         ("forbidden", "log_permission_denied"),
         ("unauthorized", "log_permission_denied"),
         ("connection refused", "log_connection_refused"),
+        // A chart `fail` guard: Helm prints "execution error at (<template>:<line>:<col>): <message>"
+        // and renders nothing, so the cluster was never touched.
+        ("execution error at (", "log_chart_values_rejected"),
     ];
 
     /// <summary>Last <paramref name="max"/> characters, cut at a line boundary where possible.</summary>
