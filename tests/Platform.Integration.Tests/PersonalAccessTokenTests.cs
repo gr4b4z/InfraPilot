@@ -141,9 +141,22 @@ public class PersonalAccessTokenTests : IClassFixture<TestFactory>
         Assert.NotEqual(JsonValueKind.Null, row.GetProperty("lastUsedAt").ValueKind);
     }
 
+    [Fact]
+    public async Task A_token_can_live_up_to_a_year()
+    {
+        using var qa = _factory.CreateAuthenticatedClient("qa@localhost", "qa123");
+        var response = await qa.PostAsJsonAsync("/api/me/tokens", new { name = "long-running agent", expiresInDays = 365 });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var lifetime = body.GetProperty("expiresAt").GetDateTimeOffset() - body.GetProperty("createdAt").GetDateTimeOffset();
+        Assert.Equal(TimeSpan.FromDays(365), lifetime);
+    }
+
     [Theory]
     [InlineData("", 30)]
-    [InlineData("ok name", 365)]
+    [InlineData("ok name", 366)]
+    [InlineData("ok name", 0)]
     public async Task Create_rejects_a_missing_name_or_an_unoffered_lifetime(string name, int days)
     {
         using var qa = _factory.CreateAuthenticatedClient("qa@localhost", "qa123");

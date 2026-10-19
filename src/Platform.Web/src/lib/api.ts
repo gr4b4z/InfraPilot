@@ -1536,7 +1536,7 @@ export interface UserPreferencesPayload {
 }
 
 /** The lifetimes the token endpoint accepts. */
-export type TokenLifetimeDays = 7 | 30 | 90;
+export type TokenLifetimeDays = 7 | 30 | 90 | 180 | 365;
 
 /**
  * What a token may decide. `Standard`: the owner's roles minus Admin, no decisions. `QA`: adds the
