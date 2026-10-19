@@ -409,7 +409,10 @@ lifting a freeze stays admin-only.
 - `GET /api/promotions/roles`, `GET /api/promotions/users/search?q=`,
   `GET /api/promotions/groups/search?q=` — directory-backed pickers (resolve against AD/Graph in
   MSAL mode; local users/static groups in dev). Note `roles` here reports the roles **observed in
-  the data**, which is not the same as the roles you may assign — see below.
+  the data**, which is not the same as the roles you may assign — see below. When the directory
+  call fails (Graph unreachable, an expired Graph client secret) the two search routes still answer
+  200 with an empty list, plus `directoryUnavailable: true` so the pickers can say so instead of
+  "no matches"; the cause is in the API log (`User search failed …` / `Group search failed …`).
 
 ### Work-item sign-off — `/api/work-items/{key}`
 
