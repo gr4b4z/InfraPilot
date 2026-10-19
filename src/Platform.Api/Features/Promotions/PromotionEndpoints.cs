@@ -420,8 +420,10 @@ public static class PromotionEndpoints
                 // Graph unreachable / misconfigured (an expired client secret, say) — return empty
                 // rather than error so the picker still offers manual entry, but flag it: an empty
                 // list alone reads as "nobody matches", which sends people hunting for a typo
-                // instead of reporting an outage.
-                log.LogWarning(ex,
+                // instead of reporting an outage. A failing Graph sign-in is the identity service's
+                // to log (Error, once per window) and the admin banner's to show; repeating it here
+                // at Warning for every keystroke only buries it.
+                log.Log(SearchFailureLevel(ex), ex,
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
                 return Results.Ok(new { users = Array.Empty<object>(), restrictedTo, directoryUnavailable = true });
@@ -469,7 +471,7 @@ public static class PromotionEndpoints
             }
             catch (Exception ex)
             {
-                log.LogWarning(ex,
+                log.Log(SearchFailureLevel(ex), ex,
                     "Group search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
                 return Results.Ok(new { groups = Array.Empty<object>(), directoryUnavailable = true });
@@ -1302,6 +1304,11 @@ public static class PromotionEndpoints
     private static bool ContainsIgnoreCase(string? haystack, string needle)
         => !string.IsNullOrEmpty(haystack)
            && haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+    // Debug for a failing Graph sign-in — EntraIdGraphService already logged it at Error — and
+    // Warning for anything else that broke a directory search.
+    private static LogLevel SearchFailureLevel(Exception ex)
+        => GraphCredentialHealth.CredentialFailureIn(ex) is null ? LogLevel.Warning : LogLevel.Debug;
 
     // Scrubs user-provided strings before they land in a log line. Drops ASCII control
     // characters (including CR/LF) so a crafted query can't inject fake log entries

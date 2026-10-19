@@ -183,6 +183,9 @@ builder.Services.AddSingleton<INotificationChannel, WebhookChannel>();
 builder.Services.AddScoped<INotificationService, NotificationDispatcher>();
 
 // Identity / Graph — separate app registration for Graph API (client credentials)
+// Registered in every mode so the admin directory-health read always answers; only the Graph
+// service ever records a failure in it.
+builder.Services.AddSingleton<GraphCredentialHealth>();
 var graphTenantId = builder.Configuration["Graph:TenantId"];
 var graphClientId = builder.Configuration["Graph:ClientId"];
 var graphClientSecret = builder.Configuration["Graph:ClientSecret"];
