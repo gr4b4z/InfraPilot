@@ -59,6 +59,7 @@ import {
   WorkItemsNeedingAttentionBadge,
 } from '@/components/promotions/MissingRoles';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
@@ -981,6 +982,7 @@ function PeopleCard({
   >([]);
   const [userSearchOpen, setUserSearchOpen] = useState(false);
   const [userSearchLoading, setUserSearchLoading] = useState(false);
+  const [directoryUnavailable, setDirectoryUnavailable] = useState(false);
 
   // Debounced directory search (Entra / local users via IIdentityService).
   useEffect(() => {
@@ -995,8 +997,10 @@ function PeopleCard({
       try {
         const res = await api.searchPromotionUsers(q);
         setUserResults(res.users || []);
+        setDirectoryUnavailable(res.directoryUnavailable === true);
       } catch {
         setUserResults([]);
+        setDirectoryUnavailable(true);
       } finally {
         setUserSearchLoading(false);
       }
@@ -1199,7 +1203,10 @@ function PeopleCard({
                     Searching...
                   </div>
                 )}
-                {!userSearchLoading && userResults.length === 0 && (
+                {!userSearchLoading && directoryUnavailable && (
+                  <DirectoryUnavailableNotice detail="Fill in the name and email below." />
+                )}
+                {!userSearchLoading && userResults.length === 0 && !directoryUnavailable && (
                   <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
                     No matches — fill in manually below.
                   </div>

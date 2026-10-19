@@ -417,12 +417,14 @@ public static class PromotionEndpoints
             }
             catch (Exception ex)
             {
-                // Graph unreachable / misconfigured — return empty rather than error so the UI
-                // silently falls back to manual entry. Log loudly so dev can see why.
+                // Graph unreachable / misconfigured (an expired client secret, say) — return empty
+                // rather than error so the picker still offers manual entry, but flag it: an empty
+                // list alone reads as "nobody matches", which sends people hunting for a typo
+                // instead of reporting an outage.
                 log.LogWarning(ex,
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
-                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo });
+                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo, directoryUnavailable = true });
             }
         });
 
@@ -470,7 +472,7 @@ public static class PromotionEndpoints
                 log.LogWarning(ex,
                     "Group search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
-                return Results.Ok(new { groups = Array.Empty<object>() });
+                return Results.Ok(new { groups = Array.Empty<object>(), directoryUnavailable = true });
             }
         });
 
