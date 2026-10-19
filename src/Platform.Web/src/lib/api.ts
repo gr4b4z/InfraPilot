@@ -640,19 +640,23 @@ class ApiClient {
   /**
    * Directory search for the assignment pickers. With `role`, a role an admin restricted to
    * directory groups (Settings → Participant Roles) only returns their members, and `restrictedTo`
-   * names those groups.
+   * names those groups. `directoryUnavailable` is set when the directory itself failed (Graph
+   * unreachable, an expired app secret) — the empty `users` then means "couldn't look", not
+   * "nobody matches".
    */
   searchPromotionUsers(q: string, role?: string | null) {
     const roleParam = role ? `&role=${encodeURIComponent(role)}` : '';
     return this.request<{
       users: Array<{ id: string; displayName: string; email: string }>;
       restrictedTo?: PromotionPolicyGroupRef[];
+      directoryUnavailable?: boolean;
     }>(`/promotions/users/search?q=${encodeURIComponent(q)}${roleParam}`);
   }
 
   searchPromotionGroups(q: string) {
     return this.request<{
       groups: Array<{ id: string; displayName: string }>;
+      directoryUnavailable?: boolean;
     }>(`/promotions/groups/search?q=${encodeURIComponent(q)}`);
   }
 
