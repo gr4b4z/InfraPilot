@@ -37,8 +37,11 @@ public class PersonalAccessTokenService
     /// <summary>The token's <see cref="PersonalTokenAccess"/>, by name.</summary>
     public const string AccessClaim = "token_access";
 
-    /// <summary>The lifetimes the portal offers. Always finite: a forgotten token stops working on its own.</summary>
-    public static readonly int[] AllowedLifetimesDays = [7, 30, 90];
+    /// <summary>
+    /// The lifetimes the portal offers, up to a year. Always finite: a forgotten token stops working
+    /// on its own.
+    /// </summary>
+    public static readonly int[] AllowedLifetimesDays = [7, 30, 90, 180, 365];
 
     /// <summary>Active (unexpired, unrevoked) tokens one person may hold at once.</summary>
     public const int MaxActivePerUser = 10;
@@ -159,7 +162,10 @@ public class PersonalAccessTokenService
 
     // ── Administration: everyone's tokens (Settings → Agent Tokens, /api/tokens/admin) ──────────
 
-    /// <summary>How long a revoked or expired token stays in the admin list — as long as a token can live.</summary>
+    /// <summary>
+    /// How long a revoked or expired token stays in the admin list. Counted from when it ended, so it
+    /// is independent of how long the token lived.
+    /// </summary>
     public static readonly TimeSpan InactiveHistory = TimeSpan.FromDays(90);
 
     public const int MaxReasonLength = 500;
