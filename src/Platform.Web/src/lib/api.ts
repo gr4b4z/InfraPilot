@@ -1342,6 +1342,14 @@ class ApiClient {
     });
   }
 
+  /**
+   * Whether the directory (Microsoft Graph) app can sign in. Admin-only. `credentialFailure` is set
+   * while it can't — every directory read then comes back empty — and null once one gets through.
+   */
+  getDirectoryHealth() {
+    return this.request<DirectoryHealth>('/settings/directory-health');
+  }
+
   // ── The signed-in user's own preferences ───────────────────────────────────
 
   /**
@@ -1611,6 +1619,26 @@ export interface AppSettingsPayload {
  * `resolvesTo` non-null means an alias already redirects this name, but its history has not been
  * merged yet: new deploys land on the canonical key while these rows stay behind.
  */
+/** `GET /settings/directory-health` (admin-only). */
+export interface DirectoryHealth {
+  credentialFailure: DirectoryCredentialFailure | null;
+}
+
+/**
+ * The directory app's sign-in failing, as the API's Graph reads have seen it since the last one that
+ * got through. Never carries the secret.
+ */
+export interface DirectoryCredentialFailure {
+  /** First failure of this outage (ISO-8601, UTC). */
+  since: string;
+  /** Latest failure (ISO-8601, UTC). */
+  lastFailedAt: string;
+  /** Entra's error code when it gave one — `AADSTS7000222` is an expired client secret. */
+  code: string | null;
+  /** The first sentence of Entra's explanation. */
+  message: string;
+}
+
 export interface EnvironmentUsage {
   key: string;
   deployments: number;
