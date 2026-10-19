@@ -29,7 +29,7 @@ import { ENV_API_KEY, ENV_URL, TOKEN_PLACEHOLDER, buildAgentSnippets } from './a
 /** The server refuses a create beyond this many active tokens; shown so the limit isn't a surprise. */
 const MAX_ACTIVE_TOKENS = 10;
 
-const LIFETIMES: TokenLifetimeDays[] = [7, 30, 90];
+const LIFETIMES: TokenLifetimeDays[] = [7, 30, 90, 180, 365];
 const DEFAULT_LIFETIME: TokenLifetimeDays = 30;
 const DEFAULT_ACCESS: TokenAccess = 'Standard';
 
@@ -208,7 +208,7 @@ export function AgentAccessPage() {
             >
               {LIFETIMES.map((days) => (
                 <option key={days} value={days}>
-                  {days} days
+                  {days === 365 ? '1 year' : `${days} days`}
                 </option>
               ))}
             </select>
@@ -311,8 +311,8 @@ export function AgentAccessPage() {
             decision you can. Each decision a token makes is recorded in the audit log as made by an agent.
           </li>
           <li>
-            <strong style={{ color: 'var(--text-primary)' }}>It expires</strong> after 7, 30 or 90 days, and
-            you can revoke it here at any time. An administrator can revoke it too, and it stops working
+            <strong style={{ color: 'var(--text-primary)' }}>It expires</strong> after 7, 30, 90 or 180 days
+            or a year, and you can revoke it here at any time. An administrator can revoke it too, and it stops working
             within minutes if your account is disabled. Treat it like a password.
           </li>
           <li>

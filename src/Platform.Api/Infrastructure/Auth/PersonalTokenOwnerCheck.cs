@@ -6,7 +6,7 @@ namespace Platform.Api.Infrastructure.Auth;
 /// <summary>
 /// Whether a personal access token's owner still has an account that may sign in. A token carries
 /// a snapshot of its owner taken when it was created, so without this it would keep working after
-/// the owner is disabled or deleted in Entra, until it expires up to 90 days later.
+/// the owner is disabled or deleted in Entra, until it expires up to a year later.
 ///
 /// <para>Checked when a token is used, through <see cref="IIdentityService.GetAccountStatus"/>
 /// (Graph in Msal mode, the local users table in Local mode), and cached per owner for

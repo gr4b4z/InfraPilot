@@ -33,7 +33,7 @@ user menu), which also shows copy-paste setup for Claude Code, a project `.mcp.j
 | Identity | Its owner: `oid`, `name`, `preferred_username` claims, so comments, triggered-by and audit name the person |
 | Access | `Standard` (default), `QA` or `Admin`, chosen at creation, never above the owner's own role (see below) |
 | Roles | The owner's roles when it was created, **minus `InfraPortal.Admin`** unless it is an Admin token; a QA token adds `InfraPortal.QA` (none ⇒ `InfraPortal.User`) |
-| Lifetime | 7, 30 or 90 days, always finite; revocable by its owner on the page and by an admin in Settings → Agent Tokens; `lastUsedAt` refreshed at most every 5 min |
+| Lifetime | 7, 30, 90, 180 or 365 days, always finite; revocable by its owner on the page and by an admin in Settings → Agent Tokens; `lastUsedAt` refreshed at most every 5 min |
 | Owner check | Refused within 5 min once the directory reports the owner disabled or deleted (see below) |
 | Limit | 10 active tokens per person |
 
@@ -79,7 +79,7 @@ revocation are audit-logged (`auth` module).
 #### Owner check (disabled or deleted accounts)
 
 A token carries a snapshot of its owner from creation time, so on its own it would outlive an
-offboarding by up to 90 days. `PersonalTokenOwnerCheck` closes that: on each use it asks
+offboarding by up to a year. `PersonalTokenOwnerCheck` closes that: on each use it asks
 `IIdentityService.GetAccountStatus` about the owner and caches the answer per owner for 5 minutes
 (`CheckInterval`), so an agent's burst of calls costs one directory read per owner per window on
 each replica.
