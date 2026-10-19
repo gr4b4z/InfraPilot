@@ -115,7 +115,7 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
 - Two kinds of key go in `X-Api-Key`: **configured keys** (pipeline keys in `Deployments:ApiKeys`,
   added by a deployment) and **personal access tokens** (`ipt_…`), which any user mints for
   themselves on the portal's **Agent access** page (`/me/agent-access`, user menu). A personal token
-  acts as the person who made it, expires (7/30/90 days) and can be revoked there. No token can
+  acts as the person who made it, expires (7/30/90/180/365 days) and can be revoked there. No token can
   ingest deploy events, register builds or create promotions via `POST /api/promotions`. What else
   it may do depends on its access (`whoami` → `tokenAccess`): **Standard** carries the owner's roles
   minus Admin and approves / rejects / signs off nothing (`403`); **QA** (QA members and admins)
