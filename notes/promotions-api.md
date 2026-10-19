@@ -413,6 +413,13 @@ lifting a freeze stays admin-only.
   call fails (Graph unreachable, an expired Graph client secret) the two search routes still answer
   200 with an empty list, plus `directoryUnavailable: true` so the pickers can say so instead of
   "no matches"; the cause is in the API log (`User search failed …` / `Group search failed …`).
+  When the cause is the Graph app's own sign-in failing (Azure.Identity `AuthenticationFailedException`,
+  e.g. `AADSTS7000222`, an expired client secret), the API logs it at Error once per 5 minutes
+  (`Microsoft Graph sign-in is failing …`) instead of a Warning per search, and
+  `GET /api/settings/directory-health` (Admin only) returns
+  `{ credentialFailure: { since, lastFailedAt, code, message } }` until a Graph read gets through
+  again (`credentialFailure: null`). The web shell polls it for Admins and shows a banner. It is per
+  API replica and in memory, so a restart starts clean.
 
 ### Work-item sign-off — `/api/work-items/{key}`
 
