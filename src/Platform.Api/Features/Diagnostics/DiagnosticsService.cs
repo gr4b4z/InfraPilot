@@ -103,10 +103,19 @@ public class DiagnosticsService
         var deliveries = await _db.WebhookDeliveries.AsNoTracking()
             .Where(d => d.EventType == ApprovedEventType && d.CancelKey == cancelKey)
             .OrderByDescending(d => d.CreatedAt)
-            .Take(5)
+            .Take(50)
             .ToListAsync(ct);
 
+        // One approval fans out to every listening subscription, and each has its own fate. Judge
+        // them one by one: the newest row overall is just whichever subscriber was queued last, so
+        // one receiver's rejection could otherwise stand in for another's success, or hide it.
+        var latestPerSubscription = deliveries
+            .GroupBy(d => d.SubscriptionId)
+            .Select(g => g.First())
+            .ToList();
+
         var subscriptions = await _db.WebhookSubscriptions.AsNoTracking().ToListAsync(ct);
+        var subscriptionNames = subscriptions.ToDictionary(s => s.Id, s => s.Name);
         var listening = subscriptions.Where(s => s.Active && Subscribes(s, ApprovedEventType, candidate)).ToList();
 
         if (listening.Count == 0)
@@ -126,28 +135,31 @@ public class DiagnosticsService
         }
         else
         {
-            var latest = deliveries[0];
-            evidence.Add($"Latest promotion.approved delivery: status '{latest.Status}', {latest.Attempts} attempt(s)"
-                + (latest.HttpStatus is not null ? $", HTTP {latest.HttpStatus}" : "")
-                + (latest.DeliveredAt is not null ? $", delivered {Describe(now - latest.DeliveredAt.Value)} ago" : "")
-                + ".");
-
-            switch (latest.Status)
+            foreach (var latest in latestPerSubscription)
             {
-                case "pending":
-                    observations.Add(Observations.DeliveryPending);
-                    evidence.Add($"It is still queued; next retry at {latest.NextRetryAt:u}.");
-                    break;
-                case "failed":
-                    observations.Add(Observations.DeliveryFailed);
-                    if (!string.IsNullOrWhiteSpace(latest.ErrorMessage))
-                        evidence.Add($"Delivery error: {Truncate(latest.ErrorMessage, 300)}");
-                    if (!string.IsNullOrWhiteSpace(latest.ResponseBody))
-                        evidence.Add($"Response body: {Truncate(latest.ResponseBody, 300)}");
-                    break;
-                default:
-                    observations.Add(Observations.DeliverySucceeded);
-                    break;
+                var name = subscriptionNames.TryGetValue(latest.SubscriptionId, out var n) ? n : "unknown subscription";
+                evidence.Add($"promotion.approved delivery to '{name}': status '{latest.Status}', {latest.Attempts} attempt(s)"
+                    + (latest.HttpStatus is not null ? $", HTTP {latest.HttpStatus}" : "")
+                    + (latest.DeliveredAt is not null ? $", delivered {Describe(now - latest.DeliveredAt.Value)} ago" : "")
+                    + ".");
+
+                switch (latest.Status)
+                {
+                    case "pending":
+                        observations.Add(Observations.DeliveryPending);
+                        evidence.Add($"It is still queued; next retry at {latest.NextRetryAt:u}.");
+                        break;
+                    case "failed":
+                        observations.Add(Observations.DeliveryFailed);
+                        if (!string.IsNullOrWhiteSpace(latest.ErrorMessage))
+                            evidence.Add($"Delivery error: {Truncate(latest.ErrorMessage, 300)}");
+                        if (!string.IsNullOrWhiteSpace(latest.ResponseBody))
+                            evidence.Add($"Response body: {Truncate(latest.ResponseBody, 300)}");
+                        break;
+                    default:
+                        observations.Add(Observations.DeliverySucceeded);
+                        break;
+                }
             }
         }
 
