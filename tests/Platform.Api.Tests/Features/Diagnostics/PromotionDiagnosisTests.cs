@@ -67,13 +67,14 @@ public class PromotionDiagnosisTests : IDisposable
         return candidate;
     }
 
-    private void GivenSubscription(string events = """["promotion.approved"]""", bool active = true,
-        string products = "[]", string environments = "[]")
+    private Guid GivenSubscription(string events = """["promotion.approved"]""", bool active = true,
+        string products = "[]", string environments = "[]", string name = "mpt-release dispatch")
     {
+        var id = Guid.NewGuid();
         _db.WebhookSubscriptions.Add(new WebhookSubscription
         {
-            Id = Guid.NewGuid(),
-            Name = "mpt-release dispatch",
+            Id = id,
+            Name = name,
             Url = "https://api.github.com/repos/x/y/dispatches",
             Active = active,
             EventsJson = events,
@@ -82,21 +83,23 @@ public class PromotionDiagnosisTests : IDisposable
             FilterEnvironmentsJson = environments,
         });
         _db.SaveChanges();
+        return id;
     }
 
-    private void GivenDelivery(Guid candidateId, string status, int attempts = 1, string? error = null)
+    private void GivenDelivery(Guid candidateId, string status, int attempts = 1, string? error = null,
+        Guid? subscriptionId = null, TimeSpan? ago = null)
     {
         _db.WebhookDeliveries.Add(new WebhookDelivery
         {
             Id = Guid.NewGuid(),
-            SubscriptionId = Guid.NewGuid(),
+            SubscriptionId = subscriptionId ?? Guid.NewGuid(),
             EventType = "promotion.approved",
             CancelKey = PromotionService.ApprovedWebhookCancelKey(candidateId),
             Status = status,
             Attempts = attempts,
             ErrorMessage = error,
             PayloadJson = $$$"""{"data":{"id":"{{{candidateId}}}"}}""",
-            CreatedAt = DateTimeOffset.UtcNow.AddHours(-2),
+            CreatedAt = DateTimeOffset.UtcNow - (ago ?? TimeSpan.FromHours(2)),
         });
         _db.SaveChanges();
     }
@@ -192,6 +195,40 @@ public class PromotionDiagnosisTests : IDisposable
         Assert.Contains(Observations.DeliveryFailed, result!.Observations);
         Assert.Contains(result.Evidence, e => e.Contains("404 Not Found"));
         Assert.Contains(result.ProbableCauses, c => c.Cause.Id == "delivery-failed");
+    }
+
+    [Fact]
+    public async Task Each_subscription_delivery_is_judged_on_its_own()
+    {
+        // One approval fans out to several subscribers. The one queued last failing must not hide
+        // that the deploying subscriber took it — nor the other way round.
+        var candidate = GivenCandidate();
+        var deployer = GivenSubscription(name: "mpt-release deploy-build");
+        var other = GivenSubscription(name: "GithubPromotion");
+        GivenDelivery(candidate.Id, "delivered", subscriptionId: deployer, ago: TimeSpan.FromHours(2));
+        GivenDelivery(candidate.Id, "failed", attempts: 5, error: "HTTP 500", subscriptionId: other, ago: TimeSpan.FromHours(1));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.Contains(Observations.DeliverySucceeded, result!.Observations);
+        Assert.Contains(Observations.DeliveryFailed, result.Observations);
+        Assert.Contains(result.Evidence, e => e.Contains("'mpt-release deploy-build'") && e.Contains("delivered"));
+        Assert.Contains(result.Evidence, e => e.Contains("'GithubPromotion'") && e.Contains("failed"));
+    }
+
+    [Fact]
+    public async Task Only_the_newest_delivery_per_subscription_counts()
+    {
+        // A re-announce queues a fresh row for the same subscriber; its older failure is history.
+        var candidate = GivenCandidate();
+        var sub = GivenSubscription();
+        GivenDelivery(candidate.Id, "failed", error: "HTTP 401", subscriptionId: sub, ago: TimeSpan.FromHours(2));
+        GivenDelivery(candidate.Id, "delivered", subscriptionId: sub, ago: TimeSpan.FromHours(1));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.Contains(Observations.DeliverySucceeded, result!.Observations);
+        Assert.DoesNotContain(Observations.DeliveryFailed, result.Observations);
     }
 
     [Fact]
