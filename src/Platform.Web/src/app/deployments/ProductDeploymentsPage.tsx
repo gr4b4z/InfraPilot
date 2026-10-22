@@ -1003,7 +1003,7 @@ export function ProductDeploymentsPage() {
                 <ActivityCard
                   key={evt.id}
                   event={evt}
-                  duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt)}
+                  duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service)}
                   showEnv={envFilter !== 'all'}
                   onClick={() => openDeployment(evt)}
                 />
@@ -1075,7 +1075,9 @@ function MatrixCell({
   highlighted: boolean;
   onOpen: (entry: { id: string }) => void;
 }) {
-  const duringFreeze = cell ? freezeWindowAt(freezeWindows, cell.product, env, cell.deployedAt) : undefined;
+  const duringFreeze = cell
+    ? freezeWindowAt(freezeWindows, cell.product, env, cell.deployedAt, cell.service)
+    : undefined;
   const pendingLabel = pending
     ? `, promotion to ${pending.version} ${pending.frozen ? 'held by a freeze' : 'awaiting approval'}`
     : '';

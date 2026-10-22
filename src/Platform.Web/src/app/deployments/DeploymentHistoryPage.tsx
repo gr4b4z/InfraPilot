@@ -183,7 +183,7 @@ export function DeploymentHistoryPage() {
               key={evt.id}
               index={index}
               event={evt}
-              duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt)}
+              duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service)}
               envLabel={getDisplayName(evt.environment)}
               detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />

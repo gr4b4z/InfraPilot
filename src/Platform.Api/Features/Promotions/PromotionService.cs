@@ -196,9 +196,9 @@ public class PromotionService
         var autoApproveNoWorkItems = !snapshot.IsAutoApprove
             && snapshot.AutoApproveWhenNoWorkItems
             && payloadWorkItems.Count == 0;
-        // A Promotion Freeze on (product, targetEnv) holds auto-approve too: the candidate is born
-        // Pending and the gate releases it when the freeze is lifted (ADR-0001).
-        var heldByFreeze = await FindFreezeAsync(product, targetEnv, ct) is not null;
+        // A Promotion Freeze covering (product, service, targetEnv) holds auto-approve too: the
+        // candidate is born Pending and the gate releases it when the freeze is lifted (ADR-0001).
+        var heldByFreeze = await FindFreezeAsync(product, service, targetEnv, ct) is not null;
         var effectiveAutoApprove = (snapshot.IsAutoApprove || autoApproveNoWorkItems) && !heldByFreeze;
 
         var now = DateTimeOffset.UtcNow;
@@ -1683,7 +1683,7 @@ public class PromotionService
         var candidate = await LoadPendingAsync(candidateId, ct);
 
         // The bypass deliberately ignores a Promotion Freeze (ADR-0001); record that it happened under one.
-        var frozen = await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct) is not null;
+        var frozen = await FindFreezeAsync(candidate.Product, candidate.Service, candidate.TargetEnv, ct) is not null;
 
         var bypassedItems = await StageBypassedWorkItemsAsync(candidate, trimmedReason, ct);
 
@@ -2183,14 +2183,14 @@ public class PromotionService
                 });
         }
 
-        // Promotion Freeze (ADR-0001/0002): an active freeze on (product, target env) holds the gate
-        // shut — checked before every auto-approve path below. Approvals keep being recorded; lifting
-        // the freeze re-evaluates the pair's Pending candidates.
-        var freeze = await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct);
+        // Promotion Freeze (ADR-0001/0002/0003): an active freeze on the product or on this service
+        // (target env) holds the gate shut — checked before every auto-approve path below. Approvals
+        // keep being recorded; lifting the freeze re-evaluates the Pending candidates it covered.
+        var freeze = await FindFreezeAsync(candidate.Product, candidate.Service, candidate.TargetEnv, ct);
         if (freeze is not null)
             return new GateResult(false, new[]
             {
-                $"Promotions of {candidate.Product} to {candidate.TargetEnv} are frozen — {freeze.Reason}",
+                $"Promotions of {DescribeFreezeScope(freeze)} to {candidate.TargetEnv} are frozen — {freeze.Reason}",
             });
 
         // 1. Work items REQUIRED but not all cleared → blocked.
@@ -2362,7 +2362,7 @@ public class PromotionService
         // A Promotion Freeze holds only Pending candidates (ADR-0001): it blocks the gate without
         // changing any count, so the panel still shows what is (or is not) signed off.
         var freeze = candidate.Status == PromotionStatus.Pending
-            ? await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct)
+            ? await FindFreezeAsync(candidate.Product, candidate.Service, candidate.TargetEnv, ct)
             : null;
 
         if (snapshot.IsAutoApprove || snapshot.AllRequirements.Count == 0)
@@ -3951,10 +3951,23 @@ public class PromotionService
         return candidate;
     }
 
-    /// <summary>The active Promotion Freeze on <c>(product, targetEnv)</c>, or <c>null</c> when the pair is not frozen.</summary>
-    public Task<PromotionFreeze?> FindFreezeAsync(string product, string targetEnv, CancellationToken ct)
+    /// <summary>
+    /// The active Promotion Freeze holding candidates of <c>(product, service, targetEnv)</c>, or
+    /// <c>null</c> when none does. Union rule (ADR-0003): a whole-product freeze <c>(product, "", env)</c>
+    /// or a service freeze <c>(product, service, env)</c> both qualify; when both exist the
+    /// whole-product one is returned.
+    /// </summary>
+    public Task<PromotionFreeze?> FindFreezeAsync(string product, string service, string targetEnv, CancellationToken ct)
         => _db.PromotionFreezes.AsNoTracking()
-            .FirstOrDefaultAsync(f => f.Product == product && f.TargetEnv == targetEnv, ct);
+            .Where(f => f.Product == product && f.TargetEnv == targetEnv
+                     && (f.Service == PromotionFreeze.WholeProduct || f.Service == service))
+            // "" sorts before any service name, so the whole-product freeze wins the tie.
+            .OrderBy(f => f.Service)
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>"product" for a whole-product freeze, "product/service" for a service one.</summary>
+    public static string DescribeFreezeScope(PromotionFreeze freeze)
+        => freeze.IsWholeProduct ? freeze.Product : $"{freeze.Product}/{freeze.Service}";
     /// <summary>
     /// System entries record what the platform did, not discussion — so nobody rewrites them,
     /// admin included. Mirrors the same rule on work-item comments.

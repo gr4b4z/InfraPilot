@@ -43,17 +43,20 @@ to Approved without satisfying its Approval Gate.
 _Avoid_: Force approve, override
 
 **Promotion Freeze**:
-A switchable state on one product's promotions into one target Environment, during which no
-Promotion Candidate for that product and target can become Approved. Approvals and Work Item
-Sign-offs are still recorded; Auto-approve waits. Lifting the freeze re-evaluates every Pending
-candidate for that product and Environment.
+A switchable state on one product's promotions — optionally narrowed to one of its services — into
+one target Environment, during which no Promotion Candidate it covers can become Approved. Approvals
+and Work Item Sign-offs are still recorded; Auto-approve waits. Lifting the freeze re-evaluates every
+Pending candidate it covered.
 _Avoid_: Environment freeze, lock, blackout, maintenance window, approval block
 
 ## Relationships
 
-- A **Promotion Freeze** applies to exactly one product on exactly one **Environment**, in its role
-  as promotion target. There is no whole-environment freeze.
-- A **Promotion Freeze** holds the **Approval Gate** of every Pending **Promotion Candidate** for
-  that product whose target is that **Environment**; it does not affect rollbacks or service requests.
+- A **Promotion Freeze** applies to exactly one product — the whole product, or exactly one of its
+  services — on exactly one **Environment**, in its role as promotion target. There is no
+  whole-environment freeze.
+- A **Promotion Freeze** holds the **Approval Gate** of every Pending **Promotion Candidate** it
+  covers whose target is that **Environment**: a whole-product freeze covers every service, a service
+  freeze only its own. A candidate is held when either kind applies; neither takes precedence over
+  the other. It does not affect rollbacks or service requests.
 - An **Administrator Bypass** ignores a **Promotion Freeze**.
 - A **Promotion Candidate** already Approved before a **Promotion Freeze** begins is unaffected.
