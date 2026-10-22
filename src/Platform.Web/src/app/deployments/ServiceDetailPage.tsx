@@ -21,6 +21,7 @@ import type { PromotionFreezeWindow } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { DeploymentFreezeBanner, DuringFreezeMark, FrozenEnvMark } from './FreezeCues';
 import { activeFreezeFor, activeFreezes, freezeWindowAt, useFreezeWindows } from './freezeWindows';
+import { freezeCovers } from '@/lib/freezeScope';
 import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
@@ -143,7 +144,11 @@ export function ServiceDetailPage() {
   // Pending promotions into its environment, so every Pending one there counts as held.
   const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
   const freezeWindows = useFreezeWindows(product, promotionsEnabled, promotionsTick);
-  const productFreezes = useMemo(() => activeFreezes(freezeWindows), [freezeWindows]);
+  // Only the freezes that hold this service: the whole product's, and its own.
+  const productFreezes = useMemo(
+    () => activeFreezes(freezeWindows).filter((w) => service !== undefined && freezeCovers(w, service)),
+    [freezeWindows, service],
+  );
   const heldIn = (env: string) =>
     (detail?.promotions ?? []).filter((p) => p.status === 'Pending' && p.targetEnv === env).length;
 
@@ -256,8 +261,8 @@ export function ServiceDetailPage() {
               cell={cell}
               service={service ?? 'service'}
               envLabel={getDisplayName(cell.environment)}
-              freeze={activeFreezeFor(freezeWindows, cell.product, cell.environment)}
-              duringFreeze={freezeWindowAt(freezeWindows, cell.product, cell.environment, cell.deployedAt)}
+              freeze={activeFreezeFor(freezeWindows, cell.product, cell.environment, cell.service)}
+              duringFreeze={freezeWindowAt(freezeWindows, cell.product, cell.environment, cell.deployedAt, cell.service)}
               pending={pendingByTargetEnv.get(cell.environment)}
               detailHref={deploymentDetailPath(cell.id, { path: backHref, label: service ?? 'service' })}
             />

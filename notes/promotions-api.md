@@ -245,9 +245,10 @@ Returns `{ candidate, approvals, sourceEvent, comments, eligibleRequirements, ap
   `allSatisfied` is `false` and `frozen`/`blockedReason` name the freeze — even when every
   requirement is met. Step / requirement / work-item counts are unchanged.
 - **`freeze`** — the active [Promotion Freeze](#promotion-freeze-admin--apipromotionsadminfreezes)
-  holding this candidate, `{ product, targetEnv, reason, frozenBy, frozenAt }`; `null` when the pair
-  is not frozen or the candidate is no longer `Pending`. Once the freeze is lifted, a candidate whose
-  gate was already satisfied reloads as `Approved`.
+  holding this candidate, `{ product, service, targetEnv, reason, frozenBy, frozenAt }` (`service`
+  null for a whole-product freeze; when both a whole-product and a service freeze hold the candidate
+  the whole-product one is reported); `null` when the candidate is not frozen or no longer `Pending`.
+  Once the freeze is lifted, a candidate whose gate was already satisfied reloads as `Approved`.
 
 ### `GET /api/promotions/audit` — activity feed
 Every recorded action on a promotion, newest first. This is what the **Promotions audit** page
@@ -666,9 +667,14 @@ match the exact `sourceEnv → targetEnv` edge. **No row ⇒ the product is not 
 
 A **Promotion Freeze** stops one product's promotions into one target environment from becoming
 `Approved` — e.g. a release freeze on `checkout → production` while other products keep shipping.
-The key is the pair `(product, targetEnv)`; there is no whole-environment freeze. Rationale:
-[`GLOSSARY.md`](../GLOSSARY.md), [ADR-0001](../docs/adr/0001-environment-freeze-holds-the-approval-gate.md),
-[ADR-0002](../docs/adr/0002-freeze-is-scoped-to-product-and-environment.md).
+It covers the **whole product** or, optionally, **one service** of it (`checkout/checkout-api →
+production`). The key is `(product, service, targetEnv)` with `service` null for the whole product;
+there is no whole-environment freeze. A candidate is held when **either** the whole-product freeze
+**or** its own service freeze is active — the two are independent rows with no precedence.
+Rationale: [`GLOSSARY.md`](../GLOSSARY.md),
+[ADR-0001](../docs/adr/0001-environment-freeze-holds-the-approval-gate.md),
+[ADR-0002](../docs/adr/0002-freeze-is-scoped-to-product-and-environment.md),
+[ADR-0003](../docs/adr/0003-freeze-may-be-scoped-to-one-service.md).
 
 ### `GET /freezes` — active freezes
 
@@ -677,11 +683,21 @@ The key is the pair `(product, targetEnv)`; there is no whole-environment freeze
   "freezes": [
     {
       "product": "checkout",
+      "service": null,             // null = the whole product; a name = that one service
       "targetEnv": "production",
       "reason": "Black Friday — no releases until Monday",
       "frozenBy": "Dana Lee",
       "frozenAt": "2026-10-15T09:12:00+00:00",
-      "heldCandidates": 3          // Pending candidates of this (product, targetEnv) right now
+      "heldCandidates": 3          // Pending candidates this freeze holds right now
+    },
+    {
+      "product": "checkout",
+      "service": "checkout-api",
+      "targetEnv": "staging",
+      "reason": "API hotfix window",
+      "frozenBy": "Dana Lee",
+      "frozenAt": "2026-10-22T08:00:00+00:00",
+      "heldCandidates": 1          // only checkout-api's Pending candidates into staging
     }
   ]
 }
@@ -689,29 +705,40 @@ The key is the pair `(product, targetEnv)`; there is no whole-environment freeze
 
 Also available to non-admins as `GET /api/promotions/freezes`.
 
-### `POST /freezes` — freeze a pair
-Body: `{ "product": "checkout", "targetEnv": "production", "reason": "Black Friday" }`.
+### `GET /freezes/services?product=X` — services a freeze may name
+`{ "services": ["checkout-api", "checkout-web"] }` — the services of `product` known from its
+promotion candidates and deploy events, sorted. `400` without `product`. The Freeze tab builds its
+service select from this.
+
+### `POST /freezes` — freeze a product or one service
+Body: `{ "product": "checkout", "targetEnv": "production", "reason": "Black Friday" }` for the whole
+product, or add `"service": "checkout-api"` to freeze one service. `service` null/blank/omitted means
+the whole product.
 
 | Status | Meaning | Body |
 |---|---|---|
-| `201 Created` | Pair frozen | the freeze, same shape as a `freezes[]` entry |
+| `201 Created` | Scope frozen | the freeze, same shape as a `freezes[]` entry |
 | `400 Bad Request` | `product`, `targetEnv` or `reason` missing/blank, or `reason` over 1000 chars | `{ "error": "..." }` |
-| `409 Conflict` | The pair is already frozen | `{ "error": "..." }` |
-| `422 Unprocessable Entity` | No approval policy targets the pair (any service, any source env) — it cannot receive promotions, so there is nothing to freeze | `{ "error": "..." }` |
+| `409 Conflict` | That exact scope `(product, service, targetEnv)` is already frozen. A service freeze next to a whole-product one (or vice versa) is **not** a conflict | `{ "error": "..." }` |
+| `422 Unprocessable Entity` | No approval policy covers the scope — for the whole product: none targets the pair (any service, any source env); for a service: neither a policy for that service nor a product-level one (`service: null`) targets the env. Or the service is not known from any candidate or deploy event of the product | `{ "error": "..." }` |
 | `403 Forbidden` | Caller is not an admin | — |
 
-Audited as `promotion.frozen` (actor, product, targetEnv, reason).
+Audited as `promotion.frozen` (actor, product, service, targetEnv, reason).
 Also dispatches the [`promotion.frozen` webhook](#webhooks-promotionfrozen--promotionunfrozen).
 
-### `DELETE /freezes/{product}/{targetEnv}` — lift a freeze
-`204 No Content` when lifted, `404` when the pair is not frozen, `403` for non-admins. Whoever may
-freeze may lift, regardless of who froze it. Audited as `promotion.unfrozen` (actor, plus the
-lifted freeze's product, targetEnv, reason, frozenBy, frozenAt).
+### `DELETE /freezes/{product}/{targetEnv}` — lift a whole-product freeze
+### `DELETE /freezes/{product}/{targetEnv}/services/{service}` — lift one service's freeze
+`204 No Content` when lifted, `404` when that scope is not frozen, `403` for non-admins. The
+product route never lifts a service freeze and the service route never lifts the whole-product
+one. Whoever may freeze may lift, regardless of who froze it. Audited as `promotion.unfrozen`
+(actor, plus the lifted freeze's product, service, targetEnv, reason, frozenBy, frozenAt).
 
-Lifting **re-evaluates every Pending candidate of that pair** (and only that pair): any candidate
-whose gate is already satisfied — approvals collected during the freeze, auto-approve, all work
-items signed off — flips to `Approved` at that moment and fires `promotion.approved`. Expect a
-burst of webhooks when a freeze holding several candidates is lifted.
+Lifting **re-evaluates every Pending candidate the freeze held** (and only those): the product's
+for a whole-product freeze, that service's for a service freeze. Any candidate whose gate is already
+satisfied — approvals collected during the freeze, auto-approve, all work items signed off — flips
+to `Approved` at that moment and fires `promotion.approved`. A candidate still covered by the other
+kind of freeze stays Pending. Expect a burst of webhooks when a freeze holding several candidates
+is lifted.
 A candidate whose re-evaluation fails is logged and skipped; the others are still re-evaluated and
 the lift still returns `204`.
 Also dispatches the [`promotion.unfrozen` webhook](#webhooks-promotionfrozen--promotionunfrozen),
@@ -720,14 +747,17 @@ just before that sweep.
 ### Webhooks: `promotion.frozen` / `promotion.unfrozen`
 Dispatched when a freeze is created (`promotion.frozen`) or lifted (`promotion.unfrozen`). Subscribe to
 them like any other event type (they are in the event list on the Webhooks page). Both are filtered
-by the pair — a subscription with `product` and/or `environment` filters only receives events for a
-matching `(product, targetEnv)`, exactly like the other promotion events. Dispatch is non-fatal: a
-failure is logged and never fails the freeze/unfreeze request.
+by the freeze's scope — a subscription with `product` and/or `environment` filters only receives
+events for a matching `(product, targetEnv)`, exactly like the other promotion events, and a
+service freeze also sets the `service` filter dimension (a whole-product freeze clears every service
+filter, since it covers them all). Dispatch is non-fatal: a failure is logged and never fails the
+freeze/unfreeze request.
 
 ```jsonc
 {
   "eventType": "promotion.frozen",        // or "promotion.unfrozen"
   "product": "checkout",
+  "service": null,                        // null = whole product; "checkout-api" = one service
   "targetEnv": "production",
   "reason": "Black Friday — no releases until Monday",   // the freeze's reason (also on unfrozen)
   "frozenBy": "Dana Lee",                 // who created the freeze
@@ -745,12 +775,13 @@ Freeze and lift events, **newest first**, derived from the audit log (`promotion
 `promotion.unfrozen`). `limit` defaults to 10 and is clamped to 1–50.
 
 ```json
-{ "entries": [ { "action": "unfrozen", "product": "checkout", "targetEnv": "prod",
+{ "entries": [ { "action": "unfrozen", "product": "checkout", "service": null, "targetEnv": "prod",
                  "reason": "Release window", "actor": "Ada Admin", "at": "2026-01-01T10:00:00Z" } ] }
 ```
 
 `action` is `"frozen"` or `"unfrozen"`; for `unfrozen`, `reason` is the lifted freeze's original
-reason and `actor` is who lifted it. `reason` is `null` when the audit payload has none.
+reason and `actor` is who lifted it. `reason` is `null` when the audit payload has none. `service`
+is `null` for a whole-product freeze (including every entry written before service freezes existed).
 
 ### `GET /api/promotions/freezes/windows?product=X` — freeze periods
 Readable by any signed-in user (not under `/admin`). Every period a pair was frozen, **newest
@@ -758,7 +789,7 @@ first**: the active freezes (`until: null`) plus the last 500 lifted ones, rebui
 `promotion.unfrozen` audit entries. `product` is optional; without it every product is listed.
 
 ```json
-{ "windows": [ { "product": "checkout", "targetEnv": "prod", "reason": "Release window",
+{ "windows": [ { "product": "checkout", "service": null, "targetEnv": "prod", "reason": "Release window",
                  "frozenBy": "Ada Admin", "from": "2026-01-01T08:00:00Z",
                  "until": "2026-01-01T10:00:00Z", "liftedBy": "Ada Admin" } ] }
 ```
