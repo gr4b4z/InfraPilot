@@ -1702,7 +1702,8 @@ public class PromotionService
 
         _logger.LogWarning(
             "Candidate {Id} bypassed to Approved by {UserId} ({Email}); {Count} work item(s) signed off; reason: {Reason}",
-            candidate.Id, _currentUser.Id, _currentUser.Email, signedOff.Count, trimmedReason);
+            candidate.Id, LogSanitizer.Clean(_currentUser.Id), LogSanitizer.Clean(_currentUser.Email),
+            signedOff.Count, LogSanitizer.Clean(trimmedReason));
 
         // Each sign-off leaves the trail a click would (audit row, promotion.ticket.approved webhook,
         // and through it the realtime refresh of open work-item views), marked as the bypass's.
