@@ -642,17 +642,19 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
-        // Promotion Freezes — one active row per (product, target env); lifting deletes the row.
+        // Promotion Freezes — one active row per (product, service, target env), where service ""
+        // means the whole product (ADR-0003); lifting deletes the row.
         modelBuilder.Entity<PromotionFreeze>(e =>
         {
             e.ToTable("promotion_freezes");
             e.HasKey(x => x.Id);
             e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
             e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
             e.Property(x => x.Reason).HasMaxLength(1000).IsRequired();
             e.Property(x => x.FrozenBy).HasMaxLength(300).IsRequired();
             e.Property(x => x.FrozenByEmail).HasMaxLength(300).IsRequired();
-            e.HasIndex(x => new { x.Product, x.TargetEnv }).IsUnique();
+            e.HasIndex(x => new { x.Product, x.Service, x.TargetEnv }).IsUnique();
         });
 
         modelBuilder.Entity<WorkItemApproval>(e =>

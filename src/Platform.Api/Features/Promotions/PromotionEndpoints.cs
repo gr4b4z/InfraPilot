@@ -200,11 +200,12 @@ public static class PromotionEndpoints
             // The active Promotion Freeze holding this candidate, if any. A freeze holds only Pending
             // candidates (ADR-0001), so decided candidates never carry one.
             var activeFreeze = c.Status == PromotionStatus.Pending
-                ? await svc.FindFreezeAsync(c.Product, c.TargetEnv, CancellationToken.None)
+                ? await svc.FindFreezeAsync(c.Product, c.Service, c.TargetEnv, CancellationToken.None)
                 : null;
             var freeze = activeFreeze is null ? null : new
             {
                 product = activeFreeze.Product,
+                service = activeFreeze.IsWholeProduct ? null : activeFreeze.Service,
                 targetEnv = activeFreeze.TargetEnv,
                 reason = activeFreeze.Reason,
                 frozenBy = activeFreeze.FrozenBy,

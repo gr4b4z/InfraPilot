@@ -229,6 +229,51 @@ public class PromotionFreezeHistoryTests : IDisposable
     }
 
     [Fact]
+    public async Task History_and_windows_carry_the_service_of_a_service_freeze()
+    {
+        SeedPolicy("acme");
+        _db.DeployEvents.Add(new Platform.Api.Features.Deployments.Models.DeployEvent
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "api", Environment = "staging", Version = "v1",
+            Status = "succeeded", Source = "ci", DeployedAt = DateTimeOffset.UtcNow, ParticipantsJson = "[]",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        _db.SaveChanges();
+        await _sut.FreezeAsync("acme", "prod", "api window", service: "api");
+        await TickAsync();
+        await _sut.FreezeAsync("acme", "prod", "whole product");
+        await TickAsync();
+        await _sut.LiftAsync("acme", "prod", service: "api");
+
+        var history = await _sut.GetHistoryAsync(10);
+        var windows = await _sut.GetWindowsAsync("acme");
+
+        Assert.Equal(3, history.Count);
+        Assert.Equal(("unfrozen", "api"), (history[0].Action, history[0].Service));
+        Assert.Equal(("frozen", (string?)null), (history[1].Action, history[1].Service));
+        Assert.Equal(("frozen", "api"), (history[2].Action, history[2].Service));
+        Assert.Equal(2, windows.Count);
+        Assert.Null(windows[0].Service);
+        Assert.Null(windows[0].Until);
+        Assert.Equal("api", windows[1].Service);
+        Assert.NotNull(windows[1].Until);
+    }
+
+    [Fact]
+    public async Task History_and_windows_treat_a_legacy_payload_without_service_as_whole_product()
+    {
+        _db.AuditLog.Add(new AuditEntry
+        {
+            Id = Guid.NewGuid(), Module = "promotions", Action = "promotion.unfrozen", ActorName = "Admin User",
+            AfterState = "{\"product\":\"acme\",\"targetEnv\":\"prod\",\"reason\":\"old\",\"frozenBy\":\"X\",\"frozenAt\":\"2026-01-01T08:00:00Z\"}",
+        });
+        _db.SaveChanges();
+
+        Assert.Null(Assert.Single(await _sut.GetHistoryAsync(10)).Service);
+        Assert.Null(Assert.Single(await _sut.GetWindowsAsync(null)).Service);
+    }
+
+    [Fact]
     public void History_reason_is_null_when_payload_has_none()
     {
         _db.AuditLog.Add(new AuditEntry
