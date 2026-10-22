@@ -264,6 +264,105 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         Assert.Equal(HttpStatusCode.NoContent, lift.StatusCode);
     }
 
+    // ── Service-scoped freeze (ADR-0003) ─────────────────────────────────────
+
+    [Fact]
+    public async Task ServiceFreeze_CreateListDetailAndLift_ProductRouteLeavesItInPlace()
+    {
+        SeedPolicy("frz-svc");
+        var apiId = SeedPendingCandidate("frz-svc", service: "api");
+        var webId = SeedPendingCandidate("frz-svc", service: "web");
+        var admin = _factory.CreateAdminClient();
+        var user = CreateUserClient();
+
+        var created = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-svc", service = "api", targetEnv = "prod", reason = "api hotfix window" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var body = await Json(created);
+        Assert.Equal("api", body.GetProperty("service").GetString());
+        Assert.Equal(1, body.GetProperty("heldCandidates").GetInt32());
+
+        var listed = (await Json(await user.GetAsync("/api/promotions/freezes"))).GetProperty("freezes").EnumerateArray()
+            .Single(f => f.GetProperty("product").GetString() == "frz-svc");
+        Assert.Equal("api", listed.GetProperty("service").GetString());
+
+        // Only the frozen service's candidate is marked frozen on the list and the detail.
+        var list = await Json(await user.GetAsync("/api/promotions?product=frz-svc"));
+        var byId = list.GetProperty("candidates").EnumerateArray()
+            .ToDictionary(c => c.GetProperty("id").GetGuid(), c => c.GetProperty("frozen").GetBoolean());
+        Assert.True(byId[apiId]);
+        Assert.False(byId[webId]);
+        var apiDetail = await Json(await user.GetAsync($"/api/promotions/{apiId}"));
+        Assert.Equal("api", apiDetail.GetProperty("freeze").GetProperty("service").GetString());
+        Assert.Equal(JsonValueKind.Null, (await Json(await user.GetAsync($"/api/promotions/{webId}"))).GetProperty("freeze").ValueKind);
+
+        // The journal names the service.
+        var history = (await Json(await admin.GetAsync("/api/promotions/admin/freezes/history?limit=50")))
+            .GetProperty("entries").EnumerateArray().First(e => e.GetProperty("product").GetString() == "frz-svc");
+        Assert.Equal("api", history.GetProperty("service").GetString());
+
+        // The whole-product route does not lift a service freeze.
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.DeleteAsync("/api/promotions/admin/freezes/frz-svc/prod")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await admin.DeleteAsync("/api/promotions/admin/freezes/frz-svc/prod/services/api")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await admin.DeleteAsync("/api/promotions/admin/freezes/frz-svc/prod/services/api")).StatusCode);
+    }
+
+    [Fact]
+    public async Task WholeProductFreeze_ReportsServiceNull_AndIsNotLiftedByTheServiceRoute()
+    {
+        SeedPolicy("frz-whole");
+        SeedPendingCandidate("frz-whole", service: "api");
+        var admin = _factory.CreateAdminClient();
+
+        var created = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-whole", targetEnv = "prod", reason = "Release window" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal(JsonValueKind.Null, (await Json(created)).GetProperty("service").ValueKind);
+
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await admin.DeleteAsync("/api/promotions/admin/freezes/frz-whole/prod/services/api")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync("/api/promotions/admin/freezes/frz-whole/prod")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_ServiceFreeze_UnknownService_Returns422_SameTripleTwice_Returns409()
+    {
+        SeedPolicy("frz-svc-422");
+        SeedPendingCandidate("frz-svc-422", service: "api");
+        var admin = _factory.CreateAdminClient();
+
+        var unknown = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-svc-422", service = "ghost", targetEnv = "prod", reason = "why" });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, unknown.StatusCode);
+
+        Assert.Equal(HttpStatusCode.Created, (await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-svc-422", service = "api", targetEnv = "prod", reason = "first" })).StatusCode);
+        var again = await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-svc-422", service = "api", targetEnv = "prod", reason = "second" });
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        // The whole product is a different scope: allowed alongside the service freeze.
+        Assert.Equal(HttpStatusCode.Created, (await admin.PostAsJsonAsync("/api/promotions/admin/freezes",
+            new { product = "frz-svc-422", targetEnv = "prod", reason = "whole product" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Services_ListsTheProductsKnownServices_RequiresProduct()
+    {
+        SeedPendingCandidate("frz-services", service: "web");
+        SeedPendingCandidate("frz-services", service: "api");
+        var admin = _factory.CreateAdminClient();
+
+        var response = await admin.GetAsync("/api/promotions/admin/freezes/services?product=frz-services");
+        var missing = await admin.GetAsync("/api/promotions/admin/freezes/services");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(new[] { "api", "web" },
+            (await Json(response)).GetProperty("services").EnumerateArray().Select(s => s.GetString()).ToArray());
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private void SeedPolicy(string product)
@@ -280,7 +379,7 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         db.SaveChanges();
     }
 
-    private Guid SeedPendingCandidate(string product)
+    private Guid SeedPendingCandidate(string product, string service = "api")
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
@@ -289,7 +388,7 @@ public class PromotionFreezeEndpointTests : IClassFixture<TestFactory>
         {
             Id = id,
             Product = product,
-            Service = "api",
+            Service = service,
             SourceEnv = "staging",
             TargetEnv = "prod",
             Version = "v1",
