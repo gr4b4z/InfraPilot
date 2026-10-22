@@ -33,7 +33,7 @@ body: |
   |---|---|---|
   | `promotion.approved` | GitHub `repository_dispatch` → **Promote Single Build Manifest** (mpt-release) | Copies `build-metadata.yaml` into the target environment directory, archiving the version it replaces. The commit then triggers `Reconcile <env>`. |
   | `promotion.approved` (source `build`) | GitHub `repository_dispatch` → **Deploy Registered Build** (mpt-release) | `oras pull`s the manifest from ACR by digest, verifies service and version match the promotion, refuses any dispatch whose `sourceEnv` is not `build`, and commits it into `<env>/<component>/build-metadata.yaml`. That commit *is* the deployment. |
-  | `promotion.approved` (Track A) | ADO Incoming Webhook → **marketplace-sdp** | Rebuilds the release branch (`staging/5.0806`, `prod/5.0828`) from the whole approved set and deploys it. |
+  | `promotion.approved` (Track A) | ADO Incoming Webhook → **marketplace-sdp** | Rebuilds the release branch (`staging/5.0806`, `prod/5.0828`) from the whole approved set, minus services in `sdp.exclude`, and deploys it. |
   | `rollback.approved` | Same receivers | Rollback travels the identical path — an earlier version is re-declared and redeployed. There is no separate undo mechanism. |
 
   ## The full subscribable list
@@ -93,6 +93,17 @@ body: |
   | `promote-single-build-manifest` | Promote Single Build Manifest |
   | `deploy-build` | Deploy Registered Build |
   | `update-promotion-work-items-dev` / `-prod` | Update Promotion Work Items |
+
+  ## mpt services moved to mpt-release
+
+  Product `mpt` has services on both deployers while they move one at a time. InfraPortal does not
+  route by service:
+  - `mpt-promotion-approved` (ADO) delivers every `mpt` approval to the SDP;
+  - `mpt-release deploy-build` and `GithubPromotion` deliver every `mpt` approval to mpt-release.
+
+  Each side skips what it does not own. The SDP skips marketplace `sdp.exclude`; mpt-release skips
+  its `disabledComponents`, which must list every service the SDP still deploys. Moving a service
+  changes those two lists and nothing in InfraPortal (`docs/plans/migrate-mpt-services.md`).
 
   If a promotion is approved and nothing happens, the first question is whether an **active**
   subscription matches `promotion.approved` for that product and environment, and the second is
