@@ -1528,6 +1528,8 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
   failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
   in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
+  // Taken out of the environment: not a deploy outcome, so it reads as neutral.
+  removed: { bg: 'var(--bg-secondary)', fg: 'var(--text-muted)', label: 'Removed' },
 };
 
 function StatusBadge({ status }: { status?: string }) {
@@ -1549,6 +1551,7 @@ function StatusBadge({ status }: { status?: string }) {
 function statusColor(status?: string): string {
   if (status === 'failed') return '#ef4444';
   if (status === 'in_progress') return '#eab308';
+  if (status === 'removed') return 'var(--text-muted)';
   return 'var(--text-primary)';
 }
 

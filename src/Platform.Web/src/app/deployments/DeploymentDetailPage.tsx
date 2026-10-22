@@ -74,6 +74,7 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   succeeded: { bg: 'var(--success-bg)', fg: 'var(--success)', label: 'Succeeded' },
   failed: { bg: 'var(--danger-bg)', fg: 'var(--danger)', label: 'Failed' },
   in_progress: { bg: 'var(--warning-bg)', fg: 'var(--warning)', label: 'In Progress' },
+  removed: { bg: 'var(--bg-secondary)', fg: 'var(--text-muted)', label: 'Removed' },
 };
 
 const PROMOTION_STATUS_COLOR: Record<string, string> = {

@@ -71,7 +71,7 @@ Rate limiting is applied per key.
 | `version` | string | **yes** | — | Version identifier. Any format is accepted (semver, git SHA, build tag). |
 | `source` | string | **yes** | — | Identifies the CI/CD system sending the event. |
 | `deployedAt` | DateTimeOffset | **yes** | — | UTC timestamp of the deployment. Must not be the zero value. |
-| `status` | string | no | `"succeeded"` | One of: `succeeded`, `failed`, `in_progress`. Case-insensitive. |
+| `status` | string | no | `"succeeded"` | One of: `succeeded`, `failed`, `in_progress`, `removed`. Case-insensitive. |
 | `isRollback` | boolean | no | `false` | Whether this deployment is a rollback to a previous version. |
 | `previousVersion` | string | no | _server-derived_ | The predecessor version the caller observed. When omitted, the server derives it from the most recent event for the same product/service/environment. Supplying this lets integrators assert the predecessor they saw and detect drift vs. the server's history. |
 | `references` | array | no | `[]` | Links to external resources (repos, pipelines, PRs, tickets). |
@@ -85,6 +85,7 @@ Rate limiting is applied per key.
 | `succeeded` | Deployment completed successfully. Eligible as a rollback target, and the status that completes a matching in-flight promotion when the version lands on its target environment. |
 | `failed` | Deployment failed. Recorded for tracking and dashboards. |
 | `in_progress` | Deployment is still running. Can be updated later by sending a new event with the same version and a final status. |
+| `removed` | The service was taken out of the environment: uninstalled, and no longer declared by the release pipeline. `version` is the version that was removed. As the newest event of a cell it means nothing of the service runs there, so the state matrix, product summaries, search and service detail drop that environment for it. It is not a deploy: analytics leave it out, it completes no promotion, it does not bring back a retired service, and the next deploy there has no `previousVersion`. It completes an approved rollback item that removes the service (an item with no target version). |
 
 ### `references[]` object
 
@@ -254,7 +255,7 @@ An environment nothing deploys to any more can be marked **Retired** in **Settin
 {
   "errors": [
     "'product' is required",
-    "'status' must be one of: succeeded, failed, in_progress"
+    "'status' must be one of: succeeded, failed, in_progress, removed"
   ]
 }
 ```
@@ -470,7 +471,8 @@ back.
 
 Returns an array with one row per (product, service, environment): the newest event there by
 `deployedAt`, **whatever its `status`** — a `failed` or `in_progress` deploy on top is what that cell
-shows, and a rollback is an event like any other. Two events sharing the newest `deployedAt` are not
+shows, and a rollback is an event like any other. The one exception is `removed`: a cell whose newest
+event is a removal is left out, because the service no longer runs there. Two events sharing the newest `deployedAt` are not
 ordered further, so send distinct timestamps when it matters which one is current. Retired services
 and retired environments (see "Retired environments" above) are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
 `product`, `service`, `environment`, `version`, `previousVersion`, `isRollback`, `status`, `source`,

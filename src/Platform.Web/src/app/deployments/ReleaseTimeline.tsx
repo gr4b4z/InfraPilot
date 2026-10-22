@@ -15,6 +15,7 @@ const STATUS_LABEL: Record<string, string> = {
   succeeded: 'Succeeded',
   failed: 'Failed',
   in_progress: 'In progress',
+  removed: 'Removed',
 };
 
 /**
@@ -264,7 +265,10 @@ function TimelineDot({ event: e, left, href, displayName, onHover }: {
 }) {
   const { solid } = useEnvColor(e.environment);
   const color =
-    e.status === 'failed' ? 'var(--danger)' : e.status === 'in_progress' ? 'var(--warning)' : solid;
+    e.status === 'failed' ? 'var(--danger)'
+      : e.status === 'in_progress' ? 'var(--warning)'
+      : e.status === 'removed' ? 'var(--text-muted)'
+      : solid;
 
   const label =
     `${displayName}: v${e.version}, ${STATUS_LABEL[e.status] ?? e.status}` +

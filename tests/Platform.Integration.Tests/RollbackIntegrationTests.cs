@@ -468,6 +468,7 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         Assert.Equal("1.2", offer.GetProperty("failedVersion").GetString());
         Assert.Equal("1.1", offer.GetProperty("lastGoodVersion").GetString());
         Assert.Equal(good, offer.GetProperty("lastGoodEventId").GetString());
+        Assert.Equal("restore", offer.GetProperty("action").GetString());
         Assert.Equal("auto", offer.GetProperty("approval").GetString());
         Assert.True(offer.GetProperty("canCreate").GetBoolean());
         Assert.Equal(JsonValueKind.Null, offer.GetProperty("openRollback").ValueKind);
@@ -531,7 +532,11 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         }
 
         Assert.Equal("This deployment did not fail.", await ReasonFor(succeeded));
-        Assert.Contains("No version of web has deployed successfully", await ReasonFor(onlyFailed));
+        // A service that never deployed successfully has nothing to go back to, so it is offered for
+        // removal instead (see RemoveFromEnvironment_*).
+        var removal = await Body(await _admin.GetAsync($"/api/rollbacks/last-known-good/{onlyFailed}"));
+        Assert.True(removal.GetProperty("available").GetBoolean());
+        Assert.Equal("remove", removal.GetProperty("action").GetString());
         // A failed redeploy of the running version has no earlier good version to go back to.
         Assert.Contains("3.0 is also the last version that deployed successfully", await ReasonFor(redeployFailed));
         // Going back already failed, so the reason says so instead of suggesting something is still running.
@@ -1016,7 +1021,100 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         Assert.Contains("FOO-4", keys14); // roll-forward carries the full diff vs prod
     }
 
+    [Fact]
+    public async Task RemoveFromEnvironment_TakesOutAServiceThatNeverDeployed_AndClosesOnTheRemovedEvent()
+    {
+        // The 2026-10-20 shape: a service promoted to prod whose every deploy there failed, so there
+        // is no earlier version to go back to.
+        var product = $"promo-{Guid.NewGuid():N}";
+        await SeedPromotionTopologyAndPolicyAsync(product);
+        await EnableRollbacksAsync();
+        await EnrollAsync(product, "prod");
+
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-6));
+        Assert.Equal(HttpStatusCode.Created, (await CreatePromotionAsync(product, "api", "staging", "prod", "1.0")).StatusCode);
+        var candidateId = await GetPendingCandidateIdAsync(product, "prod");
+        Assert.Equal(HttpStatusCode.OK, (await _admin.PostAsJsonAsync($"/api/promotions/{candidateId}/approve", new { })).StatusCode);
+        await IngestAsync(product, "api", "prod", "1.0", Hours(-3), status: "failed");
+        var failed = await IngestAsync(product, "api", "prod", "1.0", Hours(-2), status: "failed");
+
+        var offer = await Body(await _admin.GetAsync($"/api/rollbacks/last-known-good/{failed}"));
+        Assert.True(offer.GetProperty("available").GetBoolean());
+        Assert.Equal("remove", offer.GetProperty("action").GetString());
+        Assert.Equal("1.0", offer.GetProperty("failedVersion").GetString());
+        Assert.Equal(JsonValueKind.Null, offer.GetProperty("lastGoodVersion").ValueKind);
+        Assert.Equal(candidateId, Assert.Single(offer.GetProperty("promotionsToReopen").EnumerateArray()).GetProperty("id").GetString());
+
+        var created = await Body(await _admin.PostAsJsonAsync($"/api/rollbacks/last-known-good/{failed}", new { }));
+        Assert.Equal("Approved", created.GetProperty("status").GetString());
+        Assert.StartsWith("Remove api from prod", created.GetProperty("reason").GetString());
+        var item = ItemFor(created, "api");
+        Assert.Equal("1.0", item.GetProperty("fromVersion").GetString());
+        Assert.Equal("", item.GetProperty("toVersion").GetString());
+        Assert.True(item.GetProperty("remove").GetBoolean());
+        var id = created.GetProperty("id").GetString()!;
+        // The pipeline sees it as an open item with no target, which an SDP release skips.
+        Assert.Equal(new[] { "api@" }, await OpenItemsSeenByPipelineAsync(product, "prod"));
+
+        // The approval reopened the promotion of the version that never deployed.
+        var promotion = await PromotionAsync(candidateId!);
+        Assert.Equal("Pending", promotion.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.Contains(promotion.GetProperty("comments").EnumerateArray(),
+            c => c.GetProperty("body").GetString()!.Contains("removing 1.0 from the environment"));
+
+        // Until the executor reports the removal, prod still shows the failure.
+        Assert.Contains(await StateCellsAsync(product), c => c == "api@prod");
+
+        var removedId = await IngestAsync(product, "api", "prod", "1.0", Hours(1), status: "removed");
+
+        var done = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("RolledBack", done.GetProperty("status").GetString());
+        Assert.Equal(removedId, ItemFor(done, "api").GetProperty("completedDeployEventId").GetString());
+
+        // Prod no longer lists the service anywhere current, and staging is untouched.
+        Assert.Equal(new[] { "api@staging" }, await StateCellsAsync(product));
+        var search = await Body(await _admin.GetAsync($"/api/deployments/services/search?q=api&limit=100"));
+        var hit = search.GetProperty("results").EnumerateArray().Single(s => s.GetProperty("product").GetString() == product);
+        Assert.Equal(new[] { "staging" }, hit.GetProperty("environments").EnumerateArray()
+            .Select(e => e.GetProperty("environment").GetString()).ToArray());
+        var summaries = await Body(await _admin.GetAsync("/api/deployments/products"));
+        var card = summaries.EnumerateArray().Single(p => p.GetProperty("product").GetString() == product);
+        Assert.False(card.GetProperty("environments").TryGetProperty("prod", out _));
+
+        // The failure has nothing left to undo, and the next deploy starts from nothing.
+        var after = await Body(await _admin.GetAsync($"/api/rollbacks/last-known-good/{failed}"));
+        Assert.False(after.GetProperty("available").GetBoolean());
+        Assert.Contains("was removed from prod", after.GetProperty("reason").GetString()!);
+        await IngestAsync(product, "api", "prod", "1.1", Hours(2));
+        var history = await Body(await _admin.GetAsync($"/api/deployments/history/{product}/api?environment=prod&limit=1"));
+        Assert.Equal(JsonValueKind.Null, history.EnumerateArray().Single().GetProperty("previousVersion").ValueKind);
+        Assert.Contains(await StateCellsAsync(product), c => c == "api@prod");
+    }
+
+    [Fact]
+    public async Task RemoveFromEnvironment_IsRefusedForAServiceThatRuns()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2), status: "failed");
+
+        var preview = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "")));
+        var item = ItemFor(preview, "api");
+        Assert.False(item.GetProperty("eligible").GetBoolean());
+        Assert.Contains("1.0 is running here", item.GetProperty("skipReason").GetString()!);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    /// <summary>The state matrix's cells for a product, as service@environment.</summary>
+    private async Task<List<string>> StateCellsAsync(string product)
+    {
+        var state = await Body(await _admin.GetAsync($"/api/deployments/state?product={product}"));
+        return state.EnumerateArray()
+            .Select(c => $"{c.GetProperty("service").GetString()}@{c.GetProperty("environment").GetString()}")
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToList();
+    }
 
     // Create a promotion candidate via the external create API (API-key auth). Optionally carries
     // work-item references, which populate the candidate's self-contained PromotionWorkItem index.

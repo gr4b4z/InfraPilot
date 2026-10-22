@@ -755,7 +755,12 @@ function ItemRow({
         </span>
         <span className="font-mono text-[11px]">v{item.fromVersion}</span>
         <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-        <span className="font-mono text-[11px]">v{item.toVersion}</span>
+        {/* No target: the item takes the service out of the environment. */}
+        {item.remove ? (
+          <span className="text-[11px] font-medium" style={{ color: 'var(--danger)' }}>removed</span>
+        ) : (
+          <span className="font-mono text-[11px]">v{item.toVersion}</span>
+        )}
         {/* Links to the deploy that closed the item, when there is one: the landing, the deploy
             already running it at approval, or the deploy that superseded it. */}
         {item.completedDeployEventId ? (
@@ -808,7 +813,7 @@ function ItemRow({
         <p className="text-[11px] mt-0.5" style={{ color: 'var(--danger)' }}>
           <AlertTriangle size={11} className="inline mr-1 -mt-px" />
           <Link to={`/deployments/events/${item.lastFailedAttempt.deployEventId}`} className="hover:underline">
-            The deploy of v{item.toVersion} failed{' '}
+            The deploy of v{item.toVersion || item.fromVersion} failed{' '}
             {formatDistanceToNow(new Date(item.lastFailedAttempt.deployedAt), { addSuffix: true })}
           </Link>
           ; the item stays open until one succeeds.
