@@ -1169,6 +1169,19 @@ class ApiClient {
     });
   }
 
+  // What "roll back to the last known good version" would do for one failed deploy event.
+  getLastKnownGoodRollback(eventId: string) {
+    return this.request<LastKnownGoodOffer>(`/rollbacks/last-known-good/${eventId}`);
+  }
+
+  // Raises it. The server picks the target version, so it is always the one the offer named.
+  createLastKnownGoodRollback(eventId: string, reason?: string) {
+    return this.request<RollbackRequest>(`/rollbacks/last-known-good/${eventId}`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
   approveRollback(id: string, comment?: string) {
     return this.request<RollbackRequest>(`/rollbacks/${id}/approve`, {
       method: 'POST',
@@ -2925,6 +2938,38 @@ export interface RollbackGateRequirement {
   matched: number;
   required: number;
   satisfied: boolean;
+}
+
+/**
+ * The failed-deployment page's "roll back to the last known good version" offer. `available` false ⇒
+ * `reason` says why, in a sentence the page shows as it is, and the version fields are null.
+ */
+export interface LastKnownGoodOffer {
+  eventId: string;
+  product: string;
+  service: string;
+  targetEnv: string;
+  available: boolean;
+  reason: string | null;
+  /** The newest failed deploy: this event, or a later failed one. */
+  failedVersion: string | null;
+  failedEventId: string | null;
+  failedAt: string | null;
+  /** What the rollback restores: the last version that deployed successfully here. */
+  lastGoodVersion: string | null;
+  lastGoodEventId: string | null;
+  lastGoodAt: string | null;
+  canCreate: boolean;
+  createBlockedReason: string | null;
+  /** 'auto' approves at once, 'required' waits on `approvers`, 'unconfigured' needs an admin override. */
+  approval: 'auto' | 'required' | 'unconfigured' | null;
+  approvers: string[];
+  /** An open rollback that already carries this service. */
+  openRollback: { id: string; status: RollbackStatus; createdAt: string } | null;
+  /** Whether anything subscribes to rollback.approved here — without it, approving deploys nothing. */
+  executorConfigured: boolean;
+  /** Promotions of the failed version that approving the rollback sends back to Pending. */
+  promotionsToReopen: { id: string; sourceEnv: string; version: string; status: string }[];
 }
 
 /** Detail shape: the list fields plus the gate, its progress, and the decision history. */
