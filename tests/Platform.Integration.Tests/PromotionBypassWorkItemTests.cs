@@ -322,7 +322,7 @@ public class PromotionBypassWorkItemTests
 
     // ── Data ──────────────────────────────────────────────────────────────────
 
-    private static WorkItemTestFactory NewFactory()
+    internal static WorkItemTestFactory NewFactory()
     {
         var factory = new WorkItemTestFactory();
         factory.Current.Email = Admin;
@@ -334,7 +334,7 @@ public class PromotionBypassWorkItemTests
     private static readonly JsonSerializerOptions CamelCase = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     /// <summary>A human-gated policy snapshot ("any one ReleaseApprovers member") with the given work-item flags.</summary>
-    private static string Snapshot(bool requireAll, bool autoApproveOnAll = false, bool allInstances = false)
+    internal static string Snapshot(bool requireAll, bool autoApproveOnAll = false, bool allInstances = false)
         => JsonSerializer.Serialize(new ResolvedPolicySnapshot(Guid.NewGuid(), null)
         {
             ApprovalSteps = new()
@@ -350,7 +350,7 @@ public class PromotionBypassWorkItemTests
         }, CamelCase);
 
     /// <summary>A Pending acme/{service} v1 promotion into prod carrying <paramref name="keys"/>. Staged, not saved.</summary>
-    private static PromotionCandidate AddCandidate(
+    internal static PromotionCandidate AddCandidate(
         PlatformDbContext db, string snapshot, string[] keys, string service = "api", string sourceEnv = "staging")
     {
         var candidate = new PromotionCandidate
@@ -377,13 +377,14 @@ public class PromotionBypassWorkItemTests
                 Product = candidate.Product,
                 Service = service,
                 TargetEnv = candidate.TargetEnv,
+                Title = $"Title of {key}",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
         return candidate;
     }
 
-    private static WorkItemApproval Decision(string key, string email, WorkItemDecision decision)
+    internal static WorkItemApproval Decision(string key, string email, WorkItemDecision decision)
         => new()
         {
             Id = Guid.NewGuid(),

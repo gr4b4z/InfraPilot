@@ -52,6 +52,7 @@ import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
 import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { AssignToAllWorkItems } from '@/components/promotions/AssignToAllWorkItems';
+import { ApproveAllWorkItems } from '@/components/promotions/ApproveAllWorkItems';
 import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import {
   MissingRolesBadge,
@@ -600,6 +601,7 @@ export function PromotionDetailPage() {
           <WorkItemsCard
             candidate={candidate}
             workItems={bundleWorkItems}
+            requiresApproval={approvalProgress?.requiresApproval ?? true}
             onChanged={fetchData}
           />
 
@@ -2355,10 +2357,13 @@ function ApprovalProgressBody({
 function WorkItemsCard({
   candidate,
   workItems,
+  requiresApproval,
   onChanged,
 }: {
   candidate: PromotionCandidate;
   workItems: PromotionSourceEventReference[];
+  /** False for an auto-approve promotion, where there is nothing to sign off. */
+  requiresApproval: boolean;
   onChanged: () => void;
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
@@ -2413,6 +2418,14 @@ function WorkItemsCard({
         </h2>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
+          {/* Every waiting work item signed off at once — the per-item Approve, for the bundle. */}
+          <ApproveAllWorkItems
+            candidate={candidate}
+            workItems={workItems}
+            readOnly={readOnly}
+            requiresApproval={requiresApproval}
+            onChanged={onChanged}
+          />
           {/* One person into a role on every work item at once — the per-row Assign, for the bundle. */}
           <AssignToAllWorkItems
             candidate={candidate}

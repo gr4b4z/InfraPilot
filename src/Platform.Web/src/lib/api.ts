@@ -716,6 +716,22 @@ class ApiClient {
     );
   }
 
+  /**
+   * "Approve all" on a promotion: signs off every work item still waiting for a decision (nobody has
+   * ruled on it, or it only carries a bypass mark). `dryRun` lists them without writing — the
+   * confirmation shows that list — and the apply passes back the `keys` it showed, so only those are
+   * signed. Items already approved, or with an issue or a block, come back in `unchanged`. QA/Admin.
+   */
+  approveAllPromotionWorkItems(
+    candidateId: string,
+    body: { dryRun: boolean; keys?: string[]; comment?: string | null },
+  ) {
+    return this.request<ApproveAllWorkItemsResult>(`/promotions/${candidateId}/work-items/approvals`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
   upsertPromotionParticipant(
     id: string,
     body: {
@@ -2142,6 +2158,26 @@ export interface WorkItemInstance {
  * promotion's own instance: it waits for every instance to be decided with none blocked, which an
  * `Issue` roll-up satisfies but a `Pending` one does not.
  */
+/** One work item in the answer of `POST /api/promotions/{id}/work-items/approvals`. */
+export interface ApproveAllWorkItemRow {
+  workItemKey: string;
+  title: string | null;
+  /** The item's own state — after the sign-off on an approved row, the one that kept it out otherwise. */
+  state: WorkItemInstanceState | 'Unknown';
+  error: string | null;
+}
+
+/**
+ * Result of "Approve all". On a dry run `approved` is what would be approved and nothing was written;
+ * otherwise it is what was. `unchanged` were left as they are; `failed` were refused, with `error`.
+ */
+export interface ApproveAllWorkItemsResult {
+  dryRun: boolean;
+  approved: ApproveAllWorkItemRow[];
+  unchanged: ApproveAllWorkItemRow[];
+  failed: ApproveAllWorkItemRow[];
+}
+
 export interface WorkItemOverallStatus {
   state: WorkItemInstanceState;
   instances: number;
