@@ -51,7 +51,11 @@ causes:
       application-level failure — missing configuration or secret, a failed migration, or an
       unreachable dependency — not a delivery failure.
     confirm: The captured logs contain the container's own output; read the stack trace or startup error.
-    fix: Fix the configuration or dependency, then redeploy. Rolling back to the previous version restores service while you investigate.
+    fix: >-
+      Fix the configuration or dependency, then redeploy. Rolling back restores service while you
+      investigate: the failed deployment's page offers **Roll back to last known good version**,
+      which raises a rollback to the last version that deployed successfully there. Approving it also
+      sends the promotion that shipped the failed version back to Pending.
     fix_guide: request-rollback
 
   - id: probe-failure

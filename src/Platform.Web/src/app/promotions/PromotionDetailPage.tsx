@@ -75,6 +75,7 @@ import {
 } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { HelpButton } from '@/components/guide/HelpButton';
+import { LastKnownGoodRollback } from '@/app/deployments/LastKnownGoodRollback';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
@@ -869,6 +870,13 @@ function FailedDeploymentsBanner({
             <li style={{ color: 'var(--text-muted)' }}>and {attempts.length - 5} earlier</li>
           )}
         </ul>
+        {/* While the promotion is open the failure is usually still live in the environment, and
+            the warning is where the reader decides what to do about it. */}
+        {open && (
+          <div className="mt-3">
+            <LastKnownGoodRollback eventId={latest.id} hideUnavailable />
+          </div>
+        )}
       </div>
     </div>
   );

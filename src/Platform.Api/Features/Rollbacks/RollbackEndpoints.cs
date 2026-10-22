@@ -99,6 +99,34 @@ public static class RollbackEndpoints
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
+        // The failed-deployment page's "roll back to the last known good version": what it would do
+        // (GET, for the button and its confirmation) and doing it (POST). The server picks the target,
+        // so the two can never disagree about which version is "last known good".
+        group.MapGet("/last-known-good/{eventId:guid}", async (RollbackService svc, Guid eventId, CancellationToken ct) =>
+        {
+            try { return Results.Ok(await svc.GetLastKnownGoodAsync(eventId, ct)); }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        group.MapPost("/last-known-good/{eventId:guid}", async (
+            RollbackService svc, Guid eventId, LastKnownGoodBody? body, CancellationToken ct) =>
+        {
+            try
+            {
+                var r = await svc.CreateLastKnownGoodAsync(eventId, body?.Reason, ct);
+                return Results.Created($"/api/rollbacks/{r.Id}", ToDto(r, canApprove: false, canOverride: false));
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (RollbackAlreadyOpenException ex)
+            {
+                return Results.Json(new { error = ex.Message, rollbackId = ex.RequestId }, statusCode: StatusCodes.Status409Conflict);
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
         group.MapPost("/{id:guid}/approve", (RollbackService svc, Guid id, DecisionBody? body) =>
             Decide(() => svc.ApproveAsync(id, body?.Comment))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
