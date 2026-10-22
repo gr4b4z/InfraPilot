@@ -17,6 +17,7 @@ public class DeployEvent
     public string Version { get; set; } = "";
     public string? PreviousVersion { get; set; }
     public bool IsRollback { get; set; }
+    /// <summary>succeeded, failed, in_progress, or <see cref="DeployEventStatuses.Removed"/>.</summary>
     public string Status { get; set; } = "succeeded";
     public string Source { get; set; } = "";
     public DateTimeOffset DeployedAt { get; set; }
@@ -58,4 +59,20 @@ public class DeployEvent
         get => string.IsNullOrEmpty(RunJson) ? null : JsonSerializer.Deserialize<DeployRun>(RunJson, JsonOptions);
         set => RunJson = value is null ? null : JsonSerializer.Serialize(value, JsonOptions);
     }
+}
+
+/// <summary>
+/// Deploy event statuses that carry meaning beyond "it worked" or "it did not". The others are plain
+/// strings where they are used.
+/// </summary>
+public static class DeployEventStatuses
+{
+    /// <summary>
+    /// The service was taken out of the environment: uninstalled, and no longer declared by the
+    /// release pipeline. As a cell's newest event it means the environment runs nothing of the
+    /// service, so current-state views drop the cell. It is not a deploy: analytics leave it out,
+    /// and it does not bring back a service an admin retired. <c>Version</c> is the version that
+    /// was removed.
+    /// </summary>
+    public const string Removed = "removed";
 }
