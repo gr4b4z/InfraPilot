@@ -39,17 +39,19 @@ body: |
 
   Every published build is registered, `mkp` services included. For `mkp` the registration opens a
   `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
-  approved); there is **no `build → dev` policy for `mkp`**, so master builds of Track A services
-  still reach dev and test through the marketplace manifest.
+  approved, or mkp-release for a migrated service); there is **no product-wide `build → dev` policy
+  for `mkp`**, so master builds of Track A services still reach dev and test through the marketplace
+  manifest. Each migrated `mkp` service has its own `build → dev` policy and is listed in the two
+  `mkp-release … (mkp)` webhook subscriptions (see the webhook catalogue).
 
   The retired `stable` ("Staging Candidate") environment still exists in history for `mkp`,
   `mkp-extensions` and `mkp-support-tools`, but is hidden from every current-state view.
 
   ## Track A services (the monorepo)
 
-  `acx-platform`, `mkp-helpdesk`, `mkp-notifications`, `mkp-public-catalog`, `mkp-spotlight`,
-  `mkp-export`, `mkp-scheduler`, `acx-web-commerce`, `acx-web-accounts`, `acx-web-shell`,
-  `mkp-web-helpdesk`, `mkp-extensions`.
+  `acx-platform`, `mkp-helpdesk`, `mkp-notifications`, `mkp-public-catalog`, `mkp-export`,
+  `mkp-scheduler`, `acx-web-commerce`, `acx-web-accounts`, `acx-web-shell`, `mkp-web-helpdesk`,
+  `mkp-extensions`.
 
   `marketplace/modules.yaml` groups these as `libs-frontend`, `libs-backend` and `services` — the
   libraries are built and consumed by the services, not deployed on their own.
@@ -60,6 +62,8 @@ body: |
   `mkp-extension-usage-reporting`, `mkp-nav-stats`, `mkp-web-currency`, `mkp-web-publiccatalog`,
   `mkp-extension-nav-billing`, `mkp-extension-procurement`, `mkp-extension-producthub`,
   `acx-web-notifications`, `mkp-export`.
+
+  Migrated from Track A and still under product `mkp`: `mkp-spotlight` (2026-10).
 
   GitHub-Actions-built: `ops-dotnet-ci-sample`.
 
