@@ -6,6 +6,7 @@ reverses. Prod InfraPortal only (DEPLOYMENTS_URL / DEPLOYMENTS_API_KEY, admin ro
     python migrate-extension-services.cutover.py              # dry run
     python migrate-extension-services.cutover.py --apply
     python migrate-extension-services.cutover.py --undo --apply
+    python migrate-extension-services.cutover.py --dispatch-dev [--apply]   # after the mpt-release seed merged
 
 For each service:
 1. A catch-all service product override -> mpt-extensions. Anything still posted as mpt (SDP deploy
@@ -20,10 +21,16 @@ deleted once no manifest with spec.product mpt is left in an environment.
 Run it in the cutover sitting, right before the marketplace and mpt-release PRs merge. From the
 moment the override exists, new approvals for these services are mpt-extensions approvals: they go
 to mpt-release only, not to the SDP. Pending candidates move with the remap and stay approvable.
-An Approved or Deploying one would race the hand-over, so the script stops on it.
+An Approved or Deploying one would race the hand-over, so the script stops on it. The exception is an
+Approved build -> dev: the SDP never acts on dev promotions, and mpt-release skipped it while the
+service was disabled, so it is waiting rather than in flight.
+
+--dispatch-dev deploys those waiting build -> dev candidates once the mpt-release seed is merged: one
+Deploy Registered Build run (workflow_dispatch, gh) per candidate, with its digest-pinned manifest.
+InfraPortal's bulk resend would also resend other mpt-extensions services' stale approvals.
 
 --undo points each override back at mpt, remaps the history back and deletes the override."""
-import argparse, json, os, sys, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 SERVICES = ['mpt-extensions', 'mpt-web-extensions', 'mpt-web-extensions-pages', 'mpt-extensions-ui-bootstrap',
             'swo-extension-nav', 'swo-extension-adobe', 'swo-extension-aws']
@@ -34,6 +41,7 @@ COUNTS = ('deployments', 'builds', 'buildConflicts', 'promotions', 'openPromotio
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument('--undo', action='store_true', help='move the services back to mpt and delete the overrides')
 parser.add_argument('--apply', action='store_true', help='execute; without it nothing is written')
+parser.add_argument('--dispatch-dev', action='store_true', help='deploy the approved build -> dev candidates through mpt-release')
 args = parser.parse_args()
 
 url = os.environ['DEPLOYMENTS_URL'].rstrip('/'); key = os.environ['DEPLOYMENTS_API_KEY']
@@ -59,22 +67,51 @@ def must(status, body, label):
 def counts(plan):
     return ', '.join(f'{k} {plan[k]}' for k in COUNTS if plan.get(k))
 
+def candidates(product, svc, status):
+    # The service filter matches substrings: mpt-extensions also returns mpt-extensions-ui-bootstrap.
+    q = urllib.parse.urlencode({'product': product, 'service': svc, 'status': status, 'limit': 50})
+    return [c for c in get(f'/api/promotions?{q}').get('candidates') or [] if c['status'] == status and c['service'] == svc]
+
 # An approval in flight would be dispatched by the product it was filed under before the switch and
-# skipped by the deployer that owns the service after it.
-busy = []
+# skipped by the deployer that owns the service after it. An approved build -> dev is not in flight:
+# the SDP never acts on dev promotions, and mpt-release skipped it while the service was disabled.
+busy, waiting = [], []
 for svc in SERVICES:
-    for status in ('Approved', 'Deploying'):
-        q = urllib.parse.urlencode({'product': from_product, 'service': svc, 'status': status, 'limit': 50})
-        busy += [f"{svc} {c['sourceEnv']}->{c['targetEnv']} {c['version']} ({status})"
-                 for c in get(f'/api/promotions?{q}').get('candidates') or [] if c['status'] == status]
+    for product in (SOURCE, TARGET):
+        for status in ('Approved', 'Deploying'):
+            for c in candidates(product, svc, status):
+                if status == 'Approved' and (c['sourceEnv'], c['targetEnv']) == ('build', 'dev'):
+                    waiting.append((product, svc, c))
+                else:
+                    busy.append(f"{svc} {c['sourceEnv']}->{c['targetEnv']} {c['version']} ({product}, {status})")
+
+if args.dispatch_dev:
+    for product, svc, c in waiting:
+        q = urllib.parse.urlencode({'product': product, 'service': svc, 'limit': 50})
+        build = next((b for b in get(f'/api/builds?{q}').get('results') or [] if b['version'] == c['version']), None)
+        if not build or not build.get('artifactRef') or not build.get('artifactDigest'):
+            print(f"{svc} {c['version']}: no registered build with a manifest digest, skipped"); continue
+        ref = build['artifactRef']
+        if '@sha256:' not in ref:
+            # Pin the tag to the registered digest, as Deploy Registered Build does for a candidate.
+            repo = ref[:ref.rfind(':')] if ref.rfind(':') > ref.rfind('/') else ref
+            ref = f"{repo}@{build['artifactDigest']}"
+        cmd = ['gh', 'workflow', 'run', 'deploy-registered-build.yml', '--repo', 'softwareone-platform/mpt-release',
+               '-f', 'targetEnvironment=dev', '-f', f'manifestRef={ref}', '-f', f'componentName={svc}', '-f', f"version={c['version']}"]
+        if not args.apply:
+            print('DRY', ' '.join(cmd)); continue
+        print(subprocess.run(cmd).returncode, svc, c['version'])
+    sys.exit(0)
+
 if busy: sys.exit('in-flight promotions, let them finish first: ' + '; '.join(busy))
+for product, svc, c in waiting:
+    print(f"approved build -> dev {svc} {c['version']} ({product}): waiting; deploy it with --dispatch-dev after the hand-over")
 
 overrides = {o['service'].lower(): o for o in get('/api/deployments/admin/product-overrides') if o['fromProduct'] is None}
 
 for svc in SERVICES:
     row = overrides.get(svc)
-    q =urllib.parse.urlencode({'product': from_product, 'service': svc, 'status': 'Pending', 'limit': 50})
-    pending = [f"{c['sourceEnv']}->{c['targetEnv']} {c['version']}" for c in get(f'/api/promotions?{q}').get('candidates') or []]
+    pending = [f"{c['sourceEnv']}->{c['targetEnv']} {c['version']}" for c in candidates(from_product, svc, 'Pending')]
     note = f" (pending, moves along: {'; '.join(pending)})" if pending else ''
 
     if args.undo and row is None:
