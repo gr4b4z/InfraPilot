@@ -24,6 +24,7 @@ export const AVAILABLE_EVENTS = [
   'promotion.ticket.approved',
   'promotion.ticket.issue-raised',
   'promotion.ticket.blocked',
+  'promotion.ticket.bypassed',
   'rollback.approved',
   'rollback.rejected',
   'rollback.deployed',

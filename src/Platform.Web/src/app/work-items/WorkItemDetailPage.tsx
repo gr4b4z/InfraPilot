@@ -41,6 +41,7 @@ import {
   Ban,
   CheckCircle,
   ExternalLink,
+  FastForward,
   FileText,
   GitCommitHorizontal,
   GitPullRequest,
@@ -973,6 +974,7 @@ function ChangeRow({
 function DecisionIcon({ decision, size }: { decision: WorkItemDecision; size: number }) {
   if (decision === 'Approved') return <CheckCircle size={size} />;
   if (decision === 'Issue') return <AlertTriangle size={size} />;
+  if (decision === 'Bypassed') return <FastForward size={size} />;
   return <Ban size={size} />;
 }
 

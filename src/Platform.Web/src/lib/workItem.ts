@@ -193,7 +193,8 @@ export function commitCompareUrl(
  * constructions like "You issue this work item".
  *
  * Issue shares the warning palette with the undecided "Pending" state — the two never appear on the
- * same row, and the label plus the icon carry the distinction.
+ * same row, and the label plus the icon carry the distinction. Bypassed takes the info palette: it is
+ * neither a sign-off nor a hold, just a record that the item went out under an admin bypass.
  */
 export function decisionStyle(decision: WorkItemDecision): {
   label: string;
@@ -229,6 +230,14 @@ export function decisionStyle(decision: WorkItemDecision): {
         color: 'var(--danger)',
         bg: 'var(--danger-bg)',
       };
+    case 'Bypassed':
+      return {
+        label: 'Bypassed',
+        attributed: 'Bypassed',
+        youDid: 'bypassed this work item with its promotion',
+        color: 'var(--info)',
+        bg: 'var(--info-bg)',
+      };
   }
 }
 
@@ -248,7 +257,8 @@ export function instanceStateStyle(state: WorkItemInstanceState): { label: strin
 /**
  * One line for the ticket's roll-up across services: "2 of 3 services approved", with issues and
  * blocks named because the approved count alone doesn't explain the rest ("1 of 3 services approved ·
- * 1 issue · 1 blocked"). Only the blocked ones hold a promotion.
+ * 1 issue · 1 blocked"). Only the blocked ones hold a promotion. Bypassed instances are named too:
+ * they shipped, but nobody signed them off.
  * Empty for a single-instance ticket, where the instance's own state says it all.
  */
 export function overallSummaryLabel(overall: WorkItemOverallStatus | null | undefined): string {
@@ -256,5 +266,6 @@ export function overallSummaryLabel(overall: WorkItemOverallStatus | null | unde
   const parts = [`${overall.approved} of ${overall.instances} services approved`];
   if (overall.issues > 0) parts.push(`${overall.issues} issue${overall.issues === 1 ? '' : 's'}`);
   if (overall.blocked > 0) parts.push(`${overall.blocked} blocked`);
+  if (overall.bypassed > 0) parts.push(`${overall.bypassed} bypassed`);
   return parts.join(' · ');
 }
