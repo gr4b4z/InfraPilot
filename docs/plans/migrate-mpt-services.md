@@ -91,6 +91,14 @@ and `helm`. Everything up to step 4 is read-only.
 
 ### 3. mpt-release PR (seed and enable)
 
+From an mpt-release checkout on a new branch, run:
+```bash
+pwsh pipelines/common/scripts/Import-SdpComponent.ps1 -ComponentName $SVC -DryRun
+```
+Then run it again without `-DryRun`. The script does everything below, after first running the
+step 1 checks itself (it stops on any of them). It commits nothing, so review `git diff`, commit and
+open the PR. By hand, it amounts to this.
+
 For each environment, write `<env>/$SVC/`:
 - **`build-metadata.yaml`**: the registered manifest, byte for byte. Pull it from the build's
   `artifactRef` (`oras pull`, or the ACR REST API with `az acr login --expose-token`) and check its
@@ -106,8 +114,8 @@ For each environment, write `<env>/$SVC/`:
 
 Then remove `$SVC` from `disabledComponents` in `components.yaml`.
 
-The script used for spotlight landed the four directories this way. Generalising it into mpt-release
-is the obvious next speed-up.
+`-RedeployEnvironments` picks the environments that get no `deployment-status.yaml` (default: dev).
+An environment whose `versions.json` does not list the service is skipped.
 
 ### 4. Cut over
 
