@@ -239,6 +239,8 @@ public static class RollbackEndpoints
     private static object ToItemDto(RollbackItem i, IReadOnlyDictionary<Guid, FailedDeployAttempt>? failedAttempts) => new
     {
         i.Id, i.Service, i.FromVersion, i.ToVersion, status = i.Status.ToString(),
+        // No target: the item takes the service out of the environment.
+        remove = i.ToVersion.Length == 0,
         i.CompletedDeployEventId, i.ExternalRunUrl, i.CompletedAt, i.Note,
         // Open items only: the newest failed deploy of the target version since approval.
         lastFailedAttempt = failedAttempts?.GetValueOrDefault(i.Id),
