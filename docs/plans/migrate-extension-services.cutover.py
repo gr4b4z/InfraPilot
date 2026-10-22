@@ -85,8 +85,23 @@ for svc in SERVICES:
                 else:
                     busy.append(f"{svc} {c['sourceEnv']}->{c['targetEnv']} {c['version']} ({product}, {status})")
 
+def landed_dev_version(svc):
+    # What mpt-release main already declares for dev; Deploy Registered Build may have landed a newer
+    # approval on its own once the service was enabled.
+    out = subprocess.run(['gh', 'api', '-H', 'Accept: application/vnd.github.raw',
+                          f'repos/softwareone-platform/mpt-release/contents/dev/{svc}/build-metadata.yaml'],
+                         capture_output=True, text=True)
+    return next((l.split(':', 1)[1].strip() for l in out.stdout.splitlines() if l.strip().startswith('version:')), None)
+
 if args.dispatch_dev:
+    # Only the newest approval per service: an older one dispatched after it would move dev back.
+    newest = {}
     for product, svc, c in waiting:
+        if svc not in newest or c.get('createdAt', '') > newest[svc][2].get('createdAt', ''):
+            newest[svc] = (product, svc, c)
+    for product, svc, c in newest.values():
+        if landed_dev_version(svc) == c['version']:
+            print(f"{svc} {c['version']}: already in mpt-release dev, skipped"); continue
         q = urllib.parse.urlencode({'product': product, 'service': svc, 'limit': 50})
         build = next((b for b in get(f'/api/builds?{q}').get('results') or [] if b['version'] == c['version']), None)
         if not build or not build.get('artifactRef') or not build.get('artifactDigest'):
