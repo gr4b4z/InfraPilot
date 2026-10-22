@@ -96,19 +96,14 @@ body: |
 
   ## mkp services moved to mkp-release
 
-  Product `mkp` has services on both deployers while they move one at a time. Filters are
-  include-only and AND-ed, so the mkp-extensions subscriptions cannot take one mkp service. Two
-  `github` subscriptions are dedicated to the migrated ones, and list them in their services filter
-  (`docs/plans/migrate-mkp-services.cutover.py` maintains them):
+  Product `mkp` has services on both deployers while they move one at a time. InfraPortal does not
+  route by service:
+  - `mkp-promotion-approved` (ADO) delivers every `mkp` approval to the SDP;
+  - `mkp-release deploy-build` and `GithubPromotion` deliver every `mkp` approval to mkp-release.
 
-  | Subscription | Dispatch type | Environments |
-  |---|---|---|
-  | `mkp-release deploy-build (mkp)` | `deploy-build` | dev, staging (`build → *`) |
-  | `mkp-release promote-single-build-manifest (mkp)` | `promote-single-build-manifest` | test, prod (`dev → test`, `staging → prod`) |
-
-  An empty services filter would dispatch every `mkp` service to mkp-release, so neither is ever
-  left without one. The ADO `mkp-promotion-approved` subscription still receives every `mkp`
-  approval; marketplace drops the `sdp.exclude` services itself.
+  Each side skips what it does not own. The SDP skips marketplace `sdp.exclude`; mkp-release skips
+  its `disabledComponents`, which must list every service the SDP still deploys. Moving a service
+  changes those two lists and nothing in InfraPortal (`docs/plans/migrate-mkp-services.md`).
 
   If a promotion is approved and nothing happens, the first question is whether an **active**
   subscription matches `promotion.approved` for that product and environment, and the second is

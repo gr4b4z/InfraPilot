@@ -39,10 +39,11 @@ body: |
 
   Every published build is registered, `mkp` services included. For `mkp` the registration opens a
   `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
-  approved, or mkp-release for a migrated service); there is **no product-wide `build → dev` policy
-  for `mkp`**, so master builds of Track A services still reach dev and test through the marketplace
-  manifest. Each migrated `mkp` service has its own `build → dev` policy and is listed in the two
-  `mkp-release … (mkp)` webhook subscriptions (see the webhook catalogue).
+  approved, or mkp-release for a migrated service). Master builds open an auto-approved `build → dev`
+  promotion, but only mkp-release acts on it, and only for migrated services. Track A services still
+  reach dev and test through the marketplace manifest, and SDP's dev deploy closes their candidate.
+  Every `mkp` approval goes to both deployers. SDP skips `sdp.exclude` and mkp-release skips
+  `disabledComponents` (see the webhook catalogue).
 
   The retired `stable` ("Staging Candidate") environment still exists in history for `mkp`,
   `mkp-extensions` and `mkp-support-tools`, but is hidden from every current-state view.
