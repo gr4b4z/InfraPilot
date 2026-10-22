@@ -36,6 +36,56 @@ public record RollbackPreview(
 /// <summary>A failed deploy of an open rollback item's target version, since the request was approved.</summary>
 public record FailedDeployAttempt(Guid DeployEventId, DateTimeOffset DeployedAt);
 
+/// <summary>
+/// The "roll back to the last known good version" offer for one failed deploy event, produced by
+/// <c>RollbackService.GetLastKnownGoodAsync</c>. <see cref="Available"/> false ⇒ <see cref="Reason"/>
+/// explains why and the version fields are null.
+/// </summary>
+/// <param name="FailedVersion">The service's newest failed deploy: the event itself, or a later failed one.</param>
+/// <param name="LastGoodVersion">The version the rollback would restore: the last succeeded deploy.</param>
+/// <param name="Approval">"auto", "required" or "unconfigured" (no rollback policy: an admin must override).</param>
+/// <param name="Approvers">The approval steps a "required" rollback waits on.</param>
+/// <param name="OpenRollback">An open request that already carries this service, if any.</param>
+/// <param name="ExecutorConfigured">Whether any webhook subscription delivers <c>rollback.approved</c> here.</param>
+/// <param name="PromotionsToReopen">Promotions of the failed version that approving the rollback reopens.</param>
+public record LastKnownGoodOffer(
+    Guid EventId,
+    string Product,
+    string Service,
+    string TargetEnv,
+    bool Available,
+    string? Reason,
+    string? FailedVersion,
+    Guid? FailedEventId,
+    DateTimeOffset? FailedAt,
+    string? LastGoodVersion,
+    Guid? LastGoodEventId,
+    DateTimeOffset? LastGoodAt,
+    bool CanCreate,
+    string? CreateBlockedReason,
+    string? Approval,
+    IReadOnlyList<string> Approvers,
+    OpenRollbackRef? OpenRollback,
+    bool ExecutorConfigured,
+    IReadOnlyList<PromotionToReopen> PromotionsToReopen);
+
+public record OpenRollbackRef(Guid Id, string Status, DateTimeOffset CreatedAt);
+
+public record PromotionToReopen(Guid Id, string SourceEnv, string Version, string Status);
+
+/// <summary>Body for <c>POST /api/rollbacks/last-known-good/{eventId}</c>.</summary>
+public record LastKnownGoodBody(string? Reason);
+
+/// <summary>
+/// Thrown when a rollback is asked for a service that an open request already carries. Mapped to 409
+/// with the open request's id, so the caller can point at it instead of raising a second one.
+/// </summary>
+public sealed class RollbackAlreadyOpenException(Guid requestId, string status)
+    : InvalidOperationException($"Rollback {requestId} is already {status} for this service")
+{
+    public Guid RequestId { get; } = requestId;
+}
+
 public record RollbackQuery(
     RollbackStatus? Status = null,
     string? Product = null,

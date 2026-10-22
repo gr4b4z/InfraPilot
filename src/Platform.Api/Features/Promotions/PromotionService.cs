@@ -1999,6 +1999,82 @@ public class PromotionService
                 + $"approval cannot be cancelled. {fix}");
         }
 
+        var trimmedComment = (comment ?? "").Trim();
+        return await ReturnToPendingAsync(candidate, policy,
+            cleared => trimmedComment.Length == 0
+                ? $"{Actor} cancelled the approval — {cleared}."
+                : $"{Actor} cancelled the approval — {cleared}. Reason: {trimmedComment}",
+            trimmedComment.Length == 0 ? null : trimmedComment,
+            rollbackId: null, ct);
+    }
+
+    /// <summary>
+    /// Sends a promotion back to Pending because an approved rollback is taking its version back
+    /// out of the target environment. The case it exists for: the promotion was approved, its deploy
+    /// failed, and someone rolled the service back to the last version that worked. Without this the
+    /// promotion stays Approved for good. Nothing closes it, because its version never deploys
+    /// successfully, and nothing supersedes it, because the rollback lands an <i>older</i> version.
+    /// An approval for a deploy that failed and was reverted should not keep standing: whoever
+    /// approved it signed off on a change that did not survive contact with the environment.
+    ///
+    /// <para>It does what <see cref="CancelApprovalAsync"/> does (clears the sign-offs, takes back
+    /// bypass marks, re-gates under the current policy, stops a held <c>promotion.approved</c>, fires
+    /// <c>promotion.approval.cancelled</c>), with two differences. The caller is not checked against
+    /// the promotion's approvers, because the rollback's own gate is the decision being carried out.
+    /// And a Deploying promotion is reopened too: the answer to a deploy in flight is the rollback,
+    /// and that is what is happening.</para>
+    ///
+    /// <para>A promotion whose gate would approve it again with no sign-off at all (an auto-approve
+    /// policy, every work item signed off, or no work items under the matching rule) is left
+    /// Approved, with a comment saying why. Sending it to Pending would only let the next gate
+    /// evaluation approve it again and re-dispatch the version that was just rolled back.</para>
+    /// </summary>
+    public async Task<RollbackReopenOutcome> ReopenForRollbackAsync(
+        Guid candidateId, Guid rollbackId, string rollbackSummary, CancellationToken ct = default)
+    {
+        var candidate = await _db.PromotionCandidates.FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+        if (candidate.Status is not (PromotionStatus.Approved or PromotionStatus.Deploying))
+            return new RollbackReopenOutcome(candidate.Id, false, 0,
+                $"it is {candidate.Status}, so there is no approval to take back");
+
+        var policy = await ResolveCurrentPolicyAsync(candidate, ct);
+        var wouldReapprove = await EvaluateGateAsync(candidate, policy.Current, ct, ignoreRecordedApprovals: true);
+        if (wouldReapprove.Satisfied)
+        {
+            var why = wouldReapprove.SatisfiedBy switch
+            {
+                GateSatisfiedBy.AllWorkItemsApproved => "every work item is signed off",
+                GateSatisfiedBy.NoWorkItems => "it carries no work items and the policy approves those automatically",
+                _ => "the policy has no approval requirements",
+            };
+            StageSystemComment(candidate.Id,
+                $"{rollbackSummary} This promotion stays {candidate.Status.ToString().ToLowerInvariant()}: "
+                + $"its policy would approve it again at once ({why}), so reopening it would only "
+                + "send the rolled-back version out again. Reject it or let a newer version supersede it.");
+            await _db.SaveChangesAsync(ct);
+            return new RollbackReopenOutcome(candidate.Id, false, 0, $"its policy would approve it again at once ({why})");
+        }
+
+        var result = await ReturnToPendingAsync(candidate, policy,
+            cleared => $"{rollbackSummary} Reopened — {cleared}. It needs a new approval before it deploys again.",
+            comment: null, rollbackId, ct);
+        return new RollbackReopenOutcome(candidate.Id, true, result.ClearedApprovals, null);
+    }
+
+    /// <summary>
+    /// The shared half of <see cref="CancelApprovalAsync"/> and <see cref="ReopenForRollbackAsync"/>:
+    /// Approved (or Deploying) back to Pending, with the side effects that make it real. The callers
+    /// have already checked who may do it and that the gate will not simply re-approve.
+    /// <paramref name="describe"/> turns the "what was cleared" clause into the system comment.
+    /// </summary>
+    private async Task<CancelApprovalResult> ReturnToPendingAsync(
+        PromotionCandidate candidate, CurrentPolicy policy, Func<string, string> describe,
+        string? comment, Guid? rollbackId, CancellationToken ct)
+    {
+        var candidateId = candidate.Id;
+        var previousStatus = candidate.Status;
+
         // A bypass's marks go with the approval they came with — before any re-gating below rewrites
         // the work-item index they are found through.
         var unbypassed = await StageClearBypassedWorkItemsAsync(candidate, ct);
@@ -2028,7 +2104,6 @@ public class PromotionService
         candidate.Status = PromotionStatus.Pending;
         candidate.ApprovedAt = null;
 
-        var trimmedComment = (comment ?? "").Trim();
         // A bypass records no approval row, so "cleared" would read as "nothing happened" on one.
         var cleared = clearedNames.Count == 0
             ? "the promotion is back to pending"
@@ -2040,9 +2115,7 @@ public class PromotionService
         var regated = policy.Json is null
             ? ""
             : " The promotion has been re-gated under the edge's current approval rules.";
-        StageSystemComment(candidateId, trimmedComment.Length == 0
-            ? $"{Actor} cancelled the approval — {cleared}.{regated}"
-            : $"{Actor} cancelled the approval — {cleared}. Reason: {trimmedComment}{regated}");
+        StageSystemComment(candidateId, describe(cleared) + regated);
 
         await _db.SaveChangesAsync(ct);
 
@@ -2052,16 +2125,19 @@ public class PromotionService
             "PromotionCandidate", candidate.Id, null,
             new
             {
-                comment = trimmedComment.Length == 0 ? null : trimmedComment,
+                comment,
                 clearedApprovals = approvals.Count,
                 unbypassedWorkItems = unbypassed,
                 repolicied = policy.Json is not null,
                 policyId = candidate.PolicyId,
+                previousStatus = previousStatus.ToString(),
+                reopenedByRollback = rollbackId,
             });
 
         _logger.LogInformation(
-            "Candidate {Id} approval cancelled by {Email}; {Count} approval row(s) cleared",
-            candidate.Id, _currentUser.Email, approvals.Count);
+            "Candidate {Id} approval cancelled by {Email}{Rollback}; {Count} approval row(s) cleared",
+            candidate.Id, LogSanitizer.Clean(_currentUser.Email),
+            rollbackId is null ? "" : $" (rollback {rollbackId})", approvals.Count);
 
         // Stop the held promotion.approved delivery first, so a consumer that does receive both
         // events can never see the cancellation before the approval it cancels.
@@ -2081,11 +2157,13 @@ public class PromotionService
         await DispatchWebhookAsync(candidate, "promotion.approval.cancelled", ct,
             new
             {
-                comment = trimmedComment.Length == 0 ? null : trimmedComment,
+                comment,
                 clearedApprovals = approvals.Count,
                 // True ⇒ we caught it in the hold window and no promotion.approved ever left. A
                 // consumer that saw one knows this cancellation retracts it.
                 approvedWebhookStopped = stopped > 0,
+                // Set when an approved rollback reopened the promotion rather than a person.
+                reopenedByRollback = rollbackId,
             });
 
         return new CancelApprovalResult(candidate, approvals.Count, stopped > 0);
@@ -4129,6 +4207,16 @@ public record CancelApprovalResult(
     PromotionCandidate Candidate,
     int ClearedApprovals,
     bool ApprovedWebhookStopped);
+
+/// <summary>
+/// Outcome of <see cref="PromotionService.ReopenForRollbackAsync"/> for one promotion. When
+/// <see cref="Reopened"/> is false, <see cref="Reason"/> says why it was left as it was.
+/// </summary>
+public record RollbackReopenOutcome(
+    Guid CandidateId,
+    bool Reopened,
+    int ClearedApprovals,
+    string? Reason);
 
 /// <summary>
 /// Structured approval progress for the detail view, produced by
