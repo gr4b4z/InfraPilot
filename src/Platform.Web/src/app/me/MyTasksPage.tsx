@@ -9,7 +9,6 @@ import {
   GitPullRequest,
   RefreshCw,
   Ticket,
-  Unlink,
   UserPlus,
   XCircle,
 } from 'lucide-react';
@@ -585,8 +584,6 @@ function WorkItemTaskRow({
   const myRoles = (ticket.participants ?? [])
     .filter((p) => (p.email ?? '').toLowerCase() === currentUserEmail.toLowerCase())
     .map((p) => roleDisplay(p));
-  // The carrying promotion has moved on (superseded / rejected) but the item is still unsigned.
-  const orphaned = !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
   const unassigned = variant === 'unassigned';
 
   const rowProps = useKeyboardListRow(index, () => navigate(detailPath), {
@@ -645,16 +642,6 @@ function WorkItemTaskRow({
               title={`You are assigned as ${myRoles.join(', ')}`}
             >
               {myRoles.join(', ')}
-            </span>
-          )}
-          {orphaned && (
-            <span
-              className="badge shrink-0"
-              style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              title={`The promotion carrying this work item is ${ticket.candidateStatus}. The item still needs signing off.`}
-            >
-              <Unlink size={10} />
-              No live promotion
             </span>
           )}
           <MissingRolesBadge roles={ticket.missingRoles} />

@@ -44,7 +44,6 @@ import {
   ExternalLink,
   ArrowRight,
   Inbox,
-  Unlink,
   Filter,
   UserPlus,
   History,
@@ -1218,11 +1217,6 @@ function TicketRow({
   // editing. The candidate may also have moved on (Approved/Deployed/Rejected/Superseded) so we
   // surface its current status as a hint.
   const decided = ticket.decision != null;
-  // Undecided row whose promotion is gone: superseded without the replacement picking the ticket up,
-  // or rejected. The item is still ours to resolve, so it stays in the queue — flagged, because the
-  // service/version shown belongs to a promotion that is no longer going anywhere.
-  const orphaned =
-    !decided && !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
   const detailPath = workItemDetailPath(
     ticket.workItemKey,
     ticket.product,
@@ -1306,16 +1300,6 @@ function TicketRow({
                 {ticket.overall.approved}/{ticket.overall.instances} services
               </span>
             )}
-            {orphaned && (
-              <span
-                className="badge shrink-0"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-                title={`The promotion carrying this work item is ${ticket.candidateStatus}. The item still needs signing off.`}
-              >
-                <Unlink size={10} />
-                No live promotion
-              </span>
-            )}
             {/* Nobody in a role the promotion policy requires — shown on every tab, not just "Not
                 assigned": an item can be mine as QA owner and still be missing its reviewer. */}
             <MissingRolesBadge roles={ticket.missingRoles} />
@@ -1353,10 +1337,7 @@ function TicketRow({
               referenceKey={ticket.workItemKey}
               participants={ticket.participants ?? []}
               onChanged={onChanged}
-              /* Orphan rows are read-only for assignment: their candidate is the dead one, which
-                 isn't necessarily the candidate the detail page writes people to, so an edit here
-                 could land somewhere the user never sees it. The detail page is the place. */
-              readOnly={decided || orphaned}
+              readOnly={decided}
             />
           </div>
 
