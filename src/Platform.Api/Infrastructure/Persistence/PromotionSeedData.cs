@@ -84,6 +84,14 @@ public static class PromotionSeedData
         "No test covers the acceptance criteria in the ticket.",
     ];
 
+    /// <summary>The note a bypass leaves on the work items it took out unreviewed (see PromotionService.BypassAsync).</summary>
+    private static readonly string[] WorkItemBypassComments =
+    [
+        "Went out unreviewed with the admin bypass of this promotion — production hotfix for INC-4821.",
+        "Went out unreviewed with the admin bypass of this promotion — QA unavailable, release window closing.",
+        "Went out unreviewed with the admin bypass of this promotion — rollback-forward after a failed deploy.",
+    ];
+
     private static readonly string[] ThreadReplies =
     [
         "Picked this up — should have an answer by tomorrow.",
@@ -453,9 +461,12 @@ public static class PromotionSeedData
 
                 var (decision, who) = outcome.Value;
                 var (name, email) = who;
-                var comment = decision == WorkItemDecision.Approved
-                    ? WorkItemApprovalComments[rand.Next(WorkItemApprovalComments.Length)]
-                    : WorkItemProblemComments[rand.Next(WorkItemProblemComments.Length)];
+                var comment = decision switch
+                {
+                    WorkItemDecision.Approved => WorkItemApprovalComments[rand.Next(WorkItemApprovalComments.Length)],
+                    WorkItemDecision.Bypassed => WorkItemBypassComments[rand.Next(WorkItemBypassComments.Length)],
+                    _ => WorkItemProblemComments[rand.Next(WorkItemProblemComments.Length)],
+                };
                 var decidedAt = candidate.CreatedAt.AddHours(rand.Next(1, 20));
 
                 db.WorkItemApprovals.Add(new WorkItemApproval
@@ -520,12 +531,16 @@ public static class PromotionSeedData
     {
         switch (status)
         {
-            // Already through the gate ⇒ every work item on it was approved. These are what fill the
-            // "Decided" tab and give the work-item pages a finished trail to show.
+            // Already through the gate ⇒ every work item on it was approved — or, where the local admin
+            // is the one on it, went out with an admin bypass unreviewed. These are what fill the
+            // "Decided" tab and give the work-item pages a finished trail to show. The bypass case
+            // reuses the decider roll rather than drawing again, so the rest of the fixed-seed data
+            // does not shift.
             case PromotionStatus.Approved:
             case PromotionStatus.Deploying:
             case PromotionStatus.Deployed:
-                return (WorkItemDecision.Approved, PickDecider(rand));
+                var by = PickDecider(rand);
+                return (by.Email == "admin@localhost" ? WorkItemDecision.Bypassed : WorkItemDecision.Approved, by);
 
             // The live queue. Mostly open — deciding these would empty the tab the demo data exists to
             // fill — with enough decided to show every colour a row can take.
@@ -544,7 +559,7 @@ public static class PromotionSeedData
                 return (decision, PickDecider(rand));
 
             // Rejected or superseded: sometimes there's a block behind it, which is also what the
-            // queue's orphan handling has to cope with. Mostly left open.
+            // orphan sweep has to cope with. Mostly left open.
             default:
                 if (rand.NextDouble() > 0.3) return null;
                 return (
@@ -576,6 +591,7 @@ public static class PromotionSeedData
         {
             WorkItemDecision.Approved => "Approved this work item.",
             WorkItemDecision.Issue => "Raised an issue on this work item.",
+            WorkItemDecision.Bypassed => "Bypassed this work item.",
             _ => "Blocked this work item.",
         };
         var note = (comment ?? "").Trim();

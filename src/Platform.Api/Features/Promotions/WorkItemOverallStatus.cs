@@ -6,12 +6,14 @@ namespace Platform.Api.Features.Promotions;
 
 /// <summary>
 /// The sign-off state of one work item instance, derived from its <see cref="WorkItemApproval"/> rows
-/// with display precedence: a block outranks an issue, either outranks a sibling approval, and an
-/// item nobody has ruled on is pending.
+/// with display precedence: a block outranks an issue, either outranks a sibling approval, any
+/// decision outranks a bypass, and an item nobody has ruled on is pending.
 ///
 /// <para>Only <see cref="Blocked"/> holds a promotion back. <see cref="Issue"/> is a flag on a change
 /// that is still going out, so it clears the gate alongside <see cref="Approved"/> — see
-/// <see cref="WorkItemOverallStatus.ClearsGate"/>.</para>
+/// <see cref="WorkItemOverallStatus.ClearsGate"/>. <see cref="Bypassed"/> clears nothing: the item
+/// went out under an administrator bypass without anybody reviewing it
+/// (<see cref="WorkItemDecision.Bypassed"/>).</para>
 /// </summary>
 public enum WorkItemInstanceState
 {
@@ -19,6 +21,7 @@ public enum WorkItemInstanceState
     Approved,
     Issue,
     Blocked,
+    Bypassed,
 }
 
 /// <summary>
@@ -38,7 +41,8 @@ public record WorkItemInstanceStatusView(string Service, string? Title, WorkItem
 /// the same object from two sides.
 ///
 /// <para><see cref="State"/> follows display precedence across instances: any block → Blocked, else
-/// any issue → Issue, else every instance approved → Approved, else Pending. A promotion whose policy
+/// any issue → Issue, else every instance approved → Approved, else — nothing left undecided but some
+/// instance only bypassed — Bypassed, else Pending. A promotion whose policy
 /// sets <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> waits for every
 /// instance to clear (<see cref="ClearsGateEverywhere"/>) rather than for its own service's alone —
 /// which is not the same as <see cref="State"/> being Approved, since an issue clears too.</para>
@@ -55,7 +59,8 @@ public record WorkItemOverallStatus(
     int Issues,
     int Blocked,
     int Pending,
-    IReadOnlyList<WorkItemInstanceStatusView> InstanceStatuses)
+    IReadOnlyList<WorkItemInstanceStatusView> InstanceStatuses,
+    int Bypassed = 0)
 {
     /// <summary>
     /// The wire shape: states as their names, so the JSON is self-describing wherever this is
@@ -63,7 +68,8 @@ public record WorkItemOverallStatus(
     /// </summary>
     public WorkItemOverallSummary ToSummary() => new(
         State.ToString(), Instances, Approved, Issues, Blocked, Pending,
-        InstanceStatuses.Select(i => new WorkItemInstanceSummary(i.Service, i.Title, i.State.ToString())).ToList());
+        InstanceStatuses.Select(i => new WorkItemInstanceSummary(i.Service, i.Title, i.State.ToString())).ToList(),
+        Bypassed);
 
     /// <summary>
     /// Whether an instance in this state lets a promotion through. Only <see cref="WorkItemInstanceState.Blocked"/>
@@ -76,11 +82,11 @@ public record WorkItemOverallStatus(
 
     /// <summary>
     /// Whether the ticket clears the gate on every service carrying it: nothing blocked, nothing still
-    /// undecided. Read off the counts rather than <see cref="State"/> because the roll-up's display
-    /// precedence puts an issue above a pending sibling — a ticket showing "Issue" while one service
-    /// has not been looked at yet must not read as cleared.
+    /// undecided, nothing only bypassed. Read off the counts rather than <see cref="State"/> because the
+    /// roll-up's display precedence puts an issue above a pending sibling — a ticket showing "Issue"
+    /// while one service has not been looked at yet must not read as cleared.
     /// </summary>
-    public bool ClearsGateEverywhere => Instances > 0 && Blocked == 0 && Pending == 0;
+    public bool ClearsGateEverywhere => Instances > 0 && Blocked == 0 && Pending == 0 && Bypassed == 0;
 
     /// <summary>The state of one instance from its decision rows.</summary>
     public static WorkItemInstanceState StateOf(IEnumerable<WorkItemDecision> decisions)
@@ -95,8 +101,12 @@ public record WorkItemOverallStatus(
                 case WorkItemDecision.Issue:
                     state = WorkItemInstanceState.Issue;
                     break;
-                case WorkItemDecision.Approved when state == WorkItemInstanceState.Pending:
+                case WorkItemDecision.Approved
+                    when state is WorkItemInstanceState.Pending or WorkItemInstanceState.Bypassed:
                     state = WorkItemInstanceState.Approved;
+                    break;
+                case WorkItemDecision.Bypassed when state == WorkItemInstanceState.Pending:
+                    state = WorkItemInstanceState.Bypassed;
                     break;
             }
         }
@@ -109,11 +119,14 @@ public record WorkItemOverallStatus(
         var issues = instances.Count(i => i.State == WorkItemInstanceState.Issue);
         var blocked = instances.Count(i => i.State == WorkItemInstanceState.Blocked);
         var pending = instances.Count(i => i.State == WorkItemInstanceState.Pending);
+        var bypassed = instances.Count(i => i.State == WorkItemInstanceState.Bypassed);
         var state = blocked > 0 ? WorkItemInstanceState.Blocked
             : issues > 0 ? WorkItemInstanceState.Issue
             : instances.Count > 0 && approved == instances.Count ? WorkItemInstanceState.Approved
+            : bypassed > 0 && pending == 0 ? WorkItemInstanceState.Bypassed
             : WorkItemInstanceState.Pending;
-        return new WorkItemOverallStatus(state, instances.Count, approved, issues, blocked, pending, instances);
+        return new WorkItemOverallStatus(
+            state, instances.Count, approved, issues, blocked, pending, instances, bypassed);
     }
 
     /// <summary>
@@ -189,7 +202,8 @@ public record WorkItemOverallSummary(
     int Issues,
     int Blocked,
     int Pending,
-    IReadOnlyList<WorkItemInstanceSummary> InstanceStatuses);
+    IReadOnlyList<WorkItemInstanceSummary> InstanceStatuses,
+    int Bypassed);
 
 /// <summary>JSON shape of <see cref="WorkItemInstanceStatusView"/>.</summary>
 public record WorkItemInstanceSummary(string Service, string? Title, string State);

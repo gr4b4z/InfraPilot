@@ -541,9 +541,10 @@ public class PromotionService
 
     /// <summary>
     /// Returns the fresh candidate's work items to an undecided state by clearing the Issue and
-    /// Blocked sign-offs recorded for that <c>(key, product, service, targetEnv)</c>. Holds on the
-    /// same ticket for another service are a different work item and stay put — the code under
-    /// review there did not change.
+    /// Blocked sign-offs — and any Bypassed mark — recorded for that
+    /// <c>(key, product, service, targetEnv)</c>. Holds on the same ticket for another service are a
+    /// different work item and stay put — the code under review there did not change. A bypass mark
+    /// recorded that one build went out unreviewed; the new build is a new question.
     ///
     /// <para>Rationale: a "held back" verdict is a judgement about a specific build. When a new
     /// version arrives carrying the same ticket, that judgement no longer describes anything — the
@@ -1665,6 +1666,8 @@ public class PromotionService
     /// automation triggers identically — tagged with <c>trigger=administrator-bypass</c> so consumers
     /// and the audit trail can distinguish a bypass from a gate-satisfied approval. Records a distinct
     /// <c>promotion.bypassed</c> audit action rather than manufacturing an approver row.
+    /// <para>When the policy holds the promotion for its work items, the bypass also marks the ones
+    /// nobody has ruled on as Bypassed — see <see cref="StageBypassedWorkItemsAsync"/>.</para>
     /// <para>Authorization is enforced at the endpoint: this lives under <c>/api/promotions/admin</c>,
     /// gated by <see cref="AuthorizationPolicies.CatalogAdmin"/> (the <c>InfraPortal.Admin</c> role).</para>
     /// </summary>
@@ -1682,30 +1685,213 @@ public class PromotionService
         // The bypass deliberately ignores a Promotion Freeze (ADR-0001); record that it happened under one.
         var frozen = await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct) is not null;
 
+        var bypassedItems = await StageBypassedWorkItemsAsync(candidate, trimmedReason, ct);
+
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
-        StageSystemComment(candidate.Id,
-            $"{Actor} bypassed the approval gate (admin override) — {trimmedReason}");
+        StageSystemComment(candidate.Id, bypassedItems.Count == 0
+            ? $"{Actor} bypassed the approval gate (admin override) — {trimmedReason}"
+            : $"{Actor} bypassed the approval gate (admin override); "
+              + $"{DescribeWorkItems(bypassedItems, "pending")} marked Bypassed — {trimmedReason}");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
             "promotions", "promotion.bypassed",
             _currentUser.Id, _currentUser.Name, "user",
             "PromotionCandidate", candidate.Id, null,
-            new { reason = trimmedReason, frozen });
+            new { reason = trimmedReason, frozen, bypassedWorkItems = bypassedItems });
 
         _logger.LogWarning(
-            "Candidate {Id} bypassed to Approved by {UserId} ({Email}); reason: {Reason}",
-            candidate.Id, _currentUser.Id, _currentUser.Email, trimmedReason);
+            "Candidate {Id} bypassed to Approved by {UserId} ({Email}); {Count} work item(s) marked Bypassed; reason: {Reason}",
+            candidate.Id, LogSanitizer.Clean(_currentUser.Id), LogSanitizer.Clean(_currentUser.Email),
+            bypassedItems.Count, LogSanitizer.Clean(trimmedReason));
+
+        // Each mark is announced like a decision (audit row, promotion.ticket.bypassed webhook, and
+        // through it the realtime refresh of open work-item views), tagged as the bypass's. Nothing is
+        // re-evaluated: a bypass mark satisfies no other promotion's gate.
+        foreach (var key in bypassedItems)
+            await WorkItemApprovalService.EmitTicketEventsAsync(
+                _audit, _webhookDispatcher, _logger, _currentUser,
+                WorkItemDecision.Bypassed, key, candidate.Product, candidate.Service, candidate.TargetEnv,
+                candidate.Id, BypassWorkItemComment(candidate, trimmedReason), BypassTrigger, ct);
 
         // Keep the existing promotion.approved webhook so downstream automation fires as usual;
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
-            new { trigger = "administrator-bypass", reason = trimmedReason, frozen },
+            new { trigger = BypassTrigger, reason = trimmedReason, frozen },
             bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason),
             options: ApprovedWebhookOptions(candidate));
 
         return candidate;
+    }
+
+    /// <summary>The <c>trigger</c> marker on everything an administrator bypass emits.</summary>
+    private const string BypassTrigger = "administrator-bypass";
+
+    /// <summary>
+    /// The work-item half of a bypass. When the candidate's policy will not let it through until
+    /// every work item is signed off (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>),
+    /// each of the candidate's work items nobody has ruled on is marked
+    /// <see cref="WorkItemDecision.Bypassed"/> in the administrator's name, carrying the bypass reason,
+    /// with the matching entry in its comment thread. The item then says what happened to it — it went
+    /// out under an override, unreviewed — rather than sitting at Pending for a promotion that no longer
+    /// waits, or being passed off as approved. The mark clears no gate, a person's decision replaces it,
+    /// and <see cref="CancelApprovalAsync"/> takes it back with the approval it came with
+    /// (<see cref="StageClearBypassedWorkItemsAsync"/>).
+    ///
+    /// <para>Nothing else is marked. A policy that does not require the work items — no work-item
+    /// gate, or only <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>, an
+    /// accelerator that never holds a promotion — was not waiting for them, so overriding it says
+    /// nothing about them. An item somebody already ruled on keeps that ruling: an Issue already
+    /// clears it, and a Block is a person's deliberate hold that an override of the promotion's gate
+    /// does not get to rewrite. And only this candidate's own instances are marked — the same ticket
+    /// on another service is a different work item, owed its own sign-off even when
+    /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> made this gate wait
+    /// for it.</para>
+    ///
+    /// <para>Staged, not saved, so the marks persist with the transition or not at all. Returns the
+    /// keys marked, in key order.</para>
+    /// </summary>
+    private async Task<IReadOnlyList<string>> StageBypassedWorkItemsAsync(
+        PromotionCandidate candidate, string reason, CancellationToken ct)
+    {
+        if (!ReadSnapshot(candidate).RequireAllWorkItemsApproved) return Array.Empty<string>();
+
+        var keys = await CandidateWorkItemKeysAsync(candidate, ct);
+        if (keys.Count == 0) return Array.Empty<string>();
+
+        var decided = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.Service == candidate.Service
+                     && a.TargetEnv == candidate.TargetEnv)
+            .Select(a => a.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+        var pending = keys
+            .Except(decided, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (pending.Count == 0) return pending;
+
+        var comment = BypassWorkItemComment(candidate, reason);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var key in pending)
+        {
+            _db.WorkItemApprovals.Add(new WorkItemApproval
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                ApproverEmail = _currentUser.Email,
+                ApproverName = _currentUser.Name,
+                Decision = WorkItemDecision.Bypassed,
+                Comment = comment,
+                CreatedAt = now,
+            });
+            // The decision entry every decision leaves in the thread, worded as one.
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = _currentUser.Email,
+                AuthorName = _currentUser.Name,
+                Decision = WorkItemDecision.Bypassed,
+                Body = $"Bypassed this work item.\n\n{comment}",
+                CreatedAt = now,
+            });
+        }
+        return pending;
+    }
+
+    /// <summary>
+    /// Takes back the <see cref="WorkItemDecision.Bypassed"/> marks on the candidate's work items when
+    /// its approval is cancelled: the promotion is waiting again, so the items it took through
+    /// unreviewed are too. Each item returns to Pending — or to whatever a person has decided on it,
+    /// which a mark never outranks — with a system entry in its thread saying why. Only marks are
+    /// removed; a person's decision on the same item stays.
+    ///
+    /// <para>Read before any re-gating touches the candidate's work-item index, so the marks go even
+    /// when the new policy stops tracking work items. Staged, not saved. Returns the keys reset, in key
+    /// order.</para>
+    /// </summary>
+    private async Task<IReadOnlyList<string>> StageClearBypassedWorkItemsAsync(
+        PromotionCandidate candidate, CancellationToken ct)
+    {
+        var keys = await CandidateWorkItemKeysAsync(candidate, ct);
+        if (keys.Count == 0) return Array.Empty<string>();
+
+        var marks = await _db.WorkItemApprovals
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.Service == candidate.Service
+                     && a.TargetEnv == candidate.TargetEnv
+                     && a.Decision == WorkItemDecision.Bypassed)
+            .ToListAsync(ct);
+        if (marks.Count == 0) return Array.Empty<string>();
+
+        _db.WorkItemApprovals.RemoveRange(marks);
+
+        var reset = marks
+            .Select(m => m.WorkItemKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var now = DateTimeOffset.UtcNow;
+        foreach (var key in reset)
+        {
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = WorkItemComment.SystemAuthor,
+                AuthorName = "System",
+                Body = $"Bypass taken back — {Actor} cancelled the approval of the {candidate.Service} "
+                    + $"{candidate.Version} promotion this work item was bypassed with.",
+                CreatedAt = now,
+            });
+        }
+        return reset;
+    }
+
+    private async Task<List<string>> CandidateWorkItemKeysAsync(PromotionCandidate candidate, CancellationToken ct)
+        => await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.CandidateId == candidate.Id)
+            .Select(w => w.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+
+    /// <summary>
+    /// "2 pending work items (MPT-1, MPT-2)" for a system comment — the first few keys only, so a large
+    /// bundle cannot push the comment past its column.
+    /// </summary>
+    private static string DescribeWorkItems(IReadOnlyList<string> keys, string adjective)
+    {
+        const int shown = 10;
+        var count = keys.Count == 1 ? $"1 {adjective} work item" : $"{keys.Count} {adjective} work items";
+        var listed = string.Join(", ", keys.Take(shown));
+        return keys.Count <= shown
+            ? $"{count} ({listed})"
+            : $"{count} ({listed} and {keys.Count - shown} more)";
+    }
+
+    /// <summary>
+    /// The note on a bypass mark, in the decision row and the comment thread. Bounded by the decision
+    /// row's comment column — the bypass reason itself is not.
+    /// </summary>
+    private static string BypassWorkItemComment(PromotionCandidate candidate, string reason)
+    {
+        var note = $"Went out unreviewed with the admin bypass of the {candidate.Service} {candidate.Version} "
+            + $"promotion ({candidate.SourceEnv} → {candidate.TargetEnv}) — {reason}";
+        return note.Length <= MaxDecisionCommentLength ? note : note[..MaxDecisionCommentLength];
     }
 
     // ---------------------------------------------------------------------
@@ -1723,7 +1909,9 @@ public class PromotionService
     /// cosmetic: leaving them would let the very next gate evaluation re-approve the candidate, and
     /// would leave the mistaken approver unable to approve again (one decision per person). The
     /// cleared sign-offs are named in the system comment, so the thread still records who had
-    /// approved and who took it back.</para>
+    /// approved and who took it back. An admin bypass also marked the work items it took through
+    /// unreviewed as Bypassed; those marks are taken back too, so the items wait again along with the
+    /// promotion.</para>
     ///
     /// <para>Refused when the gate would re-satisfy itself with no approvals at all — an auto-approve
     /// policy. There is no human decision to retract there, and the candidate would flip straight back
@@ -1811,6 +1999,10 @@ public class PromotionService
                 + $"approval cannot be cancelled. {fix}");
         }
 
+        // A bypass's marks go with the approval they came with — before any re-gating below rewrites
+        // the work-item index they are found through.
+        var unbypassed = await StageClearBypassedWorkItemsAsync(candidate, ct);
+
         // Cancelling under a newer policy has to carry that policy onto the candidate. Sending it
         // back to Pending against the stale snapshot would let the next gate evaluation — the source
         // system's next change-set refresh is enough — auto-approve it straight back under exactly
@@ -1841,6 +2033,8 @@ public class PromotionService
         var cleared = clearedNames.Count == 0
             ? "the promotion is back to pending"
             : $"the promotion is back to pending and the sign-off(s) by {string.Join(", ", clearedNames)} were cleared";
+        if (unbypassed.Count > 0)
+            cleared += $"; {DescribeWorkItems(unbypassed, "bypassed")} went back to pending";
         // Say so when the snapshot moved underneath the candidate: the reader needs to know the
         // promotion is going back to a DIFFERENT gate than the one it was approved under.
         var regated = policy.Json is null
@@ -1860,6 +2054,7 @@ public class PromotionService
             {
                 comment = trimmedComment.Length == 0 ? null : trimmedComment,
                 clearedApprovals = approvals.Count,
+                unbypassedWorkItems = unbypassed,
                 repolicied = policy.Json is not null,
                 policyId = candidate.PolicyId,
             });
@@ -2275,8 +2470,9 @@ public class PromotionService
                 if (status is null) continue; // no instance in the index ⇒ nothing signed off yet
                 if (status.Blocked > 0) { blocked++; continue; }
                 // Counts, not State: the roll-up shows Issue even when a sibling is still undecided,
-                // and an undecided sibling is outstanding however the ticket reads.
-                if (status.Pending > 0) continue;
+                // and an undecided sibling is outstanding however the ticket reads. So is one that
+                // only went out under a bypass — nobody reviewed it.
+                if (status.Pending > 0 || status.Bypassed > 0) continue;
                 if (status.Issues > 0) { issues++; continue; }
                 approved++;
             }
@@ -2288,7 +2484,8 @@ public class PromotionService
                 var rows = approvals.Where(a => a.WorkItemKey == key).ToList();
                 // A block takes precedence over a sibling approval and is the only verdict that holds
                 // the item. Issues are counted apart from approvals so the UI can say what is flagged
-                // on what is shipping, rather than leaving a silent gap.
+                // on what is shipping, rather than leaving a silent gap. A bypassed item counts as
+                // outstanding, like an undecided one.
                 switch (WorkItemOverallStatus.StateOf(rows.Select(a => a.Decision)))
                 {
                     case WorkItemInstanceState.Blocked: blocked++; break;
@@ -3625,8 +3822,9 @@ public class PromotionService
 
         // Any verdict clears the item — an issue is a flag on a change that still ships. Only a block
         // holds it, and it holds regardless of a sibling approval: the same precedence
-        // AreAllWorkItemsClearedAsync applies.
+        // AreAllWorkItemsClearedAsync applies. A bypass is no verdict: nobody reviewed the item.
         var decidedTuples = decisions
+            .Where(d => d.Decision != WorkItemDecision.Bypassed)
             .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
             .ToHashSet();
         var blockedTuples = decisions

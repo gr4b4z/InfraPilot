@@ -41,6 +41,7 @@ import {
   Ban,
   CheckCircle,
   ExternalLink,
+  FastForward,
   FileText,
   GitCommitHorizontal,
   GitPullRequest,
@@ -766,8 +767,8 @@ function PromotionsCard({ detail }: { detail: WorkItemDetail }) {
       </h2>
       {detail.candidates.length === 0 && (
         <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-          No live promotion carries this work item — it still needs signing off so it stops sitting
-          in the queue.
+          No live promotion carries this work item, so it is not waiting in the work-item lists. Sign
+          it off here if it still needs resolving.
         </p>
       )}
       <div className="space-y-2">
@@ -973,6 +974,7 @@ function ChangeRow({
 function DecisionIcon({ decision, size }: { decision: WorkItemDecision; size: number }) {
   if (decision === 'Approved') return <CheckCircle size={size} />;
   if (decision === 'Issue') return <AlertTriangle size={size} />;
+  if (decision === 'Bypassed') return <FastForward size={size} />;
   return <Ban size={size} />;
 }
 
