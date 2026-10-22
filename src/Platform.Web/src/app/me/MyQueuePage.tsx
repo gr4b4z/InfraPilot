@@ -43,6 +43,7 @@ import {
   XCircle,
   ExternalLink,
   ArrowRight,
+  FastForward,
   Inbox,
   Filter,
   UserPlus,
@@ -1387,7 +1388,14 @@ function DecisionBanner({
 }) {
   const s = decisionStyle(decision);
   const decider = decidedByName ?? decidedByEmail ?? 'someone';
-  const Icon = decision === 'Approved' ? CheckCircle : decision === 'Issue' ? AlertTriangle : Ban;
+  const Icon =
+    decision === 'Approved'
+      ? CheckCircle
+      : decision === 'Issue'
+        ? AlertTriangle
+        : decision === 'Bypassed'
+          ? FastForward
+          : Ban;
   return (
     <div
       className="mt-2.5 rounded-lg border px-3 py-2 text-[12px] space-y-1"

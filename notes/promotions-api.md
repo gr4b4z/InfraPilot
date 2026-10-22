@@ -360,15 +360,20 @@ reason, and fires the same `promotion.approved` webhook a normal approval does, 
 `trigger: "administrator-bypass"`. Returns `{ "id", "status" }`; `400` when it is no longer Pending.
 
 When the policy requires every work item to be signed off (`requireAllWorkItemsApproved`), the
-bypass also signs off the promotion's work items **nobody has ruled on yet**: each gets an
-`Approved` decision in the admin's name, noting the bypass and its reason, plus the usual comment
-thread entry, `promotion.ticket.approved` audit row and webhook — both carrying
-`trigger: "administrator-bypass"`. The keys are listed as `approvedWorkItems` on the
-`promotion.bypassed` audit entry, and other Pending promotions carrying them are re-evaluated, as
-after any sign-off. Nothing is signed when the policy does not require work items (no work-item
-gate, or only `autoApproveOnAllWorkItemsApproved`, which never holds a promotion). An item with an
-Issue or a Block keeps it, and the same ticket on another service — a separate work item — is not
-touched.
+bypass also marks the promotion's work items **nobody has ruled on yet** as `Bypassed` — not
+approved: each gets a `Bypassed` decision in the admin's name, noting the bypass and its reason,
+plus the usual comment thread entry, `promotion.ticket.bypassed` audit row and webhook — both
+carrying `trigger: "administrator-bypass"`. The keys are listed as `bypassedWorkItems` on the
+`promotion.bypassed` audit entry. Nothing is marked when the policy does not require work items (no
+work-item gate, or only `autoApproveOnAllWorkItemsApproved`, which never holds a promotion). An item
+with an Issue or a Block keeps it, and the same ticket on another service — a separate work item —
+is not touched.
+
+`Bypassed` is a record, not a sign-off: it clears no gate, so another Pending promotion carrying the
+item still waits for a real decision; anyone's later decision on the item replaces the mark; a new
+version carrying the item resets it, like a hold; and cancelling the bypassed promotion's approval
+(`POST /api/promotions/{id}/cancel-approval`) removes the marks, putting those items back to pending
+(listed as `unbypassedWorkItems` on the `promotion.approval.cancelled` audit entry).
 
 ### `POST /api/promotions/admin/candidates/bulk/bypass` — admin
 Body: `{ "ids": ["<guid>", ...], "reason": string }`. The bypass above for a batch, one reason for
@@ -465,6 +470,7 @@ Three decisions, each its own POST with body `{ product, service, targetEnv, com
 | `POST /{key}/approvals` | `Approved` | `promotion.ticket.approved` |
 | `POST /{key}/issues` | `Issue` | `promotion.ticket.issue-raised` |
 | `POST /{key}/blocks` | `Blocked` | `promotion.ticket.blocked` |
+| — (admin bypass only, see above) | `Bypassed` | `promotion.ticket.bypassed` |
 
 **Only a block holds the gate.** An issue ("something's wrong") is a flag on a change that is still
 going out, so it releases the gate exactly as an approval does — including the auto-approve

@@ -2036,8 +2036,12 @@ export interface WorkItemRoleGap {
  * item unresolved, which stalls the gate without terminating the candidate. `Issue` says "something's
  * wrong here" about a change that is still going out, so it clears the gate like `Approved` does.
  * All three are reversible, and vetoing belongs to the promotion, not to a single work item.
+ *
+ * `Bypassed` is not a sign-off: an admin bypassed the gate of a promotion that was waiting for the
+ * item, and it went out unreviewed. Only the bypass records it (no endpoint does), it clears no gate,
+ * a person's decision replaces it, and cancelling that promotion's approval removes it.
  */
-export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked';
+export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked' | 'Bypassed';
 
 export interface WorkItemApproval {
   id: string;
@@ -2116,10 +2120,11 @@ export interface WorkItemEnvironment {
 
 /**
  * The sign-off state of one work item instance, derived from its decisions with display precedence:
- * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
- * For the gate only `Blocked` (and an undecided item) holds a promotion — `Issue` clears it.
+ * a block outranks an issue, either outranks a sibling approval, any decision outranks a bypass, and
+ * an undecided item is Pending. For the gate only `Blocked` (and an undecided or `Bypassed` item)
+ * holds a promotion — `Issue` clears it.
  */
-export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
+export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked' | 'Bypassed';
 
 /** One per-service instance of a ticket, from `GET /api/work-items/{key}/instances`. */
 export interface WorkItemInstance {
@@ -2144,6 +2149,8 @@ export interface WorkItemOverallStatus {
   issues: number;
   blocked: number;
   pending: number;
+  /** Instances that went out under an admin bypass and nobody has reviewed since. */
+  bypassed: number;
   /** Every instance with its own state, sorted by service. */
   instanceStatuses: WorkItemInstance[];
 }

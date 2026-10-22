@@ -202,6 +202,20 @@ public class WorkItemApprovalService
             throw new InvalidOperationException(
                 $"You have already recorded '{decision}' on this work item");
 
+        // A person's decision replaces a bypass mark: the item has now been looked at, and keeping
+        // the mark beside the decision would leave it reading two ways. The caller's own mark is the
+        // row updated below.
+        var bypassMarks = await _db.WorkItemApprovals
+            .Where(a =>
+                a.WorkItemKey == key &&
+                a.Product == prod &&
+                a.Service == svc &&
+                a.TargetEnv == env &&
+                a.Decision == WorkItemDecision.Bypassed &&
+                a.ApproverEmail != _currentUser.Email)
+            .ToListAsync(ct);
+        _db.WorkItemApprovals.RemoveRange(bypassMarks);
+
         WorkItemApproval row;
         if (existing is null)
         {
@@ -342,6 +356,8 @@ public class WorkItemApprovalService
         {
             WorkItemDecision.Approved => "promotion.ticket.approved",
             WorkItemDecision.Issue => "promotion.ticket.issue-raised",
+            // Only ever emitted by an administrator bypass — see WorkItemDecision.Bypassed.
+            WorkItemDecision.Bypassed => "promotion.ticket.bypassed",
             _ => "promotion.ticket.blocked",
         };
 
@@ -582,10 +598,13 @@ public class WorkItemApprovalService
         //  - decided-by-anyone suppresses role completeness (see WorkItemRoleRequirements): a ruled-on
         //    item isn't waiting for an assignment, so it reports no missing roles and drops out of the
         //    "Not assigned" narrowing below.
+        // A bypass mark is neither: nobody reviewed the item, so it is still the caller's to decide and
+        // still waiting for its people.
         var keysInPlay = workItems.Select(w => w.WorkItemKey).Distinct().ToList();
         var myEmail = _currentUser.Email;
         var decisions = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => EF.Parameter(keysInPlay).Contains(a.WorkItemKey))
+            .Where(a => a.Decision != WorkItemDecision.Bypassed)
             .Select(a => new
             {
                 a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision,
@@ -1154,7 +1173,8 @@ public class WorkItemApprovalService
         var aliases = await _roles.MapAsync(ct);
         var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key, aliases);
         var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary, aliases);
-        var decided = ctx.Approvals.Count > 0;
+        // A bypass mark is no ruling — nobody looked at the item.
+        var decided = ctx.Approvals.Any(a => a.Decision != WorkItemDecision.Bypassed);
 
         return new WorkItemDetail(
             WorkItemKey: key,
