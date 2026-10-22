@@ -716,6 +716,22 @@ class ApiClient {
     );
   }
 
+  /**
+   * "Approve all" on a promotion: signs off every work item still waiting for a decision (nobody has
+   * ruled on it, or it only carries a bypass mark). `dryRun` lists them without writing — the
+   * confirmation shows that list — and the apply passes back the `keys` it showed, so only those are
+   * signed. Items already approved, or with an issue or a block, come back in `unchanged`. QA/Admin.
+   */
+  approveAllPromotionWorkItems(
+    candidateId: string,
+    body: { dryRun: boolean; keys?: string[]; comment?: string | null },
+  ) {
+    return this.request<ApproveAllWorkItemsResult>(`/promotions/${candidateId}/work-items/approvals`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
   upsertPromotionParticipant(
     id: string,
     body: {
@@ -865,8 +881,8 @@ class ApiClient {
 
   /**
    * Signs off every work item stranded in the "No live promotion" state — its promotions were all
-   * superseded or rejected, so nothing will ever consume the sign-off and the row sits in the
-   * work-item queue as pending work forever. Items a live promotion still carries are untouched, and
+   * superseded or rejected, so it is out of the work-item lists, yet it stays pending forever and
+   * holds its ticket's roll-up across services. Items a live promotion still carries are untouched, and
    * so is anything somebody already decided (an Issue or a Block is somebody's call). Admin-only;
    * `dryRun` reports the list without writing, which the Maintenance card always does first.
    */
@@ -2036,8 +2052,12 @@ export interface WorkItemRoleGap {
  * item unresolved, which stalls the gate without terminating the candidate. `Issue` says "something's
  * wrong here" about a change that is still going out, so it clears the gate like `Approved` does.
  * All three are reversible, and vetoing belongs to the promotion, not to a single work item.
+ *
+ * `Bypassed` is not a sign-off: an admin bypassed the gate of a promotion that was waiting for the
+ * item, and it went out unreviewed. Only the bypass records it (no endpoint does), it clears no gate,
+ * a person's decision replaces it, and cancelling that promotion's approval removes it.
  */
-export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked';
+export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked' | 'Bypassed';
 
 export interface WorkItemApproval {
   id: string;
@@ -2116,10 +2136,11 @@ export interface WorkItemEnvironment {
 
 /**
  * The sign-off state of one work item instance, derived from its decisions with display precedence:
- * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
- * For the gate only `Blocked` (and an undecided item) holds a promotion — `Issue` clears it.
+ * a block outranks an issue, either outranks a sibling approval, any decision outranks a bypass, and
+ * an undecided item is Pending. For the gate only `Blocked` (and an undecided or `Bypassed` item)
+ * holds a promotion — `Issue` clears it.
  */
-export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
+export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked' | 'Bypassed';
 
 /** One per-service instance of a ticket, from `GET /api/work-items/{key}/instances`. */
 export interface WorkItemInstance {
@@ -2137,6 +2158,26 @@ export interface WorkItemInstance {
  * promotion's own instance: it waits for every instance to be decided with none blocked, which an
  * `Issue` roll-up satisfies but a `Pending` one does not.
  */
+/** One work item in the answer of `POST /api/promotions/{id}/work-items/approvals`. */
+export interface ApproveAllWorkItemRow {
+  workItemKey: string;
+  title: string | null;
+  /** The item's own state — after the sign-off on an approved row, the one that kept it out otherwise. */
+  state: WorkItemInstanceState | 'Unknown';
+  error: string | null;
+}
+
+/**
+ * Result of "Approve all". On a dry run `approved` is what would be approved and nothing was written;
+ * otherwise it is what was. `unchanged` were left as they are; `failed` were refused, with `error`.
+ */
+export interface ApproveAllWorkItemsResult {
+  dryRun: boolean;
+  approved: ApproveAllWorkItemRow[];
+  unchanged: ApproveAllWorkItemRow[];
+  failed: ApproveAllWorkItemRow[];
+}
+
 export interface WorkItemOverallStatus {
   state: WorkItemInstanceState;
   instances: number;
@@ -2144,6 +2185,8 @@ export interface WorkItemOverallStatus {
   issues: number;
   blocked: number;
   pending: number;
+  /** Instances that went out under an admin bypass and nobody has reviewed since. */
+  bypassed: number;
   /** Every instance with its own state, sorted by service. */
   instanceStatuses: WorkItemInstance[];
 }
@@ -2280,10 +2323,9 @@ export interface PendingTicket {
   /** The subset of `requiredRoles` nobody holds — non-empty means the work item needs attention. */
   missingRoles?: string[];
   /**
-   * Status of the candidate this row represents. "Pending" for a live promotion; anything else means
-   * the row is either decision history or an orphan — a work item whose promotion died (Superseded /
-   * Rejected) and which nobody has signed off, kept in the queue so the work isn't lost.
-   * "Unknown" when no candidate could be linked to the row.
+   * Status of the candidate this row represents. Always "Pending" on the pending views — a work item
+   * no live promotion carries is not listed. On the decided view it is whatever that promotion has
+   * moved on to, or "Unknown" when no candidate could be linked to the row.
    */
   candidateStatus?: string;
   /**

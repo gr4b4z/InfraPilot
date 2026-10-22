@@ -593,6 +593,30 @@ public static class PromotionEndpoints
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
+        // "Approve all" on the Work items card: signs off every work item of the promotion still
+        // waiting for a decision, each through the ordinary per-item path. `dryRun=true` lists them,
+        // with titles, for the confirmation; the apply call sends back the `keys` it showed. See
+        // WorkItemApprovalService.ApproveAllOnCandidateAsync.
+        group.MapPost("/{id:guid}/work-items/approvals", async (
+            WorkItemApprovalService svc, Guid id, ApproveAllWorkItemsRequest? body, CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await svc.ApproveAllOnCandidateAsync(
+                    id, body?.DryRun ?? false, body?.Keys, body?.Comment, ct);
+                return Results.Ok(new
+                {
+                    dryRun = result.DryRun,
+                    approved = result.Approved,
+                    unchanged = result.Unchanged,
+                    failed = result.Failed,
+                });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.QA);
+
         // List comments.
         group.MapGet("/{id:guid}/comments", async (PromotionService svc, Guid id) =>
         {
@@ -1378,4 +1402,9 @@ public record AssignReferenceParticipantTarget(string? Email, string? DisplayNam
 /// somebody in it.</summary>
 public record AssignWorkItemsParticipantRequest(
     string? Role, AssignReferenceParticipantTarget? Assignee, bool? OnlyMissing);
+
+/// <summary>Body for approving every waiting work item of a candidate. <c>DryRun</c> lists them
+/// without writing; <c>Keys</c> limits the apply to the ones the confirmation showed (all waiting
+/// items when omitted); <c>Comment</c> is recorded on every sign-off.</summary>
+public record ApproveAllWorkItemsRequest(bool? DryRun, List<string>? Keys, string? Comment);
 public record CommentRequest(string? Body);

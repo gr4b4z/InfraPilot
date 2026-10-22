@@ -359,6 +359,22 @@ without satisfying its gate — work-item gate included. Audited as `promotion.b
 reason, and fires the same `promotion.approved` webhook a normal approval does, tagged
 `trigger: "administrator-bypass"`. Returns `{ "id", "status" }`; `400` when it is no longer Pending.
 
+When the policy requires every work item to be signed off (`requireAllWorkItemsApproved`), the
+bypass also marks the promotion's work items **nobody has ruled on yet** as `Bypassed` — not
+approved: each gets a `Bypassed` decision in the admin's name, noting the bypass and its reason,
+plus the usual comment thread entry, `promotion.ticket.bypassed` audit row and webhook — both
+carrying `trigger: "administrator-bypass"`. The keys are listed as `bypassedWorkItems` on the
+`promotion.bypassed` audit entry. Nothing is marked when the policy does not require work items (no
+work-item gate, or only `autoApproveOnAllWorkItemsApproved`, which never holds a promotion). An item
+with an Issue or a Block keeps it, and the same ticket on another service — a separate work item —
+is not touched.
+
+`Bypassed` is a record, not a sign-off: it clears no gate, so another Pending promotion carrying the
+item still waits for a real decision; anyone's later decision on the item replaces the mark; a new
+version carrying the item resets it, like a hold; and cancelling the bypassed promotion's approval
+(`POST /api/promotions/{id}/cancel-approval`) removes the marks, putting those items back to pending
+(listed as `unbypassedWorkItems` on the `promotion.approval.cancelled` audit entry).
+
 ### `POST /api/promotions/admin/candidates/bulk/bypass` — admin
 Body: `{ "ids": ["<guid>", ...], "reason": string }`. The bypass above for a batch, one reason for
 all of them (empty ⇒ `400`, nothing bypassed). Each promotion is bypassed, audited and announced on
@@ -404,6 +420,18 @@ lifting a freeze stays admin-only.
   somebody. Same role/permission rules as the per-reference route (configured role, QA or Admin).
   Returns `{ role, updated: [keys], unchanged: [keys], skipped: [keys] }`; one system comment, audit
   row and `promotion.updated` (`changeType: work-items.participant.upserted|removed`) per call.
+- `POST /api/promotions/{id}/work-items/approvals` — "Approve all": signs off every work item of the
+  candidate still **waiting** for a decision (nobody has ruled on it, or it only carries a `Bypassed`
+  mark). Body `{ "dryRun"?: bool, "keys"?: [string], "comment"?: string }`. `dryRun: true` lists them
+  without writing — the promotion page shows that list in its confirmation — and the apply passes
+  back the `keys` it showed, so only those are signed (all waiting items when `keys` is omitted).
+  Items already approved, or with an Issue or a Block, are left as they are. Each sign-off goes
+  through the per-item path (`POST /api/work-items/{key}/approvals`): the caller's name, the
+  comment, an audit row, `promotion.ticket.approved`, a thread entry and gate re-evaluation, so the
+  last one can approve the promotion. Returns
+  `{ dryRun, approved: [row], unchanged: [row], failed: [row] }`, each row
+  `{ workItemKey, title, state, error }`. QA or Admin (QA-scoped personal tokens allowed); `400` on
+  an auto-approve promotion, `404` for an unknown one.
 - `GET /api/promotions/users/search?q=&role=` — with `role`, a role restricted to directory groups
   (see below) only returns their members; the response's `restrictedTo` names the groups.
 - `GET /api/promotions/roles`, `GET /api/promotions/users/search?q=`,
@@ -454,6 +482,7 @@ Three decisions, each its own POST with body `{ product, service, targetEnv, com
 | `POST /{key}/approvals` | `Approved` | `promotion.ticket.approved` |
 | `POST /{key}/issues` | `Issue` | `promotion.ticket.issue-raised` |
 | `POST /{key}/blocks` | `Blocked` | `promotion.ticket.blocked` |
+| — (admin bypass only, see above) | `Bypassed` | `promotion.ticket.bypassed` |
 
 **Only a block holds the gate.** An issue ("something's wrong") is a flag on a change that is still
 going out, so it releases the gate exactly as an approval does — including the auto-approve
@@ -490,7 +519,10 @@ What the web app's *Work items queue* page reads. Two modes, picked by `status`:
 
 Pending response: `{ tickets: [...], assignees: [{ email, displayName, role, count }] }`, unpaged —
 it is bounded by the work in flight. `assignees` is the person-filter rollup, computed before the
-`assignee` narrowing.
+`assignee` narrowing. Only work items a **Pending** promotion carries are listed: one whose
+promotions were all superseded or rejected is left out (its detail page still opens, and the
+admin orphan sweep — `POST /api/promotions/admin/work-items/approve-orphaned` — resolves such
+items in bulk), so every pending row's `candidateStatus` is `Pending`.
 
 Decided response — **paged**, every time window included (a busy month is as unbounded as all
 time):

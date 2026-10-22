@@ -54,7 +54,8 @@ body: |
   lift releases.
 
   Work items — `promotion.ticket.approved`, `promotion.ticket.issue-raised`,
-  `promotion.ticket.blocked`
+  `promotion.ticket.blocked`, and `promotion.ticket.bypassed` (an admin bypass took the item out
+  unreviewed; marked `trigger: "administrator-bypass"`, and not a sign-off)
 
   Rollbacks — `rollback.approved`, `rollback.rejected`, `rollback.deployed`, `rollback.cancelled`
 
