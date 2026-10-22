@@ -2892,6 +2892,8 @@ export interface RollbackItem {
   note: string | null;
   /** Open items only: the newest failed deploy of the target version since the request was approved. */
   lastFailedAttempt: { deployEventId: string; deployedAt: string } | null;
+  /** No target version: the item takes the service out of the environment. */
+  remove: boolean;
 }
 
 export interface RollbackRequest {
@@ -2970,6 +2972,11 @@ export interface LastKnownGoodOffer {
   executorConfigured: boolean;
   /** Promotions of the failed version that approving the rollback sends back to Pending. */
   promotionsToReopen: { id: string; sourceEnv: string; version: string; status: string }[];
+  /**
+   * 'restore' redeploys `lastGoodVersion`. 'remove' takes the service out of the environment: no
+   * version of it ever deployed successfully there, so `lastGoodVersion` is null. Null when unavailable.
+   */
+  action: 'restore' | 'remove' | null;
 }
 
 /** Detail shape: the list fields plus the gate, its progress, and the decision history. */
