@@ -1017,10 +1017,22 @@ public class RollbackService
 
         var failed = await FailedReplacementAsync(evt.Product, evt.Service, evt.Environment, running, ct);
         if (failed is null)
-            return Unavailable(SameVersion(evt.Version, running.Version)
-                ? $"{running.Version} is also the last version that deployed successfully in {evt.Environment}, " +
-                  "so there is no earlier good version to go back to. Redeploy it instead."
+        {
+            if (SameVersion(evt.Version, running.Version))
+                return Unavailable($"{running.Version} is also the last version that deployed successfully in {evt.Environment}, " +
+                                   "so there is no earlier good version to go back to. Redeploy it instead.");
+
+            // A later deploy put the last good version back (a rollback, or a redeploy) and that failed
+            // too: the version that worked no longer does, which points at something around the service
+            // rather than at what this deploy changed. Saying "not finished" here sent people waiting.
+            var newest = await NewestDeployAsync(evt.Product, evt.Service, evt.Environment, ct);
+            return Unavailable(newest is not null && string.Equals(newest.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                ? $"{newest.Version}, the last version that deployed successfully in {evt.Environment}, failed too " +
+                  $"when it was deployed again on {newest.DeployedAt:u}, so there is no known good version left to roll back to. " +
+                  "When the version that worked fails as well, look at what changed around the service: configuration, " +
+                  "secrets, credentials or a dependency."
                 : $"A newer deploy of {evt.Service} in {evt.Environment} has not finished yet.");
+        }
 
         var (canCreate, createReason) = await CanCreateAsync(evt.Product, evt.Environment, ct);
 
@@ -1258,17 +1270,23 @@ public class RollbackService
     private async Task<FailedDeploy?> FailedReplacementAsync(
         string product, string service, string env, RunningDeploy? running, CancellationToken ct)
     {
-        var newest = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == product && e.Service == service && e.Environment == env)
-            .OrderByDescending(e => e.DeployedAt)
-            .Select(e => new { e.Id, e.Version, e.Status, e.DeployedAt })
-            .FirstOrDefaultAsync(ct);
+        var newest = await NewestDeployAsync(product, service, env, ct);
         if (newest is null || !string.Equals(newest.Status, "failed", StringComparison.OrdinalIgnoreCase))
             return null;
         if (running is not null && SameVersion(newest.Version, running.Version))
             return null;
         return new FailedDeploy(newest.Id, newest.Version, newest.DeployedAt);
     }
+
+    /// <summary>The service's newest deploy in the environment, whatever its status.</summary>
+    private sealed record NewestDeploy(Guid Id, string Version, string Status, DateTimeOffset DeployedAt);
+
+    private async Task<NewestDeploy?> NewestDeployAsync(string product, string service, string env, CancellationToken ct)
+        => await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == product && e.Service == service && e.Environment == env)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new NewestDeploy(e.Id, e.Version, e.Status, e.DeployedAt))
+            .FirstOrDefaultAsync(ct);
 
     private static string RestoreNote(FailedDeploy failed, RunningDeploy? running) => running is null
         ? $"The deploy of {failed.Version} on {failed.DeployedAt:u} failed, and no deploy has succeeded here yet."
