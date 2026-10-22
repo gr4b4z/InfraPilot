@@ -72,8 +72,11 @@ export function RollbacksPage() {
   const [requests, setRequests] = useState<RollbackRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
-  const [productFilter, setProductFilter] = useState('');
-  const [targetEnvFilter, setTargetEnvFilter] = useState('');
+  // A link from a failed deployment ("Open rollbacks") lands on its product and environment. With
+  // `new=1` the same parameters prefill the create panel instead, and the list starts unfiltered.
+  const linkedScope = searchParams.get('new') === '1' ? null : searchParams;
+  const [productFilter, setProductFilter] = useState(() => linkedScope?.get('product') ?? '');
+  const [targetEnvFilter, setTargetEnvFilter] = useState(() => linkedScope?.get('targetEnv') ?? '');
   const [actioningId, setActioningId] = useState<string | null>(null);
   // Which card has its override reason prompt open, and the last override failure.
   const [overridingId, setOverridingId] = useState<string | null>(null);

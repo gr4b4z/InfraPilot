@@ -37,6 +37,7 @@ import { resolveReferenceHref } from '@/lib/refUrl';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { DuringFreezeMark } from './FreezeCues';
+import { LastKnownGoodRollback } from './LastKnownGoodRollback';
 import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
@@ -308,7 +309,12 @@ export function DeploymentDetailPage() {
 
       {/* The specific error, as the pipeline itself named it — above everything else, because on a
           failed deployment this one sentence is what the page is for. */}
-      {failed && <FailureCallout run={evt.run} hasLogs={logs.length > 0} />}
+      {failed && (
+        <FailureCallout run={evt.run} hasLogs={logs.length > 0}>
+          {/* The way out sits with the failure: back to the version that last deployed here. */}
+          <LastKnownGoodRollback eventId={evt.id} />
+        </FailureCallout>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
@@ -423,7 +429,11 @@ function RunLink({ run }: { run: DeployRun | null | undefined }) {
  * identified as the cause — not something inferred here — so it's quoted verbatim. When the producer
  * didn't send one, the callout says so and points at the logs rather than inventing a reason.
  */
-function FailureCallout({ run, hasLogs }: { run: DeployRun | null | undefined; hasLogs: boolean }) {
+function FailureCallout({ run, hasLogs, children }: {
+  run: DeployRun | null | undefined;
+  hasLogs: boolean;
+  children?: React.ReactNode;
+}) {
   const reason = run?.failureReason?.trim();
   const href = runHref(run);
 
@@ -462,6 +472,7 @@ function FailureCallout({ run, hasLogs }: { run: DeployRun | null | undefined; h
           Open the failing run <ExternalLink size={11} />
         </a>
       )}
+      {children}
     </div>
   );
 }
