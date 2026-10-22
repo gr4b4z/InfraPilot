@@ -170,7 +170,7 @@ public sealed class DeploymentTools(McpContext ctx, DeploymentService deployment
         [Description("Product name.")] string product,
         [Description("Only this environment.")] string? environment = null,
         [Description("ISO-8601 start of the window. Default: 24 hours ago.")] DateTimeOffset? since = null,
-        [Description("Only events with this status: succeeded, failed or in_progress.")] string? status = null,
+        [Description("Only events with this status: succeeded, failed, in_progress or removed (the service was taken out of the environment).")] string? status = null,
         [Description("Maximum rows (1-500, default 50).")] int limit = 50,
         CancellationToken ct = default)
     {
