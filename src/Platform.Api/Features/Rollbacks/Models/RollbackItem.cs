@@ -20,7 +20,11 @@ public class RollbackItem
     /// <summary>Version running in the env when the request was created (for display/audit).</summary>
     public string FromVersion { get; set; } = "";
 
-    /// <summary>Target version — validated to have previously run in this env.</summary>
+    /// <summary>
+    /// Target version — validated to have previously run in this env. Empty removes the service from
+    /// the environment instead (only for a service that never deployed successfully there), and a
+    /// <c>removed</c> deploy event completes the item.
+    /// </summary>
     public string ToVersion { get; set; } = "";
 
     public RollbackItemStatus Status { get; set; } = RollbackItemStatus.Pending;
