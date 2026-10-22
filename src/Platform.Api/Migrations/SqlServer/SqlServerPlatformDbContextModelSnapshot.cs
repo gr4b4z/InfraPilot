@@ -842,6 +842,13 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -849,7 +856,7 @@ namespace Platform.Api.Migrations.SqlServer
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Product", "TargetEnv")
+                    b.HasIndex("Product", "Service", "TargetEnv")
                         .IsUnique();
 
                     b.ToTable("promotion_freezes", (string)null);

@@ -99,13 +99,23 @@ public class PromotionFreezeTests : IDisposable
 
     /// <summary>Seeds a succeeded staging deploy (so source validation passes) and creates the candidate.</summary>
     private async Task<PromotionCandidate> CreateAsync(
-        string product = "acme", string version = "v1", List<ReferenceDto>? references = null)
+        string product = "acme", string version = "v1", List<ReferenceDto>? references = null,
+        string service = "api")
+    {
+        SeedDeployEvent(product, service, version);
+        var candidate = await _promotions.CreateExternalCandidateAsync(new CreatePromotionDto(
+            product, service, "staging", "prod", version, null, null, references, null));
+        return candidate!;
+    }
+
+    /// <summary>A succeeded staging deploy of <paramref name="service"/>: makes the service "known" to the product.</summary>
+    private void SeedDeployEvent(string product, string service, string version = "v1")
     {
         _db.DeployEvents.Add(new DeployEvent
         {
             Id = Guid.NewGuid(),
             Product = product,
-            Service = "api",
+            Service = service,
             Environment = "staging",
             Version = version,
             Status = "succeeded",
@@ -115,17 +125,17 @@ public class PromotionFreezeTests : IDisposable
             CreatedAt = DateTimeOffset.UtcNow,
         });
         _db.SaveChanges();
-        var candidate = await _promotions.CreateExternalCandidateAsync(new CreatePromotionDto(
-            product, "api", "staging", "prod", version, null, null, references, null));
-        return candidate!;
     }
 
-    private void SeedFreeze(string product = "acme", string targetEnv = "prod", string reason = "Release window")
+    /// <summary><paramref name="service"/> "" (the default) is a whole-product freeze; anything else freezes one service.</summary>
+    private void SeedFreeze(
+        string product = "acme", string targetEnv = "prod", string reason = "Release window", string service = "")
     {
         _db.PromotionFreezes.Add(new PromotionFreeze
         {
             Id = Guid.NewGuid(),
             Product = product,
+            Service = service,
             TargetEnv = targetEnv,
             Reason = reason,
             FrozenBy = "Dana Lee",
@@ -310,6 +320,332 @@ public class PromotionFreezeTests : IDisposable
             "promotion.approved",
             Arg.Is<object>(o => JsonContains(o, "\"frozen\":true")),
             Arg.Any<WebhookEventFilters>(), Arg.Any<WebhookDispatchOptions?>());
+    }
+
+    // ---------------------------------------------------------------------
+    // Service-scoped freeze (ADR-0003): union of the product and the service key
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task ServiceFreeze_HoldsAutoApproveOfThatServiceOnly()
+    {
+        SeedPolicy(approverGroup: null);
+        SeedFreeze(service: "api", reason: "api hotfix window");
+
+        var api = await CreateAsync(service: "api");
+        var web = await CreateAsync(service: "web");
+
+        Assert.Equal(PromotionStatus.Pending, api.Status);
+        Assert.Equal(PromotionStatus.Approved, web.Status);
+    }
+
+    [Fact]
+    public async Task ServiceFreeze_ApprovalProgress_NamesTheFreeze_SiblingServiceUnaffected()
+    {
+        SeedPolicy();
+        var api = await CreateAsync(service: "api");
+        var web = await CreateAsync(service: "web");
+        SeedFreeze(service: "api", reason: "api hotfix window");
+        await _promotions.ApproveAsync(api.Id, comment: null);
+        await _promotions.ApproveAsync(web.Id, comment: null);
+        _db.ChangeTracker.Clear();
+        api = _db.PromotionCandidates.AsNoTracking().Single(c => c.Id == api.Id);
+        web = _db.PromotionCandidates.AsNoTracking().Single(c => c.Id == web.Id);
+
+        var apiProgress = await _promotions.GetApprovalProgressAsync(api);
+        var webProgress = await _promotions.GetApprovalProgressAsync(web);
+
+        Assert.True(apiProgress.Frozen);
+        Assert.Equal("api hotfix window", apiProgress.BlockedReason);
+        Assert.Equal(PromotionStatus.Pending, api.Status);
+        Assert.False(webProgress.Frozen);
+        Assert.Equal(PromotionStatus.Approved, web.Status);
+    }
+
+    [Fact]
+    public async Task ServiceFreeze_Gate_BlockerNamesTheService()
+    {
+        SeedPolicy();
+        var candidate = await CreateAsync(service: "api");
+        SeedFreeze(service: "api", reason: "api hotfix window");
+        await _promotions.ApproveAsync(candidate.Id, comment: null);
+        _db.ChangeTracker.Clear();
+        candidate = _db.PromotionCandidates.AsNoTracking().Single(c => c.Id == candidate.Id);
+        var snapshot = JsonSerializer.Deserialize<ResolvedPolicySnapshot>(
+            candidate.ResolvedPolicyJson!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        var gate = await _promotions.EvaluateGateAsync(candidate, snapshot, CancellationToken.None);
+
+        Assert.False(gate.Satisfied);
+        var blocker = Assert.Single(gate.Blockers);
+        Assert.Contains("acme/api", blocker);
+        Assert.Contains("api hotfix window", blocker);
+    }
+
+    [Fact]
+    public async Task FindFreeze_ProductAndServiceFrozen_ReturnsProductFreezeFirst_ThenServiceAfterProductLift()
+    {
+        SeedPolicy();
+        SeedFreeze(reason: "whole product");
+        SeedFreeze(service: "api", reason: "api only");
+
+        Assert.Equal("whole product", (await _promotions.FindFreezeAsync("acme", "api", "prod", CancellationToken.None))!.Reason);
+        Assert.Equal("whole product", (await _promotions.FindFreezeAsync("acme", "web", "prod", CancellationToken.None))!.Reason);
+
+        Assert.True(await _sut.LiftAsync("acme", "prod"));
+
+        Assert.Equal("api only", (await _promotions.FindFreezeAsync("acme", "api", "prod", CancellationToken.None))!.Reason);
+        Assert.Null(await _promotions.FindFreezeAsync("acme", "web", "prod", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetHeldByFreeze_MatchesBothKeyShapes()
+    {
+        SeedFreeze(product: "acme", targetEnv: "prod");                     // whole product
+        SeedFreeze(product: "other", targetEnv: "prod", service: "api");    // one service
+        PromotionCandidate Candidate(string product, string service, PromotionStatus status = PromotionStatus.Pending) => new()
+        {
+            Id = Guid.NewGuid(), Product = product, Service = service, SourceEnv = "staging",
+            TargetEnv = "prod", Version = "v1", Status = status,
+        };
+        var acmeApi = Candidate("acme", "api");
+        var acmeWeb = Candidate("acme", "web");
+        var otherApi = Candidate("other", "api");
+        var otherWeb = Candidate("other", "web");
+        var otherApiApproved = Candidate("other", "api", PromotionStatus.Approved);
+
+        var result = await _sut.GetHeldByFreezeAsync(new[] { acmeApi, acmeWeb, otherApi, otherWeb, otherApiApproved });
+
+        Assert.Equal(new HashSet<Guid> { acmeApi.Id, acmeWeb.Id, otherApi.Id }, result);
+    }
+
+    [Fact]
+    public async Task GetActive_ServiceFreeze_CountsOnlyPendingCandidatesOfThatService()
+    {
+        SeedPolicy();
+        await CreateAsync(service: "api");
+        await CreateAsync(service: "web");
+        await CreateAsync(service: "worker");
+
+        var freeze = await _sut.FreezeAsync("acme", "prod", "api window", service: "api");
+        var active = await _sut.GetActiveAsync();
+
+        Assert.Equal("api", freeze.Service);
+        Assert.Equal(1, freeze.HeldCandidates);
+        var listed = Assert.Single(active);
+        Assert.Equal("api", listed.Service);
+        Assert.Equal(1, listed.HeldCandidates);
+    }
+
+    [Fact]
+    public async Task Freeze_WholeProduct_ReportsServiceNull()
+    {
+        SeedPolicy();
+
+        var freeze = await _sut.FreezeAsync("acme", "prod", "Release window");
+
+        Assert.Null(freeze.Service);
+        Assert.Equal("", Assert.Single(_db.PromotionFreezes).Service);
+    }
+
+    [Fact]
+    public async Task Freeze_Service_WithProductLevelPolicyOnly_Succeeds()
+    {
+        SeedPolicy();                       // Service = null policy
+        SeedDeployEvent("acme", "api");
+
+        var freeze = await _sut.FreezeAsync("acme", "prod", "api window", service: " api ");
+
+        Assert.Equal("api", freeze.Service);
+        Assert.Equal("api", Assert.Single(_db.PromotionFreezes).Service);
+    }
+
+    [Fact]
+    public async Task Freeze_Service_WithServiceLevelPolicyOnly_Succeeds()
+    {
+        _db.PromotionPolicies.Add(new PromotionPolicy
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "api", SourceEnv = "staging", TargetEnv = "prod",
+            ApprovalSteps = new List<ApprovalStep>(),
+        });
+        _db.SaveChanges();
+        SeedDeployEvent("acme", "api");
+
+        var freeze = await _sut.FreezeAsync("acme", "prod", "api window", service: "api");
+
+        Assert.Equal("api", freeze.Service);
+    }
+
+    [Fact]
+    public async Task Freeze_Service_WhenOnlyAnotherServiceHasAPolicy_Throws()
+    {
+        _db.PromotionPolicies.Add(new PromotionPolicy
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "web", SourceEnv = "staging", TargetEnv = "prod",
+            ApprovalSteps = new List<ApprovalStep>(),
+        });
+        _db.SaveChanges();
+        SeedDeployEvent("acme", "api");
+
+        await Assert.ThrowsAsync<NoApprovalPolicyForPairException>(
+            () => _sut.FreezeAsync("acme", "prod", "api window", service: "api"));
+        Assert.Empty(_db.PromotionFreezes);
+    }
+
+    [Fact]
+    public async Task Freeze_UnknownService_Throws()
+    {
+        SeedPolicy();
+        SeedDeployEvent("acme", "api");
+
+        await Assert.ThrowsAsync<UnknownServiceException>(
+            () => _sut.FreezeAsync("acme", "prod", "window", service: "ghost"));
+        Assert.Empty(_db.PromotionFreezes);
+    }
+
+    [Fact]
+    public async Task Freeze_ServiceKnownOnlyFromACandidate_Succeeds()
+    {
+        SeedPolicy();
+        _db.PromotionCandidates.Add(new PromotionCandidate
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "worker", SourceEnv = "staging", TargetEnv = "prod",
+            Version = "v1", Status = PromotionStatus.Deployed,
+        });
+        _db.SaveChanges();
+
+        var freeze = await _sut.FreezeAsync("acme", "prod", "window", service: "worker");
+
+        Assert.Equal("worker", freeze.Service);
+    }
+
+    [Fact]
+    public async Task Freeze_SameTripleTwice_Throws_OtherShapesOfTheSamePairAllowed()
+    {
+        SeedPolicy();
+        SeedDeployEvent("acme", "api");
+        SeedDeployEvent("acme", "web");
+        await _sut.FreezeAsync("acme", "prod", "api", service: "api");
+
+        await Assert.ThrowsAsync<FreezeAlreadyActiveException>(
+            () => _sut.FreezeAsync("acme", "prod", "api again", service: "api"));
+        await _sut.FreezeAsync("acme", "prod", "web", service: "web");
+        await _sut.FreezeAsync("acme", "prod", "whole product");
+
+        Assert.Equal(3, _db.PromotionFreezes.Count());
+    }
+
+    [Fact]
+    public async Task Lift_ServiceFreeze_ReevaluatesOnlyThatService()
+    {
+        SeedPolicy();
+        var api = await CreateAsync(service: "api");
+        var web = await CreateAsync(service: "web");
+        await _sut.FreezeAsync("acme", "prod", "api window", service: "api");
+        await _promotions.ApproveAsync(api.Id, comment: null);
+        // web is gate-satisfiable but never re-evaluated (approval row seeded directly): it flips to
+        // Approved only if the sweep wrongly covers the whole product.
+        _db.PromotionApprovals.Add(new PromotionApproval
+        {
+            Id = Guid.NewGuid(), CandidateId = web.Id, ApproverEmail = "admin@example.com",
+            ApproverName = "Admin User", Decision = PromotionDecision.Approved, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        _db.SaveChanges();
+        Assert.Equal(PromotionStatus.Pending, StatusOf(api.Id));
+        Assert.Equal(PromotionStatus.Pending, StatusOf(web.Id));
+
+        Assert.False(await _sut.LiftAsync("acme", "prod"));                    // no product-level freeze
+        Assert.True(await _sut.LiftAsync("acme", "prod", service: "api"));
+
+        Assert.Equal(PromotionStatus.Approved, StatusOf(api.Id));
+        Assert.Equal(PromotionStatus.Pending, StatusOf(web.Id));
+        Assert.Empty(_db.PromotionFreezes);
+    }
+
+    [Fact]
+    public async Task Lift_ProductFreeze_ServiceFreezeKeepsHoldingItsService()
+    {
+        SeedPolicy(approverGroup: null);
+        SeedDeployEvent("acme", "api");
+        await _sut.FreezeAsync("acme", "prod", "whole product");
+        await _sut.FreezeAsync("acme", "prod", "api only", service: "api");
+        var api = await CreateAsync(service: "api");
+        var web = await CreateAsync(service: "web");
+        Assert.Equal(PromotionStatus.Pending, api.Status);
+        Assert.Equal(PromotionStatus.Pending, web.Status);
+
+        Assert.True(await _sut.LiftAsync("acme", "prod"));
+
+        Assert.Equal(PromotionStatus.Pending, StatusOf(api.Id));
+        Assert.Equal(PromotionStatus.Approved, StatusOf(web.Id));
+        Assert.Equal("api", Assert.Single(_db.PromotionFreezes).Service);
+    }
+
+    [Fact]
+    public async Task Freeze_Service_DispatchesFrozenWebhook_WithServiceFilterAndPayload()
+    {
+        SeedPolicy();
+        await CreateAsync(service: "api");
+        _webhooks.ClearReceivedCalls();
+
+        await _sut.FreezeAsync("acme", "prod", "api window", service: "api");
+
+        var call = Assert.Single(_webhooks.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWebhookDispatcher.DispatchAsync));
+        var args = call.GetArguments();
+        Assert.Equal(new WebhookEventFilters(Product: "acme", Environment: "prod", Service: "api"), args[2]);
+        var p = Payload(args[1]!);
+        Assert.Equal("api", p.GetProperty("service").GetString());
+    }
+
+    [Fact]
+    public async Task Freeze_WholeProduct_WebhookCarriesServiceNull_AndNoServiceFilter()
+    {
+        SeedPolicy();
+        _webhooks.ClearReceivedCalls();
+
+        await _sut.FreezeAsync("acme", "prod", "Release window");
+
+        var call = Assert.Single(_webhooks.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWebhookDispatcher.DispatchAsync));
+        var args = call.GetArguments();
+        Assert.Null(((WebhookEventFilters)args[2]!).Service);
+        Assert.Equal(JsonValueKind.Null, Payload(args[1]!).GetProperty("service").ValueKind);
+    }
+
+    [Fact]
+    public async Task Lift_ServiceFreeze_AuditAndWebhookCarryTheService()
+    {
+        SeedPolicy();
+        SeedDeployEvent("acme", "api");
+        await _sut.FreezeAsync("acme", "prod", "api window", service: "api");
+        _webhooks.ClearReceivedCalls();
+
+        await _sut.LiftAsync("acme", "prod", service: "api");
+
+        await _audit.Received(1).Log(
+            "promotions", "promotion.unfrozen",
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "PromotionFreeze", Arg.Any<Guid?>(),
+            Arg.Any<object?>(), Arg.Is<object?>(o => JsonContains(o, "\"service\":\"api\"")), Arg.Any<object?>());
+        var call = Assert.Single(_webhooks.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWebhookDispatcher.DispatchAsync)
+            && (string)c.GetArguments()[0]! == "promotion.unfrozen");
+        Assert.Equal(new WebhookEventFilters(Product: "acme", Environment: "prod", Service: "api"), call.GetArguments()[2]);
+        Assert.Equal("api", Payload(call.GetArguments()[1]!).GetProperty("service").GetString());
+    }
+
+    [Fact]
+    public async Task GetKnownServices_ListsServicesFromDeployEventsAndCandidates_Sorted()
+    {
+        SeedDeployEvent("acme", "web");
+        SeedDeployEvent("acme", "api");
+        SeedDeployEvent("other", "billing");
+        _db.PromotionCandidates.Add(new PromotionCandidate
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "worker", SourceEnv = "staging", TargetEnv = "prod",
+            Version = "v1", Status = PromotionStatus.Deployed,
+        });
+        _db.SaveChanges();
+
+        Assert.Equal(new[] { "api", "web", "worker" }, await _sut.GetKnownServicesAsync("acme"));
+        Assert.Empty(await _sut.GetKnownServicesAsync("unknown"));
     }
 
     // ---------------------------------------------------------------------
