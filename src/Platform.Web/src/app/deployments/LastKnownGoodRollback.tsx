@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
-import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, Undo2, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, Trash2, Undo2, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { LastKnownGoodOffer, RollbackRequest } from '@/lib/api';
 import { Dialog } from '@/components/ui/Dialog';
@@ -18,6 +18,10 @@ import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
  * the service as something to undo, and this is the shortcut to it. The target is picked by the
  * server (`GET /rollbacks/last-known-good/{eventId}`), never typed here, so the button and the
  * request it raises cannot disagree about which version is "last known good".
+ *
+ * A service whose every deploy in the environment failed has no version to go back to. Its last
+ * known good state is not being there at all, so the offer becomes "Remove it from the environment"
+ * (`action: 'remove'`), a rollback item with no target version.
  *
  * The confirmation says what the click sets in motion before it happens: who has to approve, which
  * promotion its approval reopens, and, when nothing subscribes to `rollback.approved`, that approving
@@ -62,12 +66,18 @@ export function LastKnownGoodRollback({ eventId, hideUnavailable = false }: {
     ) : null;
   }
 
+  const remove = offer.action === 'remove';
+
   if (offer.openRollback) {
     return (
       <div className="flex items-center gap-2 flex-wrap text-[12.5px]" style={{ color: 'var(--text-primary)' }}>
         <Undo2 size={13} style={{ color: 'var(--warning)' }} />
         <span>
-          A rollback to <span className="font-mono">v{offer.lastGoodVersion}</span> is{' '}
+          {remove ? (
+            <>Removing {offer.service} from {offer.targetEnv} is </>
+          ) : (
+            <>A rollback to <span className="font-mono">v{offer.lastGoodVersion}</span> is{' '}</>
+          )}
           <strong>{statusLabel(offer.openRollback.status)}</strong>.
         </span>
         <Link to={rollbacksPath(offer)} className="font-medium hover:underline" style={{ color: 'var(--accent)' }}>
@@ -90,9 +100,19 @@ export function LastKnownGoodRollback({ eventId, hideUnavailable = false }: {
           style={{ backgroundColor: 'var(--danger-solid)', color: '#fff' }}
           title={offer.canCreate ? undefined : (offer.createBlockedReason ?? undefined)}
         >
-          <Undo2 size={13} />
-          Roll back to last known good version
-          <span className="font-mono">v{offer.lastGoodVersion}</span>
+          {remove ? (
+            // Nothing of the service ever ran here, so its last known good state is not being here.
+            <>
+              <Trash2 size={13} />
+              Remove {offer.service} from {offer.targetEnv}
+            </>
+          ) : (
+            <>
+              <Undo2 size={13} />
+              Roll back to last known good version
+              <span className="font-mono">v{offer.lastGoodVersion}</span>
+            </>
+          )}
         </button>
         {!offer.canCreate && offer.createBlockedReason && (
           <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
@@ -119,6 +139,8 @@ function ConfirmLastKnownGood({ offer, onClose }: { offer: LastKnownGoodOffer; o
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<RollbackRequest | null>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const remove = offer.action === 'remove';
+  const title = remove ? `Remove ${offer.service} from ${offer.targetEnv}` : 'Roll back to the last known good version';
 
   const submit = async () => {
     setError(null);
@@ -133,13 +155,17 @@ function ConfirmLastKnownGood({ offer, onClose }: { offer: LastKnownGoodOffer; o
   };
 
   return (
-    <Dialog onClose={submitting ? () => {} : onClose} ariaLabel="Roll back to the last known good version" initialFocusRef={confirmRef}>
+    <Dialog onClose={submitting ? () => {} : onClose} ariaLabel={title} initialFocusRef={confirmRef}>
       <div className="p-5 space-y-4">
         <div className="flex items-start gap-2">
-          <Undo2 size={18} className="mt-0.5" style={{ color: 'var(--danger)' }} />
+          {remove ? (
+            <Trash2 size={18} className="mt-0.5" style={{ color: 'var(--danger)' }} />
+          ) : (
+            <Undo2 size={18} className="mt-0.5" style={{ color: 'var(--danger)' }} />
+          )}
           <div className="min-w-0">
             <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-              Roll back to the last known good version
+              {title}
             </h2>
             <div className="flex items-center gap-2 mt-1 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
               <span className="font-medium">{offer.service}</span>
@@ -172,13 +198,24 @@ function ConfirmLastKnownGood({ offer, onClose }: { offer: LastKnownGoodOffer; o
             eventId={offer.failedEventId}
           />
           <ArrowRight size={16} className="self-center shrink-0" style={{ color: 'var(--text-muted)' }} />
-          <VersionCell
-            label="Last deployed successfully"
-            version={offer.lastGoodVersion}
-            at={offer.lastGoodAt}
-            color="var(--success)"
-            eventId={offer.lastGoodEventId}
-          />
+          {remove ? (
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                After removal
+              </div>
+              <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                Not deployed in {offer.targetEnv}
+              </span>
+            </div>
+          ) : (
+            <VersionCell
+              label="Last deployed successfully"
+              version={offer.lastGoodVersion}
+              at={offer.lastGoodAt}
+              color="var(--success)"
+              eventId={offer.lastGoodEventId}
+            />
+          )}
         </div>
 
         {created ? (
@@ -186,6 +223,14 @@ function ConfirmLastKnownGood({ offer, onClose }: { offer: LastKnownGoodOffer; o
         ) : (
           <>
             <ul className="space-y-2 text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
+              {remove && (
+                <li>
+                  No version of {offer.service} has deployed successfully in {offer.targetEnv}, so there is nothing to
+                  roll back to. Once approved, the release pipeline uninstalls whatever the failed deploys left
+                  there and stops declaring the service in {offer.targetEnv}. Its history stays, and a later deploy
+                  brings it back.
+                </li>
+              )}
               <li>{approvalSentence(offer)}</li>
               {offer.promotionsToReopen.map((p) => (
                 <li key={p.id}>
@@ -207,7 +252,7 @@ function ConfirmLastKnownGood({ offer, onClose }: { offer: LastKnownGoodOffer; o
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                 <span>
                   No webhook delivers <code>rollback.approved</code> for {offer.product} in {offer.targetEnv}, so
-                  approving this rollback will not deploy anything by itself. An admin adds the release
+                  approving this rollback will not {remove ? 'remove' : 'deploy'} anything by itself. An admin adds the release
                   pipeline&apos;s subscription under Settings → Webhooks.
                 </span>
               </div>
@@ -282,8 +327,14 @@ function ConfirmLastKnownGood({ offer, onClose }: { offer: LastKnownGoodOffer; o
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-opacity disabled:opacity-60"
                 style={{ backgroundColor: 'var(--danger-solid)', color: '#fff' }}
               >
-                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={13} />}
-                Roll back to v{offer.lastGoodVersion}
+                {submitting ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : remove ? (
+                  <Trash2 size={13} />
+                ) : (
+                  <Undo2 size={13} />
+                )}
+                {remove ? `Remove from ${offer.targetEnv}` : `Roll back to v${offer.lastGoodVersion}`}
               </button>
             </>
           )}
@@ -331,9 +382,11 @@ function Outcome({ offer, created }: { offer: LastKnownGoodOffer; created: Rollb
       <CheckCircle2 size={15} className="shrink-0 mt-0.5" style={{ color: 'var(--success)' }} />
       <span>
         {approved
-          ? `Rollback approved. ${offer.executorConfigured
-              ? `The release pipeline now deploys v${offer.lastGoodVersion}; the request closes when that deploy lands.`
-              : 'Nothing is subscribed to carry it out yet, so it waits until a release pipeline picks it up.'}`
+          ? `Rollback approved. ${!offer.executorConfigured
+              ? 'Nothing is subscribed to carry it out yet, so it waits until a release pipeline picks it up.'
+              : offer.action === 'remove'
+                ? `The release pipeline now removes ${offer.service} from ${offer.targetEnv}; the request closes when the removal is reported.`
+                : `The release pipeline now deploys v${offer.lastGoodVersion}; the request closes when that deploy lands.`}`
           : offer.approval === 'unconfigured'
             ? 'Rollback raised. No rollback policy covers this environment, so an admin has to override its approval on the Rollbacks page.'
             : `Rollback raised and waiting for approval${offer.approvers.length ? ` by ${offer.approvers.join(', ')}` : ''}.`}
@@ -348,7 +401,7 @@ function approvalSentence(offer: LastKnownGoodOffer): string {
     case 'auto':
       return `The rollback policy for ${offer.product} in ${offer.targetEnv} approves it at once.`;
     case 'required':
-      return `It waits for approval${offer.approvers.length ? ` by ${offer.approvers.join(', ')}` : ''} before anything deploys.`;
+      return `It waits for approval${offer.approvers.length ? ` by ${offer.approvers.join(', ')}` : ''} before anything ${offer.action === 'remove' ? 'is removed' : 'deploys'}.`;
     default:
       return `No rollback policy covers ${offer.product} in ${offer.targetEnv}, so it waits for an admin to override its approval.`;
   }

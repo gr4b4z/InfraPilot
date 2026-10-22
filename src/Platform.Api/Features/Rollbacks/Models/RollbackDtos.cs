@@ -10,6 +10,10 @@ public record CreateRollbackRequestDto(
     List<RollbackItemInput>? Items = null,// manual: explicit (service, toVersion) list
     string? Reason = null);
 
+/// <summary>
+/// One manual item. An empty <paramref name="ToVersion"/> removes the service from the environment,
+/// which is allowed only when no version of it runs successfully there and its newest deploy failed.
+/// </summary>
 public record RollbackItemInput(string Service, string ToVersion);
 
 /// <summary>
@@ -48,6 +52,12 @@ public record FailedDeployAttempt(Guid DeployEventId, DateTimeOffset DeployedAt)
 /// <param name="OpenRollback">An open request that already carries this service, if any.</param>
 /// <param name="ExecutorConfigured">Whether any webhook subscription delivers <c>rollback.approved</c> here.</param>
 /// <param name="PromotionsToReopen">Promotions of the failed version that approving the rollback reopens.</param>
+/// <param name="Action">
+/// <see cref="LastKnownGoodActions.Restore"/> back to <paramref name="LastGoodVersion"/>, or
+/// <see cref="LastKnownGoodActions.Remove"/> the service from the environment when no version of it
+/// ever deployed successfully there (<paramref name="LastGoodVersion"/> is then null). Null when not
+/// available.
+/// </param>
 public record LastKnownGoodOffer(
     Guid EventId,
     string Product,
@@ -67,7 +77,21 @@ public record LastKnownGoodOffer(
     IReadOnlyList<string> Approvers,
     OpenRollbackRef? OpenRollback,
     bool ExecutorConfigured,
-    IReadOnlyList<PromotionToReopen> PromotionsToReopen);
+    IReadOnlyList<PromotionToReopen> PromotionsToReopen,
+    string? Action);
+
+/// <summary>The two things "back to the last known good state" can mean.</summary>
+public static class LastKnownGoodActions
+{
+    /// <summary>Redeploy the last version that deployed successfully.</summary>
+    public const string Restore = "restore";
+
+    /// <summary>
+    /// Take the service out of the environment: nothing of it ever deployed successfully there. The
+    /// rollback item has an empty target version.
+    /// </summary>
+    public const string Remove = "remove";
+}
 
 public record OpenRollbackRef(Guid Id, string Status, DateTimeOffset CreatedAt);
 

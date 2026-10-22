@@ -164,7 +164,7 @@ Environment and role strings are canonicalised to kebab-case server-side (`Produ
 `POST /api/deployments/events` — how pipelines (or scripts) record a deployment.
 
 Required fields: `product`, `service`, `environment`, `version`, `source`, `deployedAt`
-(ISO-8601 UTC). Optional: `status` (`succeeded` default | `failed` | `in_progress`),
+(ISO-8601 UTC). Optional: `status` (`succeeded` default | `failed` | `in_progress` | `removed`),
 `isRollback` (bool), `references[]`, `participants[]`, `metadata{}`.
 
 ```bash

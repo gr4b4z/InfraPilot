@@ -162,8 +162,10 @@ public class DeploymentService
         // deploy belongs to, and resolving per-use is how they would drift apart.
         var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
 
-        // Staged, not saved: it rides along with whichever SaveChanges below commits the event.
-        await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
+        // Staged, not saved: it rides along with whichever SaveChanges below commits the event. A
+        // removal is the opposite of evidence that the service is alive, so it never revives one.
+        if (!string.Equals(dto.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase))
+            await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
 
         var replayed = await _db.DeployEvents
             .Where(e => e.Product == product && e.Service == dto.Service
@@ -209,12 +211,18 @@ public class DeploymentService
             var previousEvent = await _db.DeployEvents
                 .Where(e => e.Product == product && e.Service == dto.Service && e.Environment == environment)
                 .OrderByDescending(e => e.DeployedAt)
-                .Select(e => new { e.Version })
+                .Select(e => new { e.Version, e.Status })
                 .FirstOrDefaultAsync(ct);
-            previousVersion = previousEvent?.Version;
+            // After a removal the environment ran nothing, so the next deploy has no predecessor.
+            previousVersion = previousEvent is null
+                              || string.Equals(previousEvent.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : previousEvent.Version;
         }
 
-        var status = dto.Status ?? "succeeded";
+        var status = string.Equals(dto.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase)
+            ? DeployEventStatuses.Removed
+            : dto.Status ?? "succeeded";
         var deployEvent = new DeployEvent
         {
             Id = Guid.NewGuid(),
@@ -662,6 +670,10 @@ public class DeploymentService
     /// <para>Cells in a <paramref name="retired"/> environment are left out, explicit
     /// <paramref name="environment"/> filter or not: nothing is current in an environment nobody
     /// deploys to. Their history is still on the history and event-detail paths.</para>
+    ///
+    /// <para>So is a cell whose newest event is a <see cref="DeployEventStatuses.Removed"/>: the
+    /// service was taken out of that environment, so nothing of it is current there. The removal
+    /// stays in history, and the next deploy brings the cell back.</para>
     /// </summary>
     private IQueryable<DeployEvent> LatestStateEvents(
         string? product, string? environment, string? serviceName, IReadOnlySet<string> retired)
@@ -692,8 +704,30 @@ public class DeploymentService
 
         return from l in latest
                join e in _db.DeployEvents.AsNoTracking() on l.Id equals e.Id
+               where e.Status != DeployEventStatuses.Removed
                select e;
     }
+
+    /// <summary>
+    /// When each (product, service, environment) last had its service removed. Removals are rare, so
+    /// the read paths that aggregate a cell's newest timestamp over the narrow index (product
+    /// summaries, search) take this small set and drop the cells whose newest event is the removal,
+    /// rather than switching to the per-cell newest-row lookup <see cref="LatestStateEvents"/> does.
+    /// </summary>
+    private async Task<Dictionary<(string Product, string Service, string Environment), DateTimeOffset>> RemovedCellsAsync(
+        CancellationToken ct)
+        => (await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Status == DeployEventStatuses.Removed)
+                .GroupBy(e => new { e.Product, e.Service, e.Environment })
+                .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, RemovedAt = g.Max(e => e.DeployedAt) })
+                .ToListAsync(ct))
+            .ToDictionary(r => (r.Product, r.Service, r.Environment), r => r.RemovedAt);
+
+    // The cell's newest event is its removal when no event is newer than the last removal.
+    private static bool IsRemoved(
+        Dictionary<(string Product, string Service, string Environment), DateTimeOffset> removed,
+        string product, string service, string environment, DateTimeOffset newestAt)
+        => removed.TryGetValue((product, service, environment), out var removedAt) && removedAt >= newestAt;
 
     /// <summary>
     /// The product × environment matrix. Products the caller has hidden are dropped here rather
@@ -719,8 +753,12 @@ public class DeploymentService
             // product page's matrix loses it.
             .ExcludingRetiredEnvironments(retired)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => new { g.Key.Product, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
+            .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
+
+        // A service taken out of an environment stops counting there, as it leaves the matrix.
+        var removed = await RemovedCellsAsync(ct);
+        latest = latest.Where(c => !IsRemoved(removed, c.Product, c.Service, c.Environment, c.DeployedAt)).ToList();
 
         var grouped = latest
             .GroupBy(e => e.Product)
@@ -776,6 +814,10 @@ public class DeploymentService
                 LastDeployedAt = g.Max(e => e.DeployedAt),
             })
             .ToListAsync(ct);
+
+        // An environment the service was taken out of is not one it is in.
+        var removed = await RemovedCellsAsync(ct);
+        rows = rows.Where(r => !IsRemoved(removed, r.Product, r.Service, r.Environment, r.LastDeployedAt)).ToList();
 
         return rows
             .GroupBy(r => new { r.Product, r.Service })

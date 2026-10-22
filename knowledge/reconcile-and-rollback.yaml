@@ -75,6 +75,13 @@ body: |
   **Roll back to last known good version**. Approving it also reopens (back to Pending) the
   promotion that shipped the failed version, which would otherwise stay Approved forever.
 
+  A service whose every deploy in an environment failed has no version to go back to. Its page then
+  offers **Remove from <environment>** instead: a rollback item with no target version. On approval,
+  Execute InfraPortal Rollback uninstalls whatever the failed deploys left in the cluster, deletes
+  `<env>/<component>/` from mpt-release, and reports a deploy event with status `removed`. That
+  event closes the rollback and takes the environment off the service's current state; its history
+  stays, and the next deploy brings it back.
+
   It is also why a rollback produces an ordinary deploy event with `isRollback: true` rather than a
   special kind of record — from the cluster's point of view nothing unusual happened.
 related:

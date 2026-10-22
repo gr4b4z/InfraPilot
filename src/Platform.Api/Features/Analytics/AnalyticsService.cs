@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Analytics.Models;
 using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Settings;
 using Platform.Api.Features.Settings.Models;
@@ -48,8 +49,11 @@ public class AnalyticsService
         var span = rangeTo - rangeFrom;
         var prevFrom = rangeFrom - span;
 
+        // A removal takes a service out of an environment; it is not a deploy, and counting it would
+        // book it as a failed one.
         var query = _db.DeployEvents.AsNoTracking()
-            .Where(e => e.DeployedAt >= prevFrom && e.DeployedAt < rangeTo);
+            .Where(e => e.DeployedAt >= prevFrom && e.DeployedAt < rangeTo)
+            .Where(e => e.Status != DeployEventStatuses.Removed);
         if (!string.IsNullOrWhiteSpace(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrWhiteSpace(serviceName)) query = query.Where(e => e.Service == serviceName);
         if (!string.IsNullOrWhiteSpace(environment)) query = query.Where(e => e.Environment == environment);
