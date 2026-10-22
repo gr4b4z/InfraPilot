@@ -515,6 +515,13 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         var onlyFailed = await IngestAsync(product, "web", "staging", "1.0", Hours(-3), status: "failed");
         await IngestAsync(product, "worker", "staging", "3.0", Hours(-3));
         var redeployFailed = await IngestAsync(product, "worker", "staging", "3.0", Hours(-2), status: "failed");
+        // The 2026-10-22 shape after the rollback: 2.1 failed, 2.0 was deployed again and failed too.
+        await IngestAsync(product, "cache", "staging", "2.0", Hours(-3));
+        var failedBeforeRestore = await IngestAsync(product, "cache", "staging", "2.1", Hours(-2), status: "failed");
+        await IngestAsync(product, "cache", "staging", "2.0", Hours(-1), status: "failed");
+        await IngestAsync(product, "queue", "staging", "4.0", Hours(-3));
+        var failedBeforeInProgress = await IngestAsync(product, "queue", "staging", "4.1", Hours(-2), status: "failed");
+        await IngestAsync(product, "queue", "staging", "4.2", Hours(-1), status: "in_progress");
 
         async Task<string> ReasonFor(string eventId)
         {
@@ -527,6 +534,11 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         Assert.Contains("No version of web has deployed successfully", await ReasonFor(onlyFailed));
         // A failed redeploy of the running version has no earlier good version to go back to.
         Assert.Contains("3.0 is also the last version that deployed successfully", await ReasonFor(redeployFailed));
+        // Going back already failed, so the reason says so instead of suggesting something is still running.
+        var restoreFailed = await ReasonFor(failedBeforeRestore);
+        Assert.Contains("2.0, the last version that deployed successfully in staging, failed too", restoreFailed);
+        Assert.DoesNotContain("not finished", restoreFailed);
+        Assert.Contains("has not finished yet", await ReasonFor(failedBeforeInProgress));
         Assert.Equal(HttpStatusCode.BadRequest,
             (await _admin.PostAsJsonAsync($"/api/rollbacks/last-known-good/{succeeded}", new { })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
@@ -1230,6 +1242,10 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
             builder.UseSetting("Deployments:ApiKeys:0:Name", "rollback-integration-test");
             builder.UseSetting("Deployments:ApiKeys:0:Key", TestApiKey);
             builder.UseSetting("Deployments:ApiKeys:0:Roles:0", "InfraPortal.Admin");
+            // Every test here builds its deploy history through ingest on this one key, and the class
+            // as a whole posts more than the production limit of 120 a minute; the limit is not what
+            // these tests are about.
+            builder.UseSetting("Deployments:IngestionRateLimit:AuthenticatedPermitLimit", "10000");
 
             // The default StubIdentityService answers GetGroupMembers with *every* active local user
             // regardless of the group asked for, so under local auth everyone is in every group. That
