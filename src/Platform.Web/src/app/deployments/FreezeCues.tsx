@@ -2,9 +2,10 @@ import { Link } from 'react-router-dom';
 import { format, formatDistanceToNow } from 'date-fns';
 import { Settings, Snowflake } from 'lucide-react';
 import type { PromotionFreezeWindow } from '@/lib/api';
+import { freezeScope } from '@/lib/freezeScope';
 
 /*
- * Promotion Freeze cues for the deployments pages (GLOSSARY.md, ADR-0001/0002). A freeze only holds
+ * Promotion Freeze cues for the deployments pages (GLOSSARY.md, ADR-0001/0002/0003). A freeze only holds
  * promotions, so these pages say two things: which environments of the product are frozen right now
  * (banner, column / card snowflake, held promotion chips), and which deploys landed anyway while a
  * freeze was on — a promotion approved before it, an Administrator Bypass, or a pipeline that does
@@ -33,8 +34,10 @@ export function DeploymentFreezeBanner({
   if (freezes.length === 0) return null;
   const title =
     freezes.length === 1
-      ? `Promotions to ${getDisplayName(freezes[0].targetEnv)} are frozen`
-      : `Promotions to ${freezes.length} environments are frozen`;
+      ? freezes[0].service
+        ? `Promotions of ${freezes[0].service} to ${getDisplayName(freezes[0].targetEnv)} are frozen`
+        : `Promotions to ${getDisplayName(freezes[0].targetEnv)} are frozen`
+      : `${freezes.length} promotion freezes are active`;
   return (
     <div
       data-guide-anchor="deployments-freeze-banner"
@@ -62,8 +65,9 @@ export function DeploymentFreezeBanner({
           {freezes.map((f) => {
             const held = heldIn?.(f.targetEnv);
             return (
-              <li key={`${f.product}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
+              <li key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
                 <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {f.service ? `${f.service} → ` : ''}
                   {getDisplayName(f.targetEnv)}
                 </span>
                 <span>{f.reason}</span>
@@ -88,7 +92,7 @@ export function DeploymentFreezeBanner({
 /** Snowflake next to an environment's name (matrix column, environment card) while it is frozen. */
 export function FrozenEnvMark({ freeze, envLabel }: { freeze: PromotionFreezeWindow; envLabel: string }) {
   const label =
-    `Promotions to ${envLabel} are frozen for ${freeze.product}: ${freeze.reason}. ` +
+    `Promotions to ${envLabel} are frozen for ${freezeScope(freeze)}: ${freeze.reason}. ` +
     `Frozen by ${freeze.frozenBy} ${since(freeze.from)}.`;
   return (
     <span className="inline-flex" title={label} aria-label={label} style={{ color: 'var(--info)' }}>
@@ -111,7 +115,7 @@ export function DuringFreezeMark({
   variant?: 'icon' | 'badge';
 }) {
   const label =
-    `Deployed while promotions to ${envLabel} were frozen for ${freeze.product}: ${freeze.reason}. ` +
+    `Deployed while promotions to ${envLabel} were frozen for ${freezeScope(freeze)}: ${freeze.reason}. ` +
     `Frozen by ${freeze.frozenBy}` +
     (freeze.until
       ? `, lifted${freeze.liftedBy ? ` by ${freeze.liftedBy}` : ''} ${since(freeze.until)}.`

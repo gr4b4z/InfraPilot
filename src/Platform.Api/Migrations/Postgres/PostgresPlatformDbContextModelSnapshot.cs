@@ -841,6 +841,13 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
 
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasDefaultValue("");
+
                     b.Property<string>("TargetEnv")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -848,7 +855,7 @@ namespace Platform.Api.Migrations.Postgres
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Product", "TargetEnv")
+                    b.HasIndex("Product", "Service", "TargetEnv")
                         .IsUnique();
 
                     b.ToTable("promotion_freezes", (string)null);

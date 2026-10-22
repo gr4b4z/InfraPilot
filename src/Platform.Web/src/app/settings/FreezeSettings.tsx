@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { Snowflake } from 'lucide-react';
 import { api, type PromotionFreeze, type PromotionFreezeHistoryEntry } from '@/lib/api';
+import { freezeScope } from '@/lib/freezeScope';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { inputClass, inputStyle } from './formStyles';
 
@@ -58,7 +59,7 @@ function ActiveFreezeCard({
       <div className="flex-1 min-w-0 space-y-1">
         <div className="flex items-center gap-2">
           <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {freeze.product} → {envLabel}
+            {freezeScope(freeze)} → {envLabel}
           </span>
           <span
             className="text-[11px] px-1.5 py-0.5 rounded-md"
@@ -114,7 +115,7 @@ function FreezeJournal({
         const frozen = entry.action === 'frozen';
         const last = idx === entries.length - 1;
         return (
-          <li key={`${entry.at}:${entry.action}:${entry.product}:${entry.targetEnv}:${idx}`} className="flex gap-3">
+          <li key={`${entry.at}:${entry.action}:${freezeScope(entry)}:${entry.targetEnv}:${idx}`} className="flex gap-3">
             <div className="flex flex-col items-center w-3 shrink-0">
               <span
                 className="w-2 h-2 rounded-full mt-1.5 shrink-0"
@@ -127,7 +128,7 @@ function FreezeJournal({
             <div className={`flex-1 flex items-start justify-between gap-3 ${last ? '' : 'pb-3'}`}>
               <p className="text-[13px] break-words min-w-0" style={{ color: 'var(--text-primary)' }}>
                 <span className="font-medium">{entry.actor}</span> {frozen ? 'froze' : 'lifted'}{' '}
-                {entry.product} → {envLabel(entry.targetEnv)}
+                {freezeScope(entry)} → {envLabel(entry.targetEnv)}
                 {entry.reason && (
                   <span style={{ color: 'var(--text-secondary)' }}> — “{entry.reason}”</span>
                 )}
@@ -159,6 +160,9 @@ export function FreezeSettings() {
   const [loadFailed, setLoadFailed] = useState(false);
 
   const [product, setProduct] = useState('');
+  // '' = the whole product (the default); a name narrows the freeze to that service.
+  const [service, setService] = useState('');
+  const [services, setServices] = useState<string[]>([]);
   const [env, setEnv] = useState('');
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -207,13 +211,41 @@ export function FreezeSettings() {
     [pairs],
   );
 
+  // The services a service freeze may name for the chosen product. Never rejects: without the list
+  // the form still offers "All services".
+  useEffect(() => {
+    if (product === '') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setServices([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listPromotionFreezeServices(product)
+      .then((res) => {
+        if (!cancelled) setServices(res.services);
+      })
+      .catch(() => {
+        if (!cancelled) setServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product]);
+
+  // Environments the chosen scope (product, or product/service) is not frozen on yet. A service
+  // freeze may be added next to a whole-product one and vice versa: they are different scopes.
   const envOptions = useMemo(() => {
-    const frozen = new Set(freezes.filter((f) => f.product === product).map((f) => f.targetEnv));
+    const frozen = new Set(
+      freezes
+        .filter((f) => f.product === product && (f.service ?? '') === service)
+        .map((f) => f.targetEnv),
+    );
     const keys = pairs
       .filter((p) => p.product === product && !frozen.has(p.targetEnv))
       .map((p) => p.targetEnv);
     return getOrderedEnvironments(keys);
-  }, [pairs, freezes, product, getOrderedEnvironments]);
+  }, [pairs, freezes, product, service, getOrderedEnvironments]);
 
   const canFreeze = product !== '' && env !== '' && reason.trim() !== '' && !saving;
 
@@ -222,9 +254,15 @@ export function FreezeSettings() {
     setSaving(true);
     setError(null);
     try {
-      await api.createPromotionFreeze({ product, targetEnv: env, reason: reason.trim() });
+      await api.createPromotionFreeze({
+        product,
+        service: service === '' ? null : service,
+        targetEnv: env,
+        reason: reason.trim(),
+      });
       await loadFreezes();
       setProduct('');
+      setService('');
       setEnv('');
       setReason('');
       await loadHistory();
@@ -238,7 +276,7 @@ export function FreezeSettings() {
   const handleLift = async (f: PromotionFreeze) => {
     setError(null);
     try {
-      await api.liftPromotionFreeze(f.product, f.targetEnv);
+      await api.liftPromotionFreeze(f.product, f.targetEnv, f.service);
       await loadFreezes();
       await loadHistory();
     } catch (e) {
@@ -256,8 +294,8 @@ export function FreezeSettings() {
           Freeze
         </h2>
         <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-          Hold promotions for a product into an environment. Approvals keep being recorded; nothing
-          becomes Approved until the freeze is lifted.
+          Hold promotions for a product — or one of its services — into an environment. Approvals
+          keep being recorded; nothing becomes Approved until the freeze is lifted.
         </p>
       </div>
 
@@ -289,7 +327,7 @@ export function FreezeSettings() {
             ) : (
               freezes.map((f) => (
                 <ActiveFreezeCard
-                  key={`${f.product}:${f.targetEnv}`}
+                  key={`${f.product}:${f.service ?? ''}:${f.targetEnv}`}
                   freeze={f}
                   envLabel={getDisplayName(f.targetEnv)}
                   onLift={() => handleLift(f)}
@@ -308,6 +346,7 @@ export function FreezeSettings() {
                   value={product}
                   onChange={(e) => {
                     setProduct(e.target.value);
+                    setService('');
                     setEnv('');
                   }}
                   className={inputClass}
@@ -318,6 +357,24 @@ export function FreezeSettings() {
                   {products.map((p) => (
                     <option key={p} value={p}>
                       {p}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={service}
+                  onChange={(e) => {
+                    setService(e.target.value);
+                    setEnv('');
+                  }}
+                  disabled={product === '' || services.length === 0}
+                  className={`${inputClass} disabled:opacity-50`}
+                  style={inputStyle}
+                  aria-label="Service"
+                >
+                  <option value="">All services</option>
+                  {services.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
                     </option>
                   ))}
                 </select>
