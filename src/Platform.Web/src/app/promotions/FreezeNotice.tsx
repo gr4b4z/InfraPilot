@@ -1,10 +1,12 @@
 import { Snowflake } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import type { PromotionFreeze } from '@/lib/api';
+import { freezeScope } from '@/lib/freezeScope';
 
 /**
  * Banner above the approval card of a Pending candidate held by a Promotion Freeze: names the
- * frozen pair, the reason, who froze it and since when, and that an approval is still recorded.
+ * frozen scope (product, or product/service), the reason, who froze it and since when, and that an
+ * approval is still recorded.
  */
 export function FreezeNotice({ freeze }: { freeze: Omit<PromotionFreeze, 'heldCandidates'> }) {
   const frozenAt = new Date(freeze.frozenAt);
@@ -16,7 +18,7 @@ export function FreezeNotice({ freeze }: { freeze: Omit<PromotionFreeze, 'heldCa
       <Snowflake size={16} style={{ color: 'var(--info)', marginTop: 2, flexShrink: 0 }} />
       <div className="min-w-0 space-y-1 text-[13px]">
         <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Promotions to {freeze.targetEnv} are frozen for {freeze.product}
+          Promotions to {freeze.targetEnv} are frozen for {freezeScope(freeze)}
         </p>
         <p style={{ color: 'var(--text-secondary)' }}>{freeze.reason}</p>
         <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>

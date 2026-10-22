@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { Snowflake, Settings } from 'lucide-react';
 import type { PromotionCandidate, PromotionFreeze } from '@/lib/api';
+import { freezeCovers, freezeScope } from '@/lib/freezeScope';
 
 const frozenSince = (iso: string) => formatDistanceToNow(new Date(iso), { addSuffix: true });
 
@@ -32,9 +33,9 @@ export function FreezeBanner({ freezes, canManage }: { freezes: PromotionFreeze[
         </div>
         <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
           {freezes.map((f) => (
-            <li key={`${f.product}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
+            <li key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
               <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {f.product} → {f.targetEnv}
+                {freezeScope(f)} → {f.targetEnv}
               </span>
               <span>{f.reason}</span>
               <span style={{ color: 'var(--text-muted)' }}>
@@ -66,7 +67,9 @@ export function FrozenGroup({
 }) {
   if (candidates.length === 0) return null;
   const pairs = freezes.filter((f) =>
-    candidates.some((c) => c.product === f.product && c.targetEnv === f.targetEnv),
+    candidates.some(
+      (c) => c.product === f.product && c.targetEnv === f.targetEnv && freezeCovers(f, c.service),
+    ),
   );
   return (
     <div>
@@ -88,9 +91,9 @@ export function FrozenGroup({
       >
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
           {pairs.map((f) => (
-            <span key={`${f.product}|${f.targetEnv}`} className="flex items-center gap-1.5">
+            <span key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex items-center gap-1.5">
               <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {f.product} → {f.targetEnv}
+                {freezeScope(f)} → {f.targetEnv}
               </span>
               <span>— {f.reason}</span>
               <span style={{ color: 'var(--text-muted)' }}>

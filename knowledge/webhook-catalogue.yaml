@@ -48,10 +48,12 @@ body: |
   `promotion.updated`, `promotion.frozen`, `promotion.unfrozen`
 
   `promotion.frozen` and `promotion.unfrozen` fire when an admin creates or lifts a Promotion
-  Freeze on a (product, target environment) pair. Nothing downstream consumes them yet. They carry
-  `product`, `targetEnv`, `reason` and `actor` (plus `frozenBy`, `frozenAt`, `at` and
+  Freeze on a product's promotions into a target environment — the whole product, or one of its
+  services. Nothing downstream consumes them yet. They carry `product`, `service` (null for a
+  whole-product freeze), `targetEnv`, `reason` and `actor` (plus `frozenBy`, `frozenAt`, `at` and
   `heldCandidates`), and `promotion.unfrozen` goes out before the `promotion.approved` events the
-  lift releases.
+  lift releases. A service freeze also sets the service filter dimension, so a subscription narrowed
+  to other services does not receive it; a whole-product freeze clears every service filter.
 
   Work items — `promotion.ticket.approved`, `promotion.ticket.issue-raised`,
   `promotion.ticket.blocked`, and `promotion.ticket.bypassed` (an admin bypass took the item out

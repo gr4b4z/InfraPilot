@@ -201,7 +201,7 @@ export function DeploymentDetailPage() {
 
   const { event: evt, logs, history, promotions, workItems } = detail;
   const failed = evt.status === 'failed';
-  const duringFreeze = freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt);
+  const duringFreeze = freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service);
   const status = STATUS_STYLES[evt.status] ?? STATUS_STYLES.succeeded;
 
   // The release repository's record of what this version is built from. The version number hangs off

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (key extended with an optional service by ADR-0003)
 date: 2026-10-15
 ---
 

@@ -1104,17 +1104,26 @@ class ApiClient {
     return this.request<{ windows: PromotionFreezeWindow[] }>(`/promotions/freezes/windows${qs}`);
   }
 
-  createPromotionFreeze(freeze: { product: string; targetEnv: string; reason: string }) {
+  /** `service` omitted or null freezes the whole product; a name freezes just that service. */
+  createPromotionFreeze(freeze: { product: string; targetEnv: string; reason: string; service?: string | null }) {
     return this.request<PromotionFreeze>(`/promotions/admin/freezes`, {
       method: 'POST',
       body: JSON.stringify(freeze),
     });
   }
 
-  liftPromotionFreeze(product: string, targetEnv: string) {
-    return this.request<void>(
-      `/promotions/admin/freezes/${encodeURIComponent(product)}/${encodeURIComponent(targetEnv)}`,
-      { method: 'DELETE' },
+  /** Lifts the whole-product freeze, or — with `service` — that service's freeze. */
+  liftPromotionFreeze(product: string, targetEnv: string, service?: string | null) {
+    const base = `/promotions/admin/freezes/${encodeURIComponent(product)}/${encodeURIComponent(targetEnv)}`;
+    return this.request<void>(service ? `${base}/services/${encodeURIComponent(service)}` : base, {
+      method: 'DELETE',
+    });
+  }
+
+  /** The services of `product` a service freeze may name (known from its candidates and deploy events). */
+  listPromotionFreezeServices(product: string) {
+    return this.request<{ services: string[] }>(
+      `/promotions/admin/freezes/services?product=${encodeURIComponent(product)}`,
     );
   }
 
@@ -2760,9 +2769,13 @@ export interface PromotionPolicy {
   reappliedCandidates: number | null;
 }
 
-/** An active Promotion Freeze on (product, targetEnv); heldCandidates = Pending candidates of the pair. */
+/**
+ * An active Promotion Freeze on a product's promotions into targetEnv — the whole product when
+ * `service` is null, else that one service; heldCandidates = Pending candidates it holds.
+ */
 export interface PromotionFreeze {
   product: string;
+  service: string | null;
   targetEnv: string;
   reason: string;
   frozenBy: string;
@@ -2770,9 +2783,11 @@ export interface PromotionFreeze {
   heldCandidates: number;
 }
 
-/** One period a (product, targetEnv) pair was frozen; `until` / `liftedBy` are null while it is active. */
+/** One period a freeze scope was frozen; `until` / `liftedBy` are null while it is active. */
 export interface PromotionFreezeWindow {
   product: string;
+  /** null = the whole product. */
+  service: string | null;
   targetEnv: string;
   reason: string;
   frozenBy: string;
@@ -2784,6 +2799,8 @@ export interface PromotionFreezeWindow {
 export interface PromotionFreezeHistoryEntry {
   action: 'frozen' | 'unfrozen';
   product: string;
+  /** null = the whole product. */
+  service: string | null;
   targetEnv: string;
   reason: string | null;
   actor: string;
