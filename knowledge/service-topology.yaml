@@ -39,17 +39,19 @@ body: |
 
   Every published build is registered, `mpt` services included. For `mpt` the registration opens a
   `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
-  approved); there is **no `build → dev` policy for `mpt`**, so master builds of Track A services
-  still reach dev and test through the marketplace manifest.
+  approved, or mpt-release for a migrated service); there is **no product-wide `build → dev` policy
+  for `mpt`**, so master builds of Track A services still reach dev and test through the marketplace
+  manifest. Each migrated `mpt` service has its own `build → dev` policy and is listed in the two
+  `mpt-release … (mpt)` webhook subscriptions (see the webhook catalogue).
 
   The retired `stable` ("Staging Candidate") environment still exists in history for `mpt`,
   `mpt-extensions` and `mpt-support-tools`, but is hidden from every current-state view.
 
   ## Track A services (the monorepo)
 
-  `swo-platform`, `mpt-helpdesk`, `mpt-notifications`, `mpt-public-catalog`, `mpt-spotlight`,
-  `mpt-export`, `mpt-scheduler`, `swo-web-commerce`, `swo-web-accounts`, `swo-web-shell`,
-  `mpt-web-helpdesk`, `mpt-extensions`.
+  `swo-platform`, `mpt-helpdesk`, `mpt-notifications`, `mpt-public-catalog`, `mpt-export`,
+  `mpt-scheduler`, `swo-web-commerce`, `swo-web-accounts`, `swo-web-shell`, `mpt-web-helpdesk`,
+  `mpt-extensions`.
 
   `marketplace/modules.yaml` groups these as `libs-frontend`, `libs-backend` and `services` — the
   libraries are built and consumed by the services, not deployed on their own.
@@ -60,6 +62,8 @@ body: |
   `mpt-extension-usage-reporting`, `mpt-nav-stats`, `mpt-web-currency`, `mpt-web-publiccatalog`,
   `mpt-extension-nav-billing`, `mpt-extension-procurement`, `mpt-extension-producthub`,
   `swo-web-notifications`, `mpt-export`.
+
+  Migrated from Track A and still under product `mpt`: `mpt-spotlight` (2026-10).
 
   GitHub-Actions-built: `ops-dotnet-ci-sample`.
 
