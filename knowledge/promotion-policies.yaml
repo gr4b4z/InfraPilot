@@ -30,7 +30,7 @@ body: |
 
   | Product | Service | Edge | Approval | Work items | Auto-created from |
   |---|---|---|---|---|---|
-  | `mpt` | `mpt-spotlight` | build → dev | none (auto) | no | `refs/heads/master` |
+  | `mpt` | all | build → dev | none (auto) | no | `refs/heads/master` |
   | `mpt` | all | build → staging | QA Manager ×1, then Release Manager ×1 | tracked | `refs/heads/release/*` |
   | `mpt` | all | dev → test | none (auto) | no | — |
   | `mpt` | all | staging → prod | QA Manager ×1, then Release Manager ×1 | tracked, **all must be approved** | — |
@@ -48,10 +48,10 @@ body: |
   | `mpt-support-tools` | all | staging → prod | QA Manager ×1, then Release Manager ×1 | tracked, **all must be approved** | — |
 
   There is **no `stable → staging` policy any more**: the "Staging Candidate" edge was retired on
-  2026-10-14 and its approvers moved, unchanged, onto `build → staging`. `mpt` has no product-wide
-  `build → dev` policy — its dev and test still deploy straight from the marketplace manifest
-  (Track A). Only services migrated to mpt-release get one of their own, so no SDP service gets a dev
-  candidate that nothing deploys.
+  2026-10-14 and its approvers moved, unchanged, onto `build → staging`. `mpt`'s `build → dev`
+  deploys only services migrated to mpt-release. Its other services still deploy dev and test
+  straight from the marketplace manifest (Track A). For those, mpt-release skips the candidate as a
+  disabled component, and SDP's dev deploy of the version closes it.
 
   ## Why they are shaped like this
 

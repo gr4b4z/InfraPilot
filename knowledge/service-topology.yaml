@@ -39,10 +39,11 @@ body: |
 
   Every published build is registered, `mpt` services included. For `mpt` the registration opens a
   `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
-  approved, or mpt-release for a migrated service); there is **no product-wide `build → dev` policy
-  for `mpt`**, so master builds of Track A services still reach dev and test through the marketplace
-  manifest. Each migrated `mpt` service has its own `build → dev` policy and is listed in the two
-  `mpt-release … (mpt)` webhook subscriptions (see the webhook catalogue).
+  approved, or mpt-release for a migrated service). Master builds open an auto-approved `build → dev`
+  promotion, but only mpt-release acts on it, and only for migrated services. Track A services still
+  reach dev and test through the marketplace manifest, and SDP's dev deploy closes their candidate.
+  Every `mpt` approval goes to both deployers. SDP skips `sdp.exclude` and mpt-release skips
+  `disabledComponents` (see the webhook catalogue).
 
   The retired `stable` ("Staging Candidate") environment still exists in history for `mpt`,
   `mpt-extensions` and `mpt-support-tools`, but is hidden from every current-state view.

@@ -1,91 +1,98 @@
 # Moving mpt services from the marketplace SDP to mpt-release
 
 Services move one at a time and keep product `mpt`. The gap analysis and the list of what is ready
-are in mpt-release `docs/marketplace-sdp-migration-gaps.md`; this page is the per-service cutover and
-its log. `mpt-spotlight` is the first.
+are in mpt-release `docs/marketplace-sdp-migration-gaps.md`; this page covers InfraPortal and the
+per-service cutover, and keeps the log. `mpt-spotlight` is the first.
 
 ## The rule
 
 Exactly one deployer per service per environment, switched in one sitting. The August–September
 pilot ran both, and reconcile reverted SDP's deploys dozens of times per service.
 
-| Switch | SDP side (marketplace) | mpt-release side |
+## InfraPortal: wired once, never per service
+
+Every `mpt` approval goes to both deployers. Each one skips the services it does not own:
+
+| Receiver | Subscription | Skips |
 |---|---|---|
-| Who deploys | `sdp.exclude` in `modules.yaml`, on master and release/5 | not in `components.yaml` `disabledComponents` |
-| Desired state | — | `<env>/<service>/` seeded at the version running today |
-| Approvals | the ADO subscription `mpt-promotion-approved` still gets them; `get-approved-promotions.ps1` / `get-approved-rollbacks.ps1` drop `sdp.exclude` services | `mpt/<service>` `build → dev` policy and the two `mpt-release … (mpt)` subscriptions ([`migrate-mpt-services.cutover.py`](migrate-mpt-services.cutover.py)) |
+| SDP (ADO 5685/5686) | `mpt-promotion-approved`, unchanged | services in marketplace `modules.yaml` `sdp.exclude` |
+| mpt-release (Deploy Registered Build, Promote Single Build Manifest) | `mpt-release deploy-build` and `GithubPromotion`, products += `mpt` | services in mpt-release `components.yaml` `disabledComponents` |
 
-Why the InfraPortal side is shaped like this:
+[`migrate-mpt-services.cutover.py`](migrate-mpt-services.cutover.py) makes the three changes. It
+does a dry run by default; `--apply` executes and `--undo` reverses.
 
-- **Filters are include-only and AND-ed.** `mpt-promotion-approved` cannot say "all mpt except X",
-  so it stays as it is and marketplace filters. The mpt-extensions subscriptions cannot take one mpt
-  service without a services filter that would cut off every extension, so the migrated services
-  get two subscriptions of their own.
-- **No `sourceEnv` filter.** The environment filter does the routing instead: `build → *` edges
-  target dev and staging, so `deploy-build (mpt)` listens there; `dev → test` and `staging → prod`
-  target test and prod, so `promote-single-build-manifest (mpt)` listens there. `mpt` has no
-  `test → staging`; add staging to the second one if it ever gets one.
-- **An empty services filter means every service.** The script never leaves one empty.
-- **`build → dev` is per service.** A product-wide one would open dev candidates for every SDP
-  service that nothing deploys. `build → staging` and `staging → prod` stay product-wide and shared
-  with SDP services.
-- **Direct dispatch, not the `GithubPromotion` relay.** Promote Single Build Manifest reads
-  InfraPortal's envelope itself, and the relay function fails about 40% of its deliveries
-  (537 of 1,292 on 2026-10-22).
+- **Policy `mpt` `build → dev`**: product-wide, auto-approved, auto-created from `refs/heads/master`,
+  `sourceRequiresDeploy: false`. SDP never reads dev promotions. A candidate for a service SDP
+  deploys is closed by SDP's own dev deploy of that version.
+- **`mpt-release deploy-build`**: products += `mpt`.
+- **`GithubPromotion`**: products += `mpt`.
 
-## Seeding without a redeploy
+Filters are include-only and AND-ed, so per-service routing would need dedicated subscriptions,
+plus an edit on every migration. Wiring by product keeps InfraPortal out of each migration.
 
-Reconcile redeploys a component whose `deployment-status.yaml` is missing, even when the cluster
-already runs the declared version (`[RERUN]` in `Get-DeploymentList.ps1`). A no-diff landing alone
-is therefore not enough. Seed each environment with the registered build manifest of the version it
-runs (pulled from ACR by the digest InfraPortal holds) and an `instance.yaml`. Add a
-`deployment-status.yaml` recording SDP's last deploy wherever no redeploy is wanted.
+**What it costs.** Every `mpt` approval now starts runs on both sides, and most of them deploy
+nothing. With about 13–18 `mpt` master builds a day (build registry, 2026-10-19 to 10-21):
+- each build's auto-approved `build → dev` candidate starts a no-op Deploy Registered Build run in
+  mpt-release, while spotlight is the only enabled service;
+- it also starts the 5685/5686 promotion-branch runs, which end at "Nothing to release";
+- SDP's `dev → test` and `staging → prod` approvals start Promote Single Build Manifest runs that
+  skip the disabled component.
 
-For `mpt-spotlight`, dev is left without one on purpose: Reconcile Dev redeploys 6.0.29 once, which
-is mpt-release's first Helm 4 takeover of the release, in the lowest environment and with no version
-change. Test, staging and prod change nothing until their next promotion.
+`GithubPromotion` is a relay function that failed 537 of its 1,292 deliveries (2026-10-22).
+InfraPortal retries a failed delivery (30 s, 2 m, 10 m, 1 h, 4 h).
 
-## Order
+**Prerequisites before applying.**
+- mpt-release `disabledComponents` lists every service SDP still deploys. A missing one would be
+  landed and deployed by mpt-release too.
+- Promote Single Build Manifest checks it before reading the source stage, so an SDP service's
+  approval is a skip, not a failed run.
 
-Do steps 2–4 in one sitting, with no spotlight promotion approved in between. Builds registered in
-between get no `build → dev` candidate (the policy does not exist yet). Promote them afterwards with
-`POST /api/promotions/from-build`, not with the bulk resend, which re-dispatches old promotions.
+Both are in mpt-release #1652.
 
-1. **Pre-flight.** No open promotions for the service. Its builds are registered with a manifest
-   digest. Optional: a dry run of mpt-release **Publish OpenAPI Specifications** for dev. The
-   reconcile publish path has never run past its "bundle changed?" check, and spotlight is the first
-   spec owner mpt-release deploys.
-2. **marketplace:** merge the master PR and the release/5 PR. SDP stops deploying the service.
-3. **mpt-release:** merge the seeding PR.
-4. **InfraPortal:** `python docs/plans/migrate-mpt-services.cutover.py --service <service> --apply`,
-   with `MPT_RELEASE_DISPATCH_TOKEN` set the first time (it creates the two subscriptions).
-5. **Verify.**
-   - Reconcile Dev's deploy event arrives under product `mpt` with `run.workflowName` `Reconcile dev`.
-   - `versions.json` is unchanged.
-   - The next master build lands through `build → dev`, then `dev → test`.
-   - The next release build lands through `build → staging`, and 5685 logs "Skipping … sdp.exclude".
+## Per service
 
-**Undo:** add the service back to `disabledComponents`, run the script with `--undo --apply`, then
-revert the marketplace PRs. SDP deploys it again on the next manifest bump.
+1. **marketplace:** the service goes into `sdp.exclude` (master and release/5), and its changelog
+   triggers are commented out.
+2. **mpt-release:**
+   - seed `<env>/<service>/` at the version running in each environment, with the registered build
+     manifest pulled from ACR by its digest and an `instance.yaml`;
+   - remove the service from `disabledComponents`.
+
+   Reconcile redeploys a component that has no `deployment-status.yaml`, even at the running version
+   (`[RERUN]`). Seed one, recording SDP's last deploy, wherever no redeploy is wanted.
+3. **InfraPortal:** nothing.
+
+Merge 1 and 2 together, marketplace first. A promotion approved in between is skipped by both sides
+and has to be redone. Use `POST /api/promotions/from-build` for a build, not the bulk resend, which
+re-dispatches old promotions.
+
+**Undo:** add the service back to `disabledComponents`, then revert the marketplace change.
 
 ## Not covered yet
 
-- The `deployment.created` Teams Logic App matches pipeline title `marketplace-sdp`, so deploys by
-  mpt-release post no card (gap B8).
-- InfraPortal release notes for `mpt` have no Teams subscription; SDP's per-environment versions
-  report covers only what SDP deploys (gap B6).
-- `mpt-project scan` (daily 09:00 run of 5399) still bumps the service in `manifest.json` and stamps
-  the marketplace version into Jira Fixed In Build, next to mpt-release's `<service>@<version>` label.
-  It cannot use `sdp.exclude` for this: `swo-web-maintenence` is excluded from SDP but deploys through
-  its own pipeline, which the scan tracks.
-- `deploysOnApproval` is display-only. It stays `false` on the shared `mpt` `staging → prod` policy.
+- **Teams card on deploy.** The `deployment.created` Teams Logic App matches pipeline title
+  `marketplace-sdp`, so deploys by mpt-release post no card (gap B8).
+- **Teams release notes.** InfraPortal release notes for `mpt` have no Teams subscription. SDP's
+  per-environment versions report covers only what SDP deploys (gap B6).
+- **Daily scan.** `mpt-project scan` (the daily 09:00 run of 5399) still bumps migrated services in
+  `manifest.json`. It also stamps the marketplace version into Jira Fixed In Build, next to
+  mpt-release's `<service>@<version>` label.
+- **`deploysOnApproval`.** It is display-only and stays `false` on the shared `mpt` `staging → prod`
+  policy.
 
 ## Log
 
-**2026-10-22 — mpt-spotlight prepared**
-- Running versions: dev and test `6.0.29-g63db207e`, staging and prod `5.9.2-g5e489eb5`. Both builds
-  are registered with digest-pinned manifests, and both charts have `appVersion` equal to the
-  version. No open promotions.
-- The marketplace PRs (master: `sdp.exclude`, triggers, promotion filtering; release/5: `sdp.exclude`,
-  triggers), the mpt-release seeding and the cutover script were prepared. Nothing has been applied
-  yet.
+**2026-10-22: mpt-spotlight prepared**
+- Running versions:
+  - dev and test: `6.0.29-g63db207e`;
+  - staging and prod: `5.9.2-g5e489eb5`.
+- Both builds are registered with digest-pinned manifests, both charts have `appVersion` equal to
+  the version, and no promotions are open.
+- Seeding: dev has no `deployment-status.yaml`, so Reconcile Dev redeploys 6.0.29 once as
+  mpt-release's first deploy of spotlight. Test, staging and prod are seeded with one.
+- PRs:
+  - marketplace !152683 (master) and !152684 (release/5);
+  - mpt-release #1652, which also disables the six SDP services that were missing:
+    `mpt-web-servernotifications`, `swo-auth`, `swo-extension-nav`, `swo-web-errorpages`,
+    `swo-web-oneheader-container`, `swo-web-shell`.
+- Nothing has been applied in InfraPortal yet.

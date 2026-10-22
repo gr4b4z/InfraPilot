@@ -96,19 +96,14 @@ body: |
 
   ## mpt services moved to mpt-release
 
-  Product `mpt` has services on both deployers while they move one at a time. Filters are
-  include-only and AND-ed, so the mpt-extensions subscriptions cannot take one mpt service. Two
-  `github` subscriptions are dedicated to the migrated ones, and list them in their services filter
-  (`docs/plans/migrate-mpt-services.cutover.py` maintains them):
+  Product `mpt` has services on both deployers while they move one at a time. InfraPortal does not
+  route by service:
+  - `mpt-promotion-approved` (ADO) delivers every `mpt` approval to the SDP;
+  - `mpt-release deploy-build` and `GithubPromotion` deliver every `mpt` approval to mpt-release.
 
-  | Subscription | Dispatch type | Environments |
-  |---|---|---|
-  | `mpt-release deploy-build (mpt)` | `deploy-build` | dev, staging (`build → *`) |
-  | `mpt-release promote-single-build-manifest (mpt)` | `promote-single-build-manifest` | test, prod (`dev → test`, `staging → prod`) |
-
-  An empty services filter would dispatch every `mpt` service to mpt-release, so neither is ever
-  left without one. The ADO `mpt-promotion-approved` subscription still receives every `mpt`
-  approval; marketplace drops the `sdp.exclude` services itself.
+  Each side skips what it does not own. The SDP skips marketplace `sdp.exclude`; mpt-release skips
+  its `disabledComponents`, which must list every service the SDP still deploys. Moving a service
+  changes those two lists and nothing in InfraPortal (`docs/plans/migrate-mpt-services.md`).
 
   If a promotion is approved and nothing happens, the first question is whether an **active**
   subscription matches `promotion.approved` for that product and environment, and the second is
