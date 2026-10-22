@@ -420,6 +420,18 @@ lifting a freeze stays admin-only.
   somebody. Same role/permission rules as the per-reference route (configured role, QA or Admin).
   Returns `{ role, updated: [keys], unchanged: [keys], skipped: [keys] }`; one system comment, audit
   row and `promotion.updated` (`changeType: work-items.participant.upserted|removed`) per call.
+- `POST /api/promotions/{id}/work-items/approvals` — "Approve all": signs off every work item of the
+  candidate still **waiting** for a decision (nobody has ruled on it, or it only carries a `Bypassed`
+  mark). Body `{ "dryRun"?: bool, "keys"?: [string], "comment"?: string }`. `dryRun: true` lists them
+  without writing — the promotion page shows that list in its confirmation — and the apply passes
+  back the `keys` it showed, so only those are signed (all waiting items when `keys` is omitted).
+  Items already approved, or with an Issue or a Block, are left as they are. Each sign-off goes
+  through the per-item path (`POST /api/work-items/{key}/approvals`): the caller's name, the
+  comment, an audit row, `promotion.ticket.approved`, a thread entry and gate re-evaluation, so the
+  last one can approve the promotion. Returns
+  `{ dryRun, approved: [row], unchanged: [row], failed: [row] }`, each row
+  `{ workItemKey, title, state, error }`. QA or Admin (QA-scoped personal tokens allowed); `400` on
+  an auto-approve promotion, `404` for an unknown one.
 - `GET /api/promotions/users/search?q=&role=` — with `role`, a role restricted to directory groups
   (see below) only returns their members; the response's `restrictedTo` names the groups.
 - `GET /api/promotions/roles`, `GET /api/promotions/users/search?q=`,

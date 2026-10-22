@@ -1375,6 +1375,117 @@ public class WorkItemApprovalService
     }
 
     // ---------------------------------------------------------------------
+    // Bulk: every work item of one promotion ("Approve all")
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Signs off, in one go, every work item of a promotion that is still waiting for a decision —
+    /// the promotion page's "Approve all", for the QA reviewer who has checked the whole bundle.
+    /// Waiting means nobody has ruled on it, or it carries only a bypass mark
+    /// (<see cref="WorkItemDecision.Bypassed"/>). An item already approved, or with an issue or a
+    /// block, is left as it is and reported with its state: an issue or a block is somebody's
+    /// deliberate call, and a bulk action has no business overruling one.
+    ///
+    /// <para>A preview-then-apply pair, like the orphan sweep. <paramref name="dryRun"/> lists what
+    /// would be approved, with titles, for the confirmation, and writes nothing. The apply call passes
+    /// back the <paramref name="keys"/> it showed, and only those are signed: an item that started
+    /// waiting after the preview was never confirmed, so it is left (and reported) unchanged, as is
+    /// one somebody decided in between. Omitting <paramref name="keys"/> signs every waiting item.</para>
+    ///
+    /// <para>Each item goes through the ordinary <see cref="ApproveAsync"/> path — audit row,
+    /// <c>promotion.ticket.approved</c> webhook, thread entry and gate re-evaluation, so the last
+    /// sign-off can approve the promotion — exactly as if it had been approved on its own page. A
+    /// row-level refusal is reported on its row, and the rest carry on.</para>
+    /// </summary>
+    public async Task<CandidateWorkItemApprovalResult> ApproveAllOnCandidateAsync(
+        Guid candidateId, bool dryRun, IReadOnlyCollection<string>? keys, string? comment,
+        CancellationToken ct = default)
+    {
+        // Same jurisdiction as a single sign-off, checked up front so the caller gets one refusal
+        // rather than one per row.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
+
+        var candidate = await _db.PromotionCandidates.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+        if (ReadSnapshot(candidate).IsAutoApprove)
+            throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
+
+        // One row per work item, with the first title any of its rows carries.
+        var items = (await _db.PromotionWorkItems.AsNoTracking()
+                .Where(w => w.CandidateId == candidate.Id)
+                .Select(w => new { w.WorkItemKey, w.Title })
+                .ToListAsync(ct))
+            .GroupBy(w => w.WorkItemKey, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Key: g.First().WorkItemKey,
+                Title: g.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t))))
+            .OrderBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var itemKeys = items.Select(i => i.Key).ToList();
+        var decisions = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => itemKeys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.Service == candidate.Service
+                     && a.TargetEnv == candidate.TargetEnv)
+            .Select(a => new { a.WorkItemKey, a.Decision })
+            .ToListAsync(ct);
+
+        var confirmed = keys is null
+            ? null
+            : new HashSet<string>(keys.Select(k => (k ?? "").Trim()), StringComparer.OrdinalIgnoreCase);
+
+        var toApprove = new List<CandidateWorkItemRow>();
+        var unchanged = new List<CandidateWorkItemRow>();
+        foreach (var (key, title) in items)
+        {
+            var state = WorkItemOverallStatus.StateOf(decisions
+                .Where(d => string.Equals(d.WorkItemKey, key, StringComparison.OrdinalIgnoreCase))
+                .Select(d => d.Decision));
+            var row = new CandidateWorkItemRow(key, title, state.ToString());
+            var waiting = state is WorkItemInstanceState.Pending or WorkItemInstanceState.Bypassed;
+            if (waiting && (confirmed is null || confirmed.Contains(key))) toApprove.Add(row);
+            else unchanged.Add(row);
+        }
+
+        // A confirmed key the promotion does not carry is a stale or mistyped list, not a sign-off.
+        var failed = confirmed is null
+            ? new List<CandidateWorkItemRow>()
+            : confirmed
+                .Where(k => k.Length > 0 && !items.Any(i => string.Equals(i.Key, k, StringComparison.OrdinalIgnoreCase)))
+                .Select(k => new CandidateWorkItemRow(k, null, "Unknown", "Not a work item of this promotion"))
+                .ToList();
+
+        if (dryRun || toApprove.Count == 0)
+            return new CandidateWorkItemApprovalResult(dryRun, toApprove, unchanged, failed);
+
+        var note = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
+        var approved = new List<CandidateWorkItemRow>(toApprove.Count);
+        foreach (var row in toApprove)
+        {
+            try
+            {
+                await ApproveAsync(row.WorkItemKey, candidate.Product, candidate.Service, candidate.TargetEnv, note, ct);
+                approved.Add(row with { State = nameof(WorkItemInstanceState.Approved) });
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                failed.Add(row with { Error = ex.Message });
+                _logger.LogWarning(ex,
+                    "Approve-all on candidate {CandidateId} could not sign off {Key}",
+                    candidate.Id, LogSanitizer.Clean(row.WorkItemKey));
+            }
+        }
+
+        _logger.LogInformation(
+            "Approve-all on candidate {CandidateId} by {Email}: {Approved} approved, {Failed} failed, {Unchanged} left as they were",
+            candidate.Id, LogSanitizer.Clean(_currentUser.Email), approved.Count, failed.Count, unchanged.Count);
+
+        return new CandidateWorkItemApprovalResult(false, approved, unchanged, failed);
+    }
+
+    // ---------------------------------------------------------------------
     // Comments
     //
     // Keyed by (workItemKey, product, service, targetEnv) — the same grain as the decision rows — so
@@ -2184,6 +2295,23 @@ public record OrphanedWorkItemView(
     string CandidateStatus,
     /// <summary>Why this row was not signed off. Null on a preview and on every successful sweep row.</summary>
     string? Error = null);
+
+/// <summary>One work item in the answer of <see cref="WorkItemApprovalService.ApproveAllOnCandidateAsync"/>.</summary>
+/// <param name="State">The item's own state (<see cref="WorkItemInstanceState"/>) — after the sign-off on
+/// an applied row, and the one that kept it out on an unchanged row.</param>
+public record CandidateWorkItemRow(string WorkItemKey, string? Title, string State, string? Error = null);
+
+/// <summary>
+/// Outcome of <see cref="WorkItemApprovalService.ApproveAllOnCandidateAsync"/>. On a dry run
+/// <see cref="Approved"/> is what would be approved and nothing was written; otherwise it is what was.
+/// <see cref="Unchanged"/> are the items left as they are, and <see cref="Failed"/> the ones refused,
+/// each with its <see cref="CandidateWorkItemRow.Error"/>.
+/// </summary>
+public record CandidateWorkItemApprovalResult(
+    bool DryRun,
+    List<CandidateWorkItemRow> Approved,
+    List<CandidateWorkItemRow> Unchanged,
+    List<CandidateWorkItemRow> Failed);
 
 /// <summary>
 /// Outcome of <see cref="WorkItemApprovalService.ApproveOrphanedWorkItemsAsync"/>.
