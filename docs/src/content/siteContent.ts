@@ -610,7 +610,7 @@ executor:
     bullets: [
       'Endpoint: POST /api/deployments/events',
       'Auth: X-Api-Key header',
-      'Status values: succeeded, failed, in_progress',
+      'Status values: succeeded, failed, in_progress, removed (the service was taken out of the environment)',
       'Successful deploys are eligible for promotions and rollback history',
       'References can be repository, pipeline, pull-request, work-item, commit, or build-manifest — work-item references drive the Tickets queue, and a build-manifest reference makes the deployed version a link to what it is built from',
       'Participants carry on two levels (event-level + reference-level) with operator overrides and enrichment as additional layers',
@@ -703,6 +703,7 @@ Content-Type: application/json
       'There are two selection modes. `manual` takes an explicit `items` list of `{ service, toVersion }`. `align` derives the items from the diff between the target environment and a `referenceEnv`, optionally minus an `exclude` list ("roll everything back to match prod, except these services"); a service already running the reference version is not part of the diff and is left out of the result entirely. `POST /api/rollbacks/preview` returns the resolved items with an `eligible` flag and a `skipReason` for each, so the UI can show "will roll back N, skip M" before submitting.',
       'The safety rule: a target version must have previously run successfully in that environment (verified against deploy history) and must differ from what is currently running. "Currently running" is the newest succeeded deploy: a failed deploy never replaced what was running, so it is neither the current version nor a valid target, and align never lists a service whose last succeeded version already matches the reference. Failed deploys stay in deploy history, and when a service\'s newest deploy failed the preview item carries a `note` saying which version failed and what is still running. Ineligible items are dropped; a request with zero eligible items is rejected.',
       'A manual rollback raised after a failed deploy is the exception. The release pipeline now declares the failed version, so the item starts from it (`fromVersion` is the failed version) and the last succeeded version is a valid target: putting it back means deploying it again, so the item is not closed as already running when the gate clears. The failed version itself is never a target. `GET /api/rollbacks/last-known-good/{eventId}` answers what the failed deployment page offers for that event: whether a rollback to the last known good version is available (and why not), the failed and last-good versions, whether the caller may raise it, who must approve, any open rollback that already carries the service, the promotions its approval would reopen, and whether anything subscribes to `rollback.approved` there. `POST /api/rollbacks/last-known-good/{eventId}` with `{ reason? }` raises it; the server picks the target, and an open rollback for the service returns 409 with its `rollbackId`.',
+      'A service that never deployed successfully in the environment has no version to go back to, so the offer is `action: "remove"` instead of `"restore"`: the rollback item has an empty `toVersion` (`remove: true` on the item, `action: "remove"` in the `rollback.approved` payload) and takes the service out of the environment. A manual item with an empty `toVersion` is accepted under the same rule: nothing of the service runs successfully there and its newest deploy failed. The executor uninstalls it and reports a deploy event with status `removed`, which completes the item and drops the environment from the service's current state. Approving it reopens the promotion of the failed version, as for any rollback.',
       'When a rollback is approved, each open item takes its `fromVersion` back out of the environment, so any promotion of that version into the environment that is still Approved or Deploying is reopened: back to Pending, sign-offs cleared, a comment naming the rollback, and the usual `promotion.approval.cancelled` webhook (with `reopenedByRollback`). A promotion whose policy would approve it again with no sign-off is left Approved, with a comment saying why.',
       'If the resolved promotion policy has an approver group the request is created Pending and needs approval; with no approver group it auto-approves. On approval the `rollback.approved` webhook fires and your executor performs the deploy. Completion is detected from the resulting succeeded deploy event (matched on product/service/env/version after approval); a failed deploy of the target leaves the item open and is reported on it as `lastFailedAttempt`. There is no trusted callback, and the `IsRollback` flag is corroboration, not a requirement.',
       'A rollback closes once it no longer describes the environment, so an old request can never come back and revert a later deploy. When the gate clears, an item whose service already runs its target version closes as `RolledBack` straight away, and one whose service has moved to a third version since the request was raised closes as `Superseded`. After approval, any succeeded deploy of a different version supersedes the item, except a redeploy of its `fromVersion`, which is the version the rollback exists to remove. Each closed item carries a `note` and the `completedDeployEventId` of the deploy that closed it, and the request becomes `RolledBack` once every item is closed.',
@@ -1161,7 +1162,7 @@ export const deploymentApiResponse = `{
 export const deploymentApiErrors = `{
   "errors": [
     "'product' is required",
-    "'status' must be one of: succeeded, failed, in_progress"
+    "'status' must be one of: succeeded, failed, in_progress, removed"
   ]
 }`;
 
@@ -1242,7 +1243,7 @@ export const deploymentApiFieldRows: TableRow[] = [
     type: 'string',
     required: 'No',
     default: '`"succeeded"`',
-    description: 'One of succeeded, failed, or in_progress. Validation is case-insensitive.',
+    description: 'One of succeeded, failed, in_progress or removed. Validation is case-insensitive.',
   },
   {
     field: '`isRollback`',
@@ -1277,6 +1278,10 @@ export const deploymentApiStatusRows: TableRow[] = [
   {
     value: '`in_progress`',
     meaning: 'Deployment is still running. A later event for the same version can report the final result.',
+  },
+  {
+    value: '`removed`',
+    meaning: 'The service was taken out of the environment (uninstalled, no longer declared). `version` is the version removed. As the newest event of a cell it drops that environment from current-state views; it is not a deploy for analytics and completes no promotion. It completes an approved rollback item that removes the service.',
   },
 ];
 

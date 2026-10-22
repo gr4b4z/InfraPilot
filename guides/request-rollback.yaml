@@ -24,6 +24,8 @@ steps:
       in the navigation, the feature is switched off for this installation. Rolling back because a
       deploy just failed? The failed deployment's page (and the failed-deploy warning on its
       promotion) has a **Roll back to last known good version** button that fills all of this in.
+      When the service never deployed successfully in that environment, the same place offers
+      **Remove from the environment** instead.
   - text: Click **New rollback** to open the composer.
     anchor: rollbacks-new-button
   - text: Choose the **Product** that owns the service you want to revert.
