@@ -158,6 +158,37 @@ approvals.
 | `mpt-project scan` (the daily 09:00 run of 5399) still bumps excluded services in `manifest.json` and stamps the marketplace version in Jira Fixed In Build. | Harmless for deployment, so leave it. `sdp.exclude` cannot gate it: `swo-web-maintenence` is excluded from SDP but deploys through its own pipeline, which the scan tracks. |
 | The 5685/5686 promotion branches used to take every approved `mpt` promotion, including excluded services. | marketplace !152683 drops `sdp.exclude` services, so an approval of only those ends at "Nothing to release". |
 
+## Moving a service to `mpt-extensions` as well
+
+The extension services also change product, like `mpt-extension-operations` and
+`swo-extension-mscsp` before them. Changing product adds four things to the checklist:
+
+- **Build pipeline.** The publish step names the product, so new builds register as
+  `mpt-extensions` (and their manifests carry `spec.product: mpt-extensions`):
+  - `aks-docker-templates/publish-steps.yaml` takes `product:`;
+  - `frontend/client-portal/v2/publishbuild-job.yml` takes `product:`; pipelines that build with
+    `v2/build.yml` need ops-build-templates "pass the InfraPortal product through build.yml"
+    merged first.
+  - Change master **and** release/5: release builds are what reach staging and prod.
+- **InfraPortal override and remap**, with
+  [`migrate-extension-services.cutover.py`](migrate-extension-services.cutover.py). A catch-all
+  override files anything still posted as `mpt` under `mpt-extensions`: SDP deploy events, builds
+  from a pipeline not yet changed, and reconcile's events for the seeded manifests, which still
+  say `mpt`. The remap moves history, including pending candidates, so a promotion finds its
+  source deploy under the same product. The override can be deleted once no environment runs a
+  manifest with `spec.product: mpt`.
+- **Approvals leave the SDP when the override is written.** `mpt-promotion-approved` is
+  `mpt`-only, so from then on every approval of the service reaches mpt-release only. Write the
+  override in the cutover sitting, never earlier.
+- **Import with `-Product mpt-extensions`**, after the remap, since builds, deploy history and
+  promotions are then all filed there. mpt-release `jira.fixedInBuild.products` includes
+  `mpt-extensions`, so Fixed In Build keeps working.
+
+Pending candidates no longer block a migration. `Import-SdpComponent -AllowPendingPromotions`
+seeds each source environment at the version it promotes, so an approval after the hand-over
+promotes through mpt-release. Approved or Deploying candidates still stop both the import and the
+cutover script.
+
 ## Not covered yet
 
 - **Teams card.** The `deployment.created` Teams Logic App matches pipeline title `marketplace-sdp`,
@@ -193,3 +224,39 @@ approvals.
     spotlight) are updated in dev and test.
 - **What later services skip:** the product wiring, completing `disabledComponents` and the #1653
   fix were one-off. A later service needs only steps 1–5 above.
+
+**2026-10-22: the extension services, prepared (not cut over yet)**
+
+Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-web-extensions`,
+`mpt-web-extensions-pages`, `mpt-extensions-ui-bootstrap`, `swo-extension-nav`,
+`swo-extension-adobe` and `swo-extension-aws`. All seven ran under `mpt` only, deployed by
+`marketplace-sdp` / `marketplace-sdp-prod`.
+
+| Service | dev = test | staging | prod | Seeded | Pending (carried over) |
+|---|---|---|---|---|---|
+| mpt-extensions | 6.0.74-gb9b38302 | 5.9.41-g1142ab0e | 5.9.40-gcfa2f739 | all | staging → prod 5.9.41 |
+| mpt-web-extensions | 6.0.23-g1bc70123 | 5.9.4-gfe0d8441 | 5.9.1-gd6e8c9b4 | all | staging → prod 5.9.4 |
+| mpt-web-extensions-pages | 6.0.13-gfe29a3a0 | 5.9.1-gae99e43a | 5.9.1-gae99e43a | all | — |
+| mpt-extensions-ui-bootstrap | 6.0.3-gb934f24d | 5.9.1-g8828f18e | 5.9.1-g8828f18e | staging, prod | — |
+| swo-extension-nav | 6.0.19-gdd23bebb | 5.9.1-g182c494d | 5.9.1-g182c494d | dev, test | build → staging 5.9.2 |
+| swo-extension-adobe | 6.0.304-g4fa98b86 | 5.23.186-g06dd58b6 | 5.23.176-g65a0b289 | all | staging → prod 5.23.186 |
+| swo-extension-aws | 6.0.293-g3937a24e | 5.9.34-gcf350709 | 5.9.28-g92a56b29 | all | staging → prod 5.9.34 |
+
+- **Not seeded:**
+  - ui-bootstrap dev/test: 6.0.3 predates its build registration. Its next master build lands
+    there through `build → dev`.
+  - nav staging/prod: 5.9.1 was never registered. The pending 5.9.2 `build → staging` lands staging.
+- **Checks:**
+  - Dry runs of `Import-SdpComponent` (`-Product mpt`, `-AllowPendingPromotions`) passed for all
+    seven: digests, chart `appVersion`, and deploy events outside dev.
+  - `dotnet restore` is clean on master and release/5 for `mpt-extensions` and `swo-extension-nav`.
+  - `swo-extension-adobe` and `-aws` build from `main`. The `mpt-extensions` `build → dev` default
+    auto-creates from `main` as well as `master`.
+- **Cutover order (one sitting):**
+  1. `migrate-extension-services.cutover.py --apply`: overrides and remap. Approvals stop reaching
+     the SDP here.
+  2. `Import-SdpComponent -Product mpt-extensions -AllowPendingPromotions`, per service, with the
+     environments above; commit the seed to the mpt-release PR.
+  3. Merge the marketplace PRs (master, then release/5), then the mpt-release PR.
+  4. Merge the ops-build-templates PR, then the service PRs (`product: mpt-extensions`, master and
+     release/5). Their master merges are the builds that prove step 5.
