@@ -359,6 +359,17 @@ without satisfying its gate — work-item gate included. Audited as `promotion.b
 reason, and fires the same `promotion.approved` webhook a normal approval does, tagged
 `trigger: "administrator-bypass"`. Returns `{ "id", "status" }`; `400` when it is no longer Pending.
 
+When the policy requires every work item to be signed off (`requireAllWorkItemsApproved`), the
+bypass also signs off the promotion's work items **nobody has ruled on yet**: each gets an
+`Approved` decision in the admin's name, noting the bypass and its reason, plus the usual comment
+thread entry, `promotion.ticket.approved` audit row and webhook — both carrying
+`trigger: "administrator-bypass"`. The keys are listed as `approvedWorkItems` on the
+`promotion.bypassed` audit entry, and other Pending promotions carrying them are re-evaluated, as
+after any sign-off. Nothing is signed when the policy does not require work items (no work-item
+gate, or only `autoApproveOnAllWorkItemsApproved`, which never holds a promotion). An item with an
+Issue or a Block keeps it, and the same ticket on another service — a separate work item — is not
+touched.
+
 ### `POST /api/promotions/admin/candidates/bulk/bypass` — admin
 Body: `{ "ids": ["<guid>", ...], "reason": string }`. The bypass above for a batch, one reason for
 all of them (empty ⇒ `400`, nothing bypassed). Each promotion is bypassed, audited and announced on
@@ -490,7 +501,10 @@ What the web app's *Work items queue* page reads. Two modes, picked by `status`:
 
 Pending response: `{ tickets: [...], assignees: [{ email, displayName, role, count }] }`, unpaged —
 it is bounded by the work in flight. `assignees` is the person-filter rollup, computed before the
-`assignee` narrowing.
+`assignee` narrowing. Only work items a **Pending** promotion carries are listed: one whose
+promotions were all superseded or rejected is left out (its detail page still opens, and the
+admin orphan sweep — `POST /api/promotions/admin/work-items/approve-orphaned` — resolves such
+items in bulk), so every pending row's `candidateStatus` is `Pending`.
 
 Decided response — **paged**, every time window included (a busy month is as unbounded as all
 time):

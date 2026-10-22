@@ -865,8 +865,8 @@ class ApiClient {
 
   /**
    * Signs off every work item stranded in the "No live promotion" state — its promotions were all
-   * superseded or rejected, so nothing will ever consume the sign-off and the row sits in the
-   * work-item queue as pending work forever. Items a live promotion still carries are untouched, and
+   * superseded or rejected, so it is out of the work-item lists, yet it stays pending forever and
+   * holds its ticket's roll-up across services. Items a live promotion still carries are untouched, and
    * so is anything somebody already decided (an Issue or a Block is somebody's call). Admin-only;
    * `dryRun` reports the list without writing, which the Maintenance card always does first.
    */
@@ -2280,10 +2280,9 @@ export interface PendingTicket {
   /** The subset of `requiredRoles` nobody holds — non-empty means the work item needs attention. */
   missingRoles?: string[];
   /**
-   * Status of the candidate this row represents. "Pending" for a live promotion; anything else means
-   * the row is either decision history or an orphan — a work item whose promotion died (Superseded /
-   * Rejected) and which nobody has signed off, kept in the queue so the work isn't lost.
-   * "Unknown" when no candidate could be linked to the row.
+   * Status of the candidate this row represents. Always "Pending" on the pending views — a work item
+   * no live promotion carries is not listed. On the decided view it is whatever that promotion has
+   * moved on to, or "Unknown" when no candidate could be linked to the row.
    */
   candidateStatus?: string;
   /**

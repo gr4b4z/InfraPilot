@@ -1665,6 +1665,8 @@ public class PromotionService
     /// automation triggers identically — tagged with <c>trigger=administrator-bypass</c> so consumers
     /// and the audit trail can distinguish a bypass from a gate-satisfied approval. Records a distinct
     /// <c>promotion.bypassed</c> audit action rather than manufacturing an approver row.
+    /// <para>When the policy holds the promotion for its work items, the bypass also signs off the
+    /// ones nobody has ruled on yet — see <see cref="StageBypassWorkItemApprovalsAsync"/>.</para>
     /// <para>Authorization is enforced at the endpoint: this lives under <c>/api/promotions/admin</c>,
     /// gated by <see cref="AuthorizationPolicies.CatalogAdmin"/> (the <c>InfraPortal.Admin</c> role).</para>
     /// </summary>
@@ -1682,30 +1684,196 @@ public class PromotionService
         // The bypass deliberately ignores a Promotion Freeze (ADR-0001); record that it happened under one.
         var frozen = await FindFreezeAsync(candidate.Product, candidate.TargetEnv, ct) is not null;
 
+        var signedOff = await StageBypassWorkItemApprovalsAsync(candidate, trimmedReason, ct);
+
         candidate.Status = PromotionStatus.Approved;
         candidate.ApprovedAt = DateTimeOffset.UtcNow;
-        StageSystemComment(candidate.Id,
-            $"{Actor} bypassed the approval gate (admin override) — {trimmedReason}");
+        StageSystemComment(candidate.Id, signedOff.Count == 0
+            ? $"{Actor} bypassed the approval gate (admin override) — {trimmedReason}"
+            : $"{Actor} bypassed the approval gate (admin override) and signed off "
+              + $"{DescribeSignedOff(signedOff)} — {trimmedReason}");
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log(
             "promotions", "promotion.bypassed",
             _currentUser.Id, _currentUser.Name, "user",
             "PromotionCandidate", candidate.Id, null,
-            new { reason = trimmedReason, frozen });
+            new { reason = trimmedReason, frozen, approvedWorkItems = signedOff });
 
         _logger.LogWarning(
-            "Candidate {Id} bypassed to Approved by {UserId} ({Email}); reason: {Reason}",
-            candidate.Id, _currentUser.Id, _currentUser.Email, trimmedReason);
+            "Candidate {Id} bypassed to Approved by {UserId} ({Email}); {Count} work item(s) signed off; reason: {Reason}",
+            candidate.Id, _currentUser.Id, _currentUser.Email, signedOff.Count, trimmedReason);
+
+        // Each sign-off leaves the trail a click would (audit row, promotion.ticket.approved webhook,
+        // and through it the realtime refresh of open work-item views), marked as the bypass's.
+        foreach (var key in signedOff)
+            await WorkItemApprovalService.EmitTicketEventsAsync(
+                _audit, _webhookDispatcher, _logger, _currentUser,
+                WorkItemDecision.Approved, key, candidate.Product, candidate.Service, candidate.TargetEnv,
+                candidate.Id, BypassWorkItemComment(candidate, trimmedReason), BypassTrigger, ct);
 
         // Keep the existing promotion.approved webhook so downstream automation fires as usual;
         // the change marker lets consumers tell a bypass apart from a real gate satisfaction.
         await DispatchWebhookAsync(candidate, "promotion.approved", ct,
-            new { trigger = "administrator-bypass", reason = trimmedReason, frozen },
+            new { trigger = BypassTrigger, reason = trimmedReason, frozen },
             bypass: (_currentUser.Name, _currentUser.Email, candidate.ApprovedAt ?? DateTimeOffset.UtcNow, trimmedReason),
             options: ApprovedWebhookOptions(candidate));
 
+        // A work-item sign-off is shared by every promotion carrying the item, so other Pending
+        // gates may have been waiting for exactly these — re-evaluate them, as a person's sign-off
+        // does. Idempotent; a failure leaves that candidate for its next evaluation.
+        if (signedOff.Count > 0)
+        {
+            foreach (var otherId in await FindOtherPendingCarriersAsync(candidate, signedOff, ct))
+            {
+                try
+                {
+                    await ReevaluateAsync(otherId, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Gate re-evaluation failed for candidate {CandidateId} after the bypass of {BypassedId}",
+                        otherId, candidate.Id);
+                }
+            }
+        }
+
         return candidate;
+    }
+
+    /// <summary>The <c>trigger</c> marker on everything an administrator bypass emits.</summary>
+    private const string BypassTrigger = "administrator-bypass";
+
+    /// <summary>
+    /// The work-item half of a bypass. When the candidate's policy will not let it through until
+    /// every work item is signed off (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemsApproved"/>),
+    /// the bypass is the sign-off of the items it skipped: each of the candidate's work items nobody
+    /// has ruled on gets an Approved decision in the administrator's name, carrying the bypass
+    /// reason, and the matching entry in its comment thread. Left Pending, they would keep asking for a
+    /// sign-off the promotion they were holding no longer needs.
+    ///
+    /// <para>Nothing else is signed. A policy that does not require the work items — no work-item
+    /// gate, or only <see cref="ResolvedPolicySnapshot.AutoApproveOnAllWorkItemsApproved"/>, an
+    /// accelerator that never holds a promotion — was not waiting for them, so overriding it says
+    /// nothing about them. An item somebody already ruled on keeps that ruling: an Issue already
+    /// clears it, and a Block is a person's deliberate hold that an override of the promotion's gate
+    /// does not get to rewrite. And only this candidate's own instances are signed — the same ticket
+    /// on another service is a different work item, owed its own sign-off even when
+    /// <see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/> made this gate wait
+    /// for it.</para>
+    ///
+    /// <para>Staged, not saved, so the sign-offs persist with the transition or not at all. Returns the
+    /// keys signed off, in key order.</para>
+    /// </summary>
+    private async Task<IReadOnlyList<string>> StageBypassWorkItemApprovalsAsync(
+        PromotionCandidate candidate, string reason, CancellationToken ct)
+    {
+        if (!ReadSnapshot(candidate).RequireAllWorkItemsApproved) return Array.Empty<string>();
+
+        var keys = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => w.CandidateId == candidate.Id)
+            .Select(w => w.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+        if (keys.Count == 0) return Array.Empty<string>();
+
+        var decided = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => keys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.Service == candidate.Service
+                     && a.TargetEnv == candidate.TargetEnv)
+            .Select(a => a.WorkItemKey)
+            .Distinct()
+            .ToListAsync(ct);
+        var pending = keys
+            .Except(decided, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (pending.Count == 0) return pending;
+
+        var comment = BypassWorkItemComment(candidate, reason);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var key in pending)
+        {
+            _db.WorkItemApprovals.Add(new WorkItemApproval
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                ApproverEmail = _currentUser.Email,
+                ApproverName = _currentUser.Name,
+                Decision = WorkItemDecision.Approved,
+                Comment = comment,
+                CreatedAt = now,
+            });
+            // The decision entry a sign-off always leaves in the thread, worded as one.
+            _db.WorkItemComments.Add(new WorkItemComment
+            {
+                Id = Guid.NewGuid(),
+                WorkItemKey = key,
+                Product = candidate.Product,
+                Service = candidate.Service,
+                TargetEnv = candidate.TargetEnv,
+                AuthorEmail = _currentUser.Email,
+                AuthorName = _currentUser.Name,
+                Decision = WorkItemDecision.Approved,
+                Body = $"Approved this work item.\n\n{comment}",
+                CreatedAt = now,
+            });
+        }
+        return pending;
+    }
+
+    /// <summary>
+    /// "2 pending work items (MPT-1, MPT-2)" for the bypass's system comment — the first few keys
+    /// only, so a large bundle cannot push the comment past its column.
+    /// </summary>
+    private static string DescribeSignedOff(IReadOnlyList<string> keys)
+    {
+        const int shown = 10;
+        var count = keys.Count == 1 ? "1 pending work item" : $"{keys.Count} pending work items";
+        var listed = string.Join(", ", keys.Take(shown));
+        return keys.Count <= shown
+            ? $"{count} ({listed})"
+            : $"{count} ({listed} and {keys.Count - shown} more)";
+    }
+
+    /// <summary>
+    /// The note on a sign-off made by a bypass, in the decision row and the comment thread. Bounded by
+    /// the decision row's comment column — the bypass reason itself is not.
+    /// </summary>
+    private static string BypassWorkItemComment(PromotionCandidate candidate, string reason)
+    {
+        var note = $"Signed off by the admin bypass of the {candidate.Service} {candidate.Version} promotion "
+            + $"({candidate.SourceEnv} → {candidate.TargetEnv}) — {reason}";
+        return note.Length <= MaxDecisionCommentLength ? note : note[..MaxDecisionCommentLength];
+    }
+
+    /// <summary>
+    /// Pending candidates other than <paramref name="candidate"/> in its (product, targetEnv) that
+    /// carry any of <paramref name="keys"/> — on any service, since a gate reading the ticket's
+    /// overall status counts this instance too.
+    /// </summary>
+    private async Task<List<Guid>> FindOtherPendingCarriersAsync(
+        PromotionCandidate candidate, IReadOnlyList<string> keys, CancellationToken ct)
+    {
+        var carrierIds = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => keys.Contains(w.WorkItemKey)
+                     && w.Product == candidate.Product
+                     && w.TargetEnv == candidate.TargetEnv
+                     && w.CandidateId != candidate.Id)
+            .Select(w => w.CandidateId)
+            .Distinct()
+            .ToListAsync(ct);
+        if (carrierIds.Count == 0) return carrierIds;
+
+        return await _db.PromotionCandidates.AsNoTracking()
+            .Where(c => carrierIds.Contains(c.Id) && c.Status == PromotionStatus.Pending)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
     }
 
     // ---------------------------------------------------------------------

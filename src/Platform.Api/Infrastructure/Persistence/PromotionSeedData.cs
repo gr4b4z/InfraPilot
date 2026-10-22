@@ -544,7 +544,7 @@ public static class PromotionSeedData
                 return (decision, PickDecider(rand));
 
             // Rejected or superseded: sometimes there's a block behind it, which is also what the
-            // queue's orphan handling has to cope with. Mostly left open.
+            // orphan sweep has to cope with. Mostly left open.
             default:
                 if (rand.NextDouble() > 0.3) return null;
                 return (
