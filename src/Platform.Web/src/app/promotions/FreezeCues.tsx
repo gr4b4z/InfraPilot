@@ -4,49 +4,43 @@ import { formatDistanceToNow } from 'date-fns';
 import { Snowflake, Settings } from 'lucide-react';
 import type { PromotionCandidate, PromotionFreeze } from '@/lib/api';
 import { freezeCovers, freezeScope } from '@/lib/freezeScope';
+import { CollapsibleFreezeBanner } from '@/components/ui/CollapsibleFreezeBanner';
 
 const frozenSince = (iso: string) => formatDistanceToNow(new Date(iso), { addSuffix: true });
 
 /** Active freezes matching the current product / target-env filters, shown above the filters. */
 export function FreezeBanner({ freezes, canManage }: { freezes: PromotionFreeze[]; canManage: boolean }) {
   return (
-    <div
-      className="rounded-xl border p-3 flex items-start gap-3"
-      style={{ borderColor: 'var(--info)', backgroundColor: 'var(--info-bg)', borderLeft: '3px solid var(--info)' }}
+    <CollapsibleFreezeBanner
+      title={`${freezes.length === 1 ? '1 active freeze' : `${freezes.length} active freezes`} affecting this list`}
+      action={
+        canManage && (
+          <Link
+            to="/settings/freeze"
+            className="inline-flex items-center gap-1 text-[12px] font-medium hover:opacity-80"
+            style={{ color: 'var(--info)' }}
+          >
+            <Settings size={12} />
+            Manage freezes
+          </Link>
+        )
+      }
     >
-      <Snowflake size={16} style={{ color: 'var(--info)', marginTop: 2, flexShrink: 0 }} />
-      <div className="flex-1 min-w-0 space-y-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {freezes.length === 1 ? '1 active freeze' : `${freezes.length} active freezes`} affecting this list
-          </p>
-          {canManage && (
-            <Link
-              to="/settings/freeze"
-              className="inline-flex items-center gap-1 text-[12px] font-medium hover:opacity-80"
-              style={{ color: 'var(--info)' }}
-            >
-              <Settings size={12} />
-              Manage freezes
-            </Link>
-          )}
-        </div>
-        <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          {freezes.map((f) => (
-            <li key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
-              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {freezeScope(f)} → {f.targetEnv}
-              </span>
-              <span>{f.reason}</span>
-              <span style={{ color: 'var(--text-muted)' }}>
-                · frozen by {f.frozenBy} {frozenSince(f.frozenAt)} · {f.heldCandidates}{' '}
-                {f.heldCandidates === 1 ? 'promotion' : 'promotions'} held
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
+      <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+        {freezes.map((f) => (
+          <li key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
+            <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+              {freezeScope(f)} → {f.targetEnv}
+            </span>
+            <span>{f.reason}</span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              · frozen by {f.frozenBy} {frozenSince(f.frozenAt)} · {f.heldCandidates}{' '}
+              {f.heldCandidates === 1 ? 'promotion' : 'promotions'} held
+            </span>
+          </li>
+        ))}
+      </ul>
+    </CollapsibleFreezeBanner>
   );
 }
 
