@@ -191,6 +191,10 @@ dev promotions, and mpt-release skipped it while the service was disabled. Deplo
 `migrate-extension-services.cutover.py --dispatch-dev`. Any other Approved, and any Deploying,
 candidate still stops both the import and the cutover script.
 
+For another service, pass `--services a,b`. `--dispatch-dev --version V` deploys a given registered
+build rather than the newest approval. `--dispatch-dev` never sends a version older than, or equal
+to, the one mpt-release `main` already declares for dev.
+
 ## Findings from the extension services
 
 | Finding | What to do |
@@ -328,3 +332,48 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
     candidates from the release/5 merges.
   - **The overrides** stay until no environment runs a manifest with `spec.product: mpt`. dev and
     test are clear; staging and prod clear with their next release builds.
+
+**2026-10-23: finops and platform-support refiled; mpt-web-spotlight handed over (dev takeover done; waits for a master build)**
+
+Only `mpt-web-spotlight` was still on the SDP. The other two needed their product fixed, not a
+hand-over. The cutover script gained `--services` and `--version` for them (InfraPilot #406).
+
+- **`mpt-extension-finops`: refiled only.**
+  - It has been off the SDP since marketplace !150776 (MPT-24995, 2026-09-08; the ticket says
+    "prod migration was completed").
+  - Its repository, `softwareone-platform/mpt-finops-extension`, is archived (last push
+    2026-04-22). It never registered a build: its last builds, in April, predate build
+    registration. mpt-release cannot seed it, and it cannot be built.
+  - The SDP's last Helm releases still run (dev and test 6.0.1-g5051f315, staging and prod
+    5.1.12-gd41f9157), and nothing deploys them.
+  - 08:06: catch-all override and remap to `mpt-extensions`. All 18 history entries moved, and
+    nothing is left under `mpt`.
+- **`mpt-extension-platform-support`: refiled, dev repaired.**
+  - It was mpt-release's already. It builds from `main` with the organisation's reusable workflow
+    and registers as `mpt-extensions`. With no release branch, it has no staging or prod path.
+  - Dev had gone backwards. On 08-27 17:51, the old `main → dev` track (removed by mpt-release
+    #1636 on 10-14) copied an older manifest, 0.1.0-5.750ae1dd with `spec.product: mpt`, over
+    dev's 1.0.0-2. Reconcile deployed it on 09-17. Test kept 1.0.0-2.304b5996.
+  - 08:06: override and remap (520 entries moved).
+  - 08:06, `cutover.py --services mpt-extension-platform-support --dispatch-dev --version
+    1.0.0-2.304b5996 --apply`. Deploy Registered Build landed it at 08:07, and Reconcile Dev
+    deployed it at 08:10. Dev and test now both run 1.0.0-2.
+  - The stale `build → dev` 1.0.0-1 closed. The stale `dev → test` 1.0.0-0 is still Approved while
+    test runs 1.0.0-2. Reject it in InfraPortal: a bulk resend for `mpt-extensions` would push it
+    into test.
+- **`mpt-web-spotlight`: handed over, staying under `mpt`** (no override, no pipeline change).
+  - The import dry run passed with no open promotions:
+    - dev and test v6.0.38-ga8946f1f;
+    - staging and prod 5.9.2-g78834469.
+
+    The `v` prefix appears in both `versions.json` and the build registry, so they match.
+  - Merged in one sitting: marketplace !152737 (master) at 08:10:03, !152738 (release/5) at
+    08:10:14, then mpt-release #1658 (the seed) at 08:10:28.
+  - Reconcile at `d34d3a47`:
+    - test, staging and prod skipped Deploy Web;
+    - Reconcile Dev's takeover Deploy Web of v6.0.38 succeeded at 08:24:56, about 10 minutes, the
+      usual for a web deploy;
+    - InfraPortal has a succeeded `mpt` deploy event from mpt-release, and dev's
+      `deployment-status.yaml` is persisted.
+  - Done once a new master build goes build → dev → test through mpt-release. The last master
+    build was on 09-29.
