@@ -385,13 +385,16 @@ export function Sidebar() {
               >
                 <KeyboardHints />
               </div>
-              <p
-                className="text-[10px] text-center mt-1 font-mono"
+              {/* The version is where people look for "what changed in it", so it opens the
+                  changelog. */}
+              <NavLink
+                to="/whats-new"
+                className="block text-[10px] text-center mt-1 font-mono hover:underline"
                 style={{ color: 'var(--text-muted)' }}
-                title="Build version"
+                title="Build version — see what's new"
               >
                 {__APP_VERSION__}
-              </p>
+              </NavLink>
             </>
           )}
         </div>
