@@ -276,19 +276,16 @@ public class RollbackService
     // (failedVersion set): the running version is then exactly what to restore, and the failed
     // version is the one target that would change nothing.
     //
-    // An empty target removes the service from the environment. That is only for a service with
-    // nothing to go back to: no version runs successfully here, and its newest deploy failed. A
-    // service that runs is rolled back to an earlier version instead.
+    // An empty target uninstalls the service: it leaves the environment altogether. Anything that is
+    // there can go: a running version, or a failed deploy with nothing running behind it. A service
+    // with nothing in the environment (never deployed, or removed already) has nothing to remove.
     private static (bool eligible, string? reason) EvaluateTarget(
         string toVersion, string? current, string? failedVersion, HashSet<string> history)
     {
         if (string.IsNullOrWhiteSpace(toVersion))
-        {
-            if (current is null && failedVersion is not null) return (true, null);
-            return (false, current is null
-                ? "no target version"
-                : $"{current} is running here; roll back to an earlier version rather than removing the service");
-        }
+            return current is not null || failedVersion is not null
+                ? (true, null)
+                : (false, "not deployed in this environment, so there is nothing to uninstall");
         if (SameVersion(toVersion, failedVersion)) return (false, "this is the version whose deploy failed");
         if (failedVersion is null && SameVersion(toVersion, current)) return (false, "already running this version");
         if (!history.Contains(toVersion)) return (false, "version never ran in this environment");

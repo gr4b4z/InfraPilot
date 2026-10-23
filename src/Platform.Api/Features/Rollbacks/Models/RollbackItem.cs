@@ -21,9 +21,9 @@ public class RollbackItem
     public string FromVersion { get; set; } = "";
 
     /// <summary>
-    /// Target version — validated to have previously run in this env. Empty removes the service from
-    /// the environment instead (only for a service that never deployed successfully there), and a
-    /// <c>removed</c> deploy event completes the item.
+    /// Target version — validated to have previously run in this env. Empty uninstalls the service
+    /// instead: it is removed from the environment, and a <c>removed</c> deploy event completes the
+    /// item.
     /// </summary>
     public string ToVersion { get; set; } = "";
 

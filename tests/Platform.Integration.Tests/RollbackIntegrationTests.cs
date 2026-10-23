@@ -1092,16 +1092,60 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     }
 
     [Fact]
-    public async Task RemoveFromEnvironment_IsRefusedForAServiceThatRuns()
+    public async Task Uninstall_TakesARunningServiceOutOfTheEnvironment()
     {
         var product = await FreshEnrolledProductAsync();
         await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
-        await IngestAsync(product, "api", "staging", "1.1", Hours(-2), status: "failed");
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        await IngestAsync(product, "web", "staging", "2.0", Hours(-2));
 
-        var preview = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "")));
-        var item = ItemFor(preview, "api");
-        Assert.False(item.GetProperty("eligible").GetBoolean());
-        Assert.Contains("1.0 is running here", item.GetProperty("skipReason").GetString()!);
+        // An empty target uninstalls whatever runs: the item starts from the running version.
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "")));
+        Assert.Equal("Approved", created.GetProperty("status").GetString());
+        var item = ItemFor(created, "api");
+        Assert.Equal("1.1", item.GetProperty("fromVersion").GetString());
+        Assert.Equal("", item.GetProperty("toVersion").GetString());
+        Assert.True(item.GetProperty("remove").GetBoolean());
+        var id = created.GetProperty("id").GetString()!;
+
+        // Not settled on approval just because nothing has happened yet; the executor reports it.
+        var open = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Pending", ItemFor(open, "api").GetProperty("status").GetString());
+
+        // A redeploy of the version being removed (a retry finishing late) does not cancel it.
+        await IngestAsync(product, "api", "staging", "1.1", Hours(0.5));
+        Assert.Equal("Pending", ItemFor(await Body(await _admin.GetAsync($"/api/rollbacks/{id}")), "api")
+            .GetProperty("status").GetString());
+
+        var removedId = await IngestAsync(product, "api", "staging", "1.1", Hours(1), status: "removed");
+        var done = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("RolledBack", done.GetProperty("status").GetString());
+        Assert.Equal(removedId, ItemFor(done, "api").GetProperty("completedDeployEventId").GetString());
+        Assert.Equal(new[] { "web@staging" }, await StateCellsAsync(product));
+
+        // Removed now: a second uninstall has nothing to take out, and a rollback has nothing to
+        // start from, though 1.0 did run here once.
+        var again = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "")));
+        Assert.Equal("not deployed in this environment, so there is nothing to uninstall",
+            ItemFor(again, "api").GetProperty("skipReason").GetString());
+        var restore = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "1.0")));
+        Assert.Equal("", ItemFor(restore, "api").GetProperty("fromVersion").GetString());
+    }
+
+    [Fact]
+    public async Task Uninstall_IsSupersededWhenAnotherVersionDeploysAfterApproval()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", RollbackBody(product, "")));
+        var id = created.GetProperty("id").GetString()!;
+
+        // Someone shipped 1.1 instead: the environment moved on, so the uninstall must not go out.
+        await IngestAsync(product, "api", "staging", "1.1", Hours(1));
+
+        var detail = await Body(await _admin.GetAsync($"/api/rollbacks/{id}"));
+        Assert.Equal("Superseded", ItemFor(detail, "api").GetProperty("status").GetString());
+        Assert.Empty(await OpenItemsSeenByPipelineAsync(product, "staging"));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
