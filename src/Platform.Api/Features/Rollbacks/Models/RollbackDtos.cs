@@ -11,8 +11,8 @@ public record CreateRollbackRequestDto(
     string? Reason = null);
 
 /// <summary>
-/// One manual item. An empty <paramref name="ToVersion"/> removes the service from the environment,
-/// which is allowed only when no version of it runs successfully there and its newest deploy failed.
+/// One manual item. An empty <paramref name="ToVersion"/> uninstalls the service: it is removed from
+/// the environment, which is allowed for any service that is there (running, or with a failed deploy).
 /// </summary>
 public record RollbackItemInput(string Service, string ToVersion);
 

@@ -80,7 +80,8 @@ body: |
   Execute InfraPortal Rollback uninstalls whatever the failed deploys left in the cluster, deletes
   `<env>/<component>/` from mpt-release, and reports a deploy event with status `removed`. That
   event closes the rollback and takes the environment off the service's current state; its history
-  stays, and the next deploy brings it back.
+  stays, and the next deploy brings it back. Any service can be uninstalled the same way: in the New
+  rollback panel, pick **Uninstall** in the version list.
 
   It is also why a rollback produces an ordinary deploy event with `isRollback: true` rather than a
   special kind of record — from the cluster's point of view nothing unusual happened.
