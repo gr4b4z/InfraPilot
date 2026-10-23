@@ -186,8 +186,20 @@ The extension services also change product, like `mpt-extension-operations` and
 
 Pending candidates no longer block a migration. `Import-SdpComponent -AllowPendingPromotions`
 seeds each source environment at the version it promotes, so an approval after the hand-over
-promotes through mpt-release. Approved or Deploying candidates still stop both the import and the
-cutover script.
+promotes through mpt-release. An Approved `build → dev` is carried over too: the SDP never acts on
+dev promotions, and mpt-release skipped it while the service was disabled. Deploy it afterwards with
+`migrate-extension-services.cutover.py --dispatch-dev`. Any other Approved, and any Deploying,
+candidate still stops both the import and the cutover script.
+
+## Findings from the extension services
+
+| Finding | What to do |
+|---|---|
+| The service pipeline PRs merged before the override. Their master builds registered under `mpt-extensions`, were auto-approved `build → dev`, and mpt-release skipped them while disabled. They stayed Approved, which both scripts treated as in flight. | Merge the service PRs last, as planned. If they go early anyway, the scripts carry those candidates over, and `--dispatch-dev` deploys the newest per service after the seed merges. |
+| `GET /api/promotions?service=` matches substrings: `mpt-extensions` also returns `mpt-extensions-ui-bootstrap`. | Filter on the candidate's `service` field. Import-SdpComponent and the cutover script do. |
+| InfraPortal's resend of approved webhooks is per product and target environment. For `mpt-extensions` it would also resend `mpt-extension-aws-management`'s stale approvals and move its environments back. | Dispatch Deploy Registered Build (`workflow_dispatch`, digest-pinned manifest) per candidate instead. |
+| A same-version takeover deploy does not roll pods. Config from the Helm Secret only reaches a pod when its container next starts, and a pod already crash-looping fails Helm-Deploy's readiness check. | Before the cutover, look at restart counts (`kubectl get pods`). A takeover marked failed for this reason clears with the next real rollout. Reconcile will not retry it on its own: the status file exists and the version matches. |
+| Reconcile Dev runs queue behind each other, and each redeploys from the commit that triggered it. With web deploys taking about 10 minutes, five dispatches took about 90 minutes to drain. | Expect it. Dispatch everything at once rather than waiting between services. |
 
 ## Not covered yet
 
@@ -225,7 +237,7 @@ cutover script.
 - **What later services skip:** the product wiring, completing `disabledComponents` and the #1653
   fix were one-off. A later service needs only steps 1–5 above.
 
-**2026-10-22: the extension services, prepared (not cut over yet)**
+**2026-10-22: the extension services migrated (dev and test proven; staging and prod wait for QA)**
 
 Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-web-extensions`,
 `mpt-web-extensions-pages`, `mpt-extensions-ui-bootstrap`, `swo-extension-nav`,
@@ -252,7 +264,7 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
   - `dotnet restore` is clean on master and release/5 for `mpt-extensions` and `swo-extension-nav`.
   - `swo-extension-adobe` and `-aws` build from `main`. The `mpt-extensions` `build → dev` default
     auto-creates from `main` as well as `master`.
-- **Cutover order (one sitting):**
+- **Planned cutover order (one sitting):**
   1. `migrate-extension-services.cutover.py --apply`: overrides and remap. Approvals stop reaching
      the SDP here.
   2. `Import-SdpComponent -Product mpt-extensions -AllowPendingPromotions`, per service, with the
@@ -260,3 +272,59 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
   3. Merge the marketplace PRs (master, then release/5), then the mpt-release PR.
   4. Merge the ops-build-templates PR, then the service PRs (`product: mpt-extensions`, master and
      release/5). Their master merges are the builds that prove step 5.
+- **14:14–14:37, merged out of order.** The PRs went in before steps 1–2:
+  - the service PRs between 14:14 and 14:17, except `mpt-web-extensions` release/5 (!152716,
+    14:37);
+  - ops-build-templates !152708 at 14:15;
+  - marketplace !152709 and !152710 at 14:18.
+
+  From 14:18 the SDP no longer deployed the seven, and mpt-release still had them disabled, so
+  nothing deployed them until #1655 at 14:47. The new master builds already registered as
+  `mpt-extensions` and were auto-approved `build → dev`. mpt-release skipped them, so they stayed
+  Approved.
+- **14:38, overrides and remap** (`cutover.py --apply`). All history moved, and nothing was left
+  under `mpt`, including the five pending candidates. Both scripts first needed two fixes:
+  - an exact-service filter, because the promotions API matches substrings;
+  - Approved `build → dev` treated as waiting, not in flight (InfraPilot #400, mpt-release #1655).
+- **14:47, mpt-release #1655 merged**: the seed from `Import-SdpComponent -Product mpt-extensions
+  -AllowPendingPromotions`, with the environments in the table.
+- **14:51–14:53, takeover Reconcile Dev.**
+  - Five components redeployed their running version successfully. ui-bootstrap has no dev
+    directory yet.
+  - `mpt-extensions` was marked failed, for a reason that predates the cutover. Its worker had been
+    crash-looping since about 13:05 UTC on the SDP-rendered env:
+    `FormatException` on `Messaging:Orchestrator:ConnectionString`.
+  - Helm rev 201 rendered valid Service Bus strings. A same-version upgrade does not roll the pod,
+    so Helm-Deploy saw the old pod in back-off (25 restarts) and failed.
+  - The container restarted at 14:55 with the new env and stayed Ready.
+- **15:09, `cutover.py --dispatch-dev --apply`.** One Deploy Registered Build run each for
+  `mpt-extensions` 6.0.75, `mpt-web-extensions` 6.0.24, `-pages` 6.0.14, ui-bootstrap 6.0.4 and
+  `swo-extension-aws` 6.0.295. `swo-extension-adobe` was skipped:
+  - its 6.0.308 was approved after #1655 and went through on its own;
+  - the older 6.0.306 was still Approved, so `--dispatch-dev` was changed to send only the newest
+    per service and to skip a version already in dev (InfraPilot #401).
+- **By 16:45, six of seven proven** (nav followed on 2026-10-23, below). A new master build of each
+  went build → dev → test through mpt-release, and both candidates are Deployed:
+
+  | Service | dev = test |
+  |---|---|
+  | mpt-extensions | 6.0.75-g2117d032 (dev 15:33, test 15:35) |
+  | mpt-web-extensions | 6.0.24-ga59e5942 |
+  | mpt-web-extensions-pages | 6.0.14-g82a2e782 |
+  | mpt-extensions-ui-bootstrap | 6.0.4-g77773857 (its first build mpt-release deployed) |
+  | swo-extension-adobe | 6.0.308-g67a00692 |
+  | swo-extension-aws | 6.0.295-gc779b996 |
+
+  The 6.0.75 rollout cleared the failed takeover record. No Deploy Registered Build, Promote Single
+  Build Manifest, or Reconcile Dev/Test run of the seven failed.
+- **`swo-extension-nav`.** Its master build 6.0.20 failed in coverlet ("Unable to read beyond the
+  end of the stream"; all 301 tests passed). After a rerun it registered on 2026-10-23 at 07:42, and
+  Deploy Registered Build landed it in dev at 07:43. Reconcile Dev deployed it at 07:47, and
+  Promote Single Build Manifest and Reconcile Test deployed it to test at 07:53. Both candidates
+  are Deployed, so all seven are proven.
+- **Still open:**
+  - **Staging and prod** wait for QA: the carried-over `staging → prod` candidates (`mpt-extensions`
+    5.9.41, `mpt-web-extensions` 5.9.4, adobe 5.23.186, aws 5.9.34) and the `build → staging`
+    candidates from the release/5 merges.
+  - **The overrides** stay until no environment runs a manifest with `spec.product: mpt`. dev and
+    test are clear; staging and prod clear with their next release builds.
