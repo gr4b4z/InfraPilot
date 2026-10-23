@@ -1,4 +1,4 @@
-import { Bell, EyeOff, KeyRound, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
+import { Bell, EyeOff, KeyRound, Megaphone, Menu, Monitor, Moon, Sun, Sparkles, LogOut } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useConversationStore } from '@/stores/conversationStore';
@@ -9,6 +9,7 @@ import { useUiStore } from '@/stores/uiStore';
 import { HIDDEN_THEME_CLASSES, hiddenThemeInfo, useHiddenThemeStore } from '@/stores/hiddenThemeStore';
 import { isLocalAuthEnabled } from '@/lib/authConfig';
 import { isMsalEnabled, logout as msalLogout } from '@/lib/auth';
+import { useUnseenChangeCount } from '@/lib/whatsNew';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -36,6 +37,7 @@ export function Topbar() {
   // The bell opens /my-tasks, a QA/Admin-only page — for anyone else it's a door to a redirect.
   const canSeeTasks = (user?.isQA ?? false) || (user?.isAdmin ?? false);
   const hiddenProductCount = useHiddenProductCount();
+  const unseenChanges = useUnseenChangeCount(user);
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
@@ -170,6 +172,22 @@ export function Topbar() {
 
       {/* Right actions */}
       <div className="flex items-center gap-1 ml-auto">
+        {/* A nudge, not an alert: plain link text, only while there are changes this person hasn't
+            seen, gone once they open the page. The page itself stays reachable from the user menu. */}
+        {unseenChanges > 0 && (
+          <NavLink
+            to="/whats-new"
+            data-guide-anchor="whats-new-link"
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[12px] font-medium whitespace-nowrap hover:underline"
+            style={{ color: 'var(--info)' }}
+            title={`${unseenChanges} new change${unseenChanges === 1 ? '' : 's'} since you last looked`}
+          >
+            <span aria-hidden className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--info)' }} />
+            <span className="hidden sm:inline">What's new</span>
+            <span className="sm:hidden">New</span>
+          </NavLink>
+        )}
+
         {/* Three side-by-side modes cost ~110px, which a phone header can't spare — below `sm` the
             same three states are cycled through by one button instead. */}
         <button
@@ -315,6 +333,15 @@ export function Topbar() {
               >
                 <KeyRound size={14} />
                 Agent access
+              </NavLink>
+              <NavLink
+                to="/whats-new"
+                onClick={() => setUserMenuOpen(false)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-[var(--bg-primary)]"
+                style={({ isActive }) => ({ color: isActive ? 'var(--accent)' : 'var(--text-secondary)' })}
+              >
+                <Megaphone size={14} />
+                What's new
               </NavLink>
               {(isLocalAuthEnabled() || isMsalEnabled()) && (
                 <button

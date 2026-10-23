@@ -53,6 +53,8 @@ export function readEnumPref<T extends string>(
 // ── Keys ──────────────────────────────────────────────────────────────────────────────────
 // Namespaced so they can't collide with anything the API sets on the same host.
 
+/** The newest "What's new" entries this browser has been shown — see `lib/whatsNew.ts`. */
+export const WHATS_NEW_SEEN_PREF = 'ip.whatsNew.seen';
 /** Selected tab on the work-items queue page. */
 export const WORK_ITEMS_VIEW_PREF = 'ip.workItems.view';
 /** Selected tab on the promotions list page. */

@@ -40,6 +40,7 @@ import { ReleaseNoteDraftPage } from '@/app/release-notes/ReleaseNoteDraftPage';
 import { ReleaseNoteDetailPage } from '@/app/release-notes/ReleaseNoteDetailPage';
 import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
+import { WhatsNewPage } from '@/app/whats-new/WhatsNewPage';
 import { AdminRoute } from '@/components/auth/AdminRoute';
 import { FeatureRoute } from '@/components/auth/FeatureRoute';
 import { QaRoute } from '@/components/auth/QaRoute';
@@ -112,6 +113,8 @@ function App() {
               snippets. Every signed-in user manages their own, so it is neither admin- nor
               feature-gated; it is reached from the user menu. */}
           <Route path="/me/agent-access" element={<AgentAccessPage />} />
+          {/* The portal's own changelog. For everyone — each entry says which role it is for. */}
+          <Route path="/whats-new" element={<WhatsNewPage />} />
           {/* Work-item detail. The sign-off grain is (key, product, service, targetEnv): the service
               is a path segment (it names which service's change this is), product and targetEnv ride
               along as query params. The single-segment form is what links looked like before the
