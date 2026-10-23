@@ -7,6 +7,8 @@ reverses. Prod InfraPortal only (DEPLOYMENTS_URL / DEPLOYMENTS_API_KEY, admin ro
     python migrate-extension-services.cutover.py --apply
     python migrate-extension-services.cutover.py --undo --apply
     python migrate-extension-services.cutover.py --dispatch-dev [--apply]   # after the mpt-release seed merged
+    python migrate-extension-services.cutover.py --services a,b [...]       # other services than the first seven
+    python migrate-extension-services.cutover.py --services a --dispatch-dev --version V [--apply]
 
 For each service:
 1. A catch-all service product override -> mpt-extensions. Anything still posted as mpt (SDP deploy
@@ -25,24 +27,35 @@ An Approved or Deploying one would race the hand-over, so the script stops on it
 Approved build -> dev: the SDP never acts on dev promotions, and mpt-release skipped it while the
 service was disabled, so it is waiting rather than in flight.
 
+Only candidates still filed under mpt can race: an override changes nothing for one already filed
+under mpt-extensions.
+
 --dispatch-dev deploys those waiting build -> dev candidates once the mpt-release seed is merged: one
 Deploy Registered Build run (workflow_dispatch, gh) per candidate, with its digest-pinned manifest.
-InfraPortal's bulk resend would also resend other mpt-extensions services' stale approvals.
+InfraPortal's bulk resend would also resend other mpt-extensions services' stale approvals. With
+--version it deploys that registered build instead, approved or not. A version older than, or the
+same as, the one mpt-release main already declares for dev is never sent.
 
 --undo points each override back at mpt, remaps the history back and deletes the override."""
-import argparse, json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 SERVICES = ['mpt-extensions', 'mpt-web-extensions', 'mpt-web-extensions-pages', 'mpt-extensions-ui-bootstrap',
             'swo-extension-nav', 'swo-extension-adobe', 'swo-extension-aws']
 TARGET, SOURCE = 'mpt-extensions', 'mpt'
-REASON = 'Migrated: deployed by mpt-release; the build pipeline passes product mpt-extensions (migrate-mpt-services.md)'
+REASON = 'Filed under mpt-extensions with the other extensions (migrate-mpt-services.md)'
 COUNTS = ('deployments', 'builds', 'buildConflicts', 'promotions', 'openPromotions', 'ticketApprovals', 'strandedTicketApprovals')
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument('--undo', action='store_true', help='move the services back to mpt and delete the overrides')
 parser.add_argument('--apply', action='store_true', help='execute; without it nothing is written')
 parser.add_argument('--dispatch-dev', action='store_true', help='deploy the approved build -> dev candidates through mpt-release')
+parser.add_argument('--services', help='comma-separated services instead of the extension services above')
+parser.add_argument('--version', help='with --dispatch-dev: deploy this registered build instead of the newest approval')
 args = parser.parse_args()
+if args.services:
+    SERVICES = [s.strip() for s in args.services.split(',') if s.strip()]
+if args.version and not args.dispatch_dev:
+    sys.exit('--version only applies to --dispatch-dev')
 
 url = os.environ['DEPLOYMENTS_URL'].rstrip('/'); key = os.environ['DEPLOYMENTS_API_KEY']
 to_product, from_product = (SOURCE, TARGET) if args.undo else (TARGET, SOURCE)
@@ -82,8 +95,12 @@ for svc in SERVICES:
             for c in candidates(product, svc, status):
                 if status == 'Approved' and (c['sourceEnv'], c['targetEnv']) == ('build', 'dev'):
                     waiting.append((product, svc, c))
-                else:
+                elif product == from_product:
                     busy.append(f"{svc} {c['sourceEnv']}->{c['targetEnv']} {c['version']} ({product}, {status})")
+
+def version_key(v):
+    # 6.0.75-g2117d032, v6.0.38-ga8946f1f, 1.0.0-2.304b5996: the numbers before the commit hash.
+    return [int(n) for n in re.findall(r'\d+', re.sub(r'(-g|\.)[0-9a-f]{7,40}$', '', (v or '').lstrip('v')))]
 
 def landed_dev_version(svc):
     # What mpt-release main already declares for dev; Deploy Registered Build may have landed a newer
@@ -99,9 +116,12 @@ if args.dispatch_dev:
     for product, svc, c in waiting:
         if svc not in newest or c.get('createdAt', '') > newest[svc][2].get('createdAt', ''):
             newest[svc] = (product, svc, c)
+    if args.version:
+        newest = {svc: (TARGET, svc, {'version': args.version}) for svc in SERVICES}
     for product, svc, c in newest.values():
-        if landed_dev_version(svc) == c['version']:
-            print(f"{svc} {c['version']}: already in mpt-release dev, skipped"); continue
+        landed = landed_dev_version(svc)
+        if landed and version_key(landed) >= version_key(c['version']):
+            print(f"{svc} {c['version']}: mpt-release dev already declares {landed}, skipped"); continue
         q = urllib.parse.urlencode({'product': product, 'service': svc, 'limit': 50})
         build = next((b for b in get(f'/api/builds?{q}').get('results') or [] if b['version'] == c['version']), None)
         if not build or not build.get('artifactRef') or not build.get('artifactDigest'):
