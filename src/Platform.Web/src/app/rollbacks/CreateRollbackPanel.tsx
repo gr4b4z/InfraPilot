@@ -3,7 +3,11 @@ import { api } from '@/lib/api';
 import type { RollbackInput, RollbackPreview, RollbackMode, DeploymentVersion } from '@/lib/api';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnvControlStyle } from '@/components/environments/useEnvColor';
-import { X, ArrowRight, Loader2, AlertTriangle, Undo2 } from 'lucide-react';
+import { X, ArrowRight, Loader2, AlertTriangle, Trash2, Undo2 } from 'lucide-react';
+
+// The version picker's value for "take the service out of the environment". The API takes it as an
+// empty toVersion; a sentinel keeps the select's own empty value meaning "nothing picked yet".
+const UNINSTALL = '__uninstall__';
 
 interface Prefill {
   product: string;
@@ -14,7 +18,7 @@ interface Prefill {
 /**
  * Slide-over panel for composing a rollback. Two modes:
  *  - Manual: pick a target version for a single service (prefilled from a deploy
- *    event when deep-linked).
+ *    event when deep-linked), or Uninstall to take it out of the environment.
  *  - Align: pick a reference environment and exclude services; the backend
  *    resolves which services move and to what version (services already on the
  *    reference version aren't in the diff, so they never reach this panel).
@@ -173,7 +177,7 @@ export function CreateRollbackPanel({
       body.exclude = applyExclusions ? Array.from(excluded) : [];
     } else {
       body.items = manualService && manualVersion
-        ? [{ service: manualService, toVersion: manualVersion }]
+        ? [{ service: manualService, toVersion: manualVersion === UNINSTALL ? '' : manualVersion }]
         : [];
     }
     return body;
@@ -365,7 +369,6 @@ export function CreateRollbackPanel({
                     onChange={(e) => setManualVersion(e.target.value)}
                     className="w-full rounded-lg border px-3 py-2 text-[13px]"
                     style={selectStyle}
-                    disabled={versions.length === 0}
                   >
                     <option value="">{versions.length === 0 ? 'No prior versions found' : 'Select a version…'}</option>
                     {versions.map((v) => (
@@ -373,8 +376,25 @@ export function CreateRollbackPanel({
                         v{v.version}
                       </option>
                     ))}
+                    {/* Always offered, even with no earlier version: a service that never worked
+                        here has nothing else to roll back to. The server refuses it for a service
+                        that is not in the environment. */}
+                    <option value={UNINSTALL}>Uninstall (remove from {getDisplayName(targetEnv) || 'the environment'})</option>
                   </select>
                 </Field>
+              )}
+              {manualService && manualVersion === UNINSTALL && (
+                <div
+                  className="flex items-start gap-2 px-3 py-2 rounded-lg text-[12px]"
+                  style={{ backgroundColor: 'var(--danger-bg)', color: 'var(--danger)' }}
+                >
+                  <Trash2 size={14} className="shrink-0 mt-0.5" />
+                  <span>
+                    Once approved, the release pipeline uninstalls {manualService} from{' '}
+                    {getDisplayName(targetEnv)} and stops declaring it there. Nothing of it keeps running in that
+                    environment; its history stays, and a later deploy brings it back.
+                  </span>
+                </div>
               )}
             </>
           )}
@@ -463,7 +483,11 @@ export function CreateRollbackPanel({
                       <>
                         <span className="font-mono text-[11px]">v{item.fromVersion}</span>
                         <ArrowRight size={11} style={{ color: 'var(--text-muted)' }} />
-                        <span className="font-mono text-[11px]">v{item.toVersion}</span>
+                        {item.toVersion ? (
+                          <span className="font-mono text-[11px]">v{item.toVersion}</span>
+                        ) : (
+                          <span className="text-[11px] font-medium" style={{ color: 'var(--danger)' }}>uninstalled</span>
+                        )}
                       </>
                     ) : (
                       <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>

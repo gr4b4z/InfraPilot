@@ -44,7 +44,8 @@ steps:
     anchor: rollback-create-mode
   - text: >-
       In Manual mode, choose the **Service**, then the **Version** to return to. Only versions that
-      have actually run in this environment are offered.
+      have actually run in this environment are offered, plus **Uninstall**, which takes the service
+      out of the environment altogether.
     anchor: rollback-create-service
     note: In Align mode you pick a reference environment here instead of a service and version.
   - text: Add a **Reason**. It is optional, but it is what approvers read first.
