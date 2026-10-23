@@ -3,6 +3,7 @@ import { format, formatDistanceToNow } from 'date-fns';
 import { Settings, Snowflake } from 'lucide-react';
 import type { PromotionFreezeWindow } from '@/lib/api';
 import { freezeScope } from '@/lib/freezeScope';
+import { CollapsibleFreezeBanner } from '@/components/ui/CollapsibleFreezeBanner';
 
 /*
  * Promotion Freeze cues for the deployments pages (GLOSSARY.md, ADR-0001/0002/0003). A freeze only holds
@@ -39,53 +40,46 @@ export function DeploymentFreezeBanner({
         : `Promotions to ${getDisplayName(freezes[0].targetEnv)} are frozen`
       : `${freezes.length} promotion freezes are active`;
   return (
-    <div
-      data-guide-anchor="deployments-freeze-banner"
-      className="rounded-xl border p-3 flex items-start gap-3"
-      style={{ borderColor: 'var(--info)', backgroundColor: 'var(--info-bg)', borderLeft: '3px solid var(--info)' }}
+    <CollapsibleFreezeBanner
+      guideAnchor="deployments-freeze-banner"
+      title={title}
+      action={
+        canManage && (
+          <Link
+            to="/settings/freeze"
+            className="inline-flex items-center gap-1 text-[12px] font-medium hover:opacity-80"
+            style={{ color: 'var(--info)' }}
+          >
+            <Settings size={12} />
+            Manage freezes
+          </Link>
+        )
+      }
     >
-      <Snowflake size={16} style={{ color: 'var(--info)', marginTop: 2, flexShrink: 0 }} />
-      <div className="flex-1 min-w-0 space-y-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {title}
-          </p>
-          {canManage && (
-            <Link
-              to="/settings/freeze"
-              className="inline-flex items-center gap-1 text-[12px] font-medium hover:opacity-80"
-              style={{ color: 'var(--info)' }}
-            >
-              <Settings size={12} />
-              Manage freezes
-            </Link>
-          )}
-        </div>
-        <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-          {freezes.map((f) => {
-            const held = heldIn?.(f.targetEnv);
-            return (
-              <li key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
-                <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {f.service ? `${f.service} → ` : ''}
-                  {getDisplayName(f.targetEnv)}
-                </span>
-                <span>{f.reason}</span>
-                <span style={{ color: 'var(--text-muted)' }}>
-                  · frozen by {f.frozenBy}{' '}
-                  <span title={format(new Date(f.from), 'MMM d, yyyy HH:mm')}>{since(f.from)}</span>
-                  {held !== undefined && ` · ${held} ${held === 1 ? 'promotion' : 'promotions'} held`}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-          Promotions wait until the freeze is lifted. Deploys that still land meanwhile are marked
-          with an amber snowflake.
-        </p>
-      </div>
-    </div>
+      <ul className="space-y-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+        {freezes.map((f) => {
+          const held = heldIn?.(f.targetEnv);
+          return (
+            <li key={`${f.product}|${f.service ?? ''}|${f.targetEnv}`} className="flex flex-wrap items-center gap-x-2">
+              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {f.service ? `${f.service} → ` : ''}
+                {getDisplayName(f.targetEnv)}
+              </span>
+              <span>{f.reason}</span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                · frozen by {f.frozenBy}{' '}
+                <span title={format(new Date(f.from), 'MMM d, yyyy HH:mm')}>{since(f.from)}</span>
+                {held !== undefined && ` · ${held} ${held === 1 ? 'promotion' : 'promotions'} held`}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        Promotions wait until the freeze is lifted. Deploys that still land meanwhile are marked
+        with an amber snowflake.
+      </p>
+    </CollapsibleFreezeBanner>
   );
 }
 
