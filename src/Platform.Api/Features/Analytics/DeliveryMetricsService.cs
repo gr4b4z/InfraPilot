@@ -1,0 +1,609 @@
+using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Analytics.Models;
+using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Settings;
+using Platform.Api.Infrastructure.Persistence;
+
+namespace Platform.Api.Features.Analytics;
+
+/// <summary>
+/// The Delivery metrics report: DORA's four plus the flow, quality, cadence and data-quality
+/// numbers that make them readable, over a product selection pooled as one population. Products
+/// are a filter here, never a grouping — counts sum and percentiles run over the pooled work items,
+/// because per-product medians cannot be averaged into a portfolio median.
+///
+/// <para>Production is resolved on the server (<see cref="EnvironmentOrdering.ResolveProduction"/>)
+/// so every number in one response measures the same environments, and the response says which.
+/// Like the rest of analytics there is no snapshot: numbers are as fresh as the last ingest, and
+/// <c>asOf</c> says when they were computed.</para>
+///
+/// <para>Rows are filtered to the two windows (current and the equal-length one before) in SQL;
+/// work-item grains are aggregated in SQL to their first deploy per (product, service, work item,
+/// environment) so the lead-time path never loads a product's whole history. Percentile math runs
+/// in memory — see <see cref="Percentiles"/>.</para>
+/// </summary>
+public class DeliveryMetricsService
+{
+    private readonly PlatformDbContext _db;
+    private readonly AppSettingsService _settings;
+
+    public DeliveryMetricsService(PlatformDbContext db, AppSettingsService settings)
+    {
+        _db = db;
+        _settings = settings;
+    }
+
+    public async Task<DeliveryMetricsResponseDto> Get(
+        IReadOnlyList<string> products, DateTimeOffset? from, DateTimeOffset? to,
+        string bucket, TimeZoneInfo tz, CancellationToken ct)
+    {
+        var asOf = DateTimeOffset.UtcNow;
+        var rangeTo = to ?? asOf;
+        var rangeFrom = from ?? rangeTo.AddDays(-14);
+        var span = rangeTo - rangeFrom;
+        var prevFrom = rangeFrom - span;
+
+        var settings = await _settings.GetSettings(ct);
+        var retired = AppSettingsService.RetiredEnvironmentKeys(settings.Environments);
+        var configuredKeys = settings.Environments.Select(e => e.Key).ToList();
+        var filter = products.Count > 0 ? products.Distinct(StringComparer.OrdinalIgnoreCase).ToList() : null;
+
+        // ── Loads ────────────────────────────────────────────────────────────────────────────
+        // Retired environments are out of everything here: a report measures what still runs.
+
+        var eventQuery = _db.DeployEvents.AsNoTracking()
+            .ExcludingRetiredEnvironments(retired)
+            .Where(e => e.DeployedAt >= prevFrom && e.DeployedAt < rangeTo)
+            .Where(e => e.Status != DeployEventStatuses.Removed);
+        if (filter is not null) eventQuery = eventQuery.Where(e => EF.Parameter(filter).Contains(e.Product));
+        var events = await eventQuery
+            .Select(e => new EventRow(e.Id, e.Product, e.Service, e.Environment,
+                e.Version, e.PreviousVersion, e.IsRollback, e.Status, e.DeployedAt))
+            .ToListAsync(ct);
+
+        // Work items per deploy in the current window, grouped in SQL — one join, no id list.
+        var batchQuery = _db.DeployEventWorkItems.AsNoTracking()
+            .Join(_db.DeployEvents.AsNoTracking().Where(e => e.DeployedAt >= rangeFrom && e.DeployedAt < rangeTo),
+                w => w.DeployEventId, e => e.Id, (w, e) => new { e.Id, e.Product });
+        if (filter is not null) batchQuery = batchQuery.Where(x => EF.Parameter(filter).Contains(x.Product));
+        var batchByEvent = (await batchQuery
+                .GroupBy(x => x.Id)
+                .Select(g => new { Id = g.Key, Count = g.Count() })
+                .ToListAsync(ct))
+            .ToDictionary(x => x.Id, x => x.Count);
+
+        // Grain: first successful deploy per (product, service, work item, environment). Aggregated
+        // in SQL so "first" is genuinely first without loading the history; the window then keeps
+        // the grains that landed in either window.
+        var grainQuery = _db.DeployEventWorkItems.AsNoTracking()
+            .Join(_db.DeployEvents.AsNoTracking().ExcludingRetiredEnvironments(retired)
+                    .Where(e => e.Status == "succeeded" && e.DeployedAt < rangeTo),
+                w => w.DeployEventId, e => e.Id,
+                (w, e) => new { e.Product, e.Service, w.WorkItemKey, e.Environment, e.DeployedAt, w.CommittedAt });
+        if (filter is not null) grainQuery = grainQuery.Where(x => EF.Parameter(filter).Contains(x.Product));
+        var grains = (await grainQuery
+                .GroupBy(x => new { x.Product, x.Service, x.WorkItemKey, x.Environment })
+                .Select(g => new
+                {
+                    g.Key.Product, g.Key.Service, g.Key.WorkItemKey, g.Key.Environment,
+                    First = g.Min(x => x.DeployedAt),
+                    CommittedAt = g.Min(x => x.CommittedAt),
+                })
+                .Where(g => g.First >= prevFrom)
+                .ToListAsync(ct))
+            .Select(g => new Grain(g.Product, g.Service, g.WorkItemKey, g.Environment, g.First, g.CommittedAt))
+            .ToList();
+
+        var candidateQuery = _db.PromotionCandidates.AsNoTracking().AsQueryable();
+        if (filter is not null) candidateQuery = candidateQuery.Where(c => EF.Parameter(filter).Contains(c.Product));
+        var approved = await candidateQuery
+            .Where(c => c.ApprovedAt != null && c.ApprovedAt >= prevFrom && c.ApprovedAt < rangeTo)
+            .Select(c => new { c.Product, c.CreatedAt, ApprovedAt = c.ApprovedAt!.Value })
+            .ToListAsync(ct);
+        var deployed = await candidateQuery
+            .Where(c => c.DeployedAt != null && c.ApprovedAt != null && c.DeployedAt >= prevFrom && c.DeployedAt < rangeTo)
+            .Select(c => new { c.Product, ApprovedAt = c.ApprovedAt!.Value, DeployedAt = c.DeployedAt!.Value })
+            .ToListAsync(ct);
+
+        // Every service that has ever deployed under the filter, with its true last deploy — the
+        // stale-service alarm needs the ones that did not deploy in the window.
+        var knownQuery = _db.DeployEvents.AsNoTracking()
+            .ExcludingRetiredEnvironments(retired)
+            .Where(e => e.DeployedAt < rangeTo && e.Status != DeployEventStatuses.Removed);
+        if (filter is not null) knownQuery = knownQuery.Where(e => EF.Parameter(filter).Contains(e.Product));
+        var knownServices = await knownQuery
+            .GroupBy(e => new { e.Product, e.Service })
+            .Select(g => new { g.Key.Product, g.Key.Service, Last = g.Max(e => e.DeployedAt) })
+            .ToListAsync(ct);
+
+        // ── Scope ────────────────────────────────────────────────────────────────────────────
+
+        var universe = events.Select(e => e.Environment)
+            .Concat(grains.Select(g => g.Environment))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var ordered = EnvironmentOrdering.Order(universe, configuredKeys);
+        var production = EnvironmentOrdering.ResolveProduction(
+            ordered, settings.Environments.Select(e => (e.Key, e.IsProduction)));
+        var prodSet = new HashSet<string>(production.Environments, StringComparer.OrdinalIgnoreCase);
+
+        var productList = filter
+            ?? events.Select(e => e.Product)
+                .Concat(grains.Select(g => g.Product))
+                .Concat(approved.Select(a => a.Product))
+                .Concat(deployed.Select(d => d.Product))
+                .Concat(knownServices.Select(k => k.Product))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        var labels = AnalyticsCalendar.Labels(rangeFrom, rangeTo, bucket, tz);
+        var ctx = new Inputs(events, grains, batchByEvent, approved.Select(a => (a.Product, a.CreatedAt, a.ApprovedAt)).ToList(),
+            deployed.Select(d => (d.Product, d.ApprovedAt, d.DeployedAt)).ToList(),
+            knownServices.Select(k => (k.Product, k.Service, k.Last)).ToList(),
+            prodSet, rangeFrom, rangeTo, bucket, tz, labels);
+
+        var all = Scope.Compute(ctx, _ => true);
+
+        // ── Metrics ──────────────────────────────────────────────────────────────────────────
+
+        var prodLabel = production.Environments.Count switch
+        {
+            0 => "production (no environment resolved)",
+            1 => production.Environments[0],
+            _ => $"production ({string.Join(", ", production.Environments)})",
+        };
+
+        var dora = new List<DeliveryMetricDto>
+        {
+            Metric("deploymentFrequency", "Deployment frequency", "count", all.ProdDeploys, all.ProdDeploys, "up",
+                $"Successful, non-rollback deploys to {prodLabel} in the window, every service pooled. " +
+                "A redeploy of the version already running is not counted; failed attempts and rollbacks are reported apart. " +
+                "The delta compares the equal-length window immediately before.",
+                delta: Delta(all.ProdDeploys, all.PrevProdDeploys, all.PrevProdDeploys),
+                trend: Trend(labels, l => (all.ProdDeploysByBucket.GetValueOrDefault(l), all.ProdDeploysByBucket.GetValueOrDefault(l)))),
+
+            Metric("leadTime", "Lead time for changes", "hours", Hours(Percentiles.Median(all.LeadHours)), all.LeadHours.Count, "down",
+                $"Median hours from a change being merged to its story's first successful deploy to {prodLabel} — cumulative from the " +
+                "commit, so the whole path, not the last hop. Clock start is pull-request.occurredAt (fallback commit.occurredAt) as the " +
+                "producer sent it; only stories with a recorded commit time are measurable — see coverage. Percentiles, never averages.",
+                percentiles: Pct(all.LeadHours),
+                delta: Delta(Hours(Percentiles.Median(all.LeadHours)), Hours(Percentiles.Median(all.PrevLeadHours)), all.PrevLeadHours.Count),
+                trend: Trend(labels, l => (Hours(Percentiles.Median(all.LeadHoursByBucket.GetValueOrDefault(l, []))), all.LeadHoursByBucket.GetValueOrDefault(l, []).Count)),
+                coverage: Coverage("stories shipped with a recorded commit time", all.StoriesWithClock, all.StoriesShipped)),
+
+            Unavailable("changeFailureRate", "Change failure rate", "ratio", "down",
+                "Needs production incidents linked to the deployments that caused them. The portal records no incidents yet. " +
+                "Until it does, Deploy failure rate (under Quality) counts failed attempts and rollbacks instead.",
+                $"Deploys to {prodLabel} that caused an incident ÷ deploys to {prodLabel} in the window — the DORA definition."),
+
+            Unavailable("timeToRestore", "Time to restore service", "hours", "down",
+                "Needs production incidents with a start and a restore time. The portal records no incidents yet.",
+                $"Median hours from an incident starting on {prodLabel} to service being restored, for incidents resolved in the window."),
+        };
+
+        var flow = new List<DeliveryMetricDto>
+        {
+            Metric("approvalLatency", "Approval latency", "hours", Hours(Percentiles.Median(all.ApprovalHours)), all.ApprovalHours.Count, "down",
+                "Median hours from a promotion candidate being created to it being approved, for candidates approved inside the window. " +
+                "Waiting on a human, not on the pipeline. p90 in percentiles.",
+                percentiles: Pct(all.ApprovalHours),
+                delta: Delta(Hours(Percentiles.Median(all.ApprovalHours)), Hours(Percentiles.Median(all.PrevApprovalHours)), all.PrevApprovalHours.Count)),
+
+            Metric("deployLatency", "Deploy latency", "hours", Hours(Percentiles.Median(all.DeployLatencyHours)), all.DeployLatencyHours.Count, "down",
+                "Median hours from a promotion candidate being approved to it being deployed, for candidates deployed inside the window. " +
+                "Waiting on the pipeline. p90 in percentiles.",
+                percentiles: Pct(all.DeployLatencyHours),
+                delta: Delta(Hours(Percentiles.Median(all.DeployLatencyHours)), Hours(Percentiles.Median(all.PrevDeployLatencyHours)), all.PrevDeployLatencyHours.Count)),
+
+            Metric("storiesShipped", "Stories shipped", "count", all.StoriesShipped, all.StoriesShipped, "up",
+                $"Stories whose first successful deploy to {prodLabel} fell in the window, counted once per product. Undercounts by the " +
+                "share of deploys that carry no story reference — see coverage.",
+                delta: Delta(all.StoriesShipped, all.PrevStoriesShipped, all.PrevStoriesShipped),
+                trend: Trend(labels, l => (all.StoriesByBucket.GetValueOrDefault(l), all.StoriesByBucket.GetValueOrDefault(l))),
+                coverage: Coverage("deploys carrying a story reference", all.DeploysWithStory, all.Deployments)),
+        };
+
+        var quality = new List<DeliveryMetricDto>
+        {
+            Metric("deployFailureRate", "Deploy failure rate", "ratio", Ratio(all.ProdFailed + all.ProdRollbacks, all.ProdDeploys + all.ProdFailed), all.ProdDeploys + all.ProdFailed, "down",
+                $"(failed attempts + rollbacks) ÷ (succeeded + failed attempts) on {prodLabel} in the window. Attempt-based: a pipeline that " +
+                "failed before reaching users still counts, and a bad deploy fixed forward without a rollback does not — this is not " +
+                "DORA's change failure rate, which needs incident data.",
+                delta: Delta(Ratio(all.ProdFailed + all.ProdRollbacks, all.ProdDeploys + all.ProdFailed),
+                    Ratio(all.PrevProdFailed + all.PrevProdRollbacks, all.PrevProdDeploys + all.PrevProdFailed), all.PrevProdDeploys + all.PrevProdFailed),
+                trend: Trend(labels, l =>
+                {
+                    var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
+                    return (Ratio(b.Failed + b.Rollbacks, b.Counted + b.Failed), b.Counted + b.Failed);
+                })),
+
+            Metric("rollbackRate", "Rollback rate", "ratio", Ratio(all.ProdRollbacks, all.ProdDeploys), all.ProdDeploys, "down",
+                $"Rollback deploys ÷ successful deploys on {prodLabel} in the window.",
+                delta: Delta(Ratio(all.ProdRollbacks, all.ProdDeploys), Ratio(all.PrevProdRollbacks, all.PrevProdDeploys), all.PrevProdDeploys),
+                trend: Trend(labels, l =>
+                {
+                    var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
+                    return (Ratio(b.Rollbacks, b.Counted), b.Counted);
+                })),
+        };
+
+        var cadence = new List<DeliveryMetricDto>
+        {
+            Metric("staleServices", "Stale services", "count", all.StaleServices, all.Services, "down",
+                $"Services with deploy history but no successful deploy in the window, on any environment — of {all.Services} services known. " +
+                "A service nobody deploys is where risk accumulates quietly.",
+                delta: null),
+
+            Metric("batchSize", "Batch size", "count", Round1(Percentiles.Median(all.BatchSizes)), all.BatchSizes.Count, "down",
+                $"Median work items per successful deploy to {prodLabel}, zeros included — a deploy with no story counts as 0, so this doubles " +
+                "as a coverage smell when it sits below 1.",
+                percentiles: Pct(all.BatchSizes)),
+        };
+
+        var dataQuality = new List<DeliveryMetricDto>
+        {
+            Metric("storyCoverage", "Story coverage", "ratio", Ratio(all.DeploysWithStory, all.Deployments), all.Deployments, "up",
+                "Deploys in the window, on any environment, carrying at least one work-item reference ÷ all deploys. The credibility of every " +
+                "per-story number on this page: at 65% coverage they undercount by about a third.",
+                delta: Delta(Ratio(all.DeploysWithStory, all.Deployments), null, 0)),
+
+            Metric("leadTimeCoverage", "Lead time coverage", "ratio", Ratio(all.StoriesWithClock, all.StoriesShipped), all.StoriesShipped, "up",
+                $"Stories shipped to {prodLabel} in the window whose producer sent a commit time ÷ stories shipped. Never compare lead time " +
+                "across periods with materially different coverage.",
+                delta: Delta(Ratio(all.StoriesWithClock, all.StoriesShipped), Ratio(all.PrevStoriesWithClock, all.PrevStoriesShipped), all.PrevStoriesShipped)),
+        };
+
+        var sections = new List<DeliverySectionDto>
+        {
+            new("dora", "DORA", dora),
+            new("flow", "Flow", flow),
+            new("quality", "Quality", quality),
+            new("cadence", "Cadence", cadence),
+            new("dataQuality", "Data quality", dataQuality),
+        };
+
+        // ── Breakdowns ───────────────────────────────────────────────────────────────────────
+
+        var byProduct = productList.Select(product =>
+        {
+            var s = Scope.Compute(ctx, p => string.Equals(p, product, StringComparison.OrdinalIgnoreCase));
+            return new DeliveryProductRowDto(
+                product, s.Services, s.ProdDeploys, s.PrevProdDeploys, s.StoriesShipped,
+                Hours(Percentiles.Median(s.LeadHours)),
+                Ratio(s.StoriesWithClock, s.StoriesShipped),
+                Ratio(s.ProdFailed + s.ProdRollbacks, s.ProdDeploys + s.ProdFailed),
+                Ratio(s.ProdRollbacks, s.ProdDeploys),
+                Ratio(s.DeploysWithStory, s.Deployments),
+                s.StaleServices);
+        }).ToList();
+
+        var byService = BuildServiceRows(ctx, span);
+
+        var leadByEnv = ordered.Select(env =>
+        {
+            var hours = all.LeadHoursByEnvironment.GetValueOrDefault(env, []);
+            return new DeliveryLeadTimeEnvDto(env, hours.Count,
+                Hours(Percentiles.Median(hours)), Hours(Percentiles.Compute(hours, 0.75)), Hours(Percentiles.Compute(hours, 0.9)));
+        }).ToList();
+
+        var explanation = production.Source switch
+        {
+            "marked" => $"Marked as production stage in Settings → Environments: {string.Join(", ", production.Environments)}.",
+            "default-name" => $"Recognised as production by name (default mapping; add the key in Settings → Environments to override): {string.Join(", ", production.Environments)}.",
+            _ => production.Environments.Count > 0
+                ? $"Last environment in order (no production stage marked): {production.Environments[0]}."
+                : "No deployments in scope, so no production environment could be resolved.",
+        };
+
+        return new DeliveryMetricsResponseDto(
+            asOf,
+            new AnalyticsRangeDto(rangeFrom, rangeTo),
+            new AnalyticsRangeDto(prevFrom, rangeFrom),
+            productList,
+            new DeliveryProductionDto(production.Environments, production.Source, explanation),
+            new DeliveryDefinitionDto(
+                Bucket: bucket,
+                Tz: tz.Id,
+                Deploy: "A deploy event with status succeeded that is not a rollback; a redeploy of the version already running is not counted. Failed attempts and rollbacks are reported apart. Events on retired environments are left out.",
+                Production: explanation,
+                StoryShipped: "A story is shipped when it first lands successfully on any production environment, dated by that first landing; counted once per product.",
+                LeadTime: "Clock start: pull-request.occurredAt, fallback commit.occurredAt, as recorded on the work item. Clock stop: the story's first successful deploy to any production environment. Stories without a commit time are excluded and reported in coverage."),
+            sections, leadByEnv, byProduct, byService);
+    }
+
+    // ── Per-service table ────────────────────────────────────────────────────────────────────
+
+    private static List<DeliveryServiceRowDto> BuildServiceRows(Inputs ctx, TimeSpan span)
+    {
+        var rows = new List<DeliveryServiceRowDto>();
+        var current = ctx.Events.Where(e => e.DeployedAt >= ctx.RangeFrom).ToList();
+        var previous = ctx.Events.Where(e => e.DeployedAt < ctx.RangeFrom).ToList();
+
+        var prevCounted = previous
+            .Where(e => DeployEventRows.Classify(e, false, false) == EventKind.Counted)
+            .GroupBy(e => (e.Product, e.Service), ServiceKeyComparer.Instance)
+            .ToDictionary(g => g.Key, g => g.Count(), ServiceKeyComparer.Instance);
+
+        // Lead time to production per service: the first production landing of each story through
+        // this service.
+        var leadByService = ctx.Grains
+            .Where(g => ctx.ProdSet.Contains(g.Environment))
+            .GroupBy(g => (g.Product, g.Service, g.WorkItemKey), StoryServiceKeyComparer.Instance)
+            .Select(g =>
+            {
+                var first = g.MinBy(x => x.First)!;
+                var committed = g.Where(x => x.CommittedAt is not null).Select(x => x.CommittedAt).Min();
+                return (g.Key.Product, g.Key.Service, first.First, committed);
+            })
+            .Where(x => x.First >= ctx.RangeFrom && x.committed is not null)
+            .GroupBy(x => (x.Product, x.Service), ServiceKeyComparer.Instance)
+            .ToDictionary(g => g.Key, g => g.Select(x => (x.First - x.committed!.Value).TotalHours).ToList(), ServiceKeyComparer.Instance);
+
+        var seen = new HashSet<(string, string)>(ServiceKeyComparer.Instance);
+        foreach (var group in current.GroupBy(e => (e.Product, e.Service), ServiceKeyComparer.Instance))
+        {
+            var times = new List<DateTimeOffset>();
+            var batch = new List<double>();
+            var counted = 0; var failed = 0; var rollbacks = 0;
+            DateTimeOffset? last = null;
+            foreach (var e in group)
+            {
+                switch (DeployEventRows.Classify(e, false, false))
+                {
+                    case EventKind.Counted:
+                        counted++; times.Add(e.DeployedAt); batch.Add(ctx.BatchByEvent.GetValueOrDefault(e.Id));
+                        if (last is null || e.DeployedAt > last) last = e.DeployedAt;
+                        break;
+                    case EventKind.Failed: failed++; break;
+                    case EventKind.Rollback: rollbacks++; break;
+                }
+            }
+            times.Sort();
+            var intervals = new List<double>();
+            for (var i = 1; i < times.Count; i++) intervals.Add((times[i] - times[i - 1]).TotalHours);
+
+            // A service with only failed attempts in the window shows its true last success.
+            last ??= ctx.KnownServices.FirstOrDefault(k =>
+                ServiceKeyComparer.Instance.Equals((k.Product, k.Service), group.Key)).Last;
+
+            seen.Add(group.Key);
+            rows.Add(new DeliveryServiceRowDto(
+                group.Key.Product, group.Key.Service, counted, prevCounted.GetValueOrDefault(group.Key),
+                span.TotalDays > 0 ? Math.Round(counted / span.TotalDays * 7, 2) : 0,
+                last, Round1(Percentiles.Median(intervals)), failed, rollbacks,
+                Round1(Percentiles.Median(batch)),
+                Hours(Percentiles.Median(leadByService.GetValueOrDefault(group.Key, [])))));
+        }
+
+        // Stale: known, nothing in the window.
+        foreach (var k in ctx.KnownServices)
+        {
+            if (seen.Contains((k.Product, k.Service))) continue;
+            rows.Add(new DeliveryServiceRowDto(
+                k.Product, k.Service, 0, prevCounted.GetValueOrDefault((k.Product, k.Service)), 0,
+                k.Last, null, 0, 0, null, null));
+        }
+
+        return rows
+            .OrderByDescending(r => r.Deploys)
+            .ThenBy(r => r.Product, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Service, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    // ── Scope arithmetic ─────────────────────────────────────────────────────────────────────
+
+    private sealed record Grain(string Product, string Service, string WorkItemKey, string Environment, DateTimeOffset First, DateTimeOffset? CommittedAt);
+
+    private sealed record Inputs(
+        List<EventRow> Events,
+        List<Grain> Grains,
+        Dictionary<Guid, int> BatchByEvent,
+        List<(string Product, DateTimeOffset CreatedAt, DateTimeOffset ApprovedAt)> Approved,
+        List<(string Product, DateTimeOffset ApprovedAt, DateTimeOffset DeployedAt)> Deployed,
+        List<(string Product, string Service, DateTimeOffset Last)> KnownServices,
+        HashSet<string> ProdSet,
+        DateTimeOffset RangeFrom,
+        DateTimeOffset RangeTo,
+        string Bucket,
+        TimeZoneInfo Tz,
+        List<string> Labels);
+
+    private sealed class BucketCount
+    {
+        public int Counted;
+        public int Failed;
+        public int Rollbacks;
+    }
+
+    /// <summary>Everything the metrics read, for one product predicate — the whole selection or one product.</summary>
+    private sealed class Scope
+    {
+        public int ProdDeploys, PrevProdDeploys, ProdFailed, PrevProdFailed, ProdRollbacks, PrevProdRollbacks;
+        public int Deployments, DeploysWithStory;
+        public int StoriesShipped, PrevStoriesShipped, StoriesWithClock, PrevStoriesWithClock;
+        public int Services, StaleServices;
+        public List<double> LeadHours = [], PrevLeadHours = [], BatchSizes = [];
+        public List<double> ApprovalHours = [], PrevApprovalHours = [], DeployLatencyHours = [], PrevDeployLatencyHours = [];
+        public Dictionary<string, int> ProdDeploysByBucket = new(), StoriesByBucket = new();
+        public Dictionary<string, BucketCount> BucketCounts = new();
+        public Dictionary<string, List<double>> LeadHoursByBucket = new();
+        public Dictionary<string, List<double>> LeadHoursByEnvironment = new(StringComparer.OrdinalIgnoreCase);
+
+        public static Scope Compute(Inputs ctx, Func<string, bool> inScope)
+        {
+            var s = new Scope();
+            string Bucket(DateTimeOffset at) => AnalyticsCalendar.BucketStart(at, ctx.Bucket, ctx.Tz);
+
+            foreach (var e in ctx.Events)
+            {
+                if (!inScope(e.Product)) continue;
+                var inWindow = e.DeployedAt >= ctx.RangeFrom;
+                var kind = DeployEventRows.Classify(e, false, false);
+                if (inWindow && kind != EventKind.Skipped)
+                {
+                    s.Deployments++;
+                    if (ctx.BatchByEvent.ContainsKey(e.Id)) s.DeploysWithStory++;
+                }
+                if (!ctx.ProdSet.Contains(e.Environment)) continue;
+
+                if (inWindow)
+                {
+                    var b = s.BucketCounts.TryGetValue(Bucket(e.DeployedAt), out var bc) ? bc : s.BucketCounts[Bucket(e.DeployedAt)] = new BucketCount();
+                    switch (kind)
+                    {
+                        case EventKind.Counted:
+                            s.ProdDeploys++; b.Counted++;
+                            s.ProdDeploysByBucket[Bucket(e.DeployedAt)] = s.ProdDeploysByBucket.GetValueOrDefault(Bucket(e.DeployedAt)) + 1;
+                            s.BatchSizes.Add(ctx.BatchByEvent.GetValueOrDefault(e.Id));
+                            break;
+                        case EventKind.Failed: s.ProdFailed++; b.Failed++; break;
+                        case EventKind.Rollback: s.ProdRollbacks++; b.Rollbacks++; break;
+                    }
+                }
+                else
+                {
+                    switch (kind)
+                    {
+                        case EventKind.Counted: s.PrevProdDeploys++; break;
+                        case EventKind.Failed: s.PrevProdFailed++; break;
+                        case EventKind.Rollback: s.PrevProdRollbacks++; break;
+                    }
+                }
+            }
+
+            // Stories: once per (product, work item); shipped at the first landing on ANY production
+            // environment (one production suffices — further regions are a business decision, not a
+            // backlog); clock start the earliest commit time any of those grains recorded.
+            var stories = ctx.Grains
+                .Where(g => inScope(g.Product) && ctx.ProdSet.Contains(g.Environment))
+                .GroupBy(g => (g.Product, g.WorkItemKey), StoryKeyComparer.Instance)
+                .Select(g => (
+                    ShippedAt: g.Min(x => x.First),
+                    CommittedAt: g.Where(x => x.CommittedAt is not null).Select(x => x.CommittedAt).Min()));
+            foreach (var story in stories)
+            {
+                var hours = story.CommittedAt is null ? (double?)null : (story.ShippedAt - story.CommittedAt.Value).TotalHours;
+                if (story.ShippedAt >= ctx.RangeFrom)
+                {
+                    s.StoriesShipped++;
+                    var label = Bucket(story.ShippedAt);
+                    s.StoriesByBucket[label] = s.StoriesByBucket.GetValueOrDefault(label) + 1;
+                    if (hours is not null)
+                    {
+                        s.StoriesWithClock++;
+                        s.LeadHours.Add(hours.Value);
+                        (s.LeadHoursByBucket.TryGetValue(label, out var list) ? list : s.LeadHoursByBucket[label] = []).Add(hours.Value);
+                    }
+                }
+                else
+                {
+                    s.PrevStoriesShipped++;
+                    if (hours is not null) { s.PrevStoriesWithClock++; s.PrevLeadHours.Add(hours.Value); }
+                }
+            }
+
+            // Lead time per environment, cumulative from commit: first landing per (product, story, env).
+            foreach (var g in ctx.Grains
+                         .Where(g => inScope(g.Product))
+                         .GroupBy(g => (Product: g.Product, Key: g.WorkItemKey, Env: g.Environment), GrainKeyComparer.Instance))
+            {
+                var first = g.Min(x => x.First);
+                if (first < ctx.RangeFrom) continue;
+                var committed = g.Where(x => x.CommittedAt is not null).Select(x => x.CommittedAt).Min();
+                if (committed is null) continue;
+                (s.LeadHoursByEnvironment.TryGetValue(g.Key.Env, out var list) ? list : s.LeadHoursByEnvironment[g.Key.Env] = [])
+                    .Add((first - committed.Value).TotalHours);
+            }
+
+            foreach (var a in ctx.Approved.Where(a => inScope(a.Product)))
+                (a.ApprovedAt >= ctx.RangeFrom ? s.ApprovalHours : s.PrevApprovalHours).Add((a.ApprovedAt - a.CreatedAt).TotalHours);
+            foreach (var d in ctx.Deployed.Where(d => inScope(d.Product)))
+                (d.DeployedAt >= ctx.RangeFrom ? s.DeployLatencyHours : s.PrevDeployLatencyHours).Add((d.DeployedAt - d.ApprovedAt).TotalHours);
+
+            var active = new HashSet<(string, string)>(
+                ctx.Events.Where(e => inScope(e.Product) && e.DeployedAt >= ctx.RangeFrom
+                    && DeployEventRows.Classify(e, false, false) == EventKind.Counted)
+                    .Select(e => (e.Product, e.Service)),
+                ServiceKeyComparer.Instance);
+            var known = ctx.KnownServices.Where(k => inScope(k.Product)).ToList();
+            s.Services = known.Count;
+            s.StaleServices = known.Count(k => !active.Contains((k.Product, k.Service)));
+
+            return s;
+        }
+    }
+
+    // ── Small helpers ────────────────────────────────────────────────────────────────────────
+
+    private static DeliveryMetricDto Metric(
+        string key, string title, string unit, double? value, int n, string goodWhen, string definition,
+        DeliveryPercentilesDto? percentiles = null, DeliveryDeltaDto? delta = null,
+        List<DeliveryTrendPointDto>? trend = null, DeliveryCoverageDto? coverage = null)
+        => new(key, title, Available: true, Reason: null, unit, value, n, percentiles, delta, trend ?? [], coverage, definition, goodWhen);
+
+    private static DeliveryMetricDto Unavailable(string key, string title, string unit, string goodWhen, string reason, string definition)
+        => new(key, title, Available: false, reason, unit, Value: null, N: 0, null, null, [], null, definition, goodWhen);
+
+    private static DeliveryDeltaDto? Delta(double? value, double? previous, int previousN)
+        => previous is null && previousN == 0 && value is null ? null
+            : new DeliveryDeltaDto(previous, value is not null && previous is not null ? Math.Round(value.Value - previous.Value, 3) : null, previousN);
+
+    private static List<DeliveryTrendPointDto> Trend(List<string> labels, Func<string, (double? Value, int N)> point)
+        => labels.Select(l => { var (v, n) = point(l); return new DeliveryTrendPointDto(l, v, n); }).ToList();
+
+    private static DeliveryCoverageDto Coverage(string label, int numerator, int denominator)
+        => new(label, numerator, denominator, denominator > 0 ? Math.Round(numerator / (double)denominator, 3) : 0);
+
+    private static DeliveryPercentilesDto? Pct(IReadOnlyList<double> values)
+        => values.Count == 0 ? null : new DeliveryPercentilesDto(
+            Round1(Percentiles.Median(values)), Round1(Percentiles.Compute(values, 0.75)), Round1(Percentiles.Compute(values, 0.9)));
+
+    private static double? Hours(double? value) => Round1(value);
+    private static double? Round1(double? value) => value is null ? null : Math.Round(value.Value, 1);
+    private static double? Ratio(int numerator, int denominator) => denominator > 0 ? Math.Round(numerator / (double)denominator, 3) : null;
+
+    private sealed class ServiceKeyComparer : IEqualityComparer<(string Product, string Service)>
+    {
+        public static readonly ServiceKeyComparer Instance = new();
+        public bool Equals((string Product, string Service) x, (string Product, string Service) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Service, y.Service, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Service) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Service.ToUpperInvariant());
+    }
+
+    private sealed class StoryKeyComparer : IEqualityComparer<(string Product, string Key)>
+    {
+        public static readonly StoryKeyComparer Instance = new();
+        public bool Equals((string Product, string Key) x, (string Product, string Key) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Key) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Key.ToUpperInvariant());
+    }
+
+    private sealed class StoryServiceKeyComparer : IEqualityComparer<(string Product, string Service, string Key)>
+    {
+        public static readonly StoryServiceKeyComparer Instance = new();
+        public bool Equals((string Product, string Service, string Key) x, (string Product, string Service, string Key) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Service, y.Service, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Service, string Key) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Service.ToUpperInvariant(), obj.Key.ToUpperInvariant());
+    }
+
+    private sealed class GrainKeyComparer : IEqualityComparer<(string Product, string Key, string Env)>
+    {
+        public static readonly GrainKeyComparer Instance = new();
+        public bool Equals((string Product, string Key, string Env) x, (string Product, string Key, string Env) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Env, y.Env, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Key, string Env) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Key.ToUpperInvariant(), obj.Env.ToUpperInvariant());
+    }
+}

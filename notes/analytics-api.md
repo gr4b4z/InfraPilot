@@ -18,7 +18,11 @@ distributions are tail-heavy and the mean systematically flatters them.
 
 Common query parameters: `from`/`to` (ISO-8601; window is half-open `[from, to)`; default: last
 14 days), `tz` (IANA id, default UTC — buckets are cut at local midnights), `bucket`
-(`day`|`week`, weeks start Monday).
+(`day`|`week`|`month`; weeks start Monday, months on the 1st).
+
+Two kinds of endpoint live here. The first four are **operational**: one product (or one filter) at a
+time, feeding the Analytics page. `/delivery` is the **report**: several products pooled as one
+population, every metric in one envelope, feeding the Delivery metrics page.
 
 ---
 
@@ -204,3 +208,100 @@ The window selects grains by when the first deploy landed.
 **Never compare lead-time figures across periods with materially different coverage** — a
 backfill that reaches deeper into one quarter than another manufactures a trend. The `coverage`
 block exists so that check is always possible.
+
+## GET /delivery
+
+The Delivery metrics report — DORA's four plus the flow, quality, cadence and data-quality numbers
+that make them readable — over a product selection pooled as **one population**.
+
+Query: `products?` (comma-separated; empty = every product; at most 100), `from?`, `to?`,
+`bucket?` (`day`|`week`|`month`, default `week` — the trend grain), `tz?`.
+
+Three rules that differ from the endpoints above:
+
+- **Products are a filter, never a grouping.** Counts sum across the selection; percentiles run over
+  the pooled work items. Per-product medians are not averaged into a portfolio median — they cannot
+  be. The per-product table carries the split.
+- **Production is resolved on the server** and echoed in `production`, so every number in one
+  response measures the same environments: environments **marked** `isProduction` in settings; else
+  unconfigured keys whose **name** reads as production (`prod`, `production`, `prd`, `live`, alone or
+  suffixed; `preprod` never); else the **last environment in order**. `production.source` says which
+  rule fired (`marked` | `default-name` | `convention`), `production.explanation` says it in words.
+  Retired environments are left out of everything here.
+- **A story is shipped once per product**, when it first lands successfully on **any** production
+  environment (ANY semantics, like the matrix's `reachedEnv`), dated by that first landing. The lead
+  time clock stops there. The same ticket key under two products is two stories — the grain carries
+  the product.
+
+### Envelope
+
+Every metric has the same shape, so a reader (or the page) treats them alike:
+
+```jsonc
+{
+  "asOf": "2026-10-26T12:00:00Z",             // computed when — numbers are live, a backfill moves them
+  "range": { "from": "…", "to": "…" },
+  "previousRange": { "from": "…", "to": "…" }, // the equal-length window before, for deltas
+  "products": ["mpt", "extra"],                // the selection, or every product seen
+  "production": { "environments": ["prod-eu", "prod-us"], "source": "marked",
+                  "explanation": "Marked as production stage in Settings → Environments: prod-eu, prod-us." },
+  "definition": { "bucket": "week", "tz": "UTC", "deploy": "…", "production": "…", "storyShipped": "…", "leadTime": "…" },
+  "sections": [
+    { "key": "dora", "title": "DORA", "metrics": [
+      { "key": "deploymentFrequency", "title": "Deployment frequency",
+        "available": true, "reason": null,
+        "unit": "count",                       // count | hours | ratio
+        "value": 42, "n": 42,
+        "percentiles": null,                   // { p50, p75, p90 } for duration metrics
+        "delta": { "previous": 37, "change": 5, "previousN": 37 },
+        "trend": [ { "start": "2026-08-03", "value": 9, "n": 9 } ],
+        "coverage": null,                      // { label, numerator, denominator, ratio } where a number depends on ticket data
+        "definition": "Successful, non-rollback deploys to prod-eu, prod-us in the window …",
+        "goodWhen": "up" },                    // up | down | none — which movement reads as improvement
+      { "key": "changeFailureRate", "available": false,
+        "reason": "Needs production incidents linked to the deployments that caused them. …", "value": null, "n": 0, … }
+    ] },
+    { "key": "flow", … }, { "key": "quality", … }, { "key": "cadence", … }, { "key": "dataQuality", … }
+  ],
+  "leadTimeByEnvironment": [ { "environment": "test", "n": 30, "p50Hours": 9.0, "p75Hours": 20.1, "p90Hours": 41.0 } ],
+  "byProduct": [ { "product": "mpt", "services": 8, "deploys": 30, "previousDeploys": 25, "storiesShipped": 18,
+                   "leadTimeP50Hours": 41.2, "leadTimeCoverage": 0.78, "deployFailureRate": 0.06,
+                   "rollbackRate": 0.03, "storyCoverage": 0.65, "staleServices": 1 } ],
+  "byService": [ { "product": "mpt", "service": "orders", "deploys": 9, "previousDeploys": 7, "perWeek": 4.5,
+                   "lastDeployedAt": "…", "medianIntervalHours": 31.0, "failed": 1, "rollbacks": 0,
+                   "batchSizeP50": 2.0, "leadTimeP50Hours": 38.0 } ]
+}
+```
+
+`available: false` means the installation cannot measure the metric at all — `reason` says what data
+would make it measurable. An available metric with nothing in the window has `n: 0` and a null
+`value`: no data, not "not a feature".
+
+### Metrics
+
+| Section | Key | Value | Notes |
+|---|---|---|---|
+| dora | `deploymentFrequency` | successful, non-rollback deploys to production | redeploys of the running version skipped; trend per bucket |
+| dora | `leadTime` | p50 hours commit → first production deploy per story | `percentiles` p50/p75/p90; `coverage` = stories with a recorded commit time; needs `occurredAt` on `pull-request`/`commit` references |
+| dora | `changeFailureRate` | **unavailable** | the DORA definition needs incidents linked to deploys; the portal records none yet |
+| dora | `timeToRestore` | **unavailable** | needs incidents with a start and a restore time |
+| flow | `approvalLatency` | p50 hours created → approved, candidates approved in the window | waiting on a human; p90 in `percentiles` |
+| flow | `deployLatency` | p50 hours approved → deployed, candidates deployed in the window | waiting on the pipeline |
+| flow | `storiesShipped` | stories whose first production landing fell in the window | `coverage` = deploys carrying a story |
+| quality | `deployFailureRate` | `(failed + rollbacks) / (succeeded + failed)` on production | attempt-based — **not** DORA's change failure rate; the same figure the frequency endpoint calls `changeFailureRate` |
+| quality | `rollbackRate` | `rollbacks / succeeded` on production | |
+| cadence | `staleServices` | services with history but no successful deploy in the window, any environment | `n` = services known |
+| cadence | `batchSize` | p50 work items per successful production deploy, zeros included | below 1 is a coverage smell |
+| dataQuality | `storyCoverage` | deploys (any environment) carrying ≥1 work-item reference ÷ all deploys | the credibility of every per-story number |
+| dataQuality | `leadTimeCoverage` | stories shipped with a commit time ÷ stories shipped | never compare lead time across periods where this differs materially |
+
+`leadTimeByEnvironment` is cumulative from commit per environment (first landing per story and
+environment), settings-ordered — it shows **where** the time goes (`prod` minus `test` ≈ approval
+plus deploy wait). `byService` lists every service known under the selection, stale ones included
+with their true last deploy, ordered by deploys.
+
+**Scale.** Events are filtered to the two windows in SQL; work-item grains are aggregated in SQL to
+their first deploy per (product, service, work item, environment) with the window applied as a
+`HAVING`, so the lead-time path does not load a product's history. Percentile math runs in memory
+over the window's rows.
+

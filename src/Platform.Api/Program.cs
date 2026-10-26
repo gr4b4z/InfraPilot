@@ -252,6 +252,7 @@ builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 builder.Services.AddScoped<AnalyticsService>();
+builder.Services.AddScoped<DeliveryMetricsService>();
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();

@@ -424,21 +424,24 @@ public class AnalyticsService
 
         // Grain: first successful deploy per (work item, environment). Load the full history for
         // matching rows so "first" is genuinely first, then keep grains that landed in the window.
+        // Grain key carries the product: the same ticket key shipped by two products is two grains,
+        // not one dated by whichever product landed first. Invisible per product; it matters as soon
+        // as the filter spans several.
         var rows = (await query.Where(x => x.DeployedAt < rangeTo).ToListAsync(ct))
             .Where(x => IsSucceeded(x.Status))
-            .GroupBy(x => (Key: x.WorkItemKey, Env: x.Environment),
-                comparer: TupleKeyComparer.Instance)
+            .GroupBy(x => (x.Product, Key: x.WorkItemKey, Env: x.Environment),
+                comparer: GrainKeyComparer.Instance)
             .Select(g =>
             {
                 var first = g.OrderBy(x => x.DeployedAt).First();
-                return new { g.Key.Key, g.Key.Env, first.DeployedAt, first.CommittedAt, first.EventId };
+                return new { g.Key.Product, g.Key.Key, g.Key.Env, first.DeployedAt, first.CommittedAt, first.EventId };
             })
             .Where(x => x.DeployedAt >= rangeFrom)
             .ToList();
 
         var measurable = rows.Where(x => x.CommittedAt is not null).ToList();
-        var distinctItems = rows.Select(x => x.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count();
-        var distinctWithStart = measurable.Select(x => x.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        var distinctItems = rows.Select(x => (x.Product, x.Key)).Distinct(ItemKeyComparer.Instance).Count();
+        var distinctWithStart = measurable.Select(x => (x.Product, x.Key)).Distinct(ItemKeyComparer.Instance).Count();
 
         var environments = await OrderEnvironments(
             rows.Select(x => x.Env).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), ct);
@@ -502,71 +505,38 @@ public class AnalyticsService
     private async Task<IReadOnlySet<string>> RetiredAsync(CancellationToken ct)
         => AppSettingsService.RetiredEnvironmentKeys((await SettingsAsync(ct)).Environments);
 
+    // Keys settings don't know get the default name-based stage order (dev < test < staging
+    // < prod) instead of the alphabetical accident that would put "prod" before "test".
     private async Task<List<string>> OrderEnvironments(List<string> universe, CancellationToken ct)
-    {
-        var settings = await SettingsAsync(ct);
-        var configured = settings.Environments.Select(e => e.Key).ToList();
-        var known = configured
-            .Where(k => universe.Contains(k, StringComparer.OrdinalIgnoreCase))
-            .ToList();
-        // Keys settings don't know get the default name-based stage order (dev < test < staging
-        // < prod) instead of the alphabetical accident that would put "prod" before "test".
-        var unknown = universe
-            .Where(k => !configured.Contains(k, StringComparer.OrdinalIgnoreCase))
-            .OrderBy(EnvironmentStage.DefaultRank)
-            .ThenBy(k => k, StringComparer.OrdinalIgnoreCase);
-        known.AddRange(unknown);
-        return known;
-    }
+        => EnvironmentOrdering.Order(universe, (await SettingsAsync(ct)).Environments.Select(e => e.Key));
 
-    private static bool IsSucceeded(string status)
-        => string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase);
-
-    private enum EventKind { Counted, Failed, Rollback, RollbackCounted, Skipped }
+    private static bool IsSucceeded(string status) => DeployEventRows.IsSucceeded(status);
 
     private static EventKind Classify(EventRow e, bool includeRollbacks, bool includeRedeploys)
-    {
-        if (e.IsRollback)
-            return includeRollbacks && IsSucceeded(e.Status) ? EventKind.RollbackCounted : EventKind.Rollback;
-        if (!IsSucceeded(e.Status)) return EventKind.Failed;
-        var isRedeploy = e.PreviousVersion is not null && e.Version == e.PreviousVersion;
-        if (isRedeploy && !includeRedeploys) return EventKind.Skipped;
-        return EventKind.Counted;
-    }
+        => DeployEventRows.Classify(e, includeRollbacks, includeRedeploys);
 
-    /// <summary>All buckets in [from, to) pre-created so charts get explicit zeros, keyed by label.</summary>
+    /// <summary>All buckets in [from, to] pre-created so charts get explicit zeros, keyed by label.</summary>
     private static Dictionary<string, FrequencyBucketMutable> BuildBuckets(
         DateTimeOffset from, DateTimeOffset to, string bucket, TimeZoneInfo tz)
     {
+        // Inclusive of the bucket holding `to`: the day/week charts have always drawn that trailing
+        // bucket, and the delivery report (which wants strict half-open) builds its own labels.
         var result = new Dictionary<string, FrequencyBucketMutable>();
-        var cursor = LocalBucketDate(from, bucket, tz);
+        var cursor = AnalyticsCalendar.LocalBucketDate(from, bucket, tz);
         var endLocal = TimeZoneInfo.ConvertTime(to, tz).Date;
-        var step = bucket == "week" ? 7 : 1;
         while (cursor <= endLocal)
         {
             var label = cursor.ToString("yyyy-MM-dd");
             result[label] = new FrequencyBucketMutable(label);
-            cursor = cursor.AddDays(step);
+            cursor = AnalyticsCalendar.Step(cursor, bucket);
         }
         return result;
     }
 
     private static string BucketStart(DateTimeOffset at, string bucket, TimeZoneInfo tz)
-        => LocalBucketDate(at, bucket, tz).ToString("yyyy-MM-dd");
-
-    private static DateTime LocalBucketDate(DateTimeOffset at, string bucket, TimeZoneInfo tz)
-    {
-        var date = TimeZoneInfo.ConvertTime(at, tz).Date;
-        if (bucket == "week")
-            date = date.AddDays(-(((int)date.DayOfWeek + 6) % 7)); // back to Monday
-        return date;
-    }
+        => AnalyticsCalendar.BucketStart(at, bucket, tz);
 
     private static double? Round(double? value) => value is null ? null : Math.Round(value.Value, 1);
-
-    private sealed record EventRow(
-        Guid Id, string Product, string Service, string Environment,
-        string Version, string? PreviousVersion, bool IsRollback, string Status, DateTimeOffset DeployedAt);
 
     /// <summary>Mutable bucket accumulator; converted to the immutable DTO implicitly.</summary>
     private sealed class FrequencyBucketMutable
@@ -580,16 +550,28 @@ public class AnalyticsService
             => new(b.Start, b.Count, b.Failed, b.Rollbacks);
     }
 
-    private sealed class TupleKeyComparer : IEqualityComparer<(string Key, string Env)>
+    private sealed class GrainKeyComparer : IEqualityComparer<(string Product, string Key, string Env)>
     {
-        public static readonly TupleKeyComparer Instance = new();
-        public bool Equals((string Key, string Env) x, (string Key, string Env) y)
-            => string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase)
+        public static readonly GrainKeyComparer Instance = new();
+        public bool Equals((string Product, string Key, string Env) x, (string Product, string Key, string Env) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase)
             && string.Equals(x.Env, y.Env, StringComparison.OrdinalIgnoreCase);
-        public int GetHashCode((string Key, string Env) obj)
+        public int GetHashCode((string Product, string Key, string Env) obj)
             => HashCode.Combine(
+                obj.Product.ToUpperInvariant(),
                 obj.Key.ToUpperInvariant(),
                 obj.Env.ToUpperInvariant());
+    }
+
+    private sealed class ItemKeyComparer : IEqualityComparer<(string Product, string Key)>
+    {
+        public static readonly ItemKeyComparer Instance = new();
+        public bool Equals((string Product, string Key) x, (string Product, string Key) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Key) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Key.ToUpperInvariant());
     }
 
     /// <summary>Accumulates one matrix row across deploy history and open candidates.</summary>

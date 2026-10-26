@@ -11,7 +11,7 @@ namespace Platform.Api.Features.Analytics;
 /// </summary>
 public static class AnalyticsEndpoints
 {
-    private static readonly string[] Buckets = ["day", "week"];
+    private static readonly string[] Buckets = AnalyticsCalendar.Buckets;
     private static readonly string[] GroupBys = ["none", "service", "environment", "product"];
 
     public static RouteGroupBuilder MapAnalyticsEndpoints(this RouteGroupBuilder group)
@@ -29,7 +29,7 @@ public static class AnalyticsEndpoints
         {
             var resolvedBucket = bucket ?? "day";
             if (!Buckets.Contains(resolvedBucket))
-                return Results.BadRequest(new { error = "'bucket' must be one of: day, week" });
+                return Results.BadRequest(new { error = "'bucket' must be one of: day, week, month" });
             var resolvedGroupBy = groupBy ?? "none";
             if (!GroupBys.Contains(resolvedGroupBy))
                 return Results.BadRequest(new { error = "'groupBy' must be one of: none, service, environment, product" });
@@ -88,7 +88,7 @@ public static class AnalyticsEndpoints
         {
             var resolvedBucket = bucket ?? "week";
             if (!Buckets.Contains(resolvedBucket))
-                return Results.BadRequest(new { error = "'bucket' must be one of: day, week" });
+                return Results.BadRequest(new { error = "'bucket' must be one of: day, week, month" });
             if (!TryResolveTz(tz, out var tzInfo))
                 return Results.BadRequest(new { error = $"unknown timezone '{tz}'" });
 
@@ -97,8 +97,36 @@ public static class AnalyticsEndpoints
                 product, serviceName, env, from, to, resolvedBucket, tzInfo, ct));
         });
 
+        // Delivery metrics: DORA's four plus the flow/quality/cadence/data-quality numbers around them,
+        // over a product selection pooled as one population. Products are a filter, not a grouping;
+        // production is resolved server-side and echoed, so every number measures the same thing.
+        group.MapGet("/delivery", async (
+            DeliveryMetricsService delivery,
+            string? products, DateTimeOffset? from, DateTimeOffset? to,
+            string? bucket, string? tz,
+            CancellationToken ct) =>
+        {
+            var resolvedBucket = bucket ?? "week";
+            if (!Buckets.Contains(resolvedBucket))
+                return Results.BadRequest(new { error = "'bucket' must be one of: day, week, month" });
+            if (!TryResolveTz(tz, out var tzInfo))
+                return Results.BadRequest(new { error = $"unknown timezone '{tz}'" });
+            if (from is not null && to is not null && from >= to)
+                return Results.BadRequest(new { error = "'from' must be before 'to'" });
+
+            var selected = (products ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+            if (selected.Count > MaxProducts)
+                return Results.BadRequest(new { error = $"'products' lists at most {MaxProducts} products" });
+
+            return Results.Ok(await delivery.Get(selected, from, to, resolvedBucket, tzInfo, ct));
+        });
+
         return group;
     }
+
+    private const int MaxProducts = 100;
 
     private static bool TryResolveTz(string? tz, out TimeZoneInfo tzInfo)
     {
