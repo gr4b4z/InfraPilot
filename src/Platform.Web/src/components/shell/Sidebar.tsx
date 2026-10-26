@@ -6,6 +6,7 @@ import {
   CheckCircle,
   ChartColumn,
   Gauge,
+  Siren,
   ChevronLeft,
   ChevronRight,
   Settings,
@@ -130,6 +131,8 @@ const navGroups: NavGroup[] = [
     label: 'System',
     adminOnly: true,
     items: [
+      // Admin-only records behind change failure rate and time to restore on the delivery report.
+      { to: '/incidents', label: 'Incidents', icon: Siren },
       { to: '/webhooks', label: 'Webhooks', icon: Webhook  },
       { to: '/settings', label: 'Settings', icon: Settings },
     ],

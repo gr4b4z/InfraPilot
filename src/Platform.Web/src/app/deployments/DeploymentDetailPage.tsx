@@ -22,6 +22,7 @@ import {
   User,
   Users,
   Workflow,
+  Siren,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
@@ -38,6 +39,7 @@ import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvent
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { DuringFreezeMark } from './FreezeCues';
 import { LastKnownGoodRollback } from './LastKnownGoodRollback';
+import { IncidentForm } from '@/app/incidents/IncidentForm';
 import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
@@ -105,6 +107,8 @@ export function DeploymentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showManualForm, setShowManualForm] = useState(false);
+  const [showIncidentForm, setShowIncidentForm] = useState(false);
+  const [incidentRecorded, setIncidentRecorded] = useState(false);
 
   const promotionsEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Promotions));
   const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
@@ -288,9 +292,20 @@ export function DeploymentDetailPage() {
           {/* Admin-only. Records a NEW deployment based on this one, attributed to the signed-in user
               rather than to CI — the only way to reflect something done by hand. It used to live in the
               deployments drawer; this page replaced that drawer, so the action moved with it. */}
+          {/* Admin-only. Recording from here pre-fills the service, environment and version, which is
+              exactly the attribution that makes change failure rate and time to restore trustworthy. */}
           {isAdmin && (
             <button
-              onClick={() => setShowManualForm((v) => !v)}
+              onClick={() => { setShowIncidentForm((v) => !v); setShowManualForm(false); }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
+              style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
+            >
+              <Siren size={13} /> Record incident
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() => { setShowManualForm((v) => !v); setShowIncidentForm(false); }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
               style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
             >
@@ -299,6 +314,29 @@ export function DeploymentDetailPage() {
           )}
         </div>
       </div>
+
+      {isAdmin && showIncidentForm && (
+        <IncidentForm
+          locked
+          initial={{
+            product: evt.product,
+            service: evt.service,
+            environment: evt.environment,
+            version: evt.version,
+            causedByDeployEventId: evt.id,
+            startedAt: evt.deployedAt,
+          }}
+          onSaved={() => { setShowIncidentForm(false); setIncidentRecorded(true); }}
+          onCancel={() => setShowIncidentForm(false)}
+        />
+      )}
+      {incidentRecorded && (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          Incident recorded — it now counts toward change failure rate and time to restore on the{' '}
+          <Link to="/analytics/delivery" className="underline">Delivery metrics</Link> report; manage it under{' '}
+          <Link to="/incidents" className="underline">Incidents</Link>.
+        </p>
+      )}
 
       {isAdmin && showManualForm && (
         <ManualDeployCard

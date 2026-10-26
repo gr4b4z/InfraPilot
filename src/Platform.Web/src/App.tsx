@@ -14,6 +14,7 @@ import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
 import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { DeliveryMetricsPage } from '@/app/delivery/DeliveryMetricsPage';
+import { IncidentsPage } from '@/app/incidents/IncidentsPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
@@ -129,6 +130,7 @@ function App() {
           {/* "new" route must come before the dynamic :id route so it isn't captured as an id. */}
           <Route path="/release-notes/:product/new" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDraftPage /></FeatureRoute>} />
           <Route path="/release-notes/:product/:id" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDetailPage /></FeatureRoute>} />
+          <Route path="/incidents" element={<AdminRoute><IncidentsPage /></AdminRoute>} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>}>

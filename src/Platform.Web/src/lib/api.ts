@@ -1580,6 +1580,41 @@ class ApiClient {
     return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
   }
 
+  // ── Incidents (admin) ───────────────────────────────────────────────────
+
+  listIncidents(params?: {
+    product?: string;
+    environment?: string;
+    open?: boolean;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.open !== undefined) entries.push(['open', String(params.open)]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.offset) entries.push(['offset', String(params.offset)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<IncidentList>(`/incidents${query}`);
+  }
+
+  createIncident(payload: IncidentInput) {
+    return this.request<Incident>(`/incidents`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateIncident(id: string, payload: IncidentInput) {
+    return this.request<Incident>(`/incidents/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  deleteIncident(id: string) {
+    return this.request<void>(`/incidents/${id}`, { method: 'DELETE' });
+  }
+
   /**
    * The Delivery metrics report: DORA plus flow, quality, cadence and data-quality metrics over the
    * given products pooled as one population (empty = every product), with per-product and
@@ -3190,6 +3225,51 @@ export interface LeadTimeResponse {
   buckets: { start: string; environment: string; n: number; p50Hours: number | null }[];
   slowest: { workItemKey: string; environment: string; hours: number; deployEventId: string }[];
   range: AnalyticsRange;
+}
+
+// ── Incidents ─────────────────────────────────────────────────────────────
+
+/**
+ * A production incident as delivery metrics need it — a pointer to the real incident (source,
+ * externalId, url) plus what the metrics read: where, when it started, when service was restored,
+ * and which deploy caused it when known. Admin-only records; the aggregates are on the report.
+ */
+export interface Incident {
+  id: string;
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationHours: number | null;
+  version: string | null;
+  causedByDeployEventId: string | null;
+  source: string;
+  externalId: string | null;
+  url: string | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+export interface IncidentInput {
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt?: string | null;
+  version?: string | null;
+  causedByDeployEventId?: string | null;
+  source?: string | null;
+  externalId?: string | null;
+  url?: string | null;
+}
+
+export interface IncidentList {
+  items: Incident[];
+  total: number;
 }
 
 // ── Delivery metrics ──────────────────────────────────────────────────────
