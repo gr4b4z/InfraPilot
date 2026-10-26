@@ -3,6 +3,7 @@ using Platform.Api.Features.Analytics.Models;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Settings;
+using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Analytics;
@@ -34,9 +35,10 @@ public class DeliveryMetricsService
         _settings = settings;
     }
 
+    /// <param name="includeIncidents">Whether to list the incidents behind the figures — admins only.</param>
     public async Task<DeliveryMetricsResponseDto> Get(
         IReadOnlyList<string> products, DateTimeOffset? from, DateTimeOffset? to,
-        string bucket, TimeZoneInfo tz, CancellationToken ct)
+        string bucket, TimeZoneInfo tz, bool includeIncidents, CancellationToken ct)
     {
         var asOf = DateTimeOffset.UtcNow;
         var rangeTo = to ?? asOf;
@@ -45,6 +47,9 @@ public class DeliveryMetricsService
         var prevFrom = rangeFrom - span;
 
         var settings = await _settings.GetSettings(ct);
+        var analytics = (settings.Analytics ?? AnalyticsSettingsDto.Default).Clean();
+        var tolerance = TimeSpan.FromMinutes(analytics.RolloutToleranceMinutes);
+        var window = analytics.AttributionWindowDays > 0 ? TimeSpan.FromDays(analytics.AttributionWindowDays) : (TimeSpan?)null;
         var retired = AppSettingsService.RetiredEnvironmentKeys(settings.Environments);
         var configuredKeys = settings.Environments.Select(e => e.Key).ToList();
         var filter = products.Count > 0 ? products.Distinct(StringComparer.OrdinalIgnoreCase).ToList() : null;
@@ -117,6 +122,13 @@ public class DeliveryMetricsService
             .Select(g => new { g.Key.Product, g.Key.Service, Last = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
 
+        // Incidents that can touch either window: started in it (allowing the rollout tolerance
+        // before a deploy at the window start) or restored in it — a long outage can start before.
+        var incidentQuery = _db.Incidents.AsNoTracking()
+            .Where(i => i.StartedAt >= prevFrom - tolerance || (i.ResolvedAt != null && i.ResolvedAt >= prevFrom && i.ResolvedAt < rangeTo));
+        if (filter is not null) incidentQuery = incidentQuery.Where(i => EF.Parameter(filter).Contains(i.Product));
+        var incidentRows = await incidentQuery.ToListAsync(ct);
+
         // ── Scope ────────────────────────────────────────────────────────────────────────────
 
         var universe = events.Select(e => e.Environment)
@@ -127,6 +139,8 @@ public class DeliveryMetricsService
         var production = EnvironmentOrdering.ResolveProduction(
             ordered, settings.Environments.Select(e => (e.Key, e.IsProduction)));
         var prodSet = new HashSet<string>(production.Environments, StringComparer.OrdinalIgnoreCase);
+
+        var incidents = await AttributeAsync(incidentRows, events, prodSet, retired, rangeTo, tolerance, window, ct);
 
         var productList = filter
             ?? events.Select(e => e.Product)
@@ -142,7 +156,7 @@ public class DeliveryMetricsService
         var ctx = new Inputs(events, grains, batchByEvent, approved.Select(a => (a.Product, a.CreatedAt, a.ApprovedAt)).ToList(),
             deployed.Select(d => (d.Product, d.ApprovedAt, d.DeployedAt)).ToList(),
             knownServices.Select(k => (k.Product, k.Service, k.Last)).ToList(),
-            prodSet, rangeFrom, rangeTo, bucket, tz, labels);
+            incidents, prodSet, rangeFrom, rangeTo, bucket, tz, labels);
 
         var all = Scope.Compute(ctx, _ => true);
 
@@ -173,14 +187,28 @@ public class DeliveryMetricsService
                 trend: Trend(labels, l => (Hours(Percentiles.Median(all.LeadHoursByBucket.GetValueOrDefault(l, []))), all.LeadHoursByBucket.GetValueOrDefault(l, []).Count)),
                 coverage: Coverage("stories shipped with a recorded commit time", all.StoriesWithClock, all.StoriesShipped)),
 
-            Unavailable("changeFailureRate", "Change failure rate", "ratio", "down",
-                "Needs production incidents linked to the deployments that caused them. The portal records no incidents yet. " +
-                "Until it does, Deploy failure rate (under Quality) counts failed attempts and rollbacks instead.",
-                $"Deploys to {prodLabel} that caused an incident ÷ deploys to {prodLabel} in the window — the DORA definition."),
+            Metric("changeFailureRate", "Change failure rate", "ratio",
+                all.AnyIncidents ? Ratio(all.FailedDeploys, all.ProdDeploys) : null, all.ProdDeploys, "down",
+                $"Deploys to {prodLabel} that caused at least one recorded incident ÷ successful deploys to {prodLabel} in the window — the DORA " +
+                "definition. An incident is tied to the deploy it names, else to the first deploy of the version it names, else to the deploy " +
+                $"that was live when it started (within {analytics.RolloutToleranceMinutes} min of rollout tolerance)" +
+                (window is null ? "; no cap on how long after a deploy an incident still counts." : $"; an incident more than {analytics.AttributionWindowDays} days after a deploy no longer counts against it.") +
+                " Shows — until at least one incident is recorded for the selection; see Incidents (admins) and Settings → Delivery Metrics.",
+                delta: all.AnyIncidents ? Delta(Ratio(all.FailedDeploys, all.ProdDeploys), Ratio(all.PrevFailedDeploys, all.PrevProdDeploys), all.PrevProdDeploys) : null,
+                trend: all.AnyIncidents ? Trend(labels, l =>
+                {
+                    var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
+                    return (Ratio(b.FailedDeploys, b.Counted), b.Counted);
+                }) : null,
+                coverage: Coverage("incidents tied to a deploy", all.IncidentsAttributed, all.IncidentsStarted)),
 
-            Unavailable("timeToRestore", "Time to restore service", "hours", "down",
-                "Needs production incidents with a start and a restore time. The portal records no incidents yet.",
-                $"Median hours from an incident starting on {prodLabel} to service being restored, for incidents resolved in the window."),
+            Metric("timeToRestore", "Time to restore service", "hours", Hours(Percentiles.Median(all.RestoreHours)), all.RestoreHours.Count, "down",
+                $"Median hours from an incident starting on {prodLabel} to service being restored, for incidents restored inside the window. " +
+                "Open incidents are not counted until they close — see coverage. Percentiles, never averages; p90 in percentiles.",
+                percentiles: Pct(all.RestoreHours),
+                delta: Delta(Hours(Percentiles.Median(all.RestoreHours)), Hours(Percentiles.Median(all.PrevRestoreHours)), all.PrevRestoreHours.Count),
+                trend: Trend(labels, l => (Hours(Percentiles.Median(all.RestoreHoursByBucket.GetValueOrDefault(l, []))), all.RestoreHoursByBucket.GetValueOrDefault(l, []).Count)),
+                coverage: Coverage("incidents with a restore time (open ones excluded)", all.RestoreHours.Count, all.RestoreHours.Count + all.IncidentsOpen)),
         };
 
         var flow = new List<DeliveryMetricDto>
@@ -249,6 +277,13 @@ public class DeliveryMetricsService
                 "per-story number on this page: at 65% coverage they undercount by about a third.",
                 delta: Delta(Ratio(all.DeploysWithStory, all.Deployments), null, 0)),
 
+            Metric("incidentAttribution", "Incident attribution", "ratio", Ratio(all.IncidentsExplicit, all.IncidentsStarted), all.IncidentsStarted, "up",
+                $"Incidents on {prodLabel} started in the window that name the deploy or the version that caused them ÷ all such incidents " +
+                $"(explicit {all.IncidentsExplicit}, inferred from what was live {all.IncidentsInferred}, outside the attribution window {all.IncidentsOutsideWindow}, " +
+                $"unattributed {all.IncidentsUnattributed}). Inferred attribution is a guess that gets worse the busier a service is — push " +
+                "responders and producers to name the version.",
+                coverage: Coverage("incidents tied to a deploy at all", all.IncidentsAttributed, all.IncidentsStarted)),
+
             Metric("leadTimeCoverage", "Lead time coverage", "ratio", Ratio(all.StoriesWithClock, all.StoriesShipped), all.StoriesShipped, "up",
                 $"Stories shipped to {prodLabel} in the window whose producer sent a commit time ÷ stories shipped. Never compare lead time " +
                 "across periods with materially different coverage.",
@@ -276,7 +311,10 @@ public class DeliveryMetricsService
                 Ratio(s.ProdFailed + s.ProdRollbacks, s.ProdDeploys + s.ProdFailed),
                 Ratio(s.ProdRollbacks, s.ProdDeploys),
                 Ratio(s.DeploysWithStory, s.Deployments),
-                s.StaleServices);
+                s.StaleServices,
+                s.IncidentsStarted,
+                s.AnyIncidents ? Ratio(s.FailedDeploys, s.ProdDeploys) : null,
+                Hours(Percentiles.Median(s.RestoreHours)));
         }).ToList();
 
         var byService = BuildServiceRows(ctx, span);
@@ -318,7 +356,115 @@ public class DeliveryMetricsService
                 Production: explanation,
                 StoryShipped: "A story is shipped when it first lands successfully on any production environment, dated by that first landing; counted once per product.",
                 LeadTime: "Clock start: pull-request.occurredAt, fallback commit.occurredAt, as recorded on the work item. Clock stop: the story's first successful deploy to any production environment. Stories without a commit time are excluded and reported in coverage."),
-            sections, leadByEnv, byProduct, byService);
+            sections, leadByEnv, byProduct, byService,
+            includeIncidents
+                ? incidents
+                    .Where(i => (i.StartedAt >= rangeFrom && i.StartedAt < rangeTo) || (i.ResolvedAt >= rangeFrom && i.ResolvedAt < rangeTo))
+                    .OrderByDescending(i => i.StartedAt)
+                    .Select(i => new DeliveryIncidentDto(i.Id, i.Product, i.Service, i.Environment, i.StartedAt, i.ResolvedAt,
+                        i.ResolvedAt is null ? null : Round1((i.ResolvedAt.Value - i.StartedAt).TotalHours),
+                        i.Attribution, i.DeployEventId, i.DeployedAt, i.Version, i.Url))
+                    .ToList()
+                : null);
+    }
+
+    // ── Incident attribution ─────────────────────────────────────────────────────────────────
+
+    /// <summary>An incident with the deploy the report holds responsible, if any.</summary>
+    /// <param name="DeployEventId">Counts against this deploy for change failure rate — null for
+    /// <c>none</c> and <c>outside-window</c>, and for an explicit deploy the report could not find.</param>
+    private sealed record AttributedIncident(
+        Guid Id, string Product, string Service, string Environment,
+        DateTimeOffset StartedAt, DateTimeOffset? ResolvedAt,
+        string Attribution, Guid? DeployEventId, DateTimeOffset? DeployedAt, string? Version, string? Url);
+
+    /// <summary>
+    /// Ties each production incident to a deploy, at query time — a stored link would go stale the
+    /// moment a late deploy event or a backfill arrived. In order: the deploy the incident names;
+    /// the first deploy of the version it names; the deploy that was live when it started (latest
+    /// successful, non-rollback deploy at or before the start plus the rollout tolerance); nothing.
+    /// A deploy after the start is a candidate remediation, never a cause. The attribution window
+    /// caps how long after a deploy an inferred or version match still counts; a deploy the
+    /// reporter named always counts.
+    /// </summary>
+    private async Task<List<AttributedIncident>> AttributeAsync(
+        List<Features.Incidents.Models.Incident> rows, List<EventRow> windowEvents, HashSet<string> prodSet,
+        IReadOnlySet<string> retired, DateTimeOffset rangeTo, TimeSpan tolerance, TimeSpan? window, CancellationToken ct)
+    {
+        var incidents = rows
+            .Where(i => prodSet.Contains(i.Environment) && !retired.Contains(i.Environment))
+            .ToList();
+        if (incidents.Count == 0) return [];
+
+        // Candidate deploys: the full successful history of the services the incidents name — the
+        // live version at an incident's start can predate the report's windows. Few services, so a
+        // product/service/environment IN filter is cheap; exact triples are matched in memory.
+        var products = incidents.Select(i => i.Product).Distinct().ToList();
+        var services = incidents.Select(i => i.Service).Distinct().ToList();
+        var environments = incidents.Select(i => i.Environment).Distinct().ToList();
+        var named = incidents.Where(i => i.CausedByDeployEventId is not null).Select(i => i.CausedByDeployEventId!.Value).Distinct().ToList();
+        var candidates = (await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.DeployedAt < rangeTo && e.Status == "succeeded")
+                .Where(e => (EF.Parameter(products).Contains(e.Product) && EF.Parameter(services).Contains(e.Service) && EF.Parameter(environments).Contains(e.Environment))
+                            || EF.Parameter(named).Contains(e.Id))
+                .Select(e => new EventRow(e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion, e.IsRollback, e.Status, e.DeployedAt))
+                .ToListAsync(ct))
+            .Concat(windowEvents)
+            .GroupBy(e => e.Id).Select(g => g.First())
+            .ToList();
+        var byId = candidates.ToDictionary(e => e.Id);
+        var byTriple = candidates
+            .GroupBy(e => (e.Product, e.Service, e.Environment), TripleComparer.Instance)
+            .ToDictionary(g => g.Key, g => g.OrderBy(e => e.DeployedAt).ToList(), TripleComparer.Instance);
+
+        var result = new List<AttributedIncident>(incidents.Count);
+        foreach (var i in incidents)
+        {
+            var history = byTriple.GetValueOrDefault((i.Product, i.Service, i.Environment)) ?? [];
+            var latestStart = i.StartedAt + tolerance;
+
+            if (i.CausedByDeployEventId is { } namedId)
+            {
+                var evt = byId.GetValueOrDefault(namedId);
+                result.Add(new AttributedIncident(i.Id, i.Product, i.Service, i.Environment, i.StartedAt, i.ResolvedAt,
+                    "explicit", evt?.Id, evt?.DeployedAt, i.Version ?? evt?.Version, i.Url));
+                continue;
+            }
+
+            EventRow? match = null;
+            var attribution = "none";
+            if (!string.IsNullOrWhiteSpace(i.Version))
+            {
+                match = history.FirstOrDefault(e => !e.IsRollback && e.DeployedAt <= latestStart
+                    && string.Equals(e.Version, i.Version, StringComparison.OrdinalIgnoreCase));
+                if (match is not null) attribution = "version";
+            }
+            if (match is null)
+            {
+                match = history.LastOrDefault(e => !e.IsRollback && e.DeployedAt <= latestStart);
+                if (match is not null) attribution = "inferred";
+            }
+            if (match is not null && window is not null && i.StartedAt - match.DeployedAt > window.Value)
+            {
+                result.Add(new AttributedIncident(i.Id, i.Product, i.Service, i.Environment, i.StartedAt, i.ResolvedAt,
+                    "outside-window", null, match.DeployedAt, i.Version ?? match.Version, i.Url));
+                continue;
+            }
+            result.Add(new AttributedIncident(i.Id, i.Product, i.Service, i.Environment, i.StartedAt, i.ResolvedAt,
+                attribution, match?.Id, match?.DeployedAt, i.Version ?? match?.Version, i.Url));
+        }
+        return result;
+    }
+
+    private sealed class TripleComparer : IEqualityComparer<(string Product, string Service, string Environment)>
+    {
+        public static readonly TripleComparer Instance = new();
+        public bool Equals((string Product, string Service, string Environment) x, (string Product, string Service, string Environment) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Service, y.Service, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Environment, y.Environment, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Service, string Environment) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Service.ToUpperInvariant(), obj.Environment.ToUpperInvariant());
     }
 
     // ── Per-service table ────────────────────────────────────────────────────────────────────
@@ -348,6 +494,11 @@ public class DeliveryMetricsService
             .Where(x => x.First >= ctx.RangeFrom && x.committed is not null)
             .GroupBy(x => (x.Product, x.Service), ServiceKeyComparer.Instance)
             .ToDictionary(g => g.Key, g => g.Select(x => (x.First - x.committed!.Value).TotalHours).ToList(), ServiceKeyComparer.Instance);
+
+        var incidentsByService = ctx.Incidents
+            .Where(i => i.StartedAt >= ctx.RangeFrom && i.StartedAt < ctx.RangeTo)
+            .GroupBy(i => (i.Product, i.Service), ServiceKeyComparer.Instance)
+            .ToDictionary(g => g.Key, g => g.Count(), ServiceKeyComparer.Instance);
 
         var seen = new HashSet<(string, string)>(ServiceKeyComparer.Instance);
         foreach (var group in current.GroupBy(e => (e.Product, e.Service), ServiceKeyComparer.Instance))
@@ -382,7 +533,8 @@ public class DeliveryMetricsService
                 span.TotalDays > 0 ? Math.Round(counted / span.TotalDays * 7, 2) : 0,
                 last, Round1(Percentiles.Median(intervals)), failed, rollbacks,
                 Round1(Percentiles.Median(batch)),
-                Hours(Percentiles.Median(leadByService.GetValueOrDefault(group.Key, [])))));
+                Hours(Percentiles.Median(leadByService.GetValueOrDefault(group.Key, []))),
+                incidentsByService.GetValueOrDefault(group.Key)));
         }
 
         // Stale: known, nothing in the window.
@@ -391,7 +543,7 @@ public class DeliveryMetricsService
             if (seen.Contains((k.Product, k.Service))) continue;
             rows.Add(new DeliveryServiceRowDto(
                 k.Product, k.Service, 0, prevCounted.GetValueOrDefault((k.Product, k.Service)), 0,
-                k.Last, null, 0, 0, null, null));
+                k.Last, null, 0, 0, null, null, incidentsByService.GetValueOrDefault((k.Product, k.Service))));
         }
 
         return rows
@@ -412,6 +564,7 @@ public class DeliveryMetricsService
         List<(string Product, DateTimeOffset CreatedAt, DateTimeOffset ApprovedAt)> Approved,
         List<(string Product, DateTimeOffset ApprovedAt, DateTimeOffset DeployedAt)> Deployed,
         List<(string Product, string Service, DateTimeOffset Last)> KnownServices,
+        List<AttributedIncident> Incidents,
         HashSet<string> ProdSet,
         DateTimeOffset RangeFrom,
         DateTimeOffset RangeTo,
@@ -424,6 +577,8 @@ public class DeliveryMetricsService
         public int Counted;
         public int Failed;
         public int Rollbacks;
+        // Counted deploys in this bucket with at least one attributed incident.
+        public int FailedDeploys;
     }
 
     /// <summary>Everything the metrics read, for one product predicate — the whole selection or one product.</summary>
@@ -433,6 +588,11 @@ public class DeliveryMetricsService
         public int Deployments, DeploysWithStory;
         public int StoriesShipped, PrevStoriesShipped, StoriesWithClock, PrevStoriesWithClock;
         public int Services, StaleServices;
+        public bool AnyIncidents;
+        public int FailedDeploys, PrevFailedDeploys;
+        public int IncidentsStarted, IncidentsAttributed, IncidentsExplicit, IncidentsInferred, IncidentsOutsideWindow, IncidentsUnattributed, IncidentsOpen;
+        public List<double> RestoreHours = [], PrevRestoreHours = [];
+        public Dictionary<string, List<double>> RestoreHoursByBucket = new();
         public List<double> LeadHours = [], PrevLeadHours = [], BatchSizes = [];
         public List<double> ApprovalHours = [], PrevApprovalHours = [], DeployLatencyHours = [], PrevDeployLatencyHours = [];
         public Dictionary<string, int> ProdDeploysByBucket = new(), StoriesByBucket = new();
@@ -540,6 +700,58 @@ public class DeliveryMetricsService
             s.Services = known.Count;
             s.StaleServices = known.Count(k => !active.Contains((k.Product, k.Service)));
 
+            // Incidents: change failure rate counts a deploy once however many incidents it caused;
+            // time to restore counts every incident that closed in the window.
+            var scoped = ctx.Incidents.Where(i => inScope(i.Product)).ToList();
+            s.AnyIncidents = scoped.Count > 0;
+            var failedDeployIds = new HashSet<Guid>();
+            var prevFailedDeployIds = new HashSet<Guid>();
+            var countedInWindow = ctx.Events
+                .Where(e => inScope(e.Product) && ctx.ProdSet.Contains(e.Environment)
+                    && DeployEventRows.Classify(e, false, false) == EventKind.Counted)
+                .ToDictionary(e => e.Id);
+            foreach (var i in scoped)
+            {
+                var startedInWindow = i.StartedAt >= ctx.RangeFrom && i.StartedAt < ctx.RangeTo;
+                if (startedInWindow)
+                {
+                    s.IncidentsStarted++;
+                    switch (i.Attribution)
+                    {
+                        case "explicit": case "version": s.IncidentsExplicit++; s.IncidentsAttributed++; break;
+                        case "inferred": s.IncidentsInferred++; s.IncidentsAttributed++; break;
+                        case "outside-window": s.IncidentsOutsideWindow++; break;
+                        default: s.IncidentsUnattributed++; break;
+                    }
+                    if (i.ResolvedAt is null) s.IncidentsOpen++;
+                }
+                if (i.ResolvedAt is { } resolved && resolved >= ctx.RangeFrom - (ctx.RangeTo - ctx.RangeFrom) && resolved < ctx.RangeTo)
+                {
+                    var hours = (resolved - i.StartedAt).TotalHours;
+                    if (resolved >= ctx.RangeFrom)
+                    {
+                        s.RestoreHours.Add(hours);
+                        var label = Bucket(resolved);
+                        (s.RestoreHoursByBucket.TryGetValue(label, out var list) ? list : s.RestoreHoursByBucket[label] = []).Add(hours);
+                    }
+                    else s.PrevRestoreHours.Add(hours);
+                }
+                if (i.DeployEventId is { } deployId && countedInWindow.TryGetValue(deployId, out var deploy))
+                {
+                    if (deploy.DeployedAt >= ctx.RangeFrom)
+                    {
+                        if (failedDeployIds.Add(deployId))
+                        {
+                            var b = s.BucketCounts.TryGetValue(Bucket(deploy.DeployedAt), out var bc) ? bc : s.BucketCounts[Bucket(deploy.DeployedAt)] = new BucketCount();
+                            b.FailedDeploys++;
+                        }
+                    }
+                    else prevFailedDeployIds.Add(deployId);
+                }
+            }
+            s.FailedDeploys = failedDeployIds.Count;
+            s.PrevFailedDeploys = prevFailedDeployIds.Count;
+
             return s;
         }
     }
@@ -551,9 +763,6 @@ public class DeliveryMetricsService
         DeliveryPercentilesDto? percentiles = null, DeliveryDeltaDto? delta = null,
         List<DeliveryTrendPointDto>? trend = null, DeliveryCoverageDto? coverage = null)
         => new(key, title, Available: true, Reason: null, unit, value, n, percentiles, delta, trend ?? [], coverage, definition, goodWhen);
-
-    private static DeliveryMetricDto Unavailable(string key, string title, string unit, string goodWhen, string reason, string definition)
-        => new(key, title, Available: false, reason, unit, Value: null, N: 0, null, null, [], null, definition, goodWhen);
 
     private static DeliveryDeltaDto? Delta(double? value, double? previous, int previousN)
         => previous is null && previousN == 0 && value is null ? null

@@ -218,16 +218,18 @@ public class DeliveryMetricsEndpointsTests : IClassFixture<DeliveryMetricsEndpoi
     }
 
     [Fact]
-    public async Task Delivery_IncidentMetrics_AreUnavailableWithAReason()
+    public async Task Delivery_IncidentMetrics_ShowNothingUntilAnIncidentIsRecorded()
     {
-        var body = await GetJson($"/api/analytics/delivery?products={Unique("inc")}&{Window}");
+        var p = Unique("inc");
+        await IngestAsync(p, "api", "prod", "v1", "2026-08-02T10:00:00Z");
+        var body = await GetJson($"/api/analytics/delivery?products={p}&{Window}");
 
         foreach (var key in new[] { "changeFailureRate", "timeToRestore" })
         {
             var m = Metric(body, "dora", key);
-            Assert.False(m.GetProperty("available").GetBoolean());
-            Assert.Contains("incident", m.GetProperty("reason").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.True(m.GetProperty("available").GetBoolean());
             Assert.Equal(JsonValueKind.Null, m.GetProperty("value").ValueKind);
+            Assert.Contains("incident", m.GetProperty("definition").GetString(), StringComparison.OrdinalIgnoreCase);
         }
     }
 
@@ -259,7 +261,7 @@ public class DeliveryMetricsEndpointsTests : IClassFixture<DeliveryMetricsEndpoi
             Assert.False(string.IsNullOrWhiteSpace(m.GetProperty("definition").GetString()));
             Assert.Contains(m.GetProperty("goodWhen").GetString(), new[] { "up", "down", "none" });
         }
-        Assert.Equal(13, keys.Count);
+        Assert.Equal(14, keys.Count);
         Assert.Equal(keys.Count, keys.Distinct().Count());
         Assert.NotEqual(default, body.GetProperty("asOf").GetDateTimeOffset());
     }

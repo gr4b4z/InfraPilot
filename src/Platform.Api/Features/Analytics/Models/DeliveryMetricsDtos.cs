@@ -75,7 +75,10 @@ public record DeliveryProductRowDto(
     double? DeployFailureRate,
     double? RollbackRate,
     double? StoryCoverage,
-    int StaleServices);
+    int StaleServices,
+    int Incidents,
+    double? ChangeFailureRate,
+    double? TimeToRestoreP50Hours);
 
 public record DeliveryServiceRowDto(
     string Product,
@@ -88,7 +91,28 @@ public record DeliveryServiceRowDto(
     int Failed,
     int Rollbacks,
     double? BatchSizeP50,
-    double? LeadTimeP50Hours);
+    double? LeadTimeP50Hours,
+    int Incidents);
+
+/// <summary>
+/// One incident as the report saw it — the admin-only drill-down behind change failure rate and time
+/// to restore. <paramref name="Attribution"/>: <c>explicit</c> (deploy named), <c>version</c>,
+/// <c>inferred</c> (live at start), <c>outside-window</c> (a deploy was found but older than the
+/// attribution window), <c>none</c>.
+/// </summary>
+public record DeliveryIncidentDto(
+    Guid Id,
+    string Product,
+    string Service,
+    string Environment,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? ResolvedAt,
+    double? DurationHours,
+    string Attribution,
+    Guid? DeployEventId,
+    DateTimeOffset? DeployedAt,
+    string? Version,
+    string? Url);
 
 public record DeliveryLeadTimeEnvDto(string Environment, int N, double? P50Hours, double? P75Hours, double? P90Hours);
 
@@ -106,4 +130,7 @@ public record DeliveryMetricsResponseDto(
     // Lead time per environment (cumulative from commit), settings-ordered — where the time goes.
     List<DeliveryLeadTimeEnvDto> LeadTimeByEnvironment,
     List<DeliveryProductRowDto> ByProduct,
-    List<DeliveryServiceRowDto> ByService);
+    List<DeliveryServiceRowDto> ByService,
+    // The incidents behind the DORA figures. Null for non-admins: the aggregates are for everyone,
+    // the records are not.
+    List<DeliveryIncidentDto>? Incidents);

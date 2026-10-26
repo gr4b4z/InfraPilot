@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Check, ChevronDown, Download, Gauge, Search } from 'lucide-react';
-import { api, type DeliveryMetricsResponse, type DeliverySection, type DeliveryServiceRow } from '@/lib/api';
+import { api, type DeliveryIncident, type DeliveryMetricsResponse, type DeliverySection, type DeliveryServiceRow } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
@@ -183,6 +183,8 @@ export function DeliveryMetricsPage() {
           {report.byProduct.length > 1 && <ProductTable report={report} />}
 
           <ServiceTable rows={report.byService} showProduct={report.products.length > 1} />
+
+          {report.incidents && <IncidentTable incidents={report.incidents} showProduct={report.products.length > 1} />}
 
           <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
             Computed live from deploy events and promotions at {fmtDateTime(report.asOf)}; a later backfill (commit times,
@@ -434,6 +436,9 @@ function ProductTable({ report }: { report: DeliveryMetricsResponse }) {
               <th className={th}>Story coverage</th>
               <th className={th}>Lead-time coverage</th>
               <th className={th}>Stale services</th>
+              <th className={th}>Incidents</th>
+              <th className={th}>Change failure</th>
+              <th className={th}>Restore p50</th>
             </tr>
           </thead>
           <tbody>
@@ -455,6 +460,9 @@ function ProductTable({ report }: { report: DeliveryMetricsResponse }) {
                 <td className={td} style={{ color: (r.storyCoverage ?? 1) < 0.5 ? 'var(--warning)' : undefined }}>{fmtRatio(r.storyCoverage)}</td>
                 <td className={td} style={{ color: (r.leadTimeCoverage ?? 1) < 0.5 ? 'var(--warning)' : undefined }}>{fmtRatio(r.leadTimeCoverage)}</td>
                 <td className={td} style={{ color: r.staleServices > 0 ? 'var(--warning)' : undefined }}>{r.staleServices} / {r.services}</td>
+                <td className={td} style={{ color: r.incidents > 0 ? 'var(--danger)' : undefined }}>{r.incidents}</td>
+                <td className={td}>{fmtRatio(r.changeFailureRate)}</td>
+                <td className={td}>{fmtHours(r.timeToRestoreP50Hours)}</td>
               </tr>
             ))}
           </tbody>
@@ -509,6 +517,7 @@ function ServiceTable({ rows, showProduct }: { rows: DeliveryServiceRow[]; showP
               <th className={th}>Rollbacks</th>
               <th className={th}>Batch p50</th>
               <th className={th}>Lead time p50</th>
+              <th className={th}>Incidents</th>
             </tr>
           </thead>
           <tbody>
@@ -534,6 +543,7 @@ function ServiceTable({ rows, showProduct }: { rows: DeliveryServiceRow[]; showP
                 <td className={td} style={{ color: r.rollbacks > 0 ? 'var(--warning)' : undefined }}>{r.rollbacks}</td>
                 <td className={td}>{fmtCount(r.batchSizeP50)}</td>
                 <td className={td}>{fmtHours(r.leadTimeP50Hours)}</td>
+                <td className={td} style={{ color: r.incidents > 0 ? 'var(--danger)' : undefined }}>{r.incidents}</td>
               </tr>
             ))}
           </tbody>
@@ -544,6 +554,75 @@ function ServiceTable({ rows, showProduct }: { rows: DeliveryServiceRow[]; showP
           {showAll ? `Show top ${SERVICE_TOP_N}` : `Show all ${rows.length}`}
         </button>
       )}
+    </section>
+  );
+}
+
+const ATTRIBUTION_LABEL: Record<DeliveryIncident['attribution'], string> = {
+  explicit: 'deploy named',
+  version: 'by version',
+  inferred: 'live at start',
+  'outside-window': 'outside window',
+  none: 'unattributed',
+};
+
+/**
+ * The incidents behind change failure rate and time to restore, with how each was tied to a deploy.
+ * Admin-only: the API leaves the list out for everyone else, so this never renders for them.
+ */
+function IncidentTable({ incidents, showProduct }: { incidents: DeliveryIncident[]; showProduct: boolean }) {
+  if (incidents.length === 0) return null;
+  const th = 'text-left font-medium px-2 py-1.5 whitespace-nowrap';
+  const td = 'px-2 py-1.5 whitespace-nowrap tabular-nums';
+  return (
+    <section className="rounded-xl border p-4" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}>
+      <h2 className="text-[13px] font-semibold mb-1 flex items-center gap-1.5">
+        Incidents in this window
+        <InfoPopover
+          label="Incidents in this window"
+          content={{
+            what: 'The production incidents behind change failure rate and time to restore, and how each was tied to a deployment.',
+            how: '"deploy named" and "by version" are explicit; "live at start" is the deploy that was running when the incident began, within the rollout tolerance; "outside window" means a deploy was found but older than the attribution window, so it is not counted as a change failure; "unattributed" found no prior deploy. Settings → Delivery Metrics holds the two knobs.',
+            why: 'Push producers and responders towards naming the version or the deploy: inferred attribution is a guess that gets worse the busier a service is.',
+          }}
+        />
+        <span className="font-normal text-[11px] ml-1" style={{ color: 'var(--text-muted)' }}>admins only</span>
+      </h2>
+      <div className="overflow-x-auto -mx-2">
+        <table className="w-full text-[12px]">
+          <thead style={{ color: 'var(--text-muted)' }}>
+            <tr>
+              <th className={th}>Started</th>
+              <th className={th}>Service</th>
+              <th className={th}>Environment</th>
+              <th className={th}>Restored after</th>
+              <th className={th}>Attribution</th>
+              <th className={th}>Deploy</th>
+              <th className={th}>Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {incidents.map((i) => (
+              <tr key={i.id} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
+                <td className={td}>{fmtDateTime(i.startedAt)}</td>
+                <td className={td}>
+                  {showProduct && <span style={{ color: 'var(--text-muted)' }}>{i.product} · </span>}{i.service}
+                </td>
+                <td className={td}><EnvLabel env={i.environment} /></td>
+                <td className={td} style={{ color: i.resolvedAt ? undefined : 'var(--danger)' }}>{i.resolvedAt ? fmtHours(i.durationHours) : 'open'}</td>
+                <td className={td} style={{ color: i.attribution === 'none' || i.attribution === 'outside-window' ? 'var(--warning)' : undefined }}>{ATTRIBUTION_LABEL[i.attribution]}</td>
+                <td className={`${td} font-mono`}>
+                  {i.deployEventId ? <Link to={`/deployments/events/${i.deployEventId}`} className="underline">{i.version ?? 'deploy'}</Link> : (i.version ?? '—')}
+                </td>
+                <td className={td}>{i.url ? <a href={i.url} target="_blank" rel="noreferrer" className="underline">open</a> : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
+        Manage records under <Link to="/incidents" className="underline">Incidents</Link>.
+      </p>
     </section>
   );
 }

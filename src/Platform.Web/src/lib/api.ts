@@ -1704,6 +1704,15 @@ export interface AppSettingsPayload {
     assigneeGroups?: PromotionPolicyGroupRef[] | null;
   }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
+  /** How the delivery report ties incidents to deploys. Absent means the defaults (7 days, 15 min). */
+  analytics?: AnalyticsSettings | null;
+}
+
+export interface AnalyticsSettings {
+  /** An incident this many days after a deploy still counts against it (0 = no cap). */
+  attributionWindowDays: number;
+  /** An incident starting this many minutes before a deploy finished is still blamed on it (mid-rollout). */
+  rolloutToleranceMinutes: number;
 }
 
 /**
@@ -3318,6 +3327,27 @@ export interface DeliveryProductRow {
   rollbackRate: number | null;
   storyCoverage: number | null;
   staleServices: number;
+  incidents: number;
+  changeFailureRate: number | null;
+  timeToRestoreP50Hours: number | null;
+}
+
+export type DeliveryAttribution = 'explicit' | 'version' | 'inferred' | 'outside-window' | 'none';
+
+/** One incident as the report saw it — admin-only drill-down behind change failure rate and time to restore. */
+export interface DeliveryIncident {
+  id: string;
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationHours: number | null;
+  attribution: DeliveryAttribution;
+  deployEventId: string | null;
+  deployedAt: string | null;
+  version: string | null;
+  url: string | null;
 }
 
 export interface DeliveryServiceRow {
@@ -3332,6 +3362,7 @@ export interface DeliveryServiceRow {
   rollbacks: number;
   batchSizeP50: number | null;
   leadTimeP50Hours: number | null;
+  incidents: number;
 }
 
 export interface DeliveryMetricsResponse {
@@ -3358,6 +3389,8 @@ export interface DeliveryMetricsResponse {
   leadTimeByEnvironment: LeadTimeEnvStats[];
   byProduct: DeliveryProductRow[];
   byService: DeliveryServiceRow[];
+  /** The incidents behind the DORA figures, with how each was tied to a deploy. Null for non-admins. */
+  incidents: DeliveryIncident[] | null;
 }
 
 export const api = new ApiClient();

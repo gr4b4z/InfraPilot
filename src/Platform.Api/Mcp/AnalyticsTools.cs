@@ -86,7 +86,9 @@ public sealed class AnalyticsTools(McpContext ctx, AnalyticsService analytics, D
         var selected = new List<string>();
         foreach (var raw in (products ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             selected.Add(await ctx.ProductAsync(raw, ct));
-        var result = await delivery.Get(selected, from, to, bucket, TimeZoneInfo.Utc, ct);
+        var isAdmin = ctx.User.Claims.Any(c => (c.Type == "roles" || c.Type == System.Security.Claims.ClaimTypes.Role)
+            && string.Equals(c.Value, "InfraPortal.Admin", StringComparison.OrdinalIgnoreCase));
+        var result = await delivery.Get(selected, from, to, bucket, TimeZoneInfo.Utc, includeIncidents: isAdmin, ct);
         return ctx.Result(result);
     }
 

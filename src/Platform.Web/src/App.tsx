@@ -15,6 +15,7 @@ import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { DeliveryMetricsPage } from '@/app/delivery/DeliveryMetricsPage';
 import { IncidentsPage } from '@/app/incidents/IncidentsPage';
+import { AnalyticsSettings } from '@/app/settings/AnalyticsSettings';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
@@ -149,6 +150,7 @@ function App() {
             {/* The old name, kept as a redirect — this page is where bookmarked one-off fixes live,
                 which is exactly the kind of page that gets bookmarked. */}
             <Route path="deployment-maintenance" element={<Navigate to="../maintenance" replace />} />
+            <Route path="analytics" element={<AnalyticsSettings />} />
             <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>
         </Route>

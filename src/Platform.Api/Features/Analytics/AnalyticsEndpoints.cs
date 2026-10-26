@@ -1,5 +1,6 @@
 using Platform.Api.Features.Analytics.Models;
 using Platform.Api.Features.Settings;
+using Platform.Api.Infrastructure.Auth;
 
 namespace Platform.Api.Features.Analytics;
 
@@ -101,7 +102,7 @@ public static class AnalyticsEndpoints
         // over a product selection pooled as one population. Products are a filter, not a grouping;
         // production is resolved server-side and echoed, so every number measures the same thing.
         group.MapGet("/delivery", async (
-            DeliveryMetricsService delivery,
+            DeliveryMetricsService delivery, ICurrentUser user,
             string? products, DateTimeOffset? from, DateTimeOffset? to,
             string? bucket, string? tz,
             CancellationToken ct) =>
@@ -120,7 +121,8 @@ public static class AnalyticsEndpoints
             if (selected.Count > MaxProducts)
                 return Results.BadRequest(new { error = $"'products' lists at most {MaxProducts} products" });
 
-            return Results.Ok(await delivery.Get(selected, from, to, resolvedBucket, tzInfo, ct));
+            // The incident drill-down is for admins; everyone else gets the aggregates alone.
+            return Results.Ok(await delivery.Get(selected, from, to, resolvedBucket, tzInfo, includeIncidents: user.IsAdmin, ct));
         });
 
         return group;

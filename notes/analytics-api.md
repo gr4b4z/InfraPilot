@@ -283,8 +283,8 @@ would make it measurable. An available metric with nothing in the window has `n:
 |---|---|---|---|
 | dora | `deploymentFrequency` | successful, non-rollback deploys to production | redeploys of the running version skipped; trend per bucket |
 | dora | `leadTime` | p50 hours commit → first production deploy per story | `percentiles` p50/p75/p90; `coverage` = stories with a recorded commit time; needs `occurredAt` on `pull-request`/`commit` references |
-| dora | `changeFailureRate` | **unavailable** | the DORA definition needs incidents linked to deploys; the portal records none yet |
-| dora | `timeToRestore` | **unavailable** | needs incidents with a start and a restore time |
+| dora | `changeFailureRate` | deploys to production with ≥1 attributed incident ÷ successful deploys to production | the DORA definition; `coverage` = incidents tied to a deploy ÷ incidents started in the window; value is null until at least one incident is recorded for the selection |
+| dora | `timeToRestore` | p50 hours `resolvedAt − startedAt` for production incidents **restored** in the window | open incidents wait until they close (`coverage` says how many are open); p90 in `percentiles` |
 | flow | `approvalLatency` | p50 hours created → approved, candidates approved in the window | waiting on a human; p90 in `percentiles` |
 | flow | `deployLatency` | p50 hours approved → deployed, candidates deployed in the window | waiting on the pipeline |
 | flow | `storiesShipped` | stories whose first production landing fell in the window | `coverage` = deploys carrying a story |
@@ -294,11 +294,44 @@ would make it measurable. An available metric with nothing in the window has `n:
 | cadence | `batchSize` | p50 work items per successful production deploy, zeros included | below 1 is a coverage smell |
 | dataQuality | `storyCoverage` | deploys (any environment) carrying ≥1 work-item reference ÷ all deploys | the credibility of every per-story number |
 | dataQuality | `leadTimeCoverage` | stories shipped with a commit time ÷ stories shipped | never compare lead time across periods where this differs materially |
+| dataQuality | `incidentAttribution` | incidents that name the deploy or version that caused them ÷ incidents started in the window | the definition lists explicit / inferred / outside-window / unattributed counts |
 
 `leadTimeByEnvironment` is cumulative from commit per environment (first landing per story and
 environment), settings-ordered — it shows **where** the time goes (`prod` minus `test` ≈ approval
 plus deploy wait). `byService` lists every service known under the selection, stale ones included
 with their true last deploy, ordered by deploys.
+
+### Incidents → change failure rate and time to restore
+
+Incidents (`notes/incidents.md`) are tied to deploys **at query time**, never stored, so a late deploy
+event or a backfill cannot leave a stale link. Only incidents on the resolved production set count.
+Per incident, in order:
+
+1. **explicit** — the incident names the deploy (`causedByDeployEventId`). Always counts, however
+   old the deploy.
+2. **version** — the first successful deploy of the version it names, at or before the start (plus
+   the rollout tolerance).
+3. **inferred** — the deploy that was live when it started: the latest successful, non-rollback
+   deploy at or before the start plus the rollout tolerance. A deploy *after* the start is a
+   candidate remediation, never a cause; a rollback is never a cause.
+4. **none** — no prior deploy. Counts for time to restore, never against a deploy.
+
+Two admin settings (Settings → Delivery Metrics, stored with the app settings as `analytics`)
+shape 2 and 3 and are echoed in the metric definitions:
+
+- `attributionWindowDays` (default 7, `0` = no cap): a version or inferred match older than this is
+  reported as **outside-window** and does not count as a change failure.
+- `rolloutToleranceMinutes` (default 15): a deploy's time is usually the pipeline's finish; an
+  incident that starts this many minutes earlier is blamed on it rather than on the previous version.
+
+Change failure rate counts a deploy **once** however many incidents it caused; time to restore
+counts every incident that closed in the window. The per-product rows carry `incidents`,
+`changeFailureRate` and `timeToRestoreP50Hours`; the per-service rows carry `incidents`.
+
+**Admin drill-down.** For callers with the admin role the response also carries `incidents`: every
+production incident started or restored in the window with its `attribution`, `deployEventId`,
+`deployedAt`, `version`, `durationHours` and `url`. For everyone else it is `null` — the aggregates
+are for all, the records are not.
 
 **Scale.** Events are filtered to the two windows in SQL; work-item grains are aggregated in SQL to
 their first deploy per (product, service, work item, environment) with the window applied as a
