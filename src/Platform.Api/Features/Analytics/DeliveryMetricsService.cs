@@ -297,12 +297,20 @@ public class DeliveryMetricsService
                 : "No deployments in scope, so no production environment could be resolved.",
         };
 
+        // Prod-like names the rules left out: a marked "production" beside an unconfigured "prod" is
+        // the classic one, and the deploys under the loser count nowhere on this page.
+        var ignoredProdLike = ordered
+            .Where(k => !prodSet.Contains(k) && EnvironmentStage.IsProductionByName(k))
+            .ToList();
+        if (ignoredProdLike.Count > 0)
+            explanation += $" Not counted although named like production: {string.Join(", ", ignoredProdLike)} — mark it as production, or make it an alias, in Settings → Environments.";
+
         return new DeliveryMetricsResponseDto(
             asOf,
             new AnalyticsRangeDto(rangeFrom, rangeTo),
             new AnalyticsRangeDto(prevFrom, rangeFrom),
             productList,
-            new DeliveryProductionDto(production.Environments, production.Source, explanation),
+            new DeliveryProductionDto(production.Environments, production.Source, explanation, ignoredProdLike),
             new DeliveryDefinitionDto(
                 Bucket: bucket,
                 Tz: tz.Id,

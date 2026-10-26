@@ -469,6 +469,23 @@ executor:
     ],
   },
   {
+    slug: 'delivery-metrics',
+    group: 'Use Cases',
+    title: 'Delivery metrics and DORA',
+    summary: 'Once deploy events flow in, the portal reports delivery performance — DORA plus the flow, quality and data-quality numbers that make it readable — per product and across products.',
+    paragraphs: [
+      'The **Analytics** page is the operational view: one product, a live story × environment matrix, the promotion queue and per-service cadence. The **Delivery metrics** page is the report: pick all products or any subset, pick a fixed window (last month, last quarter, six months) and every number is computed over that selection as one population. Counts sum; percentiles run over the pooled stories, never over per-product averages.',
+      'The DORA section shows deployment frequency, lead time for changes, change failure rate and time to restore. Frequency and lead time come from deploy events; lead time needs producers to send `occurredAt` on `pull-request` (or `commit`) references, and its coverage figure says how many stories had one. Change failure rate and time to restore need production incidents linked to deployments; until incidents are recorded the cards say what data would make them measurable, and the attempt-based deploy failure rate under Quality stands in.',
+      'Production is resolved on the server — environments marked as production in Settings → Environments, else keys whose name reads as production, else the last environment in order — and shown at the top of the page, so every figure measures the same environments. Every metric carries its definition and a delta against the equal-length window before; the page breaks numbers down per product and per service, and exports as CSV. The same report is available to agents as the `get_delivery_metrics` MCP tool and `GET /api/analytics/delivery`.',
+    ],
+    bullets: [
+      'Mark production stages in Settings → Environments so the report measures what you mean by production',
+      'Send `occurredAt` on pull-request or commit references to light up lead time',
+      'Read every figure with its coverage: a lead time over 30% of stories is not the lead time',
+      'Use calendar windows (last month, last quarter) for figures that hold still between two looks',
+    ],
+  },
+  {
     slug: 'release-notes-setup',
     group: 'Integrations',
     title: 'Release notes setup',

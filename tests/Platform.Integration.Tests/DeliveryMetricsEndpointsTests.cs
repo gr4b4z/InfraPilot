@@ -120,6 +120,19 @@ public class DeliveryMetricsEndpointsTests : IClassFixture<DeliveryMetricsEndpoi
     }
 
     [Fact]
+    public async Task Delivery_NamesProdLikeEnvironmentsTheResolutionLeftOut()
+    {
+        var p = Unique("ignored");
+        await IngestAsync(p, "api", "prod", "v1", "2026-08-02T10:00:00Z");
+        await IngestAsync(p, "api", "live", "v1", "2026-08-03T10:00:00Z");
+
+        // Both unconfigured and both prod-like → both are production, nothing ignored.
+        var body = await GetJson($"/api/analytics/delivery?products={p}&{Window}");
+        Assert.Equal(["live", "prod"], body.GetProperty("production").GetProperty("environments").EnumerateArray().Select(e => e.GetString()).OrderBy(e => e));
+        Assert.Empty(body.GetProperty("production").GetProperty("ignoredProductionLike").EnumerateArray());
+    }
+
+    [Fact]
     public async Task Delivery_NoDeployments_IsEmptyNotAnError()
     {
         var body = await GetJson($"/api/analytics/delivery?products={Unique("empty")}&{Window}");

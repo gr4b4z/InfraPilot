@@ -1579,6 +1579,28 @@ class ApiClient {
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
   }
+
+  /**
+   * The Delivery metrics report: DORA plus flow, quality, cadence and data-quality metrics over the
+   * given products pooled as one population (empty = every product), with per-product and
+   * per-service breakdowns. Production is resolved by the server and echoed in `production`.
+   */
+  getDeliveryMetrics(params?: {
+    products?: string[];
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week' | 'month';
+    tz?: string;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.products && params.products.length > 0) entries.push(['products', params.products.join(',')]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<DeliveryMetricsResponse>(`/analytics/delivery${query}`);
+  }
 }
 
 export interface UserPreferencesPayload {
@@ -3168,6 +3190,94 @@ export interface LeadTimeResponse {
   buckets: { start: string; environment: string; n: number; p50Hours: number | null }[];
   slowest: { workItemKey: string; environment: string; hours: number; deployEventId: string }[];
   range: AnalyticsRange;
+}
+
+// ── Delivery metrics ──────────────────────────────────────────────────────
+
+export type DeliveryMetricUnit = 'count' | 'hours' | 'ratio';
+export type DeliveryGoodWhen = 'up' | 'down' | 'none';
+
+/**
+ * One metric of the Delivery metrics report. Every metric has this shape, so the page renders them
+ * generically. `available: false` means the installation cannot measure it at all — `reason` says
+ * what data would; an available metric with nothing in the window has `n: 0` and a null value.
+ */
+export interface DeliveryMetric {
+  key: string;
+  title: string;
+  available: boolean;
+  reason: string | null;
+  unit: DeliveryMetricUnit;
+  value: number | null;
+  n: number;
+  percentiles: { p50: number | null; p75: number | null; p90: number | null } | null;
+  /** Same metric over the equal-length window before; `change` = value − previous. */
+  delta: { previous: number | null; change: number | null; previousN: number } | null;
+  trend: { start: string; value: number | null; n: number }[];
+  coverage: { label: string; numerator: number; denominator: number; ratio: number } | null;
+  /** How the number was counted — quote it beside the figure. */
+  definition: string;
+  goodWhen: DeliveryGoodWhen;
+}
+
+export interface DeliverySection {
+  key: string;
+  title: string;
+  metrics: DeliveryMetric[];
+}
+
+export interface DeliveryProductRow {
+  product: string;
+  services: number;
+  deploys: number;
+  previousDeploys: number;
+  storiesShipped: number;
+  leadTimeP50Hours: number | null;
+  leadTimeCoverage: number | null;
+  deployFailureRate: number | null;
+  rollbackRate: number | null;
+  storyCoverage: number | null;
+  staleServices: number;
+}
+
+export interface DeliveryServiceRow {
+  product: string;
+  service: string;
+  deploys: number;
+  previousDeploys: number;
+  perWeek: number;
+  lastDeployedAt: string | null;
+  medianIntervalHours: number | null;
+  failed: number;
+  rollbacks: number;
+  batchSizeP50: number | null;
+  leadTimeP50Hours: number | null;
+}
+
+export interface DeliveryMetricsResponse {
+  asOf: string;
+  range: AnalyticsRange;
+  previousRange: AnalyticsRange;
+  products: string[];
+  production: {
+    environments: string[];
+    source: 'marked' | 'default-name' | 'convention';
+    explanation: string;
+    /** Prod-like names the resolution left out — deploys there count nowhere until an admin marks or aliases them. */
+    ignoredProductionLike: string[];
+  };
+  definition: {
+    bucket: string;
+    tz: string;
+    deploy: string;
+    production: string;
+    storyShipped: string;
+    leadTime: string;
+  };
+  sections: DeliverySection[];
+  leadTimeByEnvironment: LeadTimeEnvStats[];
+  byProduct: DeliveryProductRow[];
+  byService: DeliveryServiceRow[];
 }
 
 export const api = new ApiClient();

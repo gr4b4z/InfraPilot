@@ -13,6 +13,7 @@ import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
 import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
+import { DeliveryMetricsPage } from '@/app/delivery/DeliveryMetricsPage';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
@@ -103,6 +104,7 @@ function App() {
           <Route path="/deployments/:product/:service" element={<ServiceDetailPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
           <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
+          <Route path="/analytics/delivery" element={<FeatureRoute flag={FeatureFlag.Analytics}><DeliveryMetricsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           {/* "audit" ahead of the dynamic :id route so it can't be read as a promotion id. */}
           <Route path="/promotions/audit" element={<AdminRoute><FeatureRoute flag={FeatureFlag.Promotions}><PromotionsAuditPage /></FeatureRoute></AdminRoute>} />

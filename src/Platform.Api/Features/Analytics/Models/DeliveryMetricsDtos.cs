@@ -46,7 +46,11 @@ public record DeliverySectionDto(string Key, string Title, List<DeliveryMetricDt
 
 /// <summary>The production set the report measured against, and which rule chose it.</summary>
 /// <param name="Source"><c>marked</c> | <c>default-name</c> | <c>convention</c>.</param>
-public record DeliveryProductionDto(List<string> Environments, string Source, string Explanation);
+/// <param name="IgnoredProductionLike">Environments whose name reads as production but that the
+/// resolution left out — unconfigured <c>prod</c> next to a marked <c>production</c>, say. The trap
+/// this list exists to show: deploys there count nowhere on the page until an admin marks or
+/// aliases the key.</param>
+public record DeliveryProductionDto(List<string> Environments, string Source, string Explanation, List<string> IgnoredProductionLike);
 
 public record DeliveryDefinitionDto(
     string Bucket,

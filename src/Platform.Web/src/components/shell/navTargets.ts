@@ -3,6 +3,7 @@ import {
   FileText,
   CheckCircle,
   ChartColumn,
+  Gauge,
   GitPullRequest,
   History,
   Inbox,
@@ -39,6 +40,7 @@ export interface NavTarget {
 export const NAV_TARGETS: NavTarget[] = [
   { key: 'd', label: 'Deployments', to: '/deployments', icon: Rocket },
   { key: 'y', label: 'Analytics', to: '/analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
+  { key: 'm', label: 'Delivery metrics', to: '/analytics/delivery', icon: Gauge, featureFlag: FeatureFlag.Analytics },
   { key: 'p', label: 'Promotions', to: '/promotions', icon: GitPullRequest, featureFlag: FeatureFlag.Promotions },
   { key: 'w', label: 'Work items queue', to: '/me/work-items', icon: Inbox, featureFlag: FeatureFlag.Promotions },
   { key: 'u', label: 'Promotions audit', to: '/promotions/audit', icon: History, featureFlag: FeatureFlag.Promotions,
