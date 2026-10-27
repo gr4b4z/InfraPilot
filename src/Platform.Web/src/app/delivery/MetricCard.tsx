@@ -60,7 +60,8 @@ export function MetricCard({
       <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--text-muted)' }}>
         {metric.available ? metricSub(metric) || periodLabel : metric.reason}
       </p>
-      {size === 'primary' && metric.available && metric.trend.length > 1 && (
+      {/* No sparkline for an empty series — a row of gaps says nothing a blank space doesn't. */}
+      {size === 'primary' && metric.available && metric.trend.length > 1 && metric.trend.some((p) => p.value != null) && (
         <Sparkline metric={metric} />
       )}
     </div>

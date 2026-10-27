@@ -58,9 +58,23 @@ export function fmtAgo(iso: string | null | undefined): string {
   return `${fmtHours(hours)} ago`;
 }
 
+/**
+ * What an empty coverage population means, per metric — said in words rather than as
+ * "n=168 · coverage 0%", which reads like broken data when it is simply absent data.
+ */
+const EMPTY_POPULATION: Record<string, { never: string; window: string }> = {
+  changeFailureRate: { never: 'no incidents recorded yet', window: 'no incidents in this window' },
+  timeToRestore: { never: 'no incidents recorded yet', window: 'no incidents restored in this window' },
+  incidentAttribution: { never: 'no incidents recorded yet', window: 'no incidents in this window' },
+  leadTime: { never: 'no stories shipped in this window', window: 'no stories shipped in this window' },
+  leadTimeCoverage: { never: 'no stories shipped in this window', window: 'no stories shipped in this window' },
+};
+
 /** The one-line qualifier under a metric's value: sample size, and coverage where it has one. */
 export function metricSub(m: DeliveryMetric): string {
   if (!m.available) return 'not measurable yet';
+  const empty = EMPTY_POPULATION[m.key];
+  if (empty && m.coverage && m.coverage.denominator === 0) return m.value == null ? empty.never : empty.window;
   const parts: string[] = [];
   if (m.unit === 'ratio' || m.unit === 'hours') parts.push(`n=${m.n}`);
   if (m.coverage) parts.push(`coverage ${fmtRatio(m.coverage.ratio)}`);
