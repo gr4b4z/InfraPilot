@@ -135,7 +135,7 @@ public class AnalyticsEndpointsTests : IClassFixture<AnalyticsEndpointsTests.Ana
     [Fact]
     public async Task Frequency_InvalidBucket_Returns400()
     {
-        var response = await _adminClient.GetAsync("/api/analytics/deployments/frequency?bucket=month");
+        var response = await _adminClient.GetAsync("/api/analytics/deployments/frequency?bucket=year");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 

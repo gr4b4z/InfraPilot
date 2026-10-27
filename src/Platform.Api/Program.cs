@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Analytics;
+using Platform.Api.Features.Incidents;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Builds;
 using Platform.Api.Features.Catalog;
@@ -252,6 +253,8 @@ builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 builder.Services.AddScoped<AnalyticsService>();
+builder.Services.AddScoped<DeliveryMetricsService>();
+builder.Services.AddScoped<IncidentService>();
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();
@@ -492,6 +495,8 @@ app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(Authorizatio
 app.MapGroup("/api/builds").MapBuildEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Incident records are admin-only; the metrics they feed are on the delivery report for everyone.
+app.MapGroup("/api/incidents").MapIncidentEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // The promotions activity feed. AuditViewer (admin only) — the same gate as the platform audit log:

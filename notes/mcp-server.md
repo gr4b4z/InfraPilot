@@ -143,6 +143,7 @@ finds the right one.
 | `diagnose_promotion` / `diagnose_deployment` | Playbook diagnosis: evidence, observations, ranked causes with confirm/fix |
 | `search_knowledge` | Installation-specific pipeline knowledge, with as-of dates |
 | `get_deployment_frequency` / `get_promotion_queue` / `get_lead_time` | Analytics, passed through with their definition and coverage blocks |
+| `get_delivery_metrics` | The Delivery metrics report (DORA + flow, quality, cadence, data quality) over one or several products pooled, with per-product and per-service breakdowns — see `analytics-api.md` `/delivery` |
 | `create_promotion` | Pipeline action — configured key with `promotion:create`, product scope applies |
 | `promote_build` | Open a promotion from a registered build, as the caller |
 | `add_promotion_comment` / `add_work_item_comment` | Comment as the caller |
