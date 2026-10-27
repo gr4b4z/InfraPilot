@@ -43,3 +43,59 @@ public static class EnvironmentStage
         return false;
     }
 }
+
+/// <summary>Which environments a report treats as production, and which rule picked them.</summary>
+/// <param name="Source"><c>marked</c> (settings), <c>default-name</c> (name-based default mapping) or
+/// <c>convention</c> (last environment in order).</param>
+public sealed record ProductionEnvironments(List<string> Environments, string Source);
+
+/// <summary>
+/// Server-side twin of the web's <c>lib/envStage.ts</c> ordering and production resolution, so a
+/// report computed by the API and a tile computed by the browser name the same environments. Change
+/// them together.
+/// </summary>
+public static class EnvironmentOrdering
+{
+    /// <summary>
+    /// Settings order first (only the keys present in <paramref name="universe"/>), then the keys
+    /// settings don't know in default stage order (dev &lt; test &lt; staging &lt; prod), ties
+    /// alphabetical. Case-insensitive throughout, like every other environment lookup.
+    /// </summary>
+    public static List<string> Order(IEnumerable<string> universe, IEnumerable<string> configuredKeys)
+    {
+        var all = universe.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var configured = configuredKeys.ToList();
+        var known = configured
+            .Where(k => all.Contains(k, StringComparer.OrdinalIgnoreCase))
+            .Select(k => all.First(u => string.Equals(u, k, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        var unknown = all
+            .Where(k => !configured.Contains(k, StringComparer.OrdinalIgnoreCase))
+            .OrderBy(EnvironmentStage.DefaultRank)
+            .ThenBy(k => k, StringComparer.OrdinalIgnoreCase);
+        known.AddRange(unknown);
+        return known;
+    }
+
+    /// <summary>
+    /// Resolves the production set out of <paramref name="ordered"/> (already ordered by
+    /// <see cref="Order"/>): environments marked <c>isProduction</c> in settings win; else
+    /// unconfigured keys whose name reads as production (<see cref="EnvironmentStage.IsProductionByName"/>);
+    /// else the last environment in order. Several may be marked (multi-region production).
+    /// </summary>
+    public static ProductionEnvironments ResolveProduction(
+        IReadOnlyList<string> ordered, IEnumerable<(string Key, bool IsProduction)> configured)
+    {
+        var configuredList = configured.ToList();
+        bool IsConfigured(string k) => configuredList.Any(c => string.Equals(c.Key, k, StringComparison.OrdinalIgnoreCase));
+        bool IsMarked(string k) => configuredList.Any(c => c.IsProduction && string.Equals(c.Key, k, StringComparison.OrdinalIgnoreCase));
+
+        var marked = ordered.Where(IsMarked).ToList();
+        if (marked.Count > 0) return new ProductionEnvironments(marked, "marked");
+
+        var byName = ordered.Where(k => !IsConfigured(k) && EnvironmentStage.IsProductionByName(k)).ToList();
+        if (byName.Count > 0) return new ProductionEnvironments(byName, "default-name");
+
+        return new ProductionEnvironments(ordered.Count > 0 ? [ordered[^1]] : [], "convention");
+    }
+}

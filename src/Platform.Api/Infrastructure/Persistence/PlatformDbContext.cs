@@ -4,6 +4,7 @@ using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Builds.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Incidents.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
@@ -58,6 +59,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<RollbackApproval> RollbackApprovals => Set<RollbackApproval>();
     public DbSet<RollbackPolicy> RollbackPolicies => Set<RollbackPolicy>();
     public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
+    public DbSet<Incident> Incidents => Set<Incident>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -714,6 +716,31 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.Product, x.Environment, x.GeneratedAt })
                 .IsDescending(false, false, true);
             e.HasIndex(x => x.GeneratedAt).IsDescending(true);
+        });
+
+        // Incidents — pointer records for delivery metrics; see Incident.
+        modelBuilder.Entity<Incident>(e =>
+        {
+            e.ToTable("incidents");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200);
+            e.Property(x => x.Source).HasMaxLength(50).HasDefaultValue("manual").IsRequired();
+            e.Property(x => x.ExternalId).HasMaxLength(200);
+            e.Property(x => x.Url).HasMaxLength(2000);
+            e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
+            e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UpdatedBy).HasMaxLength(300);
+            // The correlation query: incidents of a service in an environment, by start time.
+            e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.StartedAt })
+                .IsDescending(false, false, false, true);
+            e.HasIndex(x => x.StartedAt).IsDescending(true);
+            // Upsert key for incidents that live elsewhere. Uniqueness is enforced by the service —
+            // the providers disagree on how a unique index treats NULL external ids.
+            e.HasIndex(x => new { x.Source, x.ExternalId });
+            e.HasIndex(x => x.CausedByDeployEventId);
         });
 
         // Rollback Requests

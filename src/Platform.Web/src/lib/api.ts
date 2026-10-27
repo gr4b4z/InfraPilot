@@ -1579,6 +1579,63 @@ class ApiClient {
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
   }
+
+  // ── Incidents (admin) ───────────────────────────────────────────────────
+
+  listIncidents(params?: {
+    product?: string;
+    environment?: string;
+    open?: boolean;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.open !== undefined) entries.push(['open', String(params.open)]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.offset) entries.push(['offset', String(params.offset)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<IncidentList>(`/incidents${query}`);
+  }
+
+  createIncident(payload: IncidentInput) {
+    return this.request<Incident>(`/incidents`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateIncident(id: string, payload: IncidentInput) {
+    return this.request<Incident>(`/incidents/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  deleteIncident(id: string) {
+    return this.request<void>(`/incidents/${id}`, { method: 'DELETE' });
+  }
+
+  /**
+   * The Delivery metrics report: DORA plus flow, quality, cadence and data-quality metrics over the
+   * given products pooled as one population (empty = every product), with per-product and
+   * per-service breakdowns. Production is resolved by the server and echoed in `production`.
+   */
+  getDeliveryMetrics(params?: {
+    products?: string[];
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week' | 'month';
+    tz?: string;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.products && params.products.length > 0) entries.push(['products', params.products.join(',')]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<DeliveryMetricsResponse>(`/analytics/delivery${query}`);
+  }
 }
 
 export interface UserPreferencesPayload {
@@ -1647,6 +1704,15 @@ export interface AppSettingsPayload {
     assigneeGroups?: PromotionPolicyGroupRef[] | null;
   }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
+  /** How the delivery report ties incidents to deploys. Absent means the defaults (7 days, 15 min). */
+  analytics?: AnalyticsSettings | null;
+}
+
+export interface AnalyticsSettings {
+  /** An incident this many days after a deploy still counts against it (0 = no cap). */
+  attributionWindowDays: number;
+  /** An incident starting this many minutes before a deploy finished is still blamed on it (mid-rollout). */
+  rolloutToleranceMinutes: number;
 }
 
 /**
@@ -3168,6 +3234,163 @@ export interface LeadTimeResponse {
   buckets: { start: string; environment: string; n: number; p50Hours: number | null }[];
   slowest: { workItemKey: string; environment: string; hours: number; deployEventId: string }[];
   range: AnalyticsRange;
+}
+
+// ── Incidents ─────────────────────────────────────────────────────────────
+
+/**
+ * A production incident as delivery metrics need it — a pointer to the real incident (source,
+ * externalId, url) plus what the metrics read: where, when it started, when service was restored,
+ * and which deploy caused it when known. Admin-only records; the aggregates are on the report.
+ */
+export interface Incident {
+  id: string;
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationHours: number | null;
+  version: string | null;
+  causedByDeployEventId: string | null;
+  source: string;
+  externalId: string | null;
+  url: string | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+export interface IncidentInput {
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt?: string | null;
+  version?: string | null;
+  causedByDeployEventId?: string | null;
+  source?: string | null;
+  externalId?: string | null;
+  url?: string | null;
+}
+
+export interface IncidentList {
+  items: Incident[];
+  total: number;
+}
+
+// ── Delivery metrics ──────────────────────────────────────────────────────
+
+export type DeliveryMetricUnit = 'count' | 'hours' | 'ratio';
+export type DeliveryGoodWhen = 'up' | 'down' | 'none';
+
+/**
+ * One metric of the Delivery metrics report. Every metric has this shape, so the page renders them
+ * generically. `available: false` means the installation cannot measure it at all — `reason` says
+ * what data would; an available metric with nothing in the window has `n: 0` and a null value.
+ */
+export interface DeliveryMetric {
+  key: string;
+  title: string;
+  available: boolean;
+  reason: string | null;
+  unit: DeliveryMetricUnit;
+  value: number | null;
+  n: number;
+  percentiles: { p50: number | null; p75: number | null; p90: number | null } | null;
+  /** Same metric over the equal-length window before; `change` = value − previous. */
+  delta: { previous: number | null; change: number | null; previousN: number } | null;
+  trend: { start: string; value: number | null; n: number }[];
+  coverage: { label: string; numerator: number; denominator: number; ratio: number } | null;
+  /** How the number was counted — quote it beside the figure. */
+  definition: string;
+  goodWhen: DeliveryGoodWhen;
+}
+
+export interface DeliverySection {
+  key: string;
+  title: string;
+  metrics: DeliveryMetric[];
+}
+
+export interface DeliveryProductRow {
+  product: string;
+  services: number;
+  deploys: number;
+  previousDeploys: number;
+  storiesShipped: number;
+  leadTimeP50Hours: number | null;
+  leadTimeCoverage: number | null;
+  deployFailureRate: number | null;
+  rollbackRate: number | null;
+  storyCoverage: number | null;
+  staleServices: number;
+  incidents: number;
+  changeFailureRate: number | null;
+  timeToRestoreP50Hours: number | null;
+}
+
+export type DeliveryAttribution = 'explicit' | 'version' | 'inferred' | 'outside-window' | 'none';
+
+/** One incident as the report saw it — admin-only drill-down behind change failure rate and time to restore. */
+export interface DeliveryIncident {
+  id: string;
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationHours: number | null;
+  attribution: DeliveryAttribution;
+  deployEventId: string | null;
+  deployedAt: string | null;
+  version: string | null;
+  url: string | null;
+}
+
+export interface DeliveryServiceRow {
+  product: string;
+  service: string;
+  deploys: number;
+  previousDeploys: number;
+  perWeek: number;
+  lastDeployedAt: string | null;
+  medianIntervalHours: number | null;
+  failed: number;
+  rollbacks: number;
+  batchSizeP50: number | null;
+  leadTimeP50Hours: number | null;
+  incidents: number;
+}
+
+export interface DeliveryMetricsResponse {
+  asOf: string;
+  range: AnalyticsRange;
+  previousRange: AnalyticsRange;
+  products: string[];
+  production: {
+    environments: string[];
+    source: 'marked' | 'default-name' | 'convention';
+    explanation: string;
+    /** Prod-like names the resolution left out — deploys there count nowhere until an admin marks or aliases them. */
+    ignoredProductionLike: string[];
+  };
+  definition: {
+    bucket: string;
+    tz: string;
+    deploy: string;
+    production: string;
+    storyShipped: string;
+    leadTime: string;
+  };
+  sections: DeliverySection[];
+  leadTimeByEnvironment: LeadTimeEnvStats[];
+  byProduct: DeliveryProductRow[];
+  byService: DeliveryServiceRow[];
+  /** The incidents behind the DORA figures, with how each was tied to a deploy. Null for non-admins. */
+  incidents: DeliveryIncident[] | null;
 }
 
 export const api = new ApiClient();

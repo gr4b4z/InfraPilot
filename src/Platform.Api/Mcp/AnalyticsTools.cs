@@ -11,7 +11,7 @@ namespace Platform.Api.Mcp;
 /// exactly what an agent must quote alongside the number — so these tools add no shaping of their own.
 /// </summary>
 [McpServerToolType]
-public sealed class AnalyticsTools(McpContext ctx, AnalyticsService analytics)
+public sealed class AnalyticsTools(McpContext ctx, AnalyticsService analytics, DeliveryMetricsService delivery)
 {
     private const string Window =
         "ISO-8601. The window is half-open [from, to); the default is the last 14 days.";
@@ -67,6 +67,28 @@ public sealed class AnalyticsTools(McpContext ctx, AnalyticsService analytics)
         var (p, s) = await ScopeAsync(product, service, ct);
         var result = await analytics.GetLeadTime(
             p, s, await ctx.EnvironmentFilterAsync(environment, ct), from, to, "week", TimeZoneInfo.Utc, ct);
+        return ctx.Result(result);
+    }
+
+    [McpServerTool(Name = "get_delivery_metrics", Title = "Delivery metrics", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("The delivery metrics report: DORA (deployment frequency, lead time, change failure rate, time to restore) plus flow, " +
+                 "quality, cadence and data-quality metrics, over one or several products pooled as one population, with per-product and " +
+                 "per-service breakdowns. Every metric carries its definition, sample size, coverage and delta vs the previous equal window; " +
+                 "an unavailable metric says what data would make it measurable. Quote definition and coverage with any number.")]
+    public async Task<string> GetDeliveryMetrics(
+        [Description("Product names, comma-separated. Empty means every product.")] string? products = null,
+        [Description("Window start. " + Window)] DateTimeOffset? from = null,
+        [Description("Window end. " + Window)] DateTimeOffset? to = null,
+        [Description("Trend bucket: day, week (default) or month.")] string bucket = "week",
+        CancellationToken ct = default)
+    {
+        if (!AnalyticsCalendar.Buckets.Contains(bucket)) throw new McpException("`bucket` must be day, week or month.");
+        var selected = new List<string>();
+        foreach (var raw in (products ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            selected.Add(await ctx.ProductAsync(raw, ct));
+        var isAdmin = ctx.User.Claims.Any(c => (c.Type == "roles" || c.Type == System.Security.Claims.ClaimTypes.Role)
+            && string.Equals(c.Value, "InfraPortal.Admin", StringComparison.OrdinalIgnoreCase));
+        var result = await delivery.Get(selected, from, to, bucket, TimeZoneInfo.Utc, includeIncidents: isAdmin, ct);
         return ctx.Result(result);
     }
 

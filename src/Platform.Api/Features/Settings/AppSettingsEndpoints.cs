@@ -39,7 +39,8 @@ public static class AppSettingsEndpoints
                 ActivityTemplate: (body.ActivityTemplate ?? [])
                     .Where(l => !string.IsNullOrWhiteSpace(l.Template))
                     .Select(l => new ActivityTemplateLineDto(l.Template, string.IsNullOrWhiteSpace(l.Style) ? "secondary" : l.Style))
-                    .ToList());
+                    .ToList(),
+                Analytics: body.Analytics?.Clean());
 
             // Aliases are the one part of this payload that can be internally inconsistent rather
             // than merely untidy — an alias claimed by two environments, or one that is also an

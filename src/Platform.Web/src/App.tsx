@@ -13,6 +13,9 @@ import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
 import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
+import { DeliveryMetricsPage } from '@/app/delivery/DeliveryMetricsPage';
+import { IncidentsPage } from '@/app/incidents/IncidentsPage';
+import { AnalyticsSettings } from '@/app/settings/AnalyticsSettings';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
@@ -103,6 +106,7 @@ function App() {
           <Route path="/deployments/:product/:service" element={<ServiceDetailPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
           <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
+          <Route path="/analytics/delivery" element={<FeatureRoute flag={FeatureFlag.Analytics}><DeliveryMetricsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           {/* "audit" ahead of the dynamic :id route so it can't be read as a promotion id. */}
           <Route path="/promotions/audit" element={<AdminRoute><FeatureRoute flag={FeatureFlag.Promotions}><PromotionsAuditPage /></FeatureRoute></AdminRoute>} />
@@ -127,6 +131,7 @@ function App() {
           {/* "new" route must come before the dynamic :id route so it isn't captured as an id. */}
           <Route path="/release-notes/:product/new" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDraftPage /></FeatureRoute>} />
           <Route path="/release-notes/:product/:id" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDetailPage /></FeatureRoute>} />
+          <Route path="/incidents" element={<AdminRoute><IncidentsPage /></AdminRoute>} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>}>
@@ -145,6 +150,7 @@ function App() {
             {/* The old name, kept as a redirect — this page is where bookmarked one-off fixes live,
                 which is exactly the kind of page that gets bookmarked. */}
             <Route path="deployment-maintenance" element={<Navigate to="../maintenance" replace />} />
+            <Route path="analytics" element={<AnalyticsSettings />} />
             <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>
         </Route>

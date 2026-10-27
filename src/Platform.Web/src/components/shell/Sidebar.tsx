@@ -5,6 +5,8 @@ import {
   FileText,
   CheckCircle,
   ChartColumn,
+  Gauge,
+  Siren,
   ChevronLeft,
   ChevronRight,
   Settings,
@@ -99,7 +101,10 @@ const navGroups: NavGroup[] = [
     label: 'Deployments',
     items: [
       { to: '/deployments', label: 'Deployments', icon: Rocket },
-      { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
+      { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics,
+        activeExcept: ['/analytics/delivery'] },
+      // The report next to the operational view: several products pooled, fixed windows, DORA.
+      { to: '/analytics/delivery', label: 'Delivery metrics', icon: Gauge, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
       { to: '/artifacts', label: 'Artifacts', icon: Package },
     ],
@@ -126,6 +131,8 @@ const navGroups: NavGroup[] = [
     label: 'System',
     adminOnly: true,
     items: [
+      // Admin-only records behind change failure rate and time to restore on the delivery report.
+      { to: '/incidents', label: 'Incidents', icon: Siren },
       { to: '/webhooks', label: 'Webhooks', icon: Webhook  },
       { to: '/settings', label: 'Settings', icon: Settings },
     ],
