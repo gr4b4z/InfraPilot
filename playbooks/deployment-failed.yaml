@@ -5,7 +5,7 @@ summary: >-
   A deploy event came back with a failed status. Reconcile attaches the deployment logs to the event
   when that happens, so the actual Helm or Kubernetes error is usually right there.
 source: mpt-release reconcile deploy steps + ops-build-templates-aks-releases/aks-docker-templates
-as_of: 2026-08-28
+as_of: 2026-10-16
 causes:
   - id: image-pull
     title: The image could not be pulled
@@ -20,6 +20,31 @@ causes:
     fix: >-
       Re-run the build's publish stage to push the missing image, or fix the pull secret. Registration
       is idempotent, so re-publishing is safe.
+
+  - id: chart-values-rejected
+    title: The chart refused the values before anything reached the cluster
+    matches_when:
+      - log_chart_values_rejected
+    explanation: >-
+      `execution error at (<template>:<line>)` is a `fail` guard inside the chart (swo-service):
+      Helm stopped while rendering, so no pod, job or event exists. The failure diagnostics showing
+      "No resources found" are consistent with that, not a separate problem. Two forms recur.
+      `secretValues.<name> is required` means the deployment manifest declares a secret under
+      `secrets:` but the environment's App Configuration store has no `<component>/<name>` key (a
+      Key Vault reference) for reconcile's Prepare-Helm-Values to resolve.
+      `no workload enabled` means the manifest turns off `api`, `web` and `worker` and declares no
+      `cronjobs`, so there is nothing to deploy. Reconcile retries a failed component on every run
+      of that environment, so this repeats until the config changes and fails the whole
+      `Reconcile <env>` run each time.
+    confirm: >-
+      Read the helm upgrade output for the guard's message. For a missing secret, list the
+      component's keys in that environment's App Configuration store and compare them with the
+      manifest's `secrets:` block. For no workload, read `<env>/<component>/deployment-manifest.yaml`.
+    fix: >-
+      Missing secret: add the App Configuration key (and its Key Vault secret) for that
+      environment, or drop the entry from the service's manifest if it is no longer used. No
+      workload: fix the service's manifest and publish a new build. Nothing is wrong with the
+      cluster, and redeploying the same version reproduces the error.
 
   - id: helm-lock
     title: Another Helm operation is in progress
