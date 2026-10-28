@@ -273,6 +273,14 @@ Every metric has the same shape, so a reader (or the page) treats them alike:
 }
 ```
 
+Every metric also carries `previousTrend` — the same series over the equal-length window before,
+**aligned by position** (bucket *i* of the previous window sits under bucket *i* of this one), which is
+what the report draws as the dashed ghost line. Trend points carry `coverage` where a bucket can be
+thin in a way the value hides (lead time: stories with a commit time ÷ shipped; change failure rate:
+incidents tied to a deploy ÷ started); the report draws such points hollow below 50%. Each
+`byProduct` row carries `trends` — the DORA four over that product alone, per bucket of the current
+window — for the per-product overlay.
+
 `available: false` means the installation cannot measure the metric at all — `reason` says what data
 would make it measurable. An available metric with nothing in the window has `n: 0` and a null
 `value`: no data, not "not a feature".

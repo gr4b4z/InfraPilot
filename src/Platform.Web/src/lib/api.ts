@@ -3302,11 +3302,21 @@ export interface DeliveryMetric {
   percentiles: { p50: number | null; p75: number | null; p90: number | null } | null;
   /** Same metric over the equal-length window before; `change` = value − previous. */
   delta: { previous: number | null; change: number | null; previousN: number } | null;
-  trend: { start: string; value: number | null; n: number }[];
+  trend: DeliveryTrendPoint[];
+  /** The same series over the previous window, aligned by position (bucket i under bucket i). */
+  previousTrend: DeliveryTrendPoint[];
   coverage: { label: string; numerator: number; denominator: number; ratio: number } | null;
   /** How the number was counted — quote it beside the figure. */
   definition: string;
   goodWhen: DeliveryGoodWhen;
+}
+
+/** One bucket of a metric's trend. `coverage` says how much of the bucket the value could see, where that notion applies. */
+export interface DeliveryTrendPoint {
+  start: string;
+  value: number | null;
+  n: number;
+  coverage?: number | null;
 }
 
 export interface DeliverySection {
@@ -3330,6 +3340,8 @@ export interface DeliveryProductRow {
   incidents: number;
   changeFailureRate: number | null;
   timeToRestoreP50Hours: number | null;
+  /** The DORA four over this product alone, per bucket of the current window, keyed by metric key. */
+  trends: Record<string, DeliveryTrendPoint[]>;
 }
 
 export type DeliveryAttribution = 'explicit' | 'version' | 'inferred' | 'outside-window' | 'none';
