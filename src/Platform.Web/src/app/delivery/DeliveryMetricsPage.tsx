@@ -9,6 +9,8 @@ import { InfoPopover } from '@/components/ui/InfoPopover';
 import { HelpButton } from '@/components/guide/HelpButton';
 import { EnvLabel } from '@/components/environments/EnvBadge';
 import { MetricCard } from './MetricCard';
+import { TrendChart } from './TrendChart';
+import { OVERLAY_COLORS, type TrendSeries } from './trendStyle';
 import { DELIVERY_PERIODS, computeDeliveryRange } from './deliveryPeriods';
 import { csvLine, fmtAgo, fmtCount, fmtDateTime, fmtHours, fmtRatio } from './deliveryFormat';
 
@@ -177,6 +179,8 @@ export function DeliveryMetricsPage() {
               </section>
             ))}
           </div>
+
+          <TrendsSection report={report} periodLabel={`by ${report.definition.bucket} · ${period.label}`} />
 
           <LeadTimeByEnvironment report={report} getDisplayName={getDisplayName} />
 
@@ -357,6 +361,95 @@ function ProductPicker({
         </AnchoredPopover>
       )}
     </>
+  );
+}
+
+// ── Trends ─────────────────────────────────────────────────────────────────
+
+const DORA_KEYS = ['deploymentFrequency', 'leadTime', 'changeFailureRate', 'timeToRestore'];
+
+/**
+ * DORA is a direction, not a snapshot: the four metrics as full charts, with the previous window
+ * as a ghost line, per-product overlays to see who moves the portfolio line, and any secondary
+ * metric added on demand. Thin-coverage buckets are drawn hollow (see TrendChart).
+ */
+function TrendsSection({ report, periodLabel }: { report: DeliveryMetricsResponse; periodLabel: string }) {
+  const [showPrevious, setShowPrevious] = useState(true);
+  const [perProduct, setPerProduct] = useState(false);
+  const [extra, setExtra] = useState<string[]>([]);
+  const metrics = report.sections.flatMap((s) => s.metrics);
+  const byKey = new Map(metrics.map((m) => [m.key, m]));
+  const dora = DORA_KEYS.map((k) => byKey.get(k)).filter((m): m is NonNullable<typeof m> => !!m);
+  const secondary = metrics.filter((m) => !DORA_KEYS.includes(m.key) && m.trend.length > 0);
+  const canOverlay = report.byProduct.length > 1 && report.byProduct.length <= OVERLAY_COLORS.length;
+
+  const overlaysFor = (key: string): TrendSeries[] =>
+    perProduct && canOverlay
+      ? report.byProduct.map((r, i) => ({ name: r.product, points: r.trends?.[key] ?? [], color: OVERLAY_COLORS[i % OVERLAY_COLORS.length] }))
+      : [];
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-center gap-3 mb-2">
+        <h2 className="text-[13px] font-semibold mr-auto flex items-center gap-1.5">
+          Trends
+          <InfoPopover
+            label="Trends"
+            content={{
+              what: 'The DORA metrics over time, one point per bucket of the selected window.',
+              how: 'Solid is this window; the dashed ghost is the equal-length window before, aligned bucket for bucket. Hollow points rest on thin coverage (under half of the bucket\'s stories or incidents measurable) and should not be read as a change. Per product overlays each product\'s own series; the portfolio line is not their average.',
+              why: 'DORA is a direction, not a level: a figure only means something next to where it came from. Compare the slope and the gap to the ghost, and distrust any move that coincides with a coverage dip.',
+            }}
+          />
+        </h2>
+        <label className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          <input type="checkbox" checked={showPrevious} onChange={(e) => setShowPrevious(e.target.checked)} /> previous period
+        </label>
+        {report.byProduct.length > 1 && (
+          <label className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--text-secondary)' }} title={canOverlay ? undefined : `Overlay supports up to ${OVERLAY_COLORS.length} products`}>
+            <input type="checkbox" checked={perProduct && canOverlay} disabled={!canOverlay} onChange={(e) => setPerProduct(e.target.checked)} /> per product
+          </label>
+        )}
+        <select
+          value=""
+          onChange={(e) => { if (e.target.value) setExtra((x) => [...x, e.target.value]); }}
+          className="text-[12px] px-2 py-1 rounded-lg border"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+          aria-label="Add a metric chart"
+        >
+          <option value="">Add metric…</option>
+          {secondary.filter((m) => !extra.includes(m.key)).map((m) => <option key={m.key} value={m.key}>{m.title}</option>)}
+        </select>
+      </div>
+      {perProduct && canOverlay && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-0.5" style={{ backgroundColor: 'var(--accent)' }} /> all selected</span>
+          {report.byProduct.map((r, i) => (
+            <span key={r.product} className="inline-flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: OVERLAY_COLORS[i % OVERLAY_COLORS.length] }} /> {r.product}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {dora.map((m) => (
+          <TrendChart key={m.key} metric={m} showPrevious={showPrevious} overlays={overlaysFor(m.key)} periodLabel={periodLabel} />
+        ))}
+        {extra.map((k) => byKey.get(k)).filter((m): m is NonNullable<typeof m> => !!m).map((m) => (
+          <div key={m.key} className="relative">
+            <TrendChart metric={m} showPrevious={showPrevious} periodLabel={periodLabel} />
+            <button
+              onClick={() => setExtra((x) => x.filter((e) => e !== m.key))}
+              className="absolute top-3 right-3 text-[11px] underline"
+              style={{ color: 'var(--text-muted)' }}
+              aria-label={`Remove ${m.title} chart`}
+            >
+              remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

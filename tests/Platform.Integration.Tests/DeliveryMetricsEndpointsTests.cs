@@ -249,6 +249,45 @@ public class DeliveryMetricsEndpointsTests : IClassFixture<DeliveryMetricsEndpoi
     }
 
     [Fact]
+    public async Task Delivery_Trends_CarryThePreviousWindow_PerBucketCoverage_AndPerProductSeries()
+    {
+        await EnablePromotionsAsync();
+        var p = Unique("trend");
+        // Previous window (Jul 18 – Aug 1): one deploy. Current window: three, two stories shipped,
+        // only one of them with a commit time.
+        await IngestAsync(p, "api", "prod", "v0", "2026-07-20T10:00:00Z");
+        await IngestAsync(p, "api", "prod", "v1", "2026-08-03T10:00:00Z", workItems: ["T-1"], prOccurredAt: "2026-08-02T10:00:00Z");
+        await IngestAsync(p, "api", "prod", "v2", "2026-08-04T10:00:00Z", workItems: ["T-2"]);
+        await IngestAsync(p, "api", "prod", "v3", "2026-08-11T10:00:00Z");
+
+        var body = await GetJson($"/api/analytics/delivery?products={p}&{Window}&bucket=week");
+
+        var freq = Metric(body, "dora", "deploymentFrequency");
+        var trend = freq.GetProperty("trend").EnumerateArray().ToList();
+        var previous = freq.GetProperty("previousTrend").EnumerateArray().ToList();
+        // Weeks start Monday: the window Aug 1–15 spans three ISO weeks, the previous one Jul 18–Aug 1 too.
+        Assert.Equal(3, trend.Count);
+        Assert.Equal(3, previous.Count);
+        Assert.All(previous, pt => Assert.True(string.CompareOrdinal(pt.GetProperty("start").GetString(), "2026-08-01") < 0));
+        Assert.Equal(1, previous.Sum(pt => pt.GetProperty("value").GetDouble()));
+        Assert.Equal(3, trend.Sum(pt => pt.GetProperty("value").GetDouble()));
+
+        // Lead time bucket coverage: the week of Aug 3 shipped two stories, one measurable → 0.5.
+        var lead = Metric(body, "dora", "leadTime").GetProperty("trend").EnumerateArray()
+            .Single(pt => pt.GetProperty("start").GetString() == "2026-08-03");
+        Assert.Equal(1, lead.GetProperty("n").GetInt32());
+        Assert.Equal(0.5, lead.GetProperty("coverage").GetDouble());
+
+        // Per-product overlay carries the same four series.
+        var row = Assert.Single(body.GetProperty("byProduct").EnumerateArray());
+        var trends = row.GetProperty("trends");
+        Assert.Equal(3, trends.GetProperty("deploymentFrequency").GetArrayLength());
+        Assert.Equal(3, trends.GetProperty("deploymentFrequency").EnumerateArray().Sum(pt => pt.GetProperty("value").GetDouble()));
+        Assert.True(trends.TryGetProperty("leadTime", out _));
+        Assert.True(trends.TryGetProperty("timeToRestore", out _));
+    }
+
+    [Fact]
     public async Task Delivery_EveryMetric_CarriesADefinition()
     {
         var body = await GetJson($"/api/analytics/delivery?products={Unique("def")}&{Window}");

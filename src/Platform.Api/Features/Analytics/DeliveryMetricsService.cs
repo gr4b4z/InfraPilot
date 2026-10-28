@@ -153,6 +153,7 @@ public class DeliveryMetricsService
                 .ToList();
 
         var labels = AnalyticsCalendar.Labels(rangeFrom, rangeTo, bucket, tz);
+        var prevLabels = AnalyticsCalendar.Labels(prevFrom, rangeFrom, bucket, tz);
         var ctx = new Inputs(events, grains, batchByEvent, approved.Select(a => (a.Product, a.CreatedAt, a.ApprovedAt)).ToList(),
             deployed.Select(d => (d.Product, d.ApprovedAt, d.DeployedAt)).ToList(),
             knownServices.Select(k => (k.Product, k.Service, k.Last)).ToList(),
@@ -176,7 +177,8 @@ public class DeliveryMetricsService
                 "A redeploy of the version already running is not counted; failed attempts and rollbacks are reported apart. " +
                 "The delta compares the equal-length window immediately before.",
                 delta: Delta(all.ProdDeploys, all.PrevProdDeploys, all.PrevProdDeploys),
-                trend: Trend(labels, l => (all.ProdDeploysByBucket.GetValueOrDefault(l), all.ProdDeploysByBucket.GetValueOrDefault(l)))),
+                trend: DoraTrend(all, "deploymentFrequency", labels),
+                previousTrend: DoraTrend(all, "deploymentFrequency", prevLabels)),
 
             Metric("leadTime", "Lead time for changes", "hours", Hours(Percentiles.Median(all.LeadHours)), all.LeadHours.Count, "down",
                 $"Median hours from a change being merged to its story's first successful deploy to {prodLabel} — cumulative from the " +
@@ -184,7 +186,8 @@ public class DeliveryMetricsService
                 "producer sent it; only stories with a recorded commit time are measurable — see coverage. Percentiles, never averages.",
                 percentiles: Pct(all.LeadHours),
                 delta: Delta(Hours(Percentiles.Median(all.LeadHours)), Hours(Percentiles.Median(all.PrevLeadHours)), all.PrevLeadHours.Count),
-                trend: Trend(labels, l => (Hours(Percentiles.Median(all.LeadHoursByBucket.GetValueOrDefault(l, []))), all.LeadHoursByBucket.GetValueOrDefault(l, []).Count)),
+                trend: DoraTrend(all, "leadTime", labels),
+                previousTrend: DoraTrend(all, "leadTime", prevLabels),
                 coverage: Coverage("stories shipped with a recorded commit time", all.StoriesWithClock, all.StoriesShipped)),
 
             Metric("changeFailureRate", "Change failure rate", "ratio",
@@ -195,11 +198,8 @@ public class DeliveryMetricsService
                 (window is null ? "; no cap on how long after a deploy an incident still counts." : $"; an incident more than {analytics.AttributionWindowDays} days after a deploy no longer counts against it.") +
                 " Shows — until at least one incident is recorded for the selection; see Incidents (admins) and Settings → Delivery Metrics.",
                 delta: all.AnyIncidents ? Delta(Ratio(all.FailedDeploys, all.ProdDeploys), Ratio(all.PrevFailedDeploys, all.PrevProdDeploys), all.PrevProdDeploys) : null,
-                trend: all.AnyIncidents ? Trend(labels, l =>
-                {
-                    var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
-                    return (Ratio(b.FailedDeploys, b.Counted), b.Counted);
-                }) : null,
+                trend: DoraTrend(all, "changeFailureRate", labels),
+                previousTrend: DoraTrend(all, "changeFailureRate", prevLabels),
                 coverage: Coverage("incidents tied to a deploy", all.IncidentsAttributed, all.IncidentsStarted)),
 
             Metric("timeToRestore", "Time to restore service", "hours", Hours(Percentiles.Median(all.RestoreHours)), all.RestoreHours.Count, "down",
@@ -207,7 +207,8 @@ public class DeliveryMetricsService
                 "Open incidents are not counted until they close — see coverage. Percentiles, never averages; p90 in percentiles.",
                 percentiles: Pct(all.RestoreHours),
                 delta: Delta(Hours(Percentiles.Median(all.RestoreHours)), Hours(Percentiles.Median(all.PrevRestoreHours)), all.PrevRestoreHours.Count),
-                trend: Trend(labels, l => (Hours(Percentiles.Median(all.RestoreHoursByBucket.GetValueOrDefault(l, []))), all.RestoreHoursByBucket.GetValueOrDefault(l, []).Count)),
+                trend: DoraTrend(all, "timeToRestore", labels),
+                previousTrend: DoraTrend(all, "timeToRestore", prevLabels),
                 coverage: Coverage("incidents with a restore time (open ones excluded)", all.RestoreHours.Count, all.RestoreHours.Count + all.IncidentsOpen)),
         };
 
@@ -230,6 +231,7 @@ public class DeliveryMetricsService
                 "share of deploys that carry no story reference — see coverage.",
                 delta: Delta(all.StoriesShipped, all.PrevStoriesShipped, all.PrevStoriesShipped),
                 trend: Trend(labels, l => (all.StoriesByBucket.GetValueOrDefault(l), all.StoriesByBucket.GetValueOrDefault(l))),
+                previousTrend: Trend(prevLabels, l => (all.StoriesByBucket.GetValueOrDefault(l), all.StoriesByBucket.GetValueOrDefault(l))),
                 coverage: Coverage("deploys carrying a story reference", all.DeploysWithStory, all.Deployments)),
         };
 
@@ -245,12 +247,22 @@ public class DeliveryMetricsService
                 {
                     var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
                     return (Ratio(b.Failed + b.Rollbacks, b.Counted + b.Failed), b.Counted + b.Failed);
+                }),
+                previousTrend: Trend(prevLabels, l =>
+                {
+                    var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
+                    return (Ratio(b.Failed + b.Rollbacks, b.Counted + b.Failed), b.Counted + b.Failed);
                 })),
 
             Metric("rollbackRate", "Rollback rate", "ratio", Ratio(all.ProdRollbacks, all.ProdDeploys), all.ProdDeploys, "down",
                 $"Rollback deploys ÷ successful deploys on {prodLabel} in the window.",
                 delta: Delta(Ratio(all.ProdRollbacks, all.ProdDeploys), Ratio(all.PrevProdRollbacks, all.PrevProdDeploys), all.PrevProdDeploys),
                 trend: Trend(labels, l =>
+                {
+                    var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
+                    return (Ratio(b.Rollbacks, b.Counted), b.Counted);
+                }),
+                previousTrend: Trend(prevLabels, l =>
                 {
                     var b = all.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
                     return (Ratio(b.Rollbacks, b.Counted), b.Counted);
@@ -314,7 +326,8 @@ public class DeliveryMetricsService
                 s.StaleServices,
                 s.IncidentsStarted,
                 s.AnyIncidents ? Ratio(s.FailedDeploys, s.ProdDeploys) : null,
-                Hours(Percentiles.Median(s.RestoreHours)));
+                Hours(Percentiles.Median(s.RestoreHours)),
+                DoraKeys.ToDictionary(k => k, k => DoraTrend(s, k, labels)));
         }).ToList();
 
         var byService = BuildServiceRows(ctx, span);
@@ -579,6 +592,9 @@ public class DeliveryMetricsService
         public int Rollbacks;
         // Counted deploys in this bucket with at least one attributed incident.
         public int FailedDeploys;
+        // Incidents that started in this bucket, and how many of them were tied to a deploy.
+        public int IncidentsStarted;
+        public int IncidentsAttributed;
     }
 
     /// <summary>Everything the metrics read, for one product predicate — the whole selection or one product.</summary>
@@ -600,6 +616,9 @@ public class DeliveryMetricsService
         public Dictionary<string, List<double>> LeadHoursByBucket = new();
         public Dictionary<string, List<double>> LeadHoursByEnvironment = new(StringComparer.OrdinalIgnoreCase);
 
+        public BucketCount BucketFor(string label)
+            => BucketCounts.TryGetValue(label, out var b) ? b : BucketCounts[label] = new BucketCount();
+
         public static Scope Compute(Inputs ctx, Func<string, bool> inScope)
         {
             var s = new Scope();
@@ -617,28 +636,25 @@ public class DeliveryMetricsService
                 }
                 if (!ctx.ProdSet.Contains(e.Environment)) continue;
 
-                if (inWindow)
+                // Buckets are kept for both windows (labels never collide across them): the previous
+                // window's buckets are the ghost line a trend is read against. Totals stay per window.
+                var b = s.BucketFor(Bucket(e.DeployedAt));
+                switch (kind)
                 {
-                    var b = s.BucketCounts.TryGetValue(Bucket(e.DeployedAt), out var bc) ? bc : s.BucketCounts[Bucket(e.DeployedAt)] = new BucketCount();
-                    switch (kind)
-                    {
-                        case EventKind.Counted:
-                            s.ProdDeploys++; b.Counted++;
-                            s.ProdDeploysByBucket[Bucket(e.DeployedAt)] = s.ProdDeploysByBucket.GetValueOrDefault(Bucket(e.DeployedAt)) + 1;
-                            s.BatchSizes.Add(ctx.BatchByEvent.GetValueOrDefault(e.Id));
-                            break;
-                        case EventKind.Failed: s.ProdFailed++; b.Failed++; break;
-                        case EventKind.Rollback: s.ProdRollbacks++; b.Rollbacks++; break;
-                    }
-                }
-                else
-                {
-                    switch (kind)
-                    {
-                        case EventKind.Counted: s.PrevProdDeploys++; break;
-                        case EventKind.Failed: s.PrevProdFailed++; break;
-                        case EventKind.Rollback: s.PrevProdRollbacks++; break;
-                    }
+                    case EventKind.Counted:
+                        b.Counted++;
+                        s.ProdDeploysByBucket[Bucket(e.DeployedAt)] = s.ProdDeploysByBucket.GetValueOrDefault(Bucket(e.DeployedAt)) + 1;
+                        if (inWindow) { s.ProdDeploys++; s.BatchSizes.Add(ctx.BatchByEvent.GetValueOrDefault(e.Id)); }
+                        else s.PrevProdDeploys++;
+                        break;
+                    case EventKind.Failed:
+                        b.Failed++;
+                        if (inWindow) s.ProdFailed++; else s.PrevProdFailed++;
+                        break;
+                    case EventKind.Rollback:
+                        b.Rollbacks++;
+                        if (inWindow) s.ProdRollbacks++; else s.PrevProdRollbacks++;
+                        break;
                 }
             }
 
@@ -654,17 +670,14 @@ public class DeliveryMetricsService
             foreach (var story in stories)
             {
                 var hours = story.CommittedAt is null ? (double?)null : (story.ShippedAt - story.CommittedAt.Value).TotalHours;
+                var storyLabel = Bucket(story.ShippedAt);
+                s.StoriesByBucket[storyLabel] = s.StoriesByBucket.GetValueOrDefault(storyLabel) + 1;
+                if (hours is not null)
+                    (s.LeadHoursByBucket.TryGetValue(storyLabel, out var list) ? list : s.LeadHoursByBucket[storyLabel] = []).Add(hours.Value);
                 if (story.ShippedAt >= ctx.RangeFrom)
                 {
                     s.StoriesShipped++;
-                    var label = Bucket(story.ShippedAt);
-                    s.StoriesByBucket[label] = s.StoriesByBucket.GetValueOrDefault(label) + 1;
-                    if (hours is not null)
-                    {
-                        s.StoriesWithClock++;
-                        s.LeadHours.Add(hours.Value);
-                        (s.LeadHoursByBucket.TryGetValue(label, out var list) ? list : s.LeadHoursByBucket[label] = []).Add(hours.Value);
-                    }
+                    if (hours is not null) { s.StoriesWithClock++; s.LeadHours.Add(hours.Value); }
                 }
                 else
                 {
@@ -713,6 +726,13 @@ public class DeliveryMetricsService
             foreach (var i in scoped)
             {
                 var startedInWindow = i.StartedAt >= ctx.RangeFrom && i.StartedAt < ctx.RangeTo;
+                var tied = i.Attribution is "explicit" or "version" or "inferred";
+                if (i.StartedAt >= ctx.RangeFrom - (ctx.RangeTo - ctx.RangeFrom) && i.StartedAt < ctx.RangeTo)
+                {
+                    var sb = s.BucketFor(Bucket(i.StartedAt));
+                    sb.IncidentsStarted++;
+                    if (tied) sb.IncidentsAttributed++;
+                }
                 if (startedInWindow)
                 {
                     s.IncidentsStarted++;
@@ -728,25 +748,15 @@ public class DeliveryMetricsService
                 if (i.ResolvedAt is { } resolved && resolved >= ctx.RangeFrom - (ctx.RangeTo - ctx.RangeFrom) && resolved < ctx.RangeTo)
                 {
                     var hours = (resolved - i.StartedAt).TotalHours;
-                    if (resolved >= ctx.RangeFrom)
-                    {
-                        s.RestoreHours.Add(hours);
-                        var label = Bucket(resolved);
-                        (s.RestoreHoursByBucket.TryGetValue(label, out var list) ? list : s.RestoreHoursByBucket[label] = []).Add(hours);
-                    }
+                    var label = Bucket(resolved);
+                    (s.RestoreHoursByBucket.TryGetValue(label, out var list) ? list : s.RestoreHoursByBucket[label] = []).Add(hours);
+                    if (resolved >= ctx.RangeFrom) s.RestoreHours.Add(hours);
                     else s.PrevRestoreHours.Add(hours);
                 }
                 if (i.DeployEventId is { } deployId && countedInWindow.TryGetValue(deployId, out var deploy))
                 {
-                    if (deploy.DeployedAt >= ctx.RangeFrom)
-                    {
-                        if (failedDeployIds.Add(deployId))
-                        {
-                            var b = s.BucketCounts.TryGetValue(Bucket(deploy.DeployedAt), out var bc) ? bc : s.BucketCounts[Bucket(deploy.DeployedAt)] = new BucketCount();
-                            b.FailedDeploys++;
-                        }
-                    }
-                    else prevFailedDeployIds.Add(deployId);
+                    var set = deploy.DeployedAt >= ctx.RangeFrom ? failedDeployIds : prevFailedDeployIds;
+                    if (set.Add(deployId)) s.BucketFor(Bucket(deploy.DeployedAt)).FailedDeploys++;
                 }
             }
             s.FailedDeploys = failedDeployIds.Count;
@@ -761,8 +771,46 @@ public class DeliveryMetricsService
     private static DeliveryMetricDto Metric(
         string key, string title, string unit, double? value, int n, string goodWhen, string definition,
         DeliveryPercentilesDto? percentiles = null, DeliveryDeltaDto? delta = null,
-        List<DeliveryTrendPointDto>? trend = null, DeliveryCoverageDto? coverage = null)
-        => new(key, title, Available: true, Reason: null, unit, value, n, percentiles, delta, trend ?? [], coverage, definition, goodWhen);
+        List<DeliveryTrendPointDto>? trend = null, List<DeliveryTrendPointDto>? previousTrend = null,
+        DeliveryCoverageDto? coverage = null)
+        => new(key, title, Available: true, Reason: null, unit, value, n, percentiles, delta, trend ?? [], previousTrend ?? [], coverage, definition, goodWhen);
+
+    private static readonly string[] DoraKeys = ["deploymentFrequency", "leadTime", "changeFailureRate", "timeToRestore"];
+
+    /// <summary>
+    /// One DORA metric per bucket, from a scope's per-label bookkeeping. The bookkeeping covers both
+    /// windows, so the same builder draws the current series, the previous-window ghost and the
+    /// per-product overlays — the labels decide which. Coverage rides along where a bucket can be
+    /// thin in a way the value hides: lead time (stories with a commit time ÷ shipped) and change
+    /// failure rate (incidents tied to a deploy ÷ started).
+    /// </summary>
+    private static List<DeliveryTrendPointDto> DoraTrend(Scope s, string key, List<string> labels) => key switch
+    {
+        "deploymentFrequency" => labels.Select(l =>
+        {
+            var n = s.ProdDeploysByBucket.GetValueOrDefault(l);
+            return new DeliveryTrendPointDto(l, n, n);
+        }).ToList(),
+        "leadTime" => labels.Select(l =>
+        {
+            var hours = s.LeadHoursByBucket.GetValueOrDefault(l, []);
+            var shipped = s.StoriesByBucket.GetValueOrDefault(l);
+            return new DeliveryTrendPointDto(l, Hours(Percentiles.Median(hours)), hours.Count, Ratio(hours.Count, shipped));
+        }).ToList(),
+        "changeFailureRate" => s.AnyIncidents
+            ? labels.Select(l =>
+            {
+                var b = s.BucketCounts.GetValueOrDefault(l) ?? new BucketCount();
+                return new DeliveryTrendPointDto(l, Ratio(b.FailedDeploys, b.Counted), b.Counted, Ratio(b.IncidentsAttributed, b.IncidentsStarted));
+            }).ToList()
+            : [],
+        "timeToRestore" => labels.Select(l =>
+        {
+            var hours = s.RestoreHoursByBucket.GetValueOrDefault(l, []);
+            return new DeliveryTrendPointDto(l, Hours(Percentiles.Median(hours)), hours.Count);
+        }).ToList(),
+        _ => [],
+    };
 
     private static DeliveryDeltaDto? Delta(double? value, double? previous, int previousN)
         => previous is null && previousN == 0 && value is null ? null
