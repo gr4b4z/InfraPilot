@@ -28,6 +28,9 @@ public record DeliveryMetricDto(
     DeliveryPercentilesDto? Percentiles,
     DeliveryDeltaDto? Delta,
     List<DeliveryTrendPointDto> Trend,
+    // The same series over the equal-length window before — the ghost line a trend is read against.
+    // Aligned by position, not by date: bucket i of the previous window sits under bucket i of this one.
+    List<DeliveryTrendPointDto> PreviousTrend,
     DeliveryCoverageDto? Coverage,
     string Definition,
     string GoodWhen);
@@ -37,7 +40,10 @@ public record DeliveryPercentilesDto(double? P50, double? P75, double? P90);
 /// <summary>Same metric over the equal-length window immediately before. Change = Value − Previous.</summary>
 public record DeliveryDeltaDto(double? Previous, double? Change, int PreviousN);
 
-public record DeliveryTrendPointDto(string Start, double? Value, int N);
+/// <param name="Coverage">How much of the bucket's population the value could see (lead time: stories
+/// with a commit time ÷ stories shipped; change failure rate: incidents tied to a deploy ÷ incidents
+/// started). Null where the notion doesn't apply. A chart dims thin buckets with it.</param>
+public record DeliveryTrendPointDto(string Start, double? Value, int N, double? Coverage = null);
 
 /// <summary>How much of the population the metric could see — the qualifier every ticket-derived number needs.</summary>
 public record DeliveryCoverageDto(string Label, int Numerator, int Denominator, double Ratio);
@@ -78,7 +84,10 @@ public record DeliveryProductRowDto(
     int StaleServices,
     int Incidents,
     double? ChangeFailureRate,
-    double? TimeToRestoreP50Hours);
+    double? TimeToRestoreP50Hours,
+    // The DORA four over this product alone, per bucket of the current window — what the trend
+    // charts overlay to show which product moves the portfolio line. Keyed by metric key.
+    Dictionary<string, List<DeliveryTrendPointDto>> Trends);
 
 public record DeliveryServiceRowDto(
     string Product,
