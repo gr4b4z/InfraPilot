@@ -5,6 +5,7 @@ using Platform.Api.Features.Builds.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Incidents.Models;
+using Platform.Api.Features.Migrations.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
@@ -60,6 +61,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<RollbackPolicy> RollbackPolicies => Set<RollbackPolicy>();
     public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
     public DbSet<Incident> Incidents => Set<Incident>();
+    public DbSet<MigrationRun> MigrationRuns => Set<MigrationRun>();
+    public DbSet<MigrationRunItem> MigrationRunItems => Set<MigrationRunItem>();
+    public DbSet<MigrationRunLog> MigrationRunLogs => Set<MigrationRunLog>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -741,6 +745,75 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             // the providers disagree on how a unique index treats NULL external ids.
             e.HasIndex(x => new { x.Source, x.ExternalId });
             e.HasIndex(x => x.CausedByDeployEventId);
+        });
+
+        // Database migrations of deployed versions (schema: a Helm hook inside the deploy; data: a
+        // separate step after it). See MigrationService.
+        modelBuilder.Entity<MigrationRun>(e =>
+        {
+            e.ToTable("migration_runs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Kind).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            e.Property(x => x.RunKey).HasMaxLength(100).HasDefaultValue("").IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(50).IsRequired();
+            e.Property(x => x.SkipReason).HasMaxLength(2000);
+            e.Property(x => x.FailureReason).HasMaxLength(2000);
+            var runJson = e.Property(x => x.RunJson);
+            if (jsonType != null) runJson.HasColumnType(jsonType);
+            e.Ignore(x => x.Run);
+            // Set null, not cascade: a migration that ran is still a fact when the deploy record
+            // behind it is removed (duplicate cleanup, a remap).
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.SetNull);
+            // The upsert key. Unique: every key column is non-null (RunKey defaults to ""), so both
+            // providers agree on what a duplicate is.
+            e.HasIndex(x => new { x.Kind, x.Product, x.Service, x.Environment, x.Version, x.RunKey }).IsUnique();
+            // Supersede and the matrix flare: a cell's data migrations by when they became due.
+            e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.QueuedAt })
+                .IsDescending(false, false, false, true);
+            e.HasIndex(x => new { x.Status, x.Product });
+            e.HasIndex(x => x.QueuedAt).IsDescending(true);
+            e.HasIndex(x => x.DeployEventId);
+            e.HasIndex(x => x.SupersededById);
+        });
+
+        modelBuilder.Entity<MigrationRunItem>(e =>
+        {
+            e.ToTable("migration_run_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Error).HasMaxLength(2000);
+            e.HasOne<MigrationRun>()
+                .WithMany()
+                .HasForeignKey(x => x.MigrationRunId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.MigrationRunId, x.Sequence });
+            // "Has migration X run on staging?" looks rows up by name.
+            e.HasIndex(x => x.Name);
+            e.HasIndex(x => x.Order);
+        });
+
+        modelBuilder.Entity<MigrationRunLog>(e =>
+        {
+            e.ToTable("migration_run_logs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(50);
+            e.Property(x => x.Content).IsRequired();
+            e.Property(x => x.Truncated).HasDefaultValue(false);
+            e.HasOne<MigrationRun>()
+                .WithMany()
+                .HasForeignKey(x => x.MigrationRunId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.MigrationRunId, x.Name }).IsUnique();
         });
 
         // Rollback Requests

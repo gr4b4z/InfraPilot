@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Clock,
+  Database,
   ExternalLink,
   FileCode2,
   GitBranch,
@@ -30,6 +31,9 @@ import { BranchBadge } from '@/components/artifacts/BranchBadge';
 import { artifactRegistryPath } from '@/lib/artifactPath';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { DeploymentLogViewer } from '@/components/deployments/DeploymentLogViewer';
+import { MigrationFlare } from '@/components/migrations/MigrationFlare';
+import { MigrationCounts } from '@/components/migrations/MigrationCounts';
+import { KIND_LABEL, migrationPath, migrationStatusStyle } from '@/components/migrations/migrationStatus';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -54,6 +58,7 @@ import type {
   DeployReference,
   DeployRun,
   DeploymentDetail,
+  MigrationRunSummary,
   RelatedPromotion,
   RelatedWorkItem,
 } from '@/lib/types';
@@ -206,6 +211,9 @@ export function DeploymentDetailPage() {
   }
 
   const { event: evt, logs, history, promotions, workItems } = detail;
+  const migrations = detail.migrations ?? [];
+  // What the header flags: a migration of this deployment that is still pending, running or failed.
+  const openMigrations = migrations.filter((m) => m.status === 'pending' || m.status === 'running' || m.status === 'failed');
   const failed = evt.status === 'failed';
   const duringFreeze = freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service);
   const status = STATUS_STYLES[evt.status] ?? STATUS_STYLES.succeeded;
@@ -250,6 +258,7 @@ export function DeploymentDetailPage() {
                 variant="badge"
               />
             )}
+            <MigrationFlare flags={openMigrations} />
           </div>
           <div className="flex items-center gap-2 flex-wrap mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
             <VersionLink version={evt.version} manifest={manifest} />
@@ -362,6 +371,8 @@ export function DeploymentDetailPage() {
           <Card title="Pipeline output" icon={ScrollText}>
             <DeploymentLogViewer eventId={evt.id} logs={logs} defaultOpen={failed} />
           </Card>
+
+          {migrations.length > 0 && <MigrationsCard migrations={migrations} eventId={evt.id} />}
 
           <CreationCard event={evt} />
 
@@ -517,6 +528,47 @@ function FailureCallout({ run, hasLogs, children }: {
 }
 
 // ── Cards ─────────────────────────────────────────────────────────────
+
+/**
+ * The deployment's migrations: the schema migration that ran inside it and the data migration due
+ * after it, each linking to its own page with the individual migrations and their output.
+ */
+function MigrationsCard({ migrations, eventId }: { migrations: MigrationRunSummary[]; eventId: string }) {
+  const back = `?from=${encodeURIComponent(`/deployments/events/${eventId}`)}&fromLabel=${encodeURIComponent('Deployment')}`;
+  return (
+    <Card title="Migrations" icon={Database}>
+      <ul className="space-y-1.5">
+        {migrations.map((m) => {
+          const st = migrationStatusStyle(m.status);
+          return (
+            <li key={m.id}>
+              <Link
+                to={`${migrationPath(m.id)}${back}`}
+                className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border transition-colors hover:border-[var(--accent)]"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                    {KIND_LABEL[m.kind]} migration
+                  </span>
+                  <span className="badge text-[10px]" style={{ backgroundColor: st.bg, color: st.fg }}>{st.label}</span>
+                  {m.failureReason && (
+                    <span className="text-[12px] font-mono truncate" style={{ color: 'var(--danger)' }} title={m.failureReason}>
+                      {m.failureReason}
+                    </span>
+                  )}
+                </span>
+                <span className="text-[12px] shrink-0" style={{ color: 'var(--text-secondary)' }}>
+                  <MigrationCounts run={m} />
+                </span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
 
 function Card({ title, icon: Icon, children, action }: {
   title: string;

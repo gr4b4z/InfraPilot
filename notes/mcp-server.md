@@ -136,6 +136,8 @@ finds the right one.
 | `list_recent_deployments` | A product's deploys since a time (default 24 h), with status filter |
 | `get_deployment` | One deploy event: run, failure reason, change set, logs index, neighbours, promotions |
 | `get_deployment_log` | A captured log block — tail, or lines matching text, numbered |
+| `list_migrations` | Schema and data migrations, default pending/running/failed; counts, failure reason, deploy link — see `migrations-api.md` |
+| `find_migration` | Has a migration run, and where: fuzzy/partial name or order number → per service × environment outcome |
 | `list_promotions` | Candidates with what each still waits on; filter by status, edge, reference |
 | `get_promotion` | Full candidate: versions, approval progress and approvers, comments, change set, failed attempts |
 | `get_work_item` | A ticket on one edge: required/missing roles, decisions, comments, commits, PRs |

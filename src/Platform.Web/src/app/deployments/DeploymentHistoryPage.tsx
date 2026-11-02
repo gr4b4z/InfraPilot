@@ -10,12 +10,15 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
-import type { DeployEvent, DeployReference } from '@/lib/types';
+import type { DeployEvent, DeployReference, MigrationFlag } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
 import type { PromotionFreezeWindow } from '@/lib/api';
 import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
 import { DuringFreezeMark } from './FreezeCues';
 import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
+import { MigrationFlare } from '@/components/migrations/MigrationFlare';
+import { flagsForDeployment } from '@/components/migrations/migrationStatus';
+import { useMigrationFlags } from '@/hooks/useMigrationFlags';
 
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
@@ -62,6 +65,7 @@ export function DeploymentHistoryPage() {
   const deploymentsTick = useEntityRefresh(['deployment'], {
     filter: (evt) => !evt.product || evt.product === product,
   });
+  const migrationFlags = useMigrationFlags(product, service);
 
   const isBackgroundRefresh = useIsBackgroundRefresh();
 
@@ -184,6 +188,7 @@ export function DeploymentHistoryPage() {
               index={index}
               event={evt}
               duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service)}
+              migrationFlags={flagsForDeployment(migrationFlags, evt)}
               envLabel={getDisplayName(evt.environment)}
               detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
@@ -215,12 +220,14 @@ export function DeploymentHistoryPage() {
  * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
  * a reader expects of a navigation.
  */
-function HistoryRow({ index, event: evt, duringFreeze, envLabel, detailHref }: {
+function HistoryRow({ index, event: evt, duringFreeze, migrationFlags, envLabel, detailHref }: {
   /** Position in the list, for the roving tabindex. */
   index: number;
   event: DeployEvent;
   /** The Promotion Freeze this deploy landed in, if any. */
   duringFreeze?: PromotionFreezeWindow;
+  /** This deploy's pending, running or failed migrations. */
+  migrationFlags: MigrationFlag[];
   envLabel: string;
   detailHref: string;
 }) {
@@ -256,6 +263,9 @@ function HistoryRow({ index, event: evt, duringFreeze, envLabel, detailHref }: {
       {duringFreeze && <DuringFreezeMark freeze={duringFreeze} envLabel={envLabel} />}
 
       <StatusBadge status={evt.status} />
+
+      {/* The row is a link already; the chip says it, the deployment page links on. */}
+      <MigrationFlare flags={migrationFlags} link={false} />
 
       <EnvBadge env={evt.environment} />
 

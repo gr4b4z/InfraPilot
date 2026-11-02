@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Migrations;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Settings;
@@ -21,6 +22,7 @@ public class DeploymentService
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceDeletionService _serviceDeletions;
     private readonly ServiceProductOverrideService _productOverrides;
+    private readonly MigrationService? _migrations;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -48,7 +50,10 @@ public class DeploymentService
         UserPreferencesService userPrefs,
         ServiceDeletionService serviceDeletions,
         ServiceProductOverrideService productOverrides,
-        ILogger<DeploymentService> logger)
+        ILogger<DeploymentService> logger,
+        // Optional so the unit tests that build this service by hand need not wire migrations; the
+        // container always supplies it.
+        MigrationService? migrations = null)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
@@ -58,6 +63,7 @@ public class DeploymentService
         _userPrefs = userPrefs;
         _serviceDeletions = serviceDeletions;
         _productOverrides = productOverrides;
+        _migrations = migrations;
         _logger = logger;
     }
 
@@ -199,6 +205,9 @@ public class DeploymentService
             // is nothing to close.
             await _promotionHook.OnIngestedAsync(replayed, ct);
 
+            // A replay may carry the hook output the first attempt had not captured yet.
+            if (_migrations is not null) await _migrations.OnDeployIngestedAsync(replayed, ct);
+
             return new IngestResult(replayed, true);
         }
 
@@ -313,6 +322,10 @@ public class DeploymentService
         // feature-flag gated internally and swallows its own failures so ingestion stays
         // resilient even when the promotion machinery misbehaves.
         await _promotionHook.OnIngestedAsync(deployEvent, ct);
+
+        // The schema migration ran inside this deploy and its output rode along with the logs; data
+        // migrations reported before the deploy arrived are linked to it. Swallows its own failures.
+        if (_migrations is not null) await _migrations.OnDeployIngestedAsync(deployEvent, ct);
 
         return new IngestResult(deployEvent, false);
     }
@@ -517,10 +530,12 @@ public class DeploymentService
             .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType, signOffEnvs))
             .ToList();
 
-        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);
+        var migrations = _migrations is null ? [] : await _migrations.ForDeployEventAsync(ev, ct);
+
+        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos, migrations);
     }
 
-    private static int CountLines(string content)
+    internal static int CountLines(string content)
     {
         if (content.Length == 0) return 0;
         var lines = 1;

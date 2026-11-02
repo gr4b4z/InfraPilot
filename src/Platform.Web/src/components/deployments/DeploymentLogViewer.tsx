@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { classifyLog, formatLogSize, type ClassifiedLine, type LogLineKind } from '@/lib/deployLog';
-import type { DeployLogSummary } from '@/lib/types';
+import type { DeployLogContent, DeployLogSummary } from '@/lib/types';
 
 /**
  * Viewer for the output a deploy pipeline captured — the Helm release printout and its failure
@@ -39,28 +39,41 @@ interface Props {
   logs: DeployLogSummary[];
   /** Open (and fetch) every block on mount. The page sets this when the deployment failed. */
   defaultOpen?: boolean;
+  /**
+   * Where a block's text comes from. Defaults to the deploy event's own logs; the migration pages
+   * pass their own, since a migration's output is stored with the migration.
+   */
+  fetchLog?: (logId: string) => Promise<DeployLogContent>;
+  /** Shown instead of the deployment wording when there are no blocks. */
+  emptyText?: string;
 }
 
-export function DeploymentLogViewer({ eventId, logs, defaultOpen = false }: Props) {
+export function DeploymentLogViewer({ eventId, logs, defaultOpen = false, fetchLog, emptyText }: Props) {
   if (logs.length === 0) {
     return (
       <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
-        The pipeline that ran this deployment didn't send any output. Newer deployments carry the Helm
-        release printout and, when they fail, the diagnostics collected at the time.
+        {emptyText ??
+          "The pipeline that ran this deployment didn't send any output. Newer deployments carry the Helm " +
+          'release printout and, when they fail, the diagnostics collected at the time.'}
       </p>
     );
   }
 
+  const fetcher = fetchLog ?? ((logId: string) => api.getDeploymentLog(eventId, logId));
   return (
     <div className="space-y-2">
       {logs.map((log) => (
-        <LogBlock key={log.id} eventId={eventId} log={log} defaultOpen={defaultOpen} />
+        <LogBlock key={log.id} log={log} defaultOpen={defaultOpen} fetchLog={fetcher} />
       ))}
     </div>
   );
 }
 
-function LogBlock({ eventId, log, defaultOpen }: { eventId: string; log: DeployLogSummary; defaultOpen: boolean }) {
+function LogBlock({ log, defaultOpen, fetchLog }: {
+  log: DeployLogSummary;
+  defaultOpen: boolean;
+  fetchLog: (logId: string) => Promise<DeployLogContent>;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,14 +85,16 @@ function LogBlock({ eventId, log, defaultOpen }: { eventId: string; log: DeployL
     setLoading(true);
     setError(null);
     try {
-      const fetched = await api.getDeploymentLog(eventId, log.id);
+      const fetched = await fetchLog(log.id);
       setContent(fetched.content);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load this log');
     } finally {
       setLoading(false);
     }
-  }, [eventId, log.id]);
+  // fetchLog is a fresh closure every render of the parent; the block's identity is its id.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [log.id]);
 
   // Fetch on first open only — a re-collapse keeps what it already has, since a finished
   // deployment's log never changes.
