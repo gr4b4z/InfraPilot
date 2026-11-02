@@ -1580,6 +1580,52 @@ class ApiClient {
     return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
   }
 
+  // ── Migrations (read-only) ──────────────────────────────────────────────
+
+  /** `status`: `attention` (pending, running, failed), `all`, or a comma-separated list. */
+  listMigrations(params?: {
+    product?: string;
+    service?: string;
+    environment?: string;
+    kind?: string;
+    status?: string;
+    version?: string;
+    deployEventId?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries = Object.entries(params ?? {})
+      .filter(([, v]) => v !== undefined && v !== '')
+      .map(([k, v]) => [k, String(v)] as [string, string]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<import('./types').MigrationRunList>(`/migrations/runs${query}`);
+  }
+
+  getMigration(id: string) {
+    return this.request<import('./types').MigrationRunDetail>(`/migrations/runs/${id}`);
+  }
+
+  getMigrationLog(runId: string, logId: string) {
+    return this.request<import('./types').DeployLogContent>(`/migrations/runs/${runId}/logs/${logId}`);
+  }
+
+  /** Migrations needing attention, for the flares on deployment views. */
+  getMigrationFlags(params: { product?: string; service?: string; environment?: string }) {
+    const entries = Object.entries(params)
+      .filter(([, v]) => v)
+      .map(([k, v]) => [k, String(v)] as [string, string]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<import('./types').MigrationFlag[]>(`/migrations/flags${query}`);
+  }
+
+  /** "Has this migration run on staging?" — partial and fuzzy over every migration name on record. */
+  searchMigrations(q: string, params?: { product?: string; environment?: string; kind?: string; limit?: number }, signal?: AbortSignal) {
+    const entries: [string, string][] = [['q', q]];
+    for (const [k, v] of Object.entries(params ?? {})) if (v !== undefined && v !== '') entries.push([k, String(v)]);
+    return this.request<import('./types').MigrationSearchResult>(
+      `/migrations/search?${new URLSearchParams(entries).toString()}`, { signal });
+  }
+
   // ── Incidents (admin) ───────────────────────────────────────────────────
 
   listIncidents(params?: {

@@ -69,6 +69,9 @@ The InfraPilot repo's `.mcp.json` does the same from the environment. Design and
   the `logExcerpts` line verbatim; read more with `get_deployment_log` (`match: "error"`).
 - **"Is X in prod?":** `get_deployment_state` with the service (a fragment is fine) and
   `environment: "prod"`; report the version and give the `url`.
+- **"Has migration X run on staging?":** `find_migration` with the name (partial or misspelt is
+  fine) and `environment: "staging"`; report the outcome per service and give the `url`. Pending or
+  failed data migrations: `list_migrations` (default filter is pending/running/failed).
 
 ### Write tools — only when the user asked for that action
 
@@ -272,4 +275,4 @@ renders a draft; `POST /api/release-notes/generate` persists it and fires the
 
 Full payload shapes and semantics live in the InfraPilot repo under `notes/`:
 `deployment-ingest-api.md`, `promotions-api.md`, `build-registry-api.md`, `analytics-api.md`,
-`release-notes.md`. Consult them when a field's exact behaviour matters.
+`release-notes.md`, `migrations-api.md`. Consult them when a field's exact behaviour matters.

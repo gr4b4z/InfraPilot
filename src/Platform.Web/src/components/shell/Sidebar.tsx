@@ -9,6 +9,7 @@ import {
   Siren,
   ChevronLeft,
   ChevronRight,
+  Database,
   Settings,
   X,
   Zap,
@@ -101,6 +102,8 @@ const navGroups: NavGroup[] = [
     label: 'Deployments',
     items: [
       { to: '/deployments', label: 'Deployments', icon: Rocket },
+      // Schema migrations run inside each deploy, data migrations after it — read-only.
+      { to: '/migrations', label: 'Migrations', icon: Database },
       { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics,
         activeExcept: ['/analytics/delivery'] },
       // The report next to the operational view: several products pooled, fixed windows, DORA.

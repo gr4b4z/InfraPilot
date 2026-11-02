@@ -11,6 +11,8 @@ import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
+import { MigrationsPage } from '@/app/migrations/MigrationsPage';
+import { MigrationDetailPage } from '@/app/migrations/MigrationDetailPage';
 import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
 import { DeliveryMetricsPage } from '@/app/delivery/DeliveryMetricsPage';
@@ -100,6 +102,8 @@ function App() {
               the event, not of its identity — and ranked above /deployments/:product by the router's
               static-segment-wins rule, so "events" can't be read as a product name. */}
           <Route path="/deployments/events/:id" element={<DeploymentDetailPage />} />
+          <Route path="/migrations" element={<MigrationsPage />} />
+          <Route path="/migrations/:id" element={<MigrationDetailPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
           {/* The service's home page — environments, recent versions, promotions. The flat
               per-deploy list keeps living under /history as a sub-page of it. */}
