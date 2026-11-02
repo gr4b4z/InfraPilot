@@ -129,14 +129,19 @@ public static partial class MigrationLogParser
             if (string.IsNullOrEmpty(content)) continue;
             var lines = SplitLines(content);
 
-            // A block the producer captured for exactly this purpose is the migration output whole.
-            if (name.StartsWith("schema migration", StringComparison.OrdinalIgnoreCase))
+            // A block the producer captured for exactly this purpose is migration output throughout. When
+            // it is split into hook pod sections (marketplace SDP writes them like mpt-release streams
+            // them) they go through the loop below, so a pod the failure diagnostics dump again is kept
+            // once; without sections the block is taken whole.
+            var dedicated = name.StartsWith("schema migration", StringComparison.OrdinalIgnoreCase);
+            if (dedicated && !lines.Any(l => HookBanner().IsMatch(l)))
             {
                 sections.Add(content.TrimEnd());
                 source = "kubectl";
                 jobFailed |= lines.Any(l => HelmJobFailed().Match(l) is { Success: true } m && IsSchemaMigrationName(m.Groups["job"].Value));
                 continue;
             }
+            if (dedicated) source = "kubectl";
 
             for (var i = 0; i < lines.Length; i++)
             {
@@ -168,12 +173,16 @@ public static partial class MigrationLogParser
                     var end = i + 1;
                     // A pod's log ends at the next section header of the dump.
                     while (end < lines.Length && !lines[end].StartsWith("---") && !lines[end].StartsWith("===")) end++;
-                    if (IsSchemaMigrationName(pod) && seenPods.Add(pod))
+                    if (IsSchemaMigrationName(pod))
                     {
-                        sections.Add(string.Join('\n', lines[i..end]).TrimEnd());
-                        source = "kubectl";
-                        // The dump only holds failed pods — that is what it is for.
+                        // The dump only holds failed pods — that is what it is for — so the pod failed
+                        // even when its output was already taken from another block.
                         jobFailed = true;
+                        if (seenPods.Add(pod))
+                        {
+                            sections.Add(string.Join('\n', lines[i..end]).TrimEnd());
+                            source = "kubectl";
+                        }
                     }
                     i = end - 1;
                 }
