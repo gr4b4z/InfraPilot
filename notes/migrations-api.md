@@ -114,7 +114,7 @@ On every deploy event ingest (new or replayed) the server looks in the event's l
 |---|---|
 | `helm hook logs` (mpt-release) | Each `=====Logs from hook pod/X (job Y-migrations)=====` … `=====End logs…=====` section whose job name contains `migration`. |
 | `failure diagnostics` (both pipelines) | Each `--- Logs for pod: X ---` / `--- Logs for job pod: X ---` section whose pod name contains `migration`, up to the next `---`/`===` header — never the `kubectl describe` output around it, which prints container environments. |
-| any block named `schema migration…` | The whole block. The way for a producer to send a successful schema migration's output on purpose. |
+| any block named `schema migration…` | Its hook pod sections (same banners as `helm hook logs`), or the whole block when it has none. The way for a producer to send a successful schema migration's output on purpose — marketplace SDP does. |
 | any block | Helm's `* job X-migrations failed: …` line. |
 
 Data migration jobs (`…data-migration…`) are never taken as schema migrations. A deploy that
