@@ -163,8 +163,12 @@ public class DiagnosticsService
             }
         }
 
-        // ── Did anything land on the cluster afterwards? ──
         var since = candidate.ApprovedAt ?? candidate.CreatedAt;
+
+        // ── Did the workflow it started say it failed? ──
+        await AddDispatchRunObservations(candidate, since, now, observations, evidence, ct);
+
+        // ── Did anything land on the cluster afterwards? ──
         var deployEvents = await _db.DeployEvents.AsNoTracking()
             .Where(e => e.Product == candidate.Product
                      && e.Service == candidate.Service
@@ -309,6 +313,56 @@ public class DiagnosticsService
         var tail = value[^max..];
         var newline = tail.IndexOf('\n');
         return "…\n" + (newline >= 0 && newline < 200 ? tail[(newline + 1)..] : tail);
+    }
+
+    /// <summary>
+    /// The phrase mpt-release's promotion workflows (Deploy Registered Build, Promote Single Build
+    /// Manifest) put in the comment they leave when they fail before committing. Their note reads
+    /// "&lt;workflow&gt; failed at step "&lt;step&gt;" before committing anything, …" with a
+    /// "Run: &lt;url&gt;" line.
+    /// </summary>
+    private const string DispatchRunFailedPhrase = "before committing anything";
+
+    private const string DispatchRunLinePrefix = "Run: ";
+
+    /// <summary>
+    /// Whether the workflow the approval started reported, on the promotion's comment thread, that it
+    /// failed before committing. Nothing else in the portal records that: no commit means no reconcile
+    /// and no deploy event, so without the note the evidence reads exactly like a delivered approval
+    /// whose commit changed nothing.
+    /// </summary>
+    private async Task AddDispatchRunObservations(
+        PromotionCandidate candidate, DateTimeOffset since, DateTimeOffset now,
+        HashSet<string> observations, List<string> evidence, CancellationToken ct)
+    {
+        // A comment thread is short, so the phrase is matched here rather than in SQL, where case
+        // sensitivity would depend on the provider's collation.
+        var comments = await _db.PromotionComments.AsNoTracking()
+            .Where(c => c.CandidateId == candidate.Id
+                     && c.AuthorEmail != PromotionComment.SystemAuthor
+                     && c.CreatedAt >= since)
+            .OrderByDescending(c => c.CreatedAt)
+            .ToListAsync(ct);
+
+        var reports = comments
+            .Where(c => c.Body.Contains(DispatchRunFailedPhrase, StringComparison.OrdinalIgnoreCase)
+                     && c.Body.Contains(" failed", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (reports.Count == 0) return;
+
+        observations.Add(Observations.DispatchRunFailed);
+
+        // The newest report is the run that matters; an earlier one is an attempt already re-run.
+        var latest = reports[0];
+        var lines = latest.Body.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var summary = lines.FirstOrDefault(l => l.Contains(DispatchRunFailedPhrase, StringComparison.OrdinalIgnoreCase)) ?? lines[0];
+        var run = lines.FirstOrDefault(l => l.StartsWith(DispatchRunLinePrefix, StringComparison.OrdinalIgnoreCase))?[DispatchRunLinePrefix.Length..].Trim();
+        var author = string.IsNullOrWhiteSpace(latest.AuthorName) ? latest.AuthorEmail : latest.AuthorName;
+
+        evidence.Add($"A comment by '{author}' {Describe(now - latest.CreatedAt)} ago reports the deploy workflow failed: \"{Truncate(summary, 300)}\""
+            + (string.IsNullOrWhiteSpace(run) ? "" : $" Run: {run}"));
+        if (reports.Count > 1)
+            evidence.Add($"{reports.Count} such failure reports since approval — the workflow has failed more than once.");
     }
 
     /// <summary>Why a Pending candidate has not been approved — gates, not plumbing.</summary>
