@@ -1,3 +1,5 @@
+using Platform.Api.Features.Migrations.Models;
+
 namespace Platform.Api.Features.Deployments.Models;
 
 // --- Input DTOs ---
@@ -215,7 +217,9 @@ public record DeployEventDetailDto(
     List<DeployLogSummaryDto> Logs,
     List<DeployEventHistoryEntryDto> History,
     List<RelatedPromotionDto> Promotions,
-    List<RelatedWorkItemDto> WorkItems);
+    List<RelatedWorkItemDto> WorkItems,
+    // The deployment's schema migration (run inside it) and its data migration (due after it).
+    List<MigrationRunSummaryDto>? Migrations = null);
 
 /// <summary>
 /// A log block without its content. Sizes are reported so the UI can warn before pulling a

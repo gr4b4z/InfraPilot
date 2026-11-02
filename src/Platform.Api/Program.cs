@@ -9,6 +9,7 @@ using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Analytics;
 using Platform.Api.Features.Incidents;
+using Platform.Api.Features.Migrations;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Builds;
 using Platform.Api.Features.Catalog;
@@ -255,6 +256,7 @@ builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook
 builder.Services.AddScoped<AnalyticsService>();
 builder.Services.AddScoped<DeliveryMetricsService>();
 builder.Services.AddScoped<IncidentService>();
+builder.Services.AddScoped<Platform.Api.Features.Migrations.MigrationService>();
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();
@@ -449,6 +451,7 @@ app.Services.GetRequiredService<PlaybookRegistry>();
         {
             await DeploymentSeedData.Seed(db);
             await PromotionSeedData.Seed(db);
+            await MigrationSeedData.Seed(db);
         }
     }
 }
@@ -498,6 +501,10 @@ app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(Auth
 // Incident records are admin-only; the metrics they feed are on the delivery report for everyone.
 app.MapGroup("/api/incidents").MapIncidentEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+// Migrations are read-only for people (CanApprove, like deployments); pipelines report through the
+// API-key route inside the group.
+app.MapGroup("/api/migrations").MapMigrationEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/migrations/admin").MapMigrationAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // The promotions activity feed. AuditViewer (admin only) — the same gate as the platform audit log:
 // read end to end it is a record of who did what across every product, which is an administrator's

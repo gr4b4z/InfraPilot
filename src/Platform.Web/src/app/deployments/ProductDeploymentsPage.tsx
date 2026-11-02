@@ -23,7 +23,7 @@ import {
   Trash2,
   Snowflake,
 } from 'lucide-react';
-import type { DeploymentStateSummary, DeployEvent } from '@/lib/types';
+import type { DeploymentStateSummary, DeployEvent, MigrationFlag } from '@/lib/types';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { api } from '@/lib/api';
 import type { PromotionCandidate, PromotionFreezeWindow } from '@/lib/api';
@@ -39,6 +39,9 @@ import { RovingGroup } from '@/components/ui/RovingGroup';
 import { useSearchScope } from '@/stores/searchScopeStore';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { MigrationFlare } from '@/components/migrations/MigrationFlare';
+import { flagsForCell, flagsForDeployment } from '@/components/migrations/migrationStatus';
+import { useMigrationFlags } from '@/hooks/useMigrationFlags';
 
 type ViewTab = 'state' | 'activity' | 'compare';
 type TimeFilter = 'all' | 'today' | '24h' | '7d' | 'custom';
@@ -319,6 +322,8 @@ export function ProductDeploymentsPage() {
   // and every window (lifted ones too) marks the deploys that landed while it was on. Freeze and
   // lift broadcast as promotion events, hence the promotions tick.
   const freezeWindows = useFreezeWindows(product, promotionsEnabled, promotionsTick);
+  // Pending, running and failed migrations — the flare on cells and activity cards.
+  const migrationFlags = useMigrationFlags(product);
   const productFreezes = useMemo(() => activeFreezes(freezeWindows), [freezeWindows]);
   const heldIn = useCallback(
     (env: string) =>
@@ -960,6 +965,7 @@ export function ProductDeploymentsPage() {
                       cell={getCell(service, env)}
                       freezeWindows={freezeWindows}
                       pending={pendingPromotions.get(`${service}::${env}`)}
+                      migrationFlags={migrationFlags}
                       highlighted={
                         timeFilter !== 'all' && recentKeys.has(`${service}::${env}`)
                       }
@@ -1004,6 +1010,7 @@ export function ProductDeploymentsPage() {
                   key={evt.id}
                   event={evt}
                   duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service)}
+                  migrationFlags={flagsForDeployment(migrationFlags, evt)}
                   showEnv={envFilter !== 'all'}
                   onClick={() => openDeployment(evt)}
                 />
@@ -1059,6 +1066,7 @@ function MatrixCell({
   cell,
   freezeWindows,
   pending,
+  migrationFlags,
   highlighted,
   onOpen,
 }: {
@@ -1072,6 +1080,8 @@ function MatrixCell({
   freezeWindows: PromotionFreezeWindow[];
   /** A Pending promotion targeting this (service, environment), if there is one. */
   pending?: PromotionCandidate;
+  /** The product's open migrations; the cell picks out its own. */
+  migrationFlags: MigrationFlag[];
   highlighted: boolean;
   onOpen: (entry: { id: string }) => void;
 }) {
@@ -1081,6 +1091,7 @@ function MatrixCell({
   const pendingLabel = pending
     ? `, promotion to ${pending.version} ${pending.frozen ? 'held by a freeze' : 'awaiting approval'}`
     : '';
+  const cellFlags = cell ? flagsForCell(migrationFlags, { id: cell.id, service, environment: env }) : [];
   // `role: null` keeps the implicit cell role — see useKeyboardListRow.
   const rowProps = useKeyboardListRow(index, () => cell && onOpen(cell), {
     role: null,
@@ -1135,6 +1146,7 @@ function MatrixCell({
           {duringFreeze && <DuringFreezeMark freeze={duringFreeze} envLabel={envLabel} />}
         </span>
         {cell.status && cell.status !== 'succeeded' && <StatusBadge status={cell.status} />}
+        <MigrationFlare flags={cellFlags} compact />
         {pending && <PendingPromotionChip candidate={pending} />}
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
           {formatDistanceToNow(new Date(cell.deployedAt), { addSuffix: true })}
@@ -1591,12 +1603,15 @@ const STYLE_COLORS: Record<string, string> = {
 function ActivityCard({
   event: evt,
   duringFreeze,
+  migrationFlags,
   showEnv,
   onClick,
 }: {
   event: DeployEvent;
   /** The freeze this deploy landed in, if any. */
   duringFreeze?: PromotionFreezeWindow;
+  /** This deploy's open migrations. */
+  migrationFlags: MigrationFlag[];
   showEnv: boolean;
   onClick: () => void;
 }) {
@@ -1652,6 +1667,7 @@ function ActivityCard({
           {evt.status && evt.status !== 'succeeded' && (
             <StatusBadge status={evt.status} />
           )}
+          <MigrationFlare flags={migrationFlags} />
         </div>
       </div>
 
