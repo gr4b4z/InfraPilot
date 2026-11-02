@@ -206,6 +206,26 @@ public class MigrationLogParserTests
     }
 
     [Fact]
+    public void Extract_DedicatedBlockWithHookSections_AndTheSamePodInDiagnostics_IsKeptOnce()
+    {
+        // marketplace SDP: "schema migration" (written right after helm) holds the hook pod in
+        // banners, and on failure the diagnostics dump the same pod again.
+        var dedicated =
+            "=======================Logs from hook pod/billing-migrations-x1 (job billing-migrations)=======================\n" +
+            "[x] 4650 AlterAccountName      1m 2026-11-02T09:14:04               0s Invalid column name 'DisplayName'.\n" +
+            "=======================End logs from hook pod/billing-migrations-x1=======================\n";
+        var diagnostics = "--- Logs for pod: billing-migrations-x1 (Phase: Failed) ---\n[x] 4650 AlterAccountName 1m 2026-11-02T09:14:04 0s boom\n";
+
+        var extracted = MigrationLogParser.ExtractSchemaMigration(
+            [("schema migration", dedicated), ("failure diagnostics", diagnostics)], "billing");
+
+        Assert.NotNull(extracted);
+        Assert.Equal("kubectl", extracted.Source);
+        Assert.True(extracted.JobFailed);
+        Assert.Single(extracted.Content.Split('\n'), l => l.Contains("AlterAccountName"));
+    }
+
+    [Fact]
     public void Extract_DataMigrationJobIsNotASchemaMigration()
     {
         var diagnostics = "--- Logs for pod: orders-orders-data-migration-abc (Phase: Failed) ---\nboom\n";
