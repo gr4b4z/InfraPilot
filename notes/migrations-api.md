@@ -47,7 +47,7 @@ migration moves on.
     "failureReason": null                // the one line that explains a failure
   },
   "migrations": null,                    // optional explicit list, see below
-  "logs": [                              // same shape and cap as deploy event logs
+  "logs": [                              // same shape, cap and secret redaction as deploy event logs
     { "name": "data migration job output", "source": "kubectl", "content": "…pod log…" }
   ]
 }
