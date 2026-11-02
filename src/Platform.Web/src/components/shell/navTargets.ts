@@ -2,6 +2,7 @@ import {
   LayoutGrid,
   FileText,
   CheckCircle,
+  Database,
   ChartColumn,
   Gauge,
   Siren,
@@ -40,6 +41,7 @@ export interface NavTarget {
 
 export const NAV_TARGETS: NavTarget[] = [
   { key: 'd', label: 'Deployments', to: '/deployments', icon: Rocket },
+  { key: 'g', label: 'Migrations', to: '/migrations', icon: Database },
   { key: 'y', label: 'Analytics', to: '/analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
   { key: 'm', label: 'Delivery metrics', to: '/analytics/delivery', icon: Gauge, featureFlag: FeatureFlag.Analytics },
   { key: 'p', label: 'Promotions', to: '/promotions', icon: GitPullRequest, featureFlag: FeatureFlag.Promotions },

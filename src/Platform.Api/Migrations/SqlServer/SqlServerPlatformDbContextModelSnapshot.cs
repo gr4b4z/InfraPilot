@@ -721,6 +721,214 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("incidents", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Migrations.Models.MigrationRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AppliedCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("DeployEventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("FailedCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset>("QueuedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RunJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RunKey")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasDefaultValue("");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("SkipReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<Guid?>("SupersededById")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("TotalCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeployEventId");
+
+                    b.HasIndex("QueuedAt")
+                        .IsDescending();
+
+                    b.HasIndex("SupersededById");
+
+                    b.HasIndex("Status", "Product");
+
+                    b.HasIndex("Product", "Service", "Environment", "QueuedAt")
+                        .IsDescending(false, false, false, true);
+
+                    b.HasIndex("Kind", "Product", "Service", "Environment", "Version", "RunKey")
+                        .IsUnique();
+
+                    b.ToTable("migration_runs", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Migrations.Models.MigrationRunItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("AppliedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<long?>("DurationMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("MigrationRunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int?>("Order")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name");
+
+                    b.HasIndex("Order");
+
+                    b.HasIndex("MigrationRunId", "Sequence");
+
+                    b.ToTable("migration_run_items", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Migrations.Models.MigrationRunLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ByteCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("LineCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("MigrationRunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("OriginalByteCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<bool>("Truncated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MigrationRunId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("migration_run_logs", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Promotions.Models.PromotionApproval", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2137,6 +2345,32 @@ namespace Platform.Api.Migrations.SqlServer
                     b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
                         .WithMany()
                         .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Migrations.Models.MigrationRun", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Deployments.Models.DeployEvent", null)
+                        .WithMany()
+                        .HasForeignKey("DeployEventId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Migrations.Models.MigrationRunItem", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Migrations.Models.MigrationRun", null)
+                        .WithMany()
+                        .HasForeignKey("MigrationRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.Migrations.Models.MigrationRunLog", b =>
+                {
+                    b.HasOne("Platform.Api.Features.Migrations.Models.MigrationRun", null)
+                        .WithMany()
+                        .HasForeignKey("MigrationRunId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

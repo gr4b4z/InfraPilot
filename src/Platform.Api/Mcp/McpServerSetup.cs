@@ -41,6 +41,7 @@ public static class McpServerSetup
             .WithHttpTransport(o => o.Stateless = true)
             .WithTools<AccessTools>()
             .WithTools<DeploymentTools>()
+            .WithTools<MigrationTools>()
             .WithTools<PromotionTools>()
             .WithTools<WorkItemTools>()
             .WithTools<BuildTools>()
