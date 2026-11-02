@@ -633,6 +633,7 @@ executor:
       'Participants carry on two levels (event-level + reference-level) with operator overrides and enrichment as additional layers',
       'Optional `run` and `logs` sections record what created the deployment and what it printed — surfaced on GET /api/deployments/events/{id}',
       'Log blocks are keyed by name, so a retrying pipeline replaces its earlier copy instead of duplicating it; content over 512 KiB per block keeps the tail',
+      'Log blocks are readable by everyone signed in, so common secret shapes (connection-string keys such as SharedAccessKey= or Password=, key: value pairs naming a password, secret, token or API key, bearer tokens, credentials in URLs, private keys) are replaced with [redacted] before storage. Producers should still not print secrets',
     ],
     code: `POST /api/deployments/events
 X-Api-Key: <your-api-key>

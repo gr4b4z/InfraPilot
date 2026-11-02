@@ -77,6 +77,32 @@ Rate limiting is applied per key.
 | `references` | array | no | `[]` | Links to external resources (repos, pipelines, PRs, tickets). |
 | `participants` | array | no | `[]` | People involved in the deployment. |
 | `metadata` | object | no | `{}` | Free-form key-value pairs for custom data. |
+| `run` | object | no | — | The CI run that performed the deployment (provider, run/job URLs, `failureReason`). |
+| `logs` | array | no | — | Captured output blocks `{ name, source, content, truncated }`, shown on the deployment page. See below. |
+
+### `logs[]` blocks
+
+Blocks are keyed by name (`helm upgrade output`, `helm hook logs`, `failure diagnostics`): a repeated
+name replaces the stored copy, an unmentioned one is kept. At most 20 per event; content over 512 KiB
+keeps the tail.
+
+Everyone signed in can read these blocks, so **secrets are redacted before storage**: connection-string
+keys (`SharedAccessKey=`, `AccountKey=`, `Password=`, `Pwd=`), `key: value` / `key=value` / JSON pairs
+whose key names a password, secret, token, API key or connection string, Kubernetes env entries
+(`- name: DB_PASSWORD` / `value: …`), bearer and `Authorization` header values, credentials in URLs,
+SAS `sig=`, JWTs, GitHub tokens and PEM private keys keep their name and lose their value to
+`[redacted]` (`Platform.Api.Infrastructure.SecretRedactor`). It is a safety net, not a licence:
+producers should not print secrets (`kubectl describe pod` prints container environments — redact
+`Environment:` values before sending). Migration logs (`POST /api/migrations/runs`) get the same
+treatment.
+
+Logs stored before redaction existed, or before a pattern was added, are scrubbed with the admin pair
+(CatalogAdmin; safe to repeat):
+
+| Endpoint | Effect |
+|---|---|
+| `GET /api/deployments/admin/logs/secrets` | Preview: `{ deployLogs, migrationLogs }` that would change. Writes nothing. |
+| `POST /api/deployments/admin/logs/secrets/redact` | Redacts every stored deploy and migration log; returns what changed. Audited as `deployment.logs.redacted`. |
 
 ### `status` values
 

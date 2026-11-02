@@ -372,7 +372,7 @@ public class DeploymentService
         foreach (var dto in incoming)
         {
             var name = dto.Name.Trim();
-            var (content, truncated, originalBytes) = CapLogContent(dto.Content ?? "");
+            var (content, truncated, originalBytes) = PrepareLogContent(dto.Content);
             truncated = truncated || dto.Truncated;
 
             if (byName.TryGetValue(name, out var row))
@@ -403,6 +403,14 @@ public class DeploymentService
             });
         }
     }
+
+    /// <summary>
+    /// What a log block stores: the sender's content with secrets redacted (see
+    /// <see cref="SecretRedactor"/> — these logs are readable by everyone signed in), then capped by
+    /// <see cref="CapLogContent"/>. Every log the portal stores, deploy or migration, goes through here.
+    /// </summary>
+    public static (string Content, bool Truncated, int OriginalByteCount) PrepareLogContent(string? content) =>
+        CapLogContent(SecretRedactor.Redact(content));
 
     /// <summary>
     /// Trims content to <see cref="LogContentLimitBytes"/>, keeping the tail and prefixing a marker
@@ -1081,6 +1089,86 @@ public class DeploymentService
     private IQueryable<DeployEventLog> OldLogsQuery(DateTimeOffset cutoff) =>
         _db.DeployEventLogs
             .Where(l => _db.DeployEvents.Any(e => e.Id == l.DeployEventId && e.DeployedAt < cutoff));
+
+    // --- Secret redaction of stored logs ---
+
+    /*
+     * Ingest redacts secrets before a log is stored (PrepareLogContent). Logs stored before that, or
+     * before a pattern was added, still hold whatever the producer sent; this pass re-applies the
+     * redactor to every stored deploy and migration log. Rows are read in batches so a large table
+     * never sits in memory at once. Running it again is harmless: redaction is idempotent, and an
+     * unchanged row is not written.
+     */
+
+    private const int RedactionBatchSize = 50;
+
+    /// <summary>
+    /// Applies <see cref="SecretRedactor"/> to every stored deploy and migration log. Returns how many
+    /// of each it changed — or, with <paramref name="apply"/> false, would change, writing nothing.
+    /// </summary>
+    public async Task<(int DeployLogs, int MigrationLogs)> RedactStoredLogs(bool apply, CancellationToken ct = default)
+    {
+        var deployLogs = await RedactLogRows(
+            await _db.DeployEventLogs.Select(l => l.Id).ToListAsync(ct),
+            batch => _db.DeployEventLogs.Where(l => batch.Contains(l.Id)),
+            l => l.Content,
+            (l, content) =>
+            {
+                l.Content = content;
+                l.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                l.LineCount = CountLines(content);
+            },
+            apply, ct);
+
+        var migrationLogs = await RedactLogRows(
+            await _db.MigrationRunLogs.Select(l => l.Id).ToListAsync(ct),
+            batch => _db.MigrationRunLogs.Where(l => batch.Contains(l.Id)),
+            l => l.Content,
+            (l, content) =>
+            {
+                l.Content = content;
+                l.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                l.LineCount = CountLines(content);
+            },
+            apply, ct);
+
+        _logger.LogInformation(
+            "Secret redaction {Mode}: {DeployLogs} deploy log block(s), {MigrationLogs} migration log block(s)",
+            apply ? "changed" : "would change", deployLogs, migrationLogs);
+
+        return (deployLogs, migrationLogs);
+    }
+
+    private async Task<int> RedactLogRows<TLog>(
+        List<Guid> ids,
+        Func<Guid[], IQueryable<TLog>> load,
+        Func<TLog, string> read,
+        Action<TLog, string> write,
+        bool apply,
+        CancellationToken ct) where TLog : class
+    {
+        var changed = 0;
+        foreach (var batch in ids.Chunk(RedactionBatchSize))
+        {
+            var query = load(batch);
+            var rows = await (apply ? query : query.AsNoTracking()).ToListAsync(ct);
+            foreach (var row in rows)
+            {
+                var content = read(row);
+                var redacted = SecretRedactor.Redact(content);
+                if (redacted == content) continue;
+                changed++;
+                if (apply) write(row, redacted);
+            }
+            if (apply)
+            {
+                await _db.SaveChangesAsync(ct);
+                // Written rows are done with; tracking up to 512 KiB of content each would only grow.
+                _db.ChangeTracker.Clear();
+            }
+        }
+        return changed;
+    }
 
     // --- Mapping helpers ---
 
