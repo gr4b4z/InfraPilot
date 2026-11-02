@@ -143,6 +143,39 @@ public class MigrationEndpointsTests : IClassFixture<MigrationEndpointsTests.Mig
     }
 
     [Fact]
+    public async Task Report_RedactsSecretsInTheLogAndInWhatIsReadFromIt()
+    {
+        const string failure = "Login failed for Server=db;User Id=app;Password=FAKE-MIGRATION-PW;";
+        var reported = await ReportAsync(new
+        {
+            kind = "data", product = "acme", service = "secrets", environment = "dev", version = "1.0.0",
+            source = "mpt-release", status = "failed",
+            startedAt = "2026-11-02T10:00:00Z", completedAt = "2026-11-02T10:01:00Z",
+            logs = new[]
+            {
+                new
+                {
+                    name = "data migration job output",
+                    content = $"[x] 9100 BackfillCodes 1m 2026-11-02T10:00:30 1s {failure}\n" +
+                              $"The following migrations have failed:\n- BackfillCodes: {failure}\n",
+                },
+            },
+        });
+
+        var id = reported.GetProperty("id").GetString();
+        var run = await Json(await _adminClient.GetAsync($"/api/migrations/runs/{id}"));
+        // The failure reason and the migration's error are read off the log, so they are redacted too.
+        Assert.Equal("BackfillCodes: Login failed for Server=db;User Id=app;Password=[redacted];",
+            run.GetProperty("run").GetProperty("failureReason").GetString());
+        Assert.DoesNotContain("FAKE-MIGRATION-PW", run.GetRawText());
+        var log = Assert.Single(run.GetProperty("logs").EnumerateArray());
+        var content = (await Json(await _adminClient.GetAsync(
+            $"/api/migrations/runs/{id}/logs/{log.GetProperty("id").GetString()}"))).GetProperty("content").GetString();
+        Assert.DoesNotContain("FAKE-MIGRATION-PW", content);
+        Assert.Contains("Password=[redacted];", content);
+    }
+
+    [Fact]
     public async Task SchemaMigration_IsReadFromTheDeploysHookLogs_AndShownOnTheDeployment()
     {
         var hookLogs =

@@ -3,6 +3,9 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Integration.Tests;
 
@@ -160,6 +163,50 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
         var body = await Deserialize(response);
         Assert.Equal(0, body.GetProperty("groups").GetInt32());
         Assert.Equal(0, body.GetProperty("rows").GetInt32());
+    }
+
+    [Fact]
+    public async Task LogSecretRedaction_PreviewThenRedact_ScrubsLogsStoredBeforeIngestRedactedThem()
+    {
+        // Written straight to the table, as rows stored before ingest-time redaction were.
+        var logId = Guid.NewGuid();
+        const string leaked = "      PYRA_Database__Password:  FAKE-STORED-PW\n";
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = new DeployEvent
+            {
+                Id = Guid.NewGuid(), Product = "acme", Service = "redaction-svc", Environment = "dev",
+                Version = "1.0.0", Status = "failed", Source = "helm-deploy",
+                DeployedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow,
+                ReferencesJson = "[]", ParticipantsJson = "[]", MetadataJson = "{}",
+            };
+            db.DeployEvents.Add(ev);
+            db.DeployEventLogs.Add(new DeployEventLog
+            {
+                Id = logId, DeployEventId = ev.Id, Name = "failure diagnostics", Content = leaked,
+                ByteCount = leaked.Length, OriginalByteCount = leaked.Length, LineCount = 2,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var preview = await Deserialize(await _adminClient.GetAsync("/api/deployments/admin/logs/secrets"));
+        Assert.True(preview.GetProperty("deployLogs").GetInt32() >= 1);
+
+        var redact = await _adminClient.PostAsync("/api/deployments/admin/logs/secrets/redact", null);
+        redact.EnsureSuccessStatusCode();
+        Assert.True((await Deserialize(redact)).GetProperty("deployLogs").GetInt32() >= 1);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventLogs.FindAsync(logId);
+            Assert.Equal("      PYRA_Database__Password:  [redacted]\n", row!.Content);
+        }
+        var after = await Deserialize(await _adminClient.GetAsync("/api/deployments/admin/logs/secrets"));
+        Assert.Equal(0, after.GetProperty("deployLogs").GetInt32());
+        Assert.Equal(0, after.GetProperty("migrationLogs").GetInt32());
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
