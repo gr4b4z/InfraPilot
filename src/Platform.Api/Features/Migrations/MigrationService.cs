@@ -128,7 +128,8 @@ public class MigrationService
 
         // Listed by the producer wins; otherwise read off the log, and a log with no migration lines
         // in it (a pod that died before the library started) keeps what an earlier report found.
-        var parsed = MigrationLogParser.Parse(string.Join("\n", (dto.Logs ?? []).Select(l => l.Content ?? "")));
+        // Parsed from the redacted text: item errors and the failure reason are shown like the log is.
+        var parsed = MigrationLogParser.Parse(string.Join("\n", (dto.Logs ?? []).Select(l => SecretRedactor.Redact(l.Content))));
         List<MigrationItem>? items = dto.Migrations is { Count: > 0 }
             ? dto.Migrations.Select(CleanItem).ToList()
             : parsed.Items.Count > 0 ? parsed.Items : null;
@@ -358,7 +359,7 @@ public class MigrationService
 
         foreach (var dto in incoming)
         {
-            var (content, truncated, originalBytes) = DeploymentService.CapLogContent(dto.Content ?? "");
+            var (content, truncated, originalBytes) = DeploymentService.PrepareLogContent(dto.Content);
             truncated = truncated || dto.Truncated;
             if (!byName.TryGetValue(dto.Name.Trim(), out var row))
             {
