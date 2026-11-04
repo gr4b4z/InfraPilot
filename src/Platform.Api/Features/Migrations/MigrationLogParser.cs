@@ -113,13 +113,17 @@ public static partial class MigrationLogParser
 
     /// <summary>
     /// The schema migration a deploy event's output contains, or null when it contains none. Pod logs
-    /// are taken verbatim, each pod once however many blocks repeat it, and nothing around them — in
-    /// particular no <c>kubectl describe</c> output, which prints a container's environment.
+    /// are taken verbatim, each pod once (its most complete copy) however many blocks repeat it, and
+    /// nothing around them — in particular no <c>kubectl describe</c> output, which prints a
+    /// container's environment.
     /// </summary>
     public static ExtractedMigration? ExtractSchemaMigration(IEnumerable<(string Name, string Content)> blocks, string service)
     {
         var sections = new List<string>();
-        var seenPods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Pod → its index in sections. mpt-release streams a hook pod again when the first stream
+        // breaks ("stream error … the log above may be incomplete"), and the re-stream prints the log
+        // from the start, so the longest copy of a pod is the most complete one.
+        var podSections = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var source = "helm";
         var jobFailed = false;
         var helmFailures = new List<string>();
@@ -160,8 +164,8 @@ public static partial class MigrationLogParser
                 {
                     var end = i + 1;
                     while (end < lines.Length && !HookBannerEnd().IsMatch(lines[end]) && !HookBanner().IsMatch(lines[end])) end++;
-                    if (IsSchemaMigrationName(banner.Groups["job"].Value) && seenPods.Add(banner.Groups["pod"].Value))
-                        sections.Add(string.Join('\n', lines[i..Math.Min(end + 1, lines.Length)]).TrimEnd());
+                    if (IsSchemaMigrationName(banner.Groups["job"].Value))
+                        KeepPodSection(banner.Groups["pod"].Value, string.Join('\n', lines[i..Math.Min(end + 1, lines.Length)]).TrimEnd());
                     i = end;
                     continue;
                 }
@@ -178,11 +182,7 @@ public static partial class MigrationLogParser
                         // The dump only holds failed pods — that is what it is for — so the pod failed
                         // even when its output was already taken from another block.
                         jobFailed = true;
-                        if (seenPods.Add(pod))
-                        {
-                            sections.Add(string.Join('\n', lines[i..end]).TrimEnd());
-                            source = "kubectl";
-                        }
+                        if (KeepPodSection(pod, string.Join('\n', lines[i..end]).TrimEnd())) source = "kubectl";
                     }
                     i = end - 1;
                 }
@@ -192,6 +192,20 @@ public static partial class MigrationLogParser
         if (sections.Count == 0 && helmFailures.Count == 0) return null;
         // Helm's line is worth keeping when no pod log survived: it names the job and why it failed.
         return new ExtractedMigration(string.Join("\n\n", sections.Concat(helmFailures.Distinct())), source, jobFailed);
+
+        // Adds a pod's log, or replaces an earlier copy of the same pod that holds less of it.
+        bool KeepPodSection(string pod, string section)
+        {
+            if (!podSections.TryGetValue(pod, out var index))
+            {
+                podSections[pod] = sections.Count;
+                sections.Add(section);
+                return true;
+            }
+            if (section.Length <= sections[index].Length) return false;
+            sections[index] = section;
+            return true;
+        }
     }
 
     /// <summary>The individual migrations in a run's output and how the run ended.</summary>

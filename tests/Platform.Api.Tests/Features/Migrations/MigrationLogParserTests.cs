@@ -167,6 +167,47 @@ public class MigrationLogParserTests
     }
 
     [Fact]
+    public void Extract_HookPodStreamedTwice_KeepsTheCompleteCopy()
+    {
+        // mpt-extension-producthub dev, 2026-11-04: the first stream broke mid-run, mpt-release streamed
+        // the pod again from the start, and only that second copy holds the outcome.
+        var hookLogs = """
+            =======================Logs from hook pod/producthub-migrations-89p5l (job producthub-migrations)=======================
+            [.] 170 AddErpItemLinkAndProductItemChangedAt     30m                   -
+            [.] 180 AddErpItemLinkLastErrorIndex              30m                   -
+            [09:53:27 INF] Running migration: 'AddErpItemLinkAndProductItemChangedAt'
+            error: stream error: stream ID 3; NO_ERROR; received from peer
+            [warning] Log streaming for hook pod producthub-migrations-89p5l ended with exit code 1; the log above may be incomplete.
+            =======================End logs from hook pod/producthub-migrations-89p5l=======================
+            =======================Logs from hook pod/producthub-migrations-89p5l (job producthub-migrations)=======================
+            [.] 170 AddErpItemLinkAndProductItemChangedAt     30m                   -
+            [.] 180 AddErpItemLinkLastErrorIndex              30m                   -
+            [09:53:27 INF] Running migration: 'AddErpItemLinkAndProductItemChangedAt'
+            [<] 170 AddErpItemLinkAndProductItemChangedAt     30m 2026-11-04T09:59:07
+            [x] 180 AddErpItemLinkLastErrorIndex              30m 2026-11-04T09:59:07 The COMMIT TRANSACTION request has no corresponding BEGIN TRANSACTION.
+            [09:59:07 ERR] Schema migrations failed.
+            The following migrations have failed:
+            - AddErpItemLinkLastErrorIndex: The COMMIT TRANSACTION request has no corresponding BEGIN TRANSACTION.
+            - AddErpItemLinkAndProductItemChangedAt: Migration rolled back
+
+            =======================End logs from hook pod/producthub-migrations-89p5l=======================
+            """;
+
+        var extracted = MigrationLogParser.ExtractSchemaMigration([("helm hook logs", hookLogs)], "producthub");
+
+        Assert.NotNull(extracted);
+        Assert.Single(extracted.Content.Split('\n'), l => l.Contains("Logs from hook pod/") && !l.Contains("End logs"));
+        Assert.DoesNotContain("stream error", extracted.Content);
+
+        var parsed = MigrationLogParser.Parse(extracted.Content);
+        Assert.True(parsed.Failed);
+        Assert.Collection(parsed.Items,
+            i => Assert.Equal((MigrationItemStatus.RolledBack, "AddErpItemLinkAndProductItemChangedAt"), (i.Status, i.Name)),
+            i => Assert.Equal((MigrationItemStatus.Failed, "AddErpItemLinkLastErrorIndex"), (i.Status, i.Name)));
+        Assert.StartsWith("AddErpItemLinkLastErrorIndex: The COMMIT TRANSACTION", parsed.FailureReason);
+    }
+
+    [Fact]
     public void Extract_FailureDiagnostics_KeepsThePodLogOnceAndNeverTheDescribeOutput()
     {
         // Shape of the SDP dump: the same pod under "Failed Pod Logs" and again under "Failed Job
