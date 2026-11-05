@@ -5,7 +5,7 @@ summary: >-
   A deploy event came back with a failed status. Reconcile attaches the deployment logs to the event
   when that happens, so the actual Helm or Kubernetes error is usually right there.
 source: mpt-release reconcile deploy steps + ops-build-templates-aks-releases/aks-docker-templates
-as_of: 2026-08-28
+as_of: 2026-11-05
 causes:
   - id: image-pull
     title: The image could not be pulled
@@ -20,6 +20,27 @@ causes:
     fix: >-
       Re-run the build's publish stage to push the missing image, or fix the pull secret. Registration
       is idempotent, so re-publishing is safe.
+
+  - id: hook-job-failed
+    title: A Helm hook job failed, usually the schema migrations
+    matches_when:
+      - log_helm_hook_failed
+    explanation: >-
+      `pre-upgrade hooks failed` (or `pre-install`) means Helm ran the chart's hook Job before
+      touching the workload and the Job exited non-zero, so the release never moved: the previous
+      version is still running and serving. For these charts the hook is almost always the
+      service's own `<service>-migrations` Job, and the helm hook logs section holds its output
+      with the failing migration's name and database error. That is an application failure in the
+      service's migration code or its database state, not a delivery or cluster problem.
+      Reconcile retries the component on every run of that environment, and the same migration
+      fails the same way until a fixed build is published.
+    confirm: >-
+      Read the helm hook logs section for the migration runner's error lines, or open the
+      deployment's migration run on the **Migrations** page, which lists each migration's outcome.
+    fix: >-
+      Hand the failing migration and its error to the service's team: they fix the migration (or
+      the data it trips over) and publish a new build. Redeploying the same version reproduces the
+      error. The old version keeps running meanwhile, so there is nothing to roll back.
 
   - id: helm-lock
     title: Another Helm operation is in progress
