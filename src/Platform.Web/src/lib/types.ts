@@ -49,6 +49,20 @@ export interface ServiceRequest {
   catalogItem?: CatalogItem;
   executionResults?: ExecutionResult[];
   approvalRequest?: ApprovalRequest;
+  /** The approval settings that applied when the request was submitted (null before submit). */
+  approvalOutcome?: ApprovalOutcome | null;
+}
+
+export interface ApprovalOutcome {
+  required: boolean;
+  strategy: string;
+  quorumCount?: number | null;
+  approverGroup?: string | null;
+  timeoutHours?: number | null;
+  escalationGroup?: string | null;
+  /** Zero-based index of the catalog item's approval rule that matched; null when none did. */
+  ruleIndex?: number | null;
+  ruleName?: string | null;
 }
 
 export interface ApprovalRequest {

@@ -1592,6 +1592,9 @@ namespace Platform.Api.Migrations.Postgres
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("ApprovalOutcomeJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<Guid>("CatalogItemId")
                         .HasColumnType("uuid");
 

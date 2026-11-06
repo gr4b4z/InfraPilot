@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Infrastructure.AzureDevOps;
 
@@ -34,9 +33,9 @@ public class AzureDevOpsPipelineExecutor : IExecutor
         if (executor is null)
             return FailedResult(request.Id, "No executor configuration found on catalog item");
 
-        // Resolve template variables from request inputs
+        // Resolve template variables from request inputs and {{request.*}} context
         var inputs = DeserializeInputs(request.InputsJson);
-        var resolvedParams = ResolveParameters(executor.ParametersMap, inputs);
+        var resolvedParams = ExecutorTemplate.ResolveParameters(executor.ParametersMap, inputs, request);
 
         // Determine pipeline ID: explicit config first, then from resolved parameters
         var pipelineId = executor.PipelineId;
@@ -226,25 +225,6 @@ public class AzureDevOpsPipelineExecutor : IExecutor
         {
             return [];
         }
-    }
-
-    private static Dictionary<string, string> ResolveParameters(
-        Dictionary<string, string> parametersMap,
-        Dictionary<string, string> inputs)
-    {
-        var resolved = new Dictionary<string, string>();
-
-        foreach (var (key, template) in parametersMap)
-        {
-            var value = Regex.Replace(template, @"\{\{(\w+)\}\}", match =>
-            {
-                var fieldName = match.Groups[1].Value;
-                return inputs.GetValueOrDefault(fieldName, match.Value);
-            });
-            resolved[key] = value;
-        }
-
-        return resolved;
     }
 
     private static ExecutionResult FailedResult(Guid requestId, string error) => new()
