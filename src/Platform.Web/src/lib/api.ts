@@ -1940,6 +1940,9 @@ interface ApprovalListResponse {
 
 interface ApprovalDetailResponse {
   approval: import('./types').ApprovalRequest;
+  /** Whether the signed-in user may decide on it now; false with a reason otherwise. */
+  canDecide?: boolean;
+  cannotDecideReason?: string | null;
 }
 
 interface AuditLogResponse {

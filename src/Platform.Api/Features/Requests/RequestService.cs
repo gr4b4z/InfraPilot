@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Approvals.Models;
+using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Notifications;
@@ -101,25 +102,26 @@ public class RequestService
         await _stateMachine.TransitionTo(request, RequestStatus.Validating,
             _currentUser.Id, _currentUser.Name, "user");
 
-        // Auto-transition: check if approval is required (read from DB entity)
-        var approvalConfig = request.CatalogItem?.Approval;
-        var needsApproval = approvalConfig?.Required == true;
+        // Work out which approval applies (the item's approval block, or the first matching rule)
+        // and keep it on the request: it decides who may approve, even if the item changes later.
+        var outcome = ApprovalRules.Resolve(request.CatalogItem?.Approval, request.InputsJson);
+        request.ApprovalOutcome = outcome;
 
-        if (needsApproval)
+        if (outcome.Required)
         {
             await _stateMachine.TransitionTo(request, RequestStatus.AwaitingApproval,
                 "system", "System", "system");
 
-            var strategy = Enum.TryParse<ApprovalStrategy>(approvalConfig!.Strategy, ignoreCase: true, out var s)
+            var strategy = Enum.TryParse<ApprovalStrategy>(outcome.Strategy, ignoreCase: true, out var s)
                 ? s : ApprovalStrategy.Any;
 
             var approvalRequest = await _approvalService.CreateApproval(
-                request, strategy, approvalConfig.QuorumCount,
-                approvalConfig.ApproverGroup, approvalConfig.TimeoutHours, approvalConfig.EscalationGroup);
+                request, strategy, outcome.QuorumCount,
+                outcome.ApproverGroup, outcome.TimeoutHours, outcome.EscalationGroup);
 
-            if (!string.IsNullOrEmpty(approvalConfig.ApproverGroup))
+            if (!string.IsNullOrEmpty(outcome.ApproverGroup))
             {
-                var approvers = await _approverResolver.ResolveApprovers(approvalConfig.ApproverGroup);
+                var approvers = await _approverResolver.ResolveApprovers(outcome.ApproverGroup);
                 var emails = approvers.Select(a => a.Email).Where(e => !string.IsNullOrEmpty(e)).ToList();
 
                 if (emails.Count > 0)

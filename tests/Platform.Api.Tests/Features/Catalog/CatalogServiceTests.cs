@@ -204,6 +204,111 @@ public class CatalogServiceTests : IDisposable
         Assert.False(result.IsValid);
     }
 
+    // ── ValidateYaml: approval rules and request variables ──
+
+    private const string ExportYaml = """
+        id: export-sql-database
+        name: Export SQL database (bacpac)
+        category: data
+        inputs:
+          - id: environment
+            component: Select
+            label: Environment
+            required: true
+            options:
+              - { id: dev, label: Dev }
+              - { id: staging, label: Staging }
+          - id: database
+            component: TextInput
+            label: Database name
+            required: true
+        approval:
+          required: true
+          approver_group: fafaaeda-c84d-406e-be43-ff265c760758
+          timeout_hours: 72
+          rules:
+            - name: Dev needs no approval
+              when: { field: environment, in: [dev, test] }
+              required: false
+            - when:
+                all:
+                  - { field: environment, equals: staging }
+                  - { field: database, not_in: [scratch] }
+              required: true
+              strategy: quorum
+              quorum_count: 2
+        executor:
+          type: azure-devops-pipeline
+          connection: softwareone-pc
+          pipeline_id: 123
+          parameters_map:
+            environment: "{{environment}}"
+            requesterEmail: "{{request.requester_email}}"
+            requestId: "{{request.id}}"
+        """;
+
+    [Fact]
+    public void ValidateYaml_ApprovalRulesAndRequestVariables_AreValid()
+    {
+        var result = _sut.ValidateYaml(ExportYaml);
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+    }
+
+    [Fact]
+    public async Task Create_KeepsApprovalRules_WithEveryOperator()
+    {
+        var (item, errors) = await _sut.Create(ExportYaml);
+
+        Assert.Empty(errors);
+        var rules = item!.Approval!.Rules!;
+        Assert.Equal(2, rules.Count);
+        Assert.Equal("Dev needs no approval", rules[0].Name);
+        Assert.Equal(["dev", "test"], rules[0].When!.In);
+        Assert.False(rules[0].Required);
+        Assert.Equal("staging", rules[1].When!.All![0].EqualsValue);
+        Assert.Equal(["scratch"], rules[1].When!.All![1].NotIn);
+        Assert.Equal(2, rules[1].QuorumCount);
+
+        // Survives the round trip through the JSON column.
+        var reloaded = await _db.CatalogItems.FindAsync(item.Id);
+        Assert.Equal("staging", reloaded!.Approval!.Rules![1].When!.All![0].EqualsValue);
+    }
+
+    [Fact]
+    public void ValidateYaml_RuleOnUnknownField_ReturnsError()
+    {
+        var yaml = ExportYaml.Replace("field: environment, in: [dev, test]", "field: env, in: [dev, test]");
+
+        var result = _sut.ValidateYaml(yaml);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("approval.rules[0]") && e.Contains("'env'"));
+    }
+
+    [Fact]
+    public void ValidateYaml_MisspelledOperator_ReturnsError()
+    {
+        // not-in (hyphen) isn't a key, so the condition has no operator left.
+        var yaml = ExportYaml.Replace("not_in: [scratch]", "not-in: [scratch]");
+
+        var result = _sut.ValidateYaml(yaml);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("approval.rules[1].when.all[1]"));
+    }
+
+    [Fact]
+    public void ValidateYaml_UnknownRequestVariable_ReturnsError()
+    {
+        var yaml = ExportYaml.Replace("{{request.requester_email}}", "{{request.email}}");
+
+        var result = _sut.ValidateYaml(yaml);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("{{request.email}}") && e.Contains("{{request.requester_email}}"));
+    }
+
     // ── Create ──
 
     [Fact]
