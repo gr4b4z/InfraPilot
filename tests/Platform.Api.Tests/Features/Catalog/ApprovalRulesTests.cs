@@ -5,7 +5,7 @@ namespace Platform.Api.Tests.Features.Catalog;
 
 public class ApprovalRulesTests
 {
-    private const string Group = "fafaaeda-c84d-406e-be43-ff265c760758";
+    private const string Group = "00000000-0000-4000-8000-0000000000a1";
 
     /// <summary>The export item's shape: approval by default, waived for dev and test.</summary>
     private static ApprovalConfig FailClosed() => new()

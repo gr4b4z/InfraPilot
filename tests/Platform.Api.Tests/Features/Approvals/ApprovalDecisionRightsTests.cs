@@ -23,7 +23,7 @@ namespace Platform.Api.Tests.Features.Approvals;
 /// </summary>
 public class ApprovalDecisionRightsTests : IDisposable
 {
-    private const string ApproverGroup = "fafaaeda-c84d-406e-be43-ff265c760758";
+    private const string ApproverGroup = "00000000-0000-4000-8000-0000000000a1";
 
     private readonly PlatformDbContext _db;
     private readonly ICurrentUser _currentUser = Substitute.For<ICurrentUser>();
