@@ -100,12 +100,12 @@ public class RequestLifecycleIntegrationTests
     /// <summary>
     /// Creates a new request for the given catalog item slug and returns its ID.
     /// </summary>
-    private async Task<Guid> CreateRequestAsync(string catalogSlug)
+    private async Task<Guid> CreateRequestAsync(string catalogSlug, HttpClient? client = null, string environment = "dev")
     {
-        var response = await _adminClient.PostAsJsonAsync("/api/requests", new
+        var response = await (client ?? _adminClient).PostAsJsonAsync("/api/requests", new
         {
             catalogItemId = catalogSlug,
-            inputs = new Dictionary<string, object> { ["environment"] = "dev" },
+            inputs = new Dictionary<string, object> { ["environment"] = environment },
         });
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
@@ -118,13 +118,16 @@ public class RequestLifecycleIntegrationTests
     /// Creates a request, submits it, waits for auto-transition to AwaitingApproval,
     /// and returns the approval ID by listing the approvals endpoint.
     /// </summary>
-    private async Task<(Guid RequestId, Guid ApprovalId)> CreateAndSubmitForApprovalAsync()
+    private async Task<(Guid RequestId, Guid ApprovalId)> CreateAndSubmitForApprovalAsync(HttpClient? requester = null)
     {
+        // Raised by user@localhost by default, so admin@localhost may decide on it: nobody may
+        // decide on their own request.
+        requester ??= _userClient;
         var slug = await SeedCatalogItemAsync();
-        var requestId = await CreateRequestAsync(slug);
+        var requestId = await CreateRequestAsync(slug, requester);
 
         // Submit triggers Validating -> AwaitingApproval (auto-transition for approval-required items).
-        var submitResponse = await _adminClient.PostAsync($"/api/requests/{requestId}/submit", null);
+        var submitResponse = await requester.PostAsync($"/api/requests/{requestId}/submit", null);
         submitResponse.EnsureSuccessStatusCode();
 
         // Fetch the request to get the linked approval.
@@ -268,6 +271,81 @@ public class RequestLifecycleIntegrationTests
             new { comment = "" });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Approve_OwnRequest_IsRefusedWithReason()
+    {
+        var (_, approvalId) = await CreateAndSubmitForApprovalAsync(requester: _adminClient);
+
+        var get = await Deserialize(await _adminClient.GetAsync($"/api/approvals/{approvalId}"));
+        Assert.False(get.GetProperty("canDecide").GetBoolean());
+        Assert.Contains("You raised this request", get.GetProperty("cannotDecideReason").GetString());
+
+        var response = await _adminClient.PostAsJsonAsync($"/api/approvals/{approvalId}/approve", new { comment = "" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("You raised this request", (await Deserialize(response)).GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Approve_SomeoneElsesRequest_Succeeds()
+    {
+        var (requestId, approvalId) = await CreateAndSubmitForApprovalAsync();
+
+        var get = await Deserialize(await _adminClient.GetAsync($"/api/approvals/{approvalId}"));
+        Assert.True(get.GetProperty("canDecide").GetBoolean());
+
+        var response = await _adminClient.PostAsJsonAsync($"/api/approvals/{approvalId}/approve", new { comment = "ok" });
+        response.EnsureSuccessStatusCode();
+
+        var request = (await Deserialize(await _adminClient.GetAsync($"/api/requests/{requestId}"))).GetProperty("request");
+        Assert.NotEqual("AwaitingApproval", request.GetProperty("status").GetString());
+    }
+
+    private const string RulesCatalogYaml = """
+        id: test-service-rules
+        name: Test Service With Rules
+        category: infrastructure
+        executor:
+          type: manual
+        approval:
+          required: true
+          rules:
+            - name: Dev needs no approval
+              when: { field: environment, in: [dev] }
+              required: false
+        inputs:
+          - id: environment
+            component: select
+            label: Environment
+            required: true
+            options:
+              - { id: dev, label: Dev }
+              - { id: staging, label: Staging }
+        """;
+
+    [Theory]
+    [InlineData("dev", false)]
+    [InlineData("staging", true)]
+    public async Task Submit_ApprovalRules_DecideWhetherApprovalIsNeeded(string environment, bool needsApproval)
+    {
+        // The second theory case finds the item already there (shared fixture).
+        var created = await _adminClient.PostAsJsonAsync("/api/catalog/admin", new { yamlContent = RulesCatalogYaml });
+        var createdBody = await created.Content.ReadAsStringAsync();
+        Assert.True(created.IsSuccessStatusCode || createdBody.Contains("already exists"), createdBody);
+
+        var requestId = await CreateRequestAsync("test-service-rules", _userClient, environment);
+        (await _userClient.PostAsync($"/api/requests/{requestId}/submit", null)).EnsureSuccessStatusCode();
+
+        var request = (await Deserialize(await _userClient.GetAsync($"/api/requests/{requestId}"))).GetProperty("request");
+        var outcome = request.GetProperty("approvalOutcome");
+        Assert.Equal(needsApproval, outcome.GetProperty("required").GetBoolean());
+        Assert.Equal(needsApproval, request.GetProperty("status").GetString() == "AwaitingApproval");
+        if (needsApproval)
+            Assert.Equal(JsonValueKind.Null, outcome.GetProperty("ruleIndex").ValueKind);
+        else
+            Assert.Equal("Dev needs no approval", outcome.GetProperty("ruleName").GetString());
     }
 
     // -- Factory ----------------------------------------------------------------

@@ -1594,6 +1594,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("ApprovalOutcomeJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<Guid>("CatalogItemId")
                         .HasColumnType("uniqueidentifier");
 

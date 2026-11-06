@@ -26,10 +26,15 @@ export function ApprovalDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionDone, setActionDone] = useState<string | null>(null);
+  // Server-side answer to "may I decide on this?" (approver group, not your own request).
+  const [decideCheck, setDecideCheck] = useState<{ canDecide: boolean; reason?: string | null }>({ canDecide: true });
 
   const fetchApproval = () => {
     api.getApproval(id!)
-      .then((data) => setApproval(data.approval))
+      .then((data) => {
+        setApproval(data.approval);
+        setDecideCheck({ canDecide: data.canDecide !== false, reason: data.cannotDecideReason });
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   };
@@ -181,8 +186,19 @@ export function ApprovalDetailPage() {
             </div>
           )}
 
+          {/* Why there are no decision buttons */}
+          {isPending && !actionDone && !decideCheck.canDecide && (
+            <div
+              className="rounded-xl border p-5 flex items-start gap-2 text-[13px]"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+            >
+              <Shield size={16} className="shrink-0 mt-0.5" style={{ color: 'var(--text-muted)' }} />
+              <span>{decideCheck.reason || "You can't decide on this request."}</span>
+            </div>
+          )}
+
           {/* Approval actions */}
-          {isPending && !actionDone && (
+          {isPending && !actionDone && decideCheck.canDecide && (
             <div
               className="rounded-xl border p-5"
               style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
@@ -313,9 +329,11 @@ export function ApprovalDetailPage() {
                 <p className="font-medium mb-1">Where are approvers defined?</p>
                 <p style={{ color: 'var(--text-secondary)' }}>
                   Approvers are configured per service in the YAML catalog definitions.
-                  Each service specifies an <code className="font-mono px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--bg-secondary)' }}>approver_group</code> (e.g.{' '}
-                  <code className="font-mono px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--bg-secondary)' }}>SWO-PLT-NetworkAdmins</code>)
-                  which maps to an Entra ID security group.
+                  Each service specifies an <code className="font-mono px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--bg-secondary)' }}>approver_group</code>{' '}
+                  (an Entra ID security group's object ID), and its approval{' '}
+                  <code className="font-mono px-1 py-0.5 rounded" style={{ backgroundColor: 'var(--bg-secondary)' }}>rules</code>{' '}
+                  can pick a different group, or none, depending on what was requested. Only members of that
+                  group can decide, and never the person who raised the request.
                 </p>
               </div>
             </div>
