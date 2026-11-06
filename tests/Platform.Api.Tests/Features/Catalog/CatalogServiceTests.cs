@@ -224,7 +224,7 @@ public class CatalogServiceTests : IDisposable
             required: true
         approval:
           required: true
-          approver_group: fafaaeda-c84d-406e-be43-ff265c760758
+          approver_group: 00000000-0000-4000-8000-0000000000a1
           timeout_hours: 72
           rules:
             - name: Dev needs no approval
@@ -239,7 +239,7 @@ public class CatalogServiceTests : IDisposable
               quorum_count: 2
         executor:
           type: azure-devops-pipeline
-          connection: softwareone-pc
+          connection: my-org
           pipeline_id: 123
           parameters_map:
             environment: "{{environment}}"
