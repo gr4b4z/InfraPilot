@@ -202,6 +202,31 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
+    // ── Retired versions: auth ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task RetireVersions_NeedsTheRetireScope_AndTheProduct()
+    {
+        var body = new { items = new[] { new { product = "bld-acme", service = "api", version = "1.0.0" } } };
+
+        // build:register alone does not allow retiring, nor does an unrelated scope.
+        using (var registerOnly = CreateApiKeyClient(BuildsFactory.ScopedKey))
+            Assert.Equal(HttpStatusCode.Forbidden, (await registerOnly.PostAsJsonAsync("/api/builds/retired", body)).StatusCode);
+        using (var wrongScope = CreateApiKeyClient(BuildsFactory.WrongScopeKey))
+            Assert.Equal(HttpStatusCode.Forbidden, (await wrongScope.PostAsJsonAsync("/api/builds/retired/restore", body)).StatusCode);
+        // A product-scoped key cannot retire under another product.
+        using (var otherProduct = CreateApiKeyClient(BuildsFactory.ProductScopedKey))
+            Assert.Equal(HttpStatusCode.Forbidden, (await otherProduct.PostAsJsonAsync("/api/builds/retired", body)).StatusCode);
+
+        // Validation: items are required.
+        var empty = await _apiKeyClient.PostAsJsonAsync("/api/builds/retired", new { items = Array.Empty<object>() });
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+
+        // A key without a Scopes list is unrestricted.
+        var ok = await _apiKeyClient.PostAsJsonAsync("/api/builds/retired", body);
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+    }
+
     // ── Read surface ────────────────────────────────────────────────────────
 
     [Fact]

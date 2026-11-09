@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Builds;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Migrations;
 using Microsoft.Extensions.Options;
@@ -572,7 +573,9 @@ public class DeploymentService
             .Where(e => e.Product == product && e.Environment == environment)
             // A retired service is not a rollback target — offering its versions in the picker would
             // invite somebody to redeploy the thing that was just migrated away.
-            .ExcludingDeletedServices(_db);
+            .ExcludingDeletedServices(_db)
+            // Nor is a version whose image was removed from the container registry: it cannot be pulled.
+            .ExcludingRetiredVersions(_db);
         if (!string.IsNullOrWhiteSpace(serviceName))
             query = query.Where(e => e.Service == serviceName);
 

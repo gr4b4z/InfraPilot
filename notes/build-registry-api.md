@@ -127,6 +127,41 @@ The web UI lists the registry under **Deployments → Artifacts** (`/artifacts`;
 redirects there, query string intact) — the UI calls a registered build an *artifact*, while the
 API keeps the `builds` vocabulary.
 
+## Retired versions
+
+A version whose artifacts were removed from the container registry (by the registry cleanup) is
+**retired**: rollbacks no longer offer it (`GET /api/deployments/versions` leaves it out, which is
+what the **Roll back to version** picker reads), manual and align rollbacks report it ineligible
+with "its image was removed from the container registry", and the last-known-good offer is
+unavailable when its target is retired.
+
+```
+POST /api/builds/retired          — retire versions (idempotent)
+POST /api/builds/retired/restore  — un-retire them (the cleanup put a tag back)
+GET  /api/builds/retired?product=&service=&limit=   — newest first, limit 1–1000 (default 200)
+```
+
+Both POSTs take the same body and are API-key routes with the same product scoping as
+registration. A key with a `Scopes` list needs `build:retire`.
+
+```json
+{
+  "reason": "acr cleanup MPT-20257 plan 3c9cff94",
+  "items": [
+    { "service": "swo-platform", "version": "5.0.440-g330344b3" },
+    { "product": "mpt", "service": "mpt-audit", "version": "6.0.12-g6d9b56e1" }
+  ]
+}
+```
+
+- At most 5000 items per call; `service` and `version` are required.
+- `product` is optional. Without it the version is retired under every product the service has
+  deploy events or builds for. A product-scoped key retires only under its own products, and an
+  item naming another product is a `403`.
+- Retire answers `200 { "retired", "alreadyRetired", "unknown" }`. `unknown` counts items whose
+  service the portal has never seen; they are not stored.
+- Restore answers `200 { "restored", "notRetired" }`.
+
 ## Promotions from builds (Phase C)
 
 Registered builds feed the promotion surface through the synthetic source env `build`
