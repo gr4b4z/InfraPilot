@@ -127,6 +127,26 @@ public class DeploymentServiceRunAndLogTests : IDisposable
     }
 
     [Fact]
+    public async Task Ingest_RedactsSecretsInLogBlocks_BeforeStoringThem()
+    {
+        // kubectl describe prints container env values, and everyone signed in can read this block.
+        const string diagnostics =
+            "--- Describe pod: api-x2klm ---\n" +
+            "    Environment:\n" +
+            "      PYRA_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123=\n" +
+            "    Mounts:\n";
+
+        var ev = await _sut.IngestEvent(Dto(status: "failed", logs: [new("failure diagnostics", "kubectl", diagnostics)]));
+
+        var log = await _db.DeployEventLogs.SingleAsync(l => l.DeployEventId == ev.Id);
+        Assert.DoesNotContain("FAKEKEY", log.Content);
+        Assert.Contains("      PYRA_ServiceBus__ConnectionString:  [redacted]\n", log.Content);
+        Assert.Contains("--- Describe pod: api-x2klm ---", log.Content);
+        // Sizes describe what is stored, not what was sent.
+        Assert.Equal(Encoding.UTF8.GetByteCount(log.Content), log.ByteCount);
+    }
+
+    [Fact]
     public async Task Replay_RefreshesRunAndLogs_WithoutCreatingASecondEvent()
     {
         // First attempt: the pipeline had not resolved its job URL and had captured nothing yet.

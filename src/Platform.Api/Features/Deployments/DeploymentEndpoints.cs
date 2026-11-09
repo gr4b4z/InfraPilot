@@ -268,7 +268,7 @@ public static class DeploymentEndpoints
     private static readonly string[] StateViews = ["full", "summary"];
 
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
-        { "succeeded", "failed", "in_progress" };
+        { "succeeded", "failed", "in_progress", DeployEventStatuses.Removed };
 
     private static List<string> Validate(CreateDeployEventDto dto)
     {

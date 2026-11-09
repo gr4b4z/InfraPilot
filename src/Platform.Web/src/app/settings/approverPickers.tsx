@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { api, type PromotionPolicyGroupRef } from '@/lib/api';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { inputClass, inputStyle } from './formStyles';
 
 /**
@@ -70,6 +71,7 @@ export function UserPicker({
     Array<{ id: string; displayName: string; email: string }>
   >([]);
   const [searching, setSearching] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [focused, setFocused] = useState(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -84,9 +86,15 @@ export function UserPicker({
     const timer = setTimeout(async () => {
       try {
         const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users || []);
+        if (!cancelled) {
+          setResults(res.users || []);
+          setUnavailable(res.directoryUnavailable === true);
+        }
       } catch {
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setUnavailable(true);
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -145,6 +153,9 @@ export function UserPicker({
                 Searching...
               </div>
             )}
+            {!searching && unavailable && (
+              <DirectoryUnavailableNotice detail="Enter the full email address instead." />
+            )}
             {!searching && results.length === 0 && (
               <button
                 type="button"
@@ -154,9 +165,11 @@ export function UserPicker({
                 style={{ color: 'var(--text-primary)' }}
               >
                 <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as email</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
-                </span>
+                {!unavailable && (
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
+                  </span>
+                )}
               </button>
             )}
             {!searching &&
@@ -198,6 +211,7 @@ export function GroupPicker({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string }>>([]);
   const [searching, setSearching] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [focused, setFocused] = useState(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -212,9 +226,15 @@ export function GroupPicker({
     const timer = setTimeout(async () => {
       try {
         const res = await api.searchPromotionGroups(q);
-        if (!cancelled) setResults(res.groups || []);
+        if (!cancelled) {
+          setResults(res.groups || []);
+          setUnavailable(res.directoryUnavailable === true);
+        }
       } catch {
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setUnavailable(true);
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -276,6 +296,11 @@ export function GroupPicker({
                 Searching...
               </div>
             )}
+            {/* The approval-time membership lookup keys off the object id only a picked hit
+                carries — a typed name just matches role claims — so steer towards trying again. */}
+            {!searching && unavailable && (
+              <DirectoryUnavailableNotice detail="Try again later to pick the group from the list." />
+            )}
             {!searching && results.length === 0 && (
               <button
                 type="button"
@@ -284,9 +309,11 @@ export function GroupPicker({
                 style={{ color: 'var(--text-primary)' }}
               >
                 <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as group</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  No directory matches — added as-is.
-                </span>
+                {!unavailable && (
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    No directory matches — added as-is.
+                  </span>
+                )}
               </button>
             )}
             {!searching &&

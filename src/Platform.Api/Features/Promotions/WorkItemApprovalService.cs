@@ -64,9 +64,9 @@ public class WorkItemApprovalService
     };
 
     /// <summary>
-    /// How far back the orphan scan reaches when rebuilding the queue. Bounds the "promotion died,
-    /// work item didn't" pass so an old graveyard of superseded candidates can't turn one inbox
-    /// read into a full-table scan.
+    /// How far back the stranded-item sweep reaches. Bounds the "promotion died, work item didn't"
+    /// scan so an old graveyard of superseded candidates can't turn one maintenance pass into a
+    /// full-table scan.
     /// </summary>
     private const int OrphanScanLimit = 500;
 
@@ -202,6 +202,20 @@ public class WorkItemApprovalService
             throw new InvalidOperationException(
                 $"You have already recorded '{decision}' on this work item");
 
+        // A person's decision replaces a bypass mark: the item has now been looked at, and keeping
+        // the mark beside the decision would leave it reading two ways. The caller's own mark is the
+        // row updated below.
+        var bypassMarks = await _db.WorkItemApprovals
+            .Where(a =>
+                a.WorkItemKey == key &&
+                a.Product == prod &&
+                a.Service == svc &&
+                a.TargetEnv == env &&
+                a.Decision == WorkItemDecision.Bypassed &&
+                a.ApproverEmail != _currentUser.Email)
+            .ToListAsync(ct);
+        _db.WorkItemApprovals.RemoveRange(bypassMarks);
+
         WorkItemApproval row;
         if (existing is null)
         {
@@ -271,7 +285,8 @@ public class WorkItemApprovalService
         // Ticket-level audit + webhook: attached to the live candidate when there is one, and emitted
         // with a null candidate id for an orphaned sign-off — the payload identifies the ticket by
         // (workItemKey, product, service, targetEnv) either way.
-        await EmitTicketEventsAsync(decision, key, prod, svc, env, candidate?.Id, comment, ct);
+        await EmitTicketEventsAsync(_audit, _webhookDispatcher, _logger, _currentUser,
+            decision, key, prod, svc, env, candidate?.Id, comment, trigger: null, ct);
 
         _logger.LogInformation(
             "Work-item decision recorded: {Decision} on {Key} ({Product}/{Service}/{Env}) by {Email}; candidate {CandidateId}",
@@ -321,11 +336,17 @@ public class WorkItemApprovalService
     /// Emits the ticket-level audit + webhook for a decision. Independent of the candidate, so the
     /// ticket signoff is always observable — including the orphaned path where no live candidate
     /// carries the item and <paramref name="candidateId"/> is null.
+    ///
+    /// <para>Static so <see cref="PromotionService.BypassAsync"/> can emit the same events for the
+    /// work items a bypass signs off without depending on this service. Those carry a
+    /// <paramref name="trigger"/> marker, the way the bypass's own <c>promotion.approved</c> does; a
+    /// person's decision carries none, and its payload is unchanged.</para>
     /// </summary>
-    private async Task EmitTicketEventsAsync(
+    internal static async Task EmitTicketEventsAsync(
+        IAuditLogger audit, IWebhookDispatcher webhookDispatcher, ILogger logger, ICurrentUser currentUser,
         WorkItemDecision decision,
         string workItemKey, string product, string service, string targetEnv,
-        Guid? candidateId, string? comment, CancellationToken ct)
+        Guid? candidateId, string? comment, string? trigger, CancellationToken ct)
     {
         // Subscriber-visible contract. As with the audit actions above, the two non-approval names
         // shifted meaning in the rename: a subscriber that was matching promotion.ticket.blocked now
@@ -335,46 +356,35 @@ public class WorkItemApprovalService
         {
             WorkItemDecision.Approved => "promotion.ticket.approved",
             WorkItemDecision.Issue => "promotion.ticket.issue-raised",
+            // Only ever emitted by an administrator bypass — see WorkItemDecision.Bypassed.
+            WorkItemDecision.Bypassed => "promotion.ticket.bypassed",
             _ => "promotion.ticket.blocked",
         };
+
+        // The audit state and the webhook payload are the same object.
+        var approver = currentUser.Email;
+        object payload = trigger is null
+            ? new { workItemKey, product, service, targetEnv, candidateId, approver, comment }
+            : new { workItemKey, product, service, targetEnv, candidateId, approver, comment, trigger };
 
         // No dedicated ticket entity exists; the audit row attaches to the candidate when one
         // is known so the UI can deep-link. When the cascade has no live candidate (future),
         // entityType remains "PromotionCandidate" with a null entity id — the payload still
         // identifies the ticket via workItemKey + product + service + targetEnv.
-        await _audit.Log(
+        await audit.Log(
             "promotions", action,
-            _currentUser.Id, _currentUser.Name, "user",
+            currentUser.Id, currentUser.Name, "user",
             "PromotionCandidate", candidateId, null,
-            new
-            {
-                workItemKey,
-                product,
-                service,
-                targetEnv,
-                candidateId,
-                approver = _currentUser.Email,
-                comment,
-            });
+            payload);
 
         try
         {
-            var payload = new
-            {
-                workItemKey,
-                product,
-                service,
-                targetEnv,
-                candidateId,
-                approver = _currentUser.Email,
-                comment,
-            };
             var filters = new WebhookEventFilters(Product: product, Environment: targetEnv);
-            await _webhookDispatcher.DispatchAsync(action, payload, filters);
+            await webhookDispatcher.DispatchAsync(action, payload, filters);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
+            logger.LogWarning(ex,
                 "Webhook dispatch '{EventType}' failed for ticket {Key} ({Product}/{Service}/{Env})",
                 action, LogSanitizer.Clean(workItemKey), LogSanitizer.Clean(product),
                 LogSanitizer.Clean(service), LogSanitizer.Clean(targetEnv));
@@ -494,13 +504,10 @@ public class WorkItemApprovalService
     /// participants are loaded — and parsed once — only when it ends up owning a row. Id lists go
     /// to the database as one array parameter, so a queue of any size is one cached plan.</para>
     ///
-    /// <para>The queue also carries <b>orphaned</b> work items: those whose promotion died
-    /// (superseded without the replacement picking the ticket up, or rejected outright) and which
-    /// nobody has approved. Dropping them would silently lose the work, so they stay — their row
-    /// reports the dead candidate's status so the UI can flag it. The scan over dead candidates is
-    /// capped at <see cref="OrphanScanLimit"/> newest-first; a Pending candidate always wins the
-    /// row for a given ticket, because Pending is iterated first and rows dedupe on the
-    /// (key, product, service, env) identity.</para>
+    /// <para>Only work items a live (Pending) promotion carries are listed. One whose promotions all
+    /// died — superseded without the replacement picking the ticket up, or rejected — is not work
+    /// anybody is waiting on, so it stays out of every tab; its detail page still opens, and the
+    /// maintenance sweep (<see cref="ApproveOrphanedWorkItemsAsync"/>) resolves such items in bulk.</para>
     ///
     /// <para>Returns the rendered ticket list along with the (email, role) → count assignee
     /// summary built from the authorized list <i>before</i> the person filter is applied.
@@ -546,7 +553,8 @@ public class WorkItemApprovalService
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
 
         // Retired services drop out on the same principle: the queue is a list of work to do, and
-        // nobody is signing off tickets for a component that has been migrated away.
+        // nobody is signing off tickets for a component that has been migrated away. So do dead
+        // promotions (superseded, rejected) — see the summary: only a live one makes an item work.
         var pending = await _db.PromotionCandidates.AsNoTracking()
             .Where(c => c.Status == PromotionStatus.Pending)
             .Where(c => !hidden.Contains(c.Product))
@@ -555,20 +563,7 @@ public class WorkItemApprovalService
             .Select(QueueCandidate.Columns)
             .ToListAsync(ct);
 
-        // Dead candidates whose work items may have been stranded. Iterated after the Pending set so
-        // a ticket still carried by a live promotion always renders from that promotion instead.
-        var stranded = await _db.PromotionCandidates.AsNoTracking()
-            .Where(c => c.Status == PromotionStatus.Superseded || c.Status == PromotionStatus.Rejected)
-            .Where(c => !hidden.Contains(c.Product))
-            .ExcludingDeletedServices(_db)
-            .OrderByDescending(c => c.CreatedAt)
-            .Take(OrphanScanLimit)
-            .Select(QueueCandidate.Columns)
-            .ToListAsync(ct);
-
-        var queueCandidates = pending.Concat(stranded).ToList();
-
-        if (queueCandidates.Count == 0)
+        if (pending.Count == 0)
         {
             return new PendingQueueResult(new(), new());
         }
@@ -586,7 +581,7 @@ public class WorkItemApprovalService
         // Candidate-scoped work-item index — the candidate is self-contained, so its tickets come
         // from PromotionWorkItem by candidate id (not from deploy-event bundles). Display columns
         // only: the ticket body is the detail page's, not the queue's.
-        var candidateIds = queueCandidates.Select(c => c.Id).ToList();
+        var candidateIds = pending.Select(c => c.Id).ToList();
         var workItems = await _db.PromotionWorkItems.AsNoTracking()
             .Where(w => EF.Parameter(candidateIds).Contains(w.CandidateId))
             .Select(QueueWorkItem.Columns)
@@ -597,19 +592,19 @@ public class WorkItemApprovalService
         }
 
         // Decisions on the tickets in play — matched on key here (index-backed, and a superset), on
-        // the full (key, product, service, env) identity by the sets below. Three uses:
+        // the full (key, product, service, env) identity by the sets below. Two uses:
         //  - the user's own decisions: (key, product, service, env) tuples to skip. "Own" is decided by
         //    the database's comparison, as it always was.
-        //  - approved-by-anyone retires orphans: an item whose promotion is dead but which someone
-        //    already signed off is finished, not stranded. Rows still carried by a Pending candidate
-        //    keep the existing behaviour (visible until *this* user decides).
         //  - decided-by-anyone suppresses role completeness (see WorkItemRoleRequirements): a ruled-on
         //    item isn't waiting for an assignment, so it reports no missing roles and drops out of the
         //    "Not assigned" narrowing below.
+        // A bypass mark is neither: nobody reviewed the item, so it is still the caller's to decide and
+        // still waiting for its people.
         var keysInPlay = workItems.Select(w => w.WorkItemKey).Distinct().ToList();
         var myEmail = _currentUser.Email;
         var decisions = await _db.WorkItemApprovals.AsNoTracking()
             .Where(a => EF.Parameter(keysInPlay).Contains(a.WorkItemKey))
+            .Where(a => a.Decision != WorkItemDecision.Bypassed)
             .Select(a => new
             {
                 a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision,
@@ -619,10 +614,6 @@ public class WorkItemApprovalService
         var decidedSet = decisions
             .Where(d => d.Mine)
             .Select(d => (d.WorkItemKey, d.Product, d.Service, d.TargetEnv))
-            .ToHashSet();
-        var approvedByAnyone = decisions
-            .Where(a => a.Decision == WorkItemDecision.Approved)
-            .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
             .ToHashSet();
         var decidedByAnyone = decisions
             .Select(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv))
@@ -660,14 +651,12 @@ public class WorkItemApprovalService
         var owned = new List<(QueueCandidate Candidate, IReadOnlyList<string> RequiredRoles,
             HashSet<string>? RequiredRoleSet, List<QueueWorkItem> Items)>();
 
-        // Pending candidates first, each set newest-first, so the most recent live candidate "owns"
-        // the inbox row when the same ticket appears in several — keeps the list deterministic and
-        // surfaces the freshest version/promotion to the approver. Dead candidates trail behind and
-        // only ever contribute rows for tickets no live promotion claimed. Ownership needs nothing
-        // but the policy snapshot and the decisions, so it is settled before any change set is read.
-        foreach (var c in queueCandidates)
+        // Newest first, so the most recent candidate "owns" the inbox row when the same ticket
+        // appears in several — keeps the list deterministic and surfaces the freshest
+        // version/promotion to the approver. Ownership needs nothing but the policy snapshot and the
+        // decisions, so it is settled before any change set is read.
+        foreach (var c in pending)
         {
-            var isOrphanSource = c.Status != PromotionStatus.Pending;
             var snapshot = ReadSnapshot(c.Id, c.ResolvedPolicyJson);
             if (snapshot.IsAutoApprove) continue;
 
@@ -688,8 +677,6 @@ public class WorkItemApprovalService
             {
                 var tup = (w.WorkItemKey, c.Product, c.Service, c.TargetEnv);
                 if (decidedSet.Contains(tup)) continue;
-                // An orphan someone already approved is resolved, not stranded — retire it.
-                if (isOrphanSource && approvedByAnyone.Contains(tup)) continue;
                 // Dedupe BEFORE the person/role narrowing so the newest candidate always owns the
                 // row, and the participants the filter reads are the ones the row will display. The
                 // other order would let an older candidate's copy of the ticket answer the filter
@@ -845,8 +832,8 @@ public class WorkItemApprovalService
                 BlockingPromotions: blockingCount.GetValueOrDefault(
                     (r.Item.WorkItemKey, r.Candidate.Product, r.Candidate.Service, r.Candidate.TargetEnv), 1),
                 Participants: r.Participants,
-                // "Pending" for a live promotion; the dead candidate's status for an orphan, which
-                // is what tells the UI to render it as stranded rather than actionable-as-usual.
+                // Always "Pending" here — only live promotions own a row. The decided view reports
+                // whatever the carrying candidate has moved on to.
                 CandidateStatus: r.Candidate.Status.ToString(),
                 RequiredRoles: r.RequiredRoles,
                 MissingRoles: r.MissingRoles,
@@ -1186,7 +1173,8 @@ public class WorkItemApprovalService
         var aliases = await _roles.MapAsync(ct);
         var participants = WorkItemRoleRequirements.ResolveParticipants(primary, key, aliases);
         var requiredRoles = WorkItemRoleRequirements.RequiredRoles(primary, aliases);
-        var decided = ctx.Approvals.Count > 0;
+        // A bypass mark is no ruling — nobody looked at the item.
+        var decided = ctx.Approvals.Any(a => a.Decision != WorkItemDecision.Bypassed);
 
         return new WorkItemDetail(
             WorkItemKey: key,
@@ -1232,17 +1220,19 @@ public class WorkItemApprovalService
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Signs off every work item stranded in the "No live promotion" state — the queue rows whose
-    /// only promotions were superseded or rejected without a replacement picking the ticket up.
-    /// Nothing resolves them on its own (no future gate needs them, and no deploy retires them), so
-    /// they accumulate as permanently pending work; this is the sweep that clears them.
+    /// Signs off every work item stranded with no live promotion — those whose only promotions were
+    /// superseded or rejected without a replacement picking the ticket up. The work-item lists leave
+    /// them out (only a live promotion makes an item work to do), but they still count as Pending
+    /// instances of their ticket: the overall roll-up shows them, and a gate reading every instance
+    /// (<see cref="ResolvedPolicySnapshot.RequireAllWorkItemInstancesApproved"/>) waits for them.
+    /// Nothing resolves them on its own (no future gate of their own needs them, and no deploy retires
+    /// them); this is the sweep that clears them.
     ///
-    /// <para>The scan mirrors the orphan branch of <see cref="GetPendingForCurrentUserAsync"/> —
-    /// dead candidate, live service, human gate — with two deliberate differences. It is
-    /// <b>global</b>, not narrowed by the caller's hidden products: a maintenance pass repairs the
-    /// install, and one admin's view preference is not a scope. And it skips any item that already
-    /// carries <i>any</i> decision by anyone, not just an approval: an Issue or a Block is a
-    /// deliberate human hold, and a bulk sweep has no business overruling one.</para>
+    /// <para>The scan takes dead candidates of live services with a human gate. It is <b>global</b>,
+    /// not narrowed by the caller's hidden products: a maintenance pass repairs the install, and one
+    /// admin's view preference is not a scope. And it skips any item that already carries <i>any</i>
+    /// decision by anyone, not just an approval: an Issue or a Block is a deliberate human hold, and
+    /// a bulk sweep has no business overruling one.</para>
     ///
     /// <para>Each item is signed off through the ordinary <see cref="ApproveAsync"/> path, so every
     /// one gets its audit row, its <c>promotion.ticket.approved</c> webhook and its entry in the
@@ -1251,7 +1241,7 @@ public class WorkItemApprovalService
     /// A single failure is recorded on its row and the sweep continues.</para>
     ///
     /// <para><paramref name="dryRun"/> reports the list without writing. The scan is capped at
-    /// <see cref="OrphanScanLimit"/> dead candidates, the same ceiling the queue reads.</para>
+    /// <see cref="OrphanScanLimit"/> dead candidates, newest first.</para>
     /// </summary>
     public async Task<OrphanedWorkItemSweepResult> ApproveOrphanedWorkItemsAsync(
         bool dryRun, CancellationToken ct = default)
@@ -1360,7 +1350,7 @@ public class WorkItemApprovalService
         foreach (var c in stranded)
         {
             // Auto-approve has no human gate, so its tickets are not sign-off work — the queue
-            // skips them and they never show as "No live promotion".
+            // skipped them while they were live, and the sweep does not invent decisions for them.
             if (ReadSnapshot(c).IsAutoApprove) continue;
 
             foreach (var w in workItemsByCandidate.GetValueOrDefault(c.Id) ?? new())
@@ -1382,6 +1372,117 @@ public class WorkItemApprovalService
         }
 
         return result;
+    }
+
+    // ---------------------------------------------------------------------
+    // Bulk: every work item of one promotion ("Approve all")
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Signs off, in one go, every work item of a promotion that is still waiting for a decision —
+    /// the promotion page's "Approve all", for the QA reviewer who has checked the whole bundle.
+    /// Waiting means nobody has ruled on it, or it carries only a bypass mark
+    /// (<see cref="WorkItemDecision.Bypassed"/>). An item already approved, or with an issue or a
+    /// block, is left as it is and reported with its state: an issue or a block is somebody's
+    /// deliberate call, and a bulk action has no business overruling one.
+    ///
+    /// <para>A preview-then-apply pair, like the orphan sweep. <paramref name="dryRun"/> lists what
+    /// would be approved, with titles, for the confirmation, and writes nothing. The apply call passes
+    /// back the <paramref name="keys"/> it showed, and only those are signed: an item that started
+    /// waiting after the preview was never confirmed, so it is left (and reported) unchanged, as is
+    /// one somebody decided in between. Omitting <paramref name="keys"/> signs every waiting item.</para>
+    ///
+    /// <para>Each item goes through the ordinary <see cref="ApproveAsync"/> path — audit row,
+    /// <c>promotion.ticket.approved</c> webhook, thread entry and gate re-evaluation, so the last
+    /// sign-off can approve the promotion — exactly as if it had been approved on its own page. A
+    /// row-level refusal is reported on its row, and the rest carry on.</para>
+    /// </summary>
+    public async Task<CandidateWorkItemApprovalResult> ApproveAllOnCandidateAsync(
+        Guid candidateId, bool dryRun, IReadOnlyCollection<string>? keys, string? comment,
+        CancellationToken ct = default)
+    {
+        // Same jurisdiction as a single sign-off, checked up front so the caller gets one refusal
+        // rather than one per row.
+        if (!(_currentUser.IsQA || _currentUser.IsAdmin))
+            throw new UnauthorizedAccessException("Work-item sign-off requires the QA or Admin role");
+
+        var candidate = await _db.PromotionCandidates.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == candidateId, ct)
+            ?? throw new KeyNotFoundException($"Promotion candidate {candidateId} not found");
+        if (ReadSnapshot(candidate).IsAutoApprove)
+            throw new InvalidOperationException("This promotion is auto-approve; ticket signoff is not applicable");
+
+        // One row per work item, with the first title any of its rows carries.
+        var items = (await _db.PromotionWorkItems.AsNoTracking()
+                .Where(w => w.CandidateId == candidate.Id)
+                .Select(w => new { w.WorkItemKey, w.Title })
+                .ToListAsync(ct))
+            .GroupBy(w => w.WorkItemKey, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Key: g.First().WorkItemKey,
+                Title: g.Select(w => w.Title).FirstOrDefault(t => !string.IsNullOrEmpty(t))))
+            .OrderBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var itemKeys = items.Select(i => i.Key).ToList();
+        var decisions = await _db.WorkItemApprovals.AsNoTracking()
+            .Where(a => itemKeys.Contains(a.WorkItemKey)
+                     && a.Product == candidate.Product
+                     && a.Service == candidate.Service
+                     && a.TargetEnv == candidate.TargetEnv)
+            .Select(a => new { a.WorkItemKey, a.Decision })
+            .ToListAsync(ct);
+
+        var confirmed = keys is null
+            ? null
+            : new HashSet<string>(keys.Select(k => (k ?? "").Trim()), StringComparer.OrdinalIgnoreCase);
+
+        var toApprove = new List<CandidateWorkItemRow>();
+        var unchanged = new List<CandidateWorkItemRow>();
+        foreach (var (key, title) in items)
+        {
+            var state = WorkItemOverallStatus.StateOf(decisions
+                .Where(d => string.Equals(d.WorkItemKey, key, StringComparison.OrdinalIgnoreCase))
+                .Select(d => d.Decision));
+            var row = new CandidateWorkItemRow(key, title, state.ToString());
+            var waiting = state is WorkItemInstanceState.Pending or WorkItemInstanceState.Bypassed;
+            if (waiting && (confirmed is null || confirmed.Contains(key))) toApprove.Add(row);
+            else unchanged.Add(row);
+        }
+
+        // A confirmed key the promotion does not carry is a stale or mistyped list, not a sign-off.
+        var failed = confirmed is null
+            ? new List<CandidateWorkItemRow>()
+            : confirmed
+                .Where(k => k.Length > 0 && !items.Any(i => string.Equals(i.Key, k, StringComparison.OrdinalIgnoreCase)))
+                .Select(k => new CandidateWorkItemRow(k, null, "Unknown", "Not a work item of this promotion"))
+                .ToList();
+
+        if (dryRun || toApprove.Count == 0)
+            return new CandidateWorkItemApprovalResult(dryRun, toApprove, unchanged, failed);
+
+        var note = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
+        var approved = new List<CandidateWorkItemRow>(toApprove.Count);
+        foreach (var row in toApprove)
+        {
+            try
+            {
+                await ApproveAsync(row.WorkItemKey, candidate.Product, candidate.Service, candidate.TargetEnv, note, ct);
+                approved.Add(row with { State = nameof(WorkItemInstanceState.Approved) });
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                failed.Add(row with { Error = ex.Message });
+                _logger.LogWarning(ex,
+                    "Approve-all on candidate {CandidateId} could not sign off {Key}",
+                    candidate.Id, LogSanitizer.Clean(row.WorkItemKey));
+            }
+        }
+
+        _logger.LogInformation(
+            "Approve-all on candidate {CandidateId} by {Email}: {Approved} approved, {Failed} failed, {Unchanged} left as they were",
+            candidate.Id, LogSanitizer.Clean(_currentUser.Email), approved.Count, failed.Count, unchanged.Count);
+
+        return new CandidateWorkItemApprovalResult(false, approved, unchanged, failed);
     }
 
     // ---------------------------------------------------------------------
@@ -2194,6 +2295,23 @@ public record OrphanedWorkItemView(
     string CandidateStatus,
     /// <summary>Why this row was not signed off. Null on a preview and on every successful sweep row.</summary>
     string? Error = null);
+
+/// <summary>One work item in the answer of <see cref="WorkItemApprovalService.ApproveAllOnCandidateAsync"/>.</summary>
+/// <param name="State">The item's own state (<see cref="WorkItemInstanceState"/>) — after the sign-off on
+/// an applied row, and the one that kept it out on an unchanged row.</param>
+public record CandidateWorkItemRow(string WorkItemKey, string? Title, string State, string? Error = null);
+
+/// <summary>
+/// Outcome of <see cref="WorkItemApprovalService.ApproveAllOnCandidateAsync"/>. On a dry run
+/// <see cref="Approved"/> is what would be approved and nothing was written; otherwise it is what was.
+/// <see cref="Unchanged"/> are the items left as they are, and <see cref="Failed"/> the ones refused,
+/// each with its <see cref="CandidateWorkItemRow.Error"/>.
+/// </summary>
+public record CandidateWorkItemApprovalResult(
+    bool DryRun,
+    List<CandidateWorkItemRow> Approved,
+    List<CandidateWorkItemRow> Unchanged,
+    List<CandidateWorkItemRow> Failed);
 
 /// <summary>
 /// Outcome of <see cref="WorkItemApprovalService.ApproveOrphanedWorkItemsAsync"/>.

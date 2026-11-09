@@ -41,6 +41,13 @@ public static class PortalRoutes
 
     public static string DeployEvent(Guid id) => $"/deployments/events/{id}";
 
+    public static string Migrations() => "/migrations";
+
+    public static string Migration(Guid id) => $"/migrations/{id}";
+
+    /// <summary>The migrations page with its "Find a migration" search filled in.</summary>
+    public static string MigrationSearch(string query) => $"/migrations?q={Uri.EscapeDataString(query.Trim())}";
+
     public static string Promotions() => "/promotions";
 
     public static string Promotion(Guid id) => $"/promotions/{id}";

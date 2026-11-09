@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Diagnostics;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -66,13 +67,14 @@ public class PromotionDiagnosisTests : IDisposable
         return candidate;
     }
 
-    private void GivenSubscription(string events = """["promotion.approved"]""", bool active = true,
-        string products = "[]", string environments = "[]")
+    private Guid GivenSubscription(string events = """["promotion.approved"]""", bool active = true,
+        string products = "[]", string environments = "[]", string name = "mpt-release dispatch")
     {
+        var id = Guid.NewGuid();
         _db.WebhookSubscriptions.Add(new WebhookSubscription
         {
-            Id = Guid.NewGuid(),
-            Name = "mpt-release dispatch",
+            Id = id,
+            Name = name,
             Url = "https://api.github.com/repos/x/y/dispatches",
             Active = active,
             EventsJson = events,
@@ -81,21 +83,23 @@ public class PromotionDiagnosisTests : IDisposable
             FilterEnvironmentsJson = environments,
         });
         _db.SaveChanges();
+        return id;
     }
 
-    private void GivenDelivery(Guid candidateId, string status, int attempts = 1, string? error = null)
+    private void GivenDelivery(Guid candidateId, string status, int attempts = 1, string? error = null,
+        Guid? subscriptionId = null, TimeSpan? ago = null)
     {
         _db.WebhookDeliveries.Add(new WebhookDelivery
         {
             Id = Guid.NewGuid(),
-            SubscriptionId = Guid.NewGuid(),
+            SubscriptionId = subscriptionId ?? Guid.NewGuid(),
             EventType = "promotion.approved",
-            CancelKey = $"promotion-approved:{candidateId}",
+            CancelKey = PromotionService.ApprovedWebhookCancelKey(candidateId),
             Status = status,
             Attempts = attempts,
             ErrorMessage = error,
             PayloadJson = $$$"""{"data":{"id":"{{{candidateId}}}"}}""",
-            CreatedAt = DateTimeOffset.UtcNow.AddHours(-2),
+            CreatedAt = DateTimeOffset.UtcNow - (ago ?? TimeSpan.FromHours(2)),
         });
         _db.SaveChanges();
     }
@@ -112,6 +116,27 @@ public class PromotionDiagnosisTests : IDisposable
             Status = status,
             Source = "helm-deploy",
             DeployedAt = DateTimeOffset.UtcNow.AddMinutes(-30),
+        });
+        _db.SaveChanges();
+    }
+
+    /// <summary>The note mpt-release's report-failure job leaves when a deploy run fails before committing.</summary>
+    private const string FailedRunNote =
+        "Deploy Registered Build failed at step \"Azure Login\" before committing anything, so this promotion was not deployed and stays Approved.\n"
+        + "Once the cause is fixed, re-run the failed jobs on GitHub; the re-run deploys this same promotion.\n"
+        + "Run: https://github.com/softwareone-platform/mpt-release/actions/runs/41435628245/job/120001";
+
+    private void GivenComment(Guid candidateId, string body, TimeSpan ago,
+        string authorEmail = "", string authorName = "mpt-release")
+    {
+        _db.PromotionComments.Add(new PromotionComment
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = candidateId,
+            AuthorEmail = authorEmail,
+            AuthorName = authorName,
+            Body = body,
+            CreatedAt = DateTimeOffset.UtcNow - ago,
         });
         _db.SaveChanges();
     }
@@ -194,6 +219,40 @@ public class PromotionDiagnosisTests : IDisposable
     }
 
     [Fact]
+    public async Task Each_subscription_delivery_is_judged_on_its_own()
+    {
+        // One approval fans out to several subscribers. The one queued last failing must not hide
+        // that the deploying subscriber took it — nor the other way round.
+        var candidate = GivenCandidate();
+        var deployer = GivenSubscription(name: "mpt-release deploy-build");
+        var other = GivenSubscription(name: "GithubPromotion");
+        GivenDelivery(candidate.Id, "delivered", subscriptionId: deployer, ago: TimeSpan.FromHours(2));
+        GivenDelivery(candidate.Id, "failed", attempts: 5, error: "HTTP 500", subscriptionId: other, ago: TimeSpan.FromHours(1));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.Contains(Observations.DeliverySucceeded, result!.Observations);
+        Assert.Contains(Observations.DeliveryFailed, result.Observations);
+        Assert.Contains(result.Evidence, e => e.Contains("'mpt-release deploy-build'") && e.Contains("delivered"));
+        Assert.Contains(result.Evidence, e => e.Contains("'GithubPromotion'") && e.Contains("failed"));
+    }
+
+    [Fact]
+    public async Task Only_the_newest_delivery_per_subscription_counts()
+    {
+        // A re-announce queues a fresh row for the same subscriber; its older failure is history.
+        var candidate = GivenCandidate();
+        var sub = GivenSubscription();
+        GivenDelivery(candidate.Id, "failed", error: "HTTP 401", subscriptionId: sub, ago: TimeSpan.FromHours(2));
+        GivenDelivery(candidate.Id, "delivered", subscriptionId: sub, ago: TimeSpan.FromHours(1));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.Contains(Observations.DeliverySucceeded, result!.Observations);
+        Assert.DoesNotContain(Observations.DeliveryFailed, result.Observations);
+    }
+
+    [Fact]
     public async Task Queued_delivery_is_not_reported_as_lost()
     {
         var candidate = GivenCandidate();
@@ -222,6 +281,78 @@ public class PromotionDiagnosisTests : IDisposable
 
         Assert.Contains(Observations.DeliverySucceeded, result!.Observations);
         Assert.Contains(Observations.NoDeployEventSinceApproval, result.Observations);
+        Assert.Contains(result.ProbableCauses, c => c.Cause.Id == "no-diff-landing");
+    }
+
+    /// <summary>
+    /// A deploy run that failed before committing leaves the same delivery and deploy-event evidence
+    /// as a no-drift landing. Only its note on the promotion tells them apart, and it must win.
+    /// </summary>
+    [Fact]
+    public async Task A_reported_failed_deploy_run_leads_the_diagnosis()
+    {
+        var candidate = GivenCandidate();
+        GivenSubscription();
+        GivenDelivery(candidate.Id, "delivered");
+        GivenComment(candidate.Id, FailedRunNote, ago: TimeSpan.FromHours(1));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.Contains(Observations.DispatchRunFailed, result!.Observations);
+        Assert.Contains(Observations.NoDeployEventSinceApproval, result.Observations);
+        Assert.Contains(result.Evidence, e => e.Contains("'mpt-release'")
+            && e.Contains("at step \"Azure Login\" before committing anything")
+            && e.Contains("Run: https://github.com/softwareone-platform/mpt-release/actions/runs/41435628245/job/120001"));
+        Assert.Equal("dispatch-run-failed", result.ProbableCauses[0].Cause.Id);
+        // Still offered, below it — a later attempt may have committed after all.
+        Assert.Contains(result.ProbableCauses.Skip(1), c => c.Cause.Id == "no-diff-landing");
+    }
+
+    [Fact]
+    public async Task The_newest_failure_report_is_the_one_quoted()
+    {
+        var candidate = GivenCandidate();
+        GivenSubscription();
+        GivenDelivery(candidate.Id, "delivered");
+        GivenComment(candidate.Id, FailedRunNote.Replace("Azure Login", "Pull build manifest"), ago: TimeSpan.FromHours(2));
+        GivenComment(candidate.Id, FailedRunNote, ago: TimeSpan.FromMinutes(30));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.Contains(result!.Evidence, e => e.Contains("\"Azure Login\""));
+        Assert.DoesNotContain(result.Evidence, e => e.Contains("\"Pull build manifest\""));
+        Assert.Contains(result.Evidence, e => e.Contains("2 such failure reports"));
+    }
+
+    [Fact]
+    public async Task A_failure_report_from_before_the_approval_does_not_count()
+    {
+        // The candidate was approved three hours ago; this note belongs to an earlier approval.
+        var candidate = GivenCandidate(age: TimeSpan.FromHours(3));
+        GivenSubscription();
+        GivenDelivery(candidate.Id, "delivered");
+        GivenComment(candidate.Id, FailedRunNote, ago: TimeSpan.FromHours(4));
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.DoesNotContain(Observations.DispatchRunFailed, result!.Observations);
+        Assert.DoesNotContain(result.ProbableCauses, c => c.Cause.Id == "dispatch-run-failed");
+    }
+
+    [Fact]
+    public async Task System_entries_and_ordinary_comments_are_not_failure_reports()
+    {
+        var candidate = GivenCandidate();
+        GivenSubscription();
+        GivenDelivery(candidate.Id, "delivered");
+        GivenComment(candidate.Id, FailedRunNote, ago: TimeSpan.FromHours(1),
+            authorEmail: PromotionComment.SystemAuthor, authorName: "System");
+        GivenComment(candidate.Id, "The deploy failed yesterday, trying again today.", ago: TimeSpan.FromHours(1),
+            authorEmail: "dev@example.com", authorName: "Dev");
+
+        var result = await _sut.DiagnosePromotionAsync(candidate.Id);
+
+        Assert.DoesNotContain(Observations.DispatchRunFailed, result!.Observations);
         Assert.Contains(result.ProbableCauses, c => c.Cause.Id == "no-diff-landing");
     }
 

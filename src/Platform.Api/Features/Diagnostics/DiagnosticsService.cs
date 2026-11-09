@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -97,14 +98,24 @@ public class DiagnosticsService
         }
 
         // ── Approved: follow the announcement out of the building. ──
-        var cancelKey = $"promotion-approved:{candidate.Id}";
+        // The key the dispatcher actually queued the rows under — never a re-typed copy of it.
+        var cancelKey = PromotionService.ApprovedWebhookCancelKey(candidate.Id);
         var deliveries = await _db.WebhookDeliveries.AsNoTracking()
             .Where(d => d.EventType == ApprovedEventType && d.CancelKey == cancelKey)
             .OrderByDescending(d => d.CreatedAt)
-            .Take(5)
+            .Take(50)
             .ToListAsync(ct);
 
+        // One approval fans out to every listening subscription, and each has its own fate. Judge
+        // them one by one: the newest row overall is just whichever subscriber was queued last, so
+        // one receiver's rejection could otherwise stand in for another's success, or hide it.
+        var latestPerSubscription = deliveries
+            .GroupBy(d => d.SubscriptionId)
+            .Select(g => g.First())
+            .ToList();
+
         var subscriptions = await _db.WebhookSubscriptions.AsNoTracking().ToListAsync(ct);
+        var subscriptionNames = subscriptions.ToDictionary(s => s.Id, s => s.Name);
         var listening = subscriptions.Where(s => s.Active && Subscribes(s, ApprovedEventType, candidate)).ToList();
 
         if (listening.Count == 0)
@@ -124,33 +135,40 @@ public class DiagnosticsService
         }
         else
         {
-            var latest = deliveries[0];
-            evidence.Add($"Latest promotion.approved delivery: status '{latest.Status}', {latest.Attempts} attempt(s)"
-                + (latest.HttpStatus is not null ? $", HTTP {latest.HttpStatus}" : "")
-                + (latest.DeliveredAt is not null ? $", delivered {Describe(now - latest.DeliveredAt.Value)} ago" : "")
-                + ".");
-
-            switch (latest.Status)
+            foreach (var latest in latestPerSubscription)
             {
-                case "pending":
-                    observations.Add(Observations.DeliveryPending);
-                    evidence.Add($"It is still queued; next retry at {latest.NextRetryAt:u}.");
-                    break;
-                case "failed":
-                    observations.Add(Observations.DeliveryFailed);
-                    if (!string.IsNullOrWhiteSpace(latest.ErrorMessage))
-                        evidence.Add($"Delivery error: {Truncate(latest.ErrorMessage, 300)}");
-                    if (!string.IsNullOrWhiteSpace(latest.ResponseBody))
-                        evidence.Add($"Response body: {Truncate(latest.ResponseBody, 300)}");
-                    break;
-                default:
-                    observations.Add(Observations.DeliverySucceeded);
-                    break;
+                var name = subscriptionNames.TryGetValue(latest.SubscriptionId, out var n) ? n : "unknown subscription";
+                evidence.Add($"promotion.approved delivery to '{name}': status '{latest.Status}', {latest.Attempts} attempt(s)"
+                    + (latest.HttpStatus is not null ? $", HTTP {latest.HttpStatus}" : "")
+                    + (latest.DeliveredAt is not null ? $", delivered {Describe(now - latest.DeliveredAt.Value)} ago" : "")
+                    + ".");
+
+                switch (latest.Status)
+                {
+                    case "pending":
+                        observations.Add(Observations.DeliveryPending);
+                        evidence.Add($"It is still queued; next retry at {latest.NextRetryAt:u}.");
+                        break;
+                    case "failed":
+                        observations.Add(Observations.DeliveryFailed);
+                        if (!string.IsNullOrWhiteSpace(latest.ErrorMessage))
+                            evidence.Add($"Delivery error: {Truncate(latest.ErrorMessage, 300)}");
+                        if (!string.IsNullOrWhiteSpace(latest.ResponseBody))
+                            evidence.Add($"Response body: {Truncate(latest.ResponseBody, 300)}");
+                        break;
+                    default:
+                        observations.Add(Observations.DeliverySucceeded);
+                        break;
+                }
             }
         }
 
-        // ── Did anything land on the cluster afterwards? ──
         var since = candidate.ApprovedAt ?? candidate.CreatedAt;
+
+        // ── Did the workflow it started say it failed? ──
+        await AddDispatchRunObservations(candidate, since, now, observations, evidence, ct);
+
+        // ── Did anything land on the cluster afterwards? ──
         var deployEvents = await _db.DeployEvents.AsNoTracking()
             .Where(e => e.Product == candidate.Product
                      && e.Service == candidate.Service
@@ -279,6 +297,9 @@ public class DiagnosticsService
         ("timed out waiting for the condition", "log_timeout"),
         ("context deadline exceeded", "log_timeout"),
         ("UPGRADE FAILED", "log_helm_upgrade_failed"),
+        // "pre-upgrade hooks failed", "pre-install hooks failed", …: a hook Job (usually the
+        // service's schema migrations) ran and failed, so Helm never rolled the release forward.
+        ("hooks failed", "log_helm_hook_failed"),
         ("another operation (install/upgrade/rollback) is in progress", "log_helm_lock"),
         ("has no deployed releases", "log_helm_no_deployed_release"),
         ("Insufficient cpu", "log_insufficient_resources"),
@@ -298,6 +319,56 @@ public class DiagnosticsService
         var tail = value[^max..];
         var newline = tail.IndexOf('\n');
         return "…\n" + (newline >= 0 && newline < 200 ? tail[(newline + 1)..] : tail);
+    }
+
+    /// <summary>
+    /// The phrase mpt-release's promotion workflows (Deploy Registered Build, Promote Single Build
+    /// Manifest) put in the comment they leave when they fail before committing. Their note reads
+    /// "&lt;workflow&gt; failed at step "&lt;step&gt;" before committing anything, …" with a
+    /// "Run: &lt;url&gt;" line.
+    /// </summary>
+    private const string DispatchRunFailedPhrase = "before committing anything";
+
+    private const string DispatchRunLinePrefix = "Run: ";
+
+    /// <summary>
+    /// Whether the workflow the approval started reported, on the promotion's comment thread, that it
+    /// failed before committing. Nothing else in the portal records that: no commit means no reconcile
+    /// and no deploy event, so without the note the evidence reads exactly like a delivered approval
+    /// whose commit changed nothing.
+    /// </summary>
+    private async Task AddDispatchRunObservations(
+        PromotionCandidate candidate, DateTimeOffset since, DateTimeOffset now,
+        HashSet<string> observations, List<string> evidence, CancellationToken ct)
+    {
+        // A comment thread is short, so the phrase is matched here rather than in SQL, where case
+        // sensitivity would depend on the provider's collation.
+        var comments = await _db.PromotionComments.AsNoTracking()
+            .Where(c => c.CandidateId == candidate.Id
+                     && c.AuthorEmail != PromotionComment.SystemAuthor
+                     && c.CreatedAt >= since)
+            .OrderByDescending(c => c.CreatedAt)
+            .ToListAsync(ct);
+
+        var reports = comments
+            .Where(c => c.Body.Contains(DispatchRunFailedPhrase, StringComparison.OrdinalIgnoreCase)
+                     && c.Body.Contains(" failed", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (reports.Count == 0) return;
+
+        observations.Add(Observations.DispatchRunFailed);
+
+        // The newest report is the run that matters; an earlier one is an attempt already re-run.
+        var latest = reports[0];
+        var lines = latest.Body.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var summary = lines.FirstOrDefault(l => l.Contains(DispatchRunFailedPhrase, StringComparison.OrdinalIgnoreCase)) ?? lines[0];
+        var run = lines.FirstOrDefault(l => l.StartsWith(DispatchRunLinePrefix, StringComparison.OrdinalIgnoreCase))?[DispatchRunLinePrefix.Length..].Trim();
+        var author = string.IsNullOrWhiteSpace(latest.AuthorName) ? latest.AuthorEmail : latest.AuthorName;
+
+        evidence.Add($"A comment by '{author}' {Describe(now - latest.CreatedAt)} ago reports the deploy workflow failed: \"{Truncate(summary, 300)}\""
+            + (string.IsNullOrWhiteSpace(run) ? "" : $" Run: {run}"));
+        if (reports.Count > 1)
+            evidence.Add($"{reports.Count} such failure reports since approval — the workflow has failed more than once.");
     }
 
     /// <summary>Why a Pending candidate has not been approved — gates, not plumbing.</summary>

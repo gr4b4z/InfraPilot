@@ -5,7 +5,7 @@ summary: >-
   A deploy event came back with a failed status. Reconcile attaches the deployment logs to the event
   when that happens, so the actual Helm or Kubernetes error is usually right there.
 source: mpt-release reconcile deploy steps + ops-build-templates-aks-releases/aks-docker-templates
-as_of: 2026-10-16
+as_of: 2026-11-05
 causes:
   - id: image-pull
     title: The image could not be pulled
@@ -46,6 +46,27 @@ causes:
       workload: fix the service's manifest and publish a new build. Nothing is wrong with the
       cluster, and redeploying the same version reproduces the error.
 
+  - id: hook-job-failed
+    title: A Helm hook job failed, usually the schema migrations
+    matches_when:
+      - log_helm_hook_failed
+    explanation: >-
+      `pre-upgrade hooks failed` (or `pre-install`) means Helm ran the chart's hook Job before
+      touching the workload and the Job exited non-zero, so the release never moved: the previous
+      version is still running and serving. For these charts the hook is almost always the
+      service's own `<service>-migrations` Job, and the helm hook logs section holds its output
+      with the failing migration's name and database error. That is an application failure in the
+      service's migration code or its database state, not a delivery or cluster problem.
+      Reconcile retries the component on every run of that environment, and the same migration
+      fails the same way until a fixed build is published.
+    confirm: >-
+      Read the helm hook logs section for the migration runner's error lines, or open the
+      deployment's migration run on the **Migrations** page, which lists each migration's outcome.
+    fix: >-
+      Hand the failing migration and its error to the service's team: they fix the migration (or
+      the data it trips over) and publish a new build. Redeploying the same version reproduces the
+      error. The old version keeps running meanwhile, so there is nothing to roll back.
+
   - id: helm-lock
     title: Another Helm operation is in progress
     matches_when:
@@ -76,7 +97,11 @@ causes:
       application-level failure — missing configuration or secret, a failed migration, or an
       unreachable dependency — not a delivery failure.
     confirm: The captured logs contain the container's own output; read the stack trace or startup error.
-    fix: Fix the configuration or dependency, then redeploy. Rolling back to the previous version restores service while you investigate.
+    fix: >-
+      Fix the configuration or dependency, then redeploy. Rolling back restores service while you
+      investigate: the failed deployment's page offers **Roll back to last known good version**,
+      which raises a rollback to the last version that deployed successfully there. Approving it also
+      sends the promotion that shipped the failed version back to Pending.
     fix_guide: request-rollback
 
   - id: probe-failure

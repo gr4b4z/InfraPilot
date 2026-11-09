@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Platform.Api.Features.Builds.Models;
+using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 
 namespace Platform.Api.Features.Builds;
@@ -83,6 +84,74 @@ public static class BuildEndpoints
         {
             var build = await builds.GetAsync(id, ct);
             return build is null ? Results.NotFound() : Results.Ok(build);
+        });
+
+        // Retired versions: artifacts removed from the container registry, so rollbacks must not offer
+        // or target them. Written by the registry cleanup with an API key (build:retire scope for keys
+        // that declare a Scopes list), product scope enforced per item like registration.
+        group.MapPost("/retired", async (
+            RetiredVersionService retired, ClaimsPrincipal user, ICurrentUser me, IAuditLogger audit,
+            RetireVersionsDto dto, CancellationToken ct) =>
+        {
+            if (!ApiKeyAuthHandler.HasScope(user, ApiKeyScopes.BuildRetire))
+                return Results.Forbid();
+            var errors = RetiredVersionService.Validate(dto);
+            if (errors.Count > 0)
+                return Results.BadRequest(new { errors });
+
+            var allowed = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
+            var by = string.IsNullOrWhiteSpace(me.Email) ? me.Name : me.Email;
+            try
+            {
+                var result = await retired.RetireAsync(dto, by, allowed, ct);
+                await audit.Log("builds", "build.versions.retired", me.Id, me.Name, "user",
+                    "RetiredVersion", null, null,
+                    new { items = dto.Items!.Count, result.Retired, result.AlreadyRetired, result.Unknown, dto.Reason });
+                return Results.Ok(result);
+            }
+            catch (RetiredVersionService.ProductNotAllowedException)
+            {
+                return Results.Forbid();
+            }
+        })
+        .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
+        .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
+
+        group.MapPost("/retired/restore", async (
+            RetiredVersionService retired, ClaimsPrincipal user, ICurrentUser me, IAuditLogger audit,
+            RetireVersionsDto dto, CancellationToken ct) =>
+        {
+            if (!ApiKeyAuthHandler.HasScope(user, ApiKeyScopes.BuildRetire))
+                return Results.Forbid();
+            var errors = RetiredVersionService.Validate(dto);
+            if (errors.Count > 0)
+                return Results.BadRequest(new { errors });
+
+            var allowed = user.FindAll(ApiKeyAuthHandler.AllowedProductClaim).Select(c => c.Value).ToList();
+            try
+            {
+                var result = await retired.RestoreAsync(dto, allowed, ct);
+                await audit.Log("builds", "build.versions.restored", me.Id, me.Name, "user",
+                    "RetiredVersion", null, null,
+                    new { items = dto.Items!.Count, result.Restored, result.NotRetired, dto.Reason });
+                return Results.Ok(result);
+            }
+            catch (RetiredVersionService.ProductNotAllowedException)
+            {
+                return Results.Forbid();
+            }
+        })
+        .RequireAuthorization(ApiKeyAuthHandler.PolicyName)
+        .RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName);
+
+        // Newest first; product/service match exactly (case-insensitive).
+        group.MapGet("/retired", async (
+            RetiredVersionService retired, string? product, string? service, string? serviceName, int? limit,
+            CancellationToken ct) =>
+        {
+            var results = await retired.ListAsync(product, service ?? serviceName,
+                limit is > 0 and <= 1000 ? limit.Value : 200, ct);
+            return Results.Ok(new { results });
         });
 
         return group;

@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Analytics;
+using Platform.Api.Features.Incidents;
+using Platform.Api.Features.Migrations;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Builds;
 using Platform.Api.Features.Catalog;
@@ -183,6 +185,9 @@ builder.Services.AddSingleton<INotificationChannel, WebhookChannel>();
 builder.Services.AddScoped<INotificationService, NotificationDispatcher>();
 
 // Identity / Graph — separate app registration for Graph API (client credentials)
+// Registered in every mode so the admin directory-health read always answers; only the Graph
+// service ever records a failure in it.
+builder.Services.AddSingleton<GraphCredentialHealth>();
 var graphTenantId = builder.Configuration["Graph:TenantId"];
 var graphClientId = builder.Configuration["Graph:ClientId"];
 var graphClientSecret = builder.Configuration["Graph:ClientSecret"];
@@ -233,6 +238,7 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<BuildService>();
+builder.Services.AddScoped<RetiredVersionService>();
 builder.Services.AddScoped<Platform.Api.Features.Builds.IBuildIngestHook, Platform.Api.Features.Builds.BuildIngestHook>();
 builder.Services.AddScoped<DeploymentService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceDeletionService>();
@@ -243,11 +249,15 @@ builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionFreezeService>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 builder.Services.AddScoped<AnalyticsService>();
+builder.Services.AddScoped<DeliveryMetricsService>();
+builder.Services.AddScoped<IncidentService>();
+builder.Services.AddScoped<Platform.Api.Features.Migrations.MigrationService>();
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();
@@ -442,6 +452,7 @@ app.Services.GetRequiredService<PlaybookRegistry>();
         {
             await DeploymentSeedData.Seed(db);
             await PromotionSeedData.Seed(db);
+            await MigrationSeedData.Seed(db);
         }
     }
 }
@@ -488,7 +499,13 @@ app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(Authorizatio
 app.MapGroup("/api/builds").MapBuildEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Incident records are admin-only; the metrics they feed are on the delivery report for everyone.
+app.MapGroup("/api/incidents").MapIncidentEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+// Migrations are read-only for people (CanApprove, like deployments); pipelines report through the
+// API-key route inside the group.
+app.MapGroup("/api/migrations").MapMigrationEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/migrations/admin").MapMigrationAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // The promotions activity feed. AuditViewer (admin only) — the same gate as the platform audit log:
 // read end to end it is a record of who did what across every product, which is an administrator's

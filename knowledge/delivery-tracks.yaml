@@ -51,8 +51,9 @@ body: |
     `yield-to-newer-run.ps1` elects the newest and `queue-deployment.ps1` cancels the earlier
     in-flight one. Net result: one release, one deployment.
   - **What goes in the staging branch** is every approved `mpt` staging promotion, whatever its
-    source — since 2026-10-14 those are `build → staging` promotions of registered release builds.
-    Dev and test still deploy straight from `manifest.json` on every master bump (5399 → 5462).
+    source — since 2026-10-14 those are `build → staging` promotions of registered release builds —
+    except services in `sdp.exclude`, which the branch pipelines drop because mpt-release deploys
+    them. Dev and test still deploy straight from `manifest.json` on every master bump (5399 → 5462).
 
   ## Track B — desired state in git
 

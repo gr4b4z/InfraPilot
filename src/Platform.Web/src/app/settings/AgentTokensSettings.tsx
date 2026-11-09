@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { Check, Search, Trash2, UserX } from 'lucide-react';
 import { api, type AdminPersonalAccessToken } from '@/lib/api';
-import { TOKEN_STATUS_STYLE, tokenRoleName, tokenStatus, type TokenStatus } from '@/lib/personalTokens';
+import { TOKEN_ACCESS, TOKEN_STATUS_STYLE, tokenRoleName, tokenStatus, type TokenStatus } from '@/lib/personalTokens';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { inputClass, inputStyle } from './formStyles';
 
@@ -138,9 +138,12 @@ export function AgentTokensSettings() {
           </h2>
           <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
             Personal access tokens people have created on their Agent access page for AI agents and
-            scripts. Each acts as its owner, without Admin and without approval rights, until it expires,
-            is revoked, or the owner's account is disabled or deleted in the directory — checked at most
-            every 5 minutes. Only a hash of each secret is stored, so nobody can read one here.
+            scripts. Each acts as its owner until it expires, is revoked, or the owner's account is
+            disabled or deleted in the directory — checked at most every 5 minutes. A standard token has
+            no Admin and no approval rights; a <strong>QA access</strong> token also signs off work items,
+            and an <strong>Admin access</strong> token keeps Admin and makes its owner's decisions — revoke
+            those first when someone's role changes. Only a hash of each secret is stored, so nobody can
+            read one here.
           </p>
           <p className="text-[13px] mt-2" style={{ color: 'var(--text-muted)' }}>
             <strong>A token leaked?</strong> Paste it into the search: it is matched by its prefix in your
@@ -350,6 +353,7 @@ function TokenRow({
   onRevoke: () => void;
 }) {
   const s = TOKEN_STATUS_STYLE[status];
+  const accessBadge = TOKEN_ACCESS[token.access]?.badge;
   const inactive = status !== 'active';
   const ended =
     status === 'revoked' && token.revokedAt
@@ -375,6 +379,15 @@ function TokenRow({
           >
             {s.label}
           </span>
+          {accessBadge && (
+            <span
+              className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
+              style={{ backgroundColor: accessBadge.bg, color: accessBadge.color }}
+              title={TOKEN_ACCESS[token.access].summary}
+            >
+              {accessBadge.label}
+            </span>
+          )}
           {token.roles.map((role) => (
             <span
               key={role}

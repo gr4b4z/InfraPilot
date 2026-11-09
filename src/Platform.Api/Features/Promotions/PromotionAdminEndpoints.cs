@@ -20,6 +20,10 @@ public static class PromotionAdminEndpoints
         // Force a Pending candidate to Approved without satisfying its gate. Admin-only via the
         // group's CatalogAdmin policy. A reason is required; the existing promotion.approved webhook
         // still fires so downstream automation is unchanged.
+        //
+        // The decisions here (bypass, reject, orphan sweep) also carry RequirePersonalTokenAccess:
+        // the group's Admin role already limits personal tokens to Admin ones, and the filter records
+        // that an agent made the decision.
         group.MapPost("/candidates/{id:guid}/bypass", async (
             PromotionService service, Guid id, BypassPromotionRequest? request, CancellationToken ct) =>
         {
@@ -36,7 +40,7 @@ public static class PromotionAdminEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Bypass in bulk: mass approve's admin column. One reason covers the batch, the same way one
         // comment covers a bulk approve, and each candidate is bypassed and audited on its own
@@ -76,7 +80,7 @@ public static class PromotionAdminEndpoints
             }
 
             return Results.Ok(new { results });
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // ── Candidate reject (admin override) ───────────────────────────────
         // Reject a Pending candidate without being an eligible approver for it — the counterpart of
@@ -101,7 +105,7 @@ public static class PromotionAdminEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Reject in bulk, for automation (the UI deliberately has no bulk reject — see the bulk approve
         // route). Same contract as bulk bypass: one reason for the batch, each candidate rejected and
@@ -140,7 +144,7 @@ public static class PromotionAdminEndpoints
             }
 
             return Results.Ok(new { results });
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // ── Completion reconciliation ───────────────────────────────────────
         // Settles open promotions that the target environment's deploy history has already decided:
@@ -268,7 +272,7 @@ public static class PromotionAdminEndpoints
             {
                 return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
             }
-        });
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // ── Duplicate candidates (Settings → Maintenance) ────────────────────
         // Residue of a pre-D15 create path that minted a new row per external POST instead of
@@ -287,6 +291,63 @@ public static class PromotionAdminEndpoints
             var (groups, rows) = await service.RemoveDuplicateCandidatesAsync(ct);
             return Results.Ok(new { groups, rows });
         });
+
+        // ── Promotion Freeze (ADR-0001 / ADR-0002 / ADR-0003) ───────────────
+        // Freeze one product's promotions into one target env — the whole product, or one service of
+        // it; lifting re-evaluates the Pending candidates the freeze held. Admin-only via the group's
+        // CatalogAdmin policy.
+
+        group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
+            Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
+
+        group.MapGet("/freezes/history", async (
+            PromotionFreezeService freezes, int? limit, CancellationToken ct) =>
+            Results.Ok(new
+            {
+                entries = await freezes.GetHistoryAsync(limit ?? PromotionFreezeService.DefaultHistoryLimit, ct),
+            }));
+
+        // The services a service freeze may name for a product: the ones its candidates and deploy
+        // events have mentioned. The freeze form's service select is built from this.
+        group.MapGet("/freezes/services", async (
+            PromotionFreezeService freezes, string? product, CancellationToken ct) =>
+            string.IsNullOrWhiteSpace(product)
+                ? Results.BadRequest(new { error = "'product' is required" })
+                : Results.Ok(new { services = await freezes.GetKnownServicesAsync(product, ct) }));
+
+        // The target env is resolved to its canonical key, like the policy editors, so freezing
+        // "prod" freezes the "production" pair the policies and candidates are stored under.
+        group.MapPost("/freezes", async (
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            FreezePromotionsRequest? request, CancellationToken ct) =>
+        {
+            try
+            {
+                var freeze = await freezes.FreezeAsync(
+                    request?.Product ?? "", await environments.ResolveAsync(request?.TargetEnv, ct),
+                    request?.Reason ?? "", request?.Service, ct);
+                return Results.Created("/api/promotions/admin/freezes", freeze);
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (FreezeAlreadyActiveException ex) { return Results.Conflict(new { error = ex.Message }); }
+            catch (Exception ex) when (ex is NoApprovalPolicyForPairException or UnknownServiceException)
+            {
+                return Results.UnprocessableEntity(new { error = ex.Message });
+            }
+        });
+
+        // Lifts the whole-product freeze only; a service freeze has its own route below. Falls back
+        // to the key exactly as sent, so a freeze stored before that name became an alias can still
+        // be lifted.
+        group.MapDelete("/freezes/{product}/{targetEnv}", async (
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            string product, string targetEnv, CancellationToken ct) =>
+            await LiftAsync(freezes, environments, product, targetEnv, service: null, ct));
+
+        group.MapDelete("/freezes/{product}/{targetEnv}/services/{service}", async (
+            PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+            string product, string targetEnv, string service, CancellationToken ct) =>
+            await LiftAsync(freezes, environments, product, targetEnv, service, ct));
 
         // ── Policies ────────────────────────────────────────────────────────
 
@@ -553,6 +614,20 @@ public static class PromotionAdminEndpoints
     }
 
     /// <summary>
+    /// Lifts one freeze scope under the canonical environment key, falling back to the key exactly as
+    /// sent so a freeze stored before that name became an alias can still be lifted.
+    /// </summary>
+    private static async Task<IResult> LiftAsync(
+        PromotionFreezeService freezes, EnvironmentAliasResolver environments,
+        string product, string targetEnv, string? service, CancellationToken ct)
+    {
+        var canonical = await environments.ResolveAsync(targetEnv, ct);
+        var lifted = await freezes.LiftAsync(product, canonical, service, ct)
+            || (canonical != targetEnv && await freezes.LiftAsync(product, targetEnv, service, ct));
+        return lifted ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
     /// Canonicalises both ends of the edge a policy governs. Applied after validation, so a blank
     /// environment is still reported as missing rather than silently becoming an empty key.
     /// </summary>
@@ -662,6 +737,12 @@ public record UpsertRequirementRequest(
 /// <summary>Body for the admin bypass endpoint. <c>Reason</c> is required (empty ⇒ 400).</summary>
 public record BypassPromotionRequest(string? Reason);
 
+/// <summary>
+/// Body for creating a Promotion Freeze. <c>Product</c>, <c>TargetEnv</c> and <c>Reason</c> are
+/// required (blank ⇒ 400); <c>Service</c> narrows the freeze to one service of the product and is
+/// omitted (or blank) for a whole-product freeze.
+/// </summary>
+public record FreezePromotionsRequest(string? Product, string? TargetEnv, string? Reason, string? Service = null);
 /// <summary>Body for the bulk bypass endpoint: the candidates, and the one reason that covers them all.</summary>
 public record BulkBypassPromotionRequest(Guid[]? Ids, string? Reason);
 

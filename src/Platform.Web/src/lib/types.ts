@@ -49,6 +49,20 @@ export interface ServiceRequest {
   catalogItem?: CatalogItem;
   executionResults?: ExecutionResult[];
   approvalRequest?: ApprovalRequest;
+  /** The approval settings that applied when the request was submitted (null before submit). */
+  approvalOutcome?: ApprovalOutcome | null;
+}
+
+export interface ApprovalOutcome {
+  required: boolean;
+  strategy: string;
+  quorumCount?: number | null;
+  approverGroup?: string | null;
+  timeoutHours?: number | null;
+  escalationGroup?: string | null;
+  /** Zero-based index of the catalog item's approval rule that matched; null when none did. */
+  ruleIndex?: number | null;
+  ruleName?: string | null;
 }
 
 export interface ApprovalRequest {
@@ -294,6 +308,109 @@ export interface DeploymentDetail {
   history: DeployEventHistoryEntry[];
   promotions: RelatedPromotion[];
   workItems: RelatedWorkItem[];
+  /** Its schema migration (run inside the deploy) and data migration (due after it). */
+  migrations?: MigrationRunSummary[] | null;
+}
+
+// Migrations — read-only: what the pipelines reported or the portal read from deploy logs.
+
+/** `schema` runs inside the deployment as a Helm hook; `data` runs after it, as a separate step. */
+export type MigrationKind = 'schema' | 'data';
+
+/**
+ * `pending` — the service is deployed and its data migration hasn't run (or isn't even scheduled).
+ * `superseded` — a newer version's data migration replaced it; it will never run.
+ */
+export type MigrationRunStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'superseded';
+
+export type MigrationItemStatus = 'applied' | 'failed' | 'rolled-back' | 'running' | 'pending' | 'skipped';
+
+export interface MigrationRunSummary {
+  id: string;
+  kind: MigrationKind;
+  product: string;
+  service: string;
+  environment: string;
+  version: string;
+  status: MigrationRunStatus;
+  source: string;
+  deployEventId?: string | null;
+  queuedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  attempts: number;
+  appliedCount: number;
+  failedCount: number;
+  totalCount: number;
+  failureReason?: string | null;
+  skipReason?: string | null;
+  supersededById?: string | null;
+  runUrl?: string | null;
+  updatedAt: string;
+}
+
+export interface MigrationRunList {
+  items: MigrationRunSummary[];
+  total: number;
+}
+
+/** One migration inside a run, by the id the migration library prints (the script name without its order prefix). */
+export interface MigrationItem {
+  name: string;
+  status: MigrationItemStatus;
+  durationMs?: number | null;
+  error?: string | null;
+  order?: number | null;
+  appliedAt?: string | null;
+}
+
+export interface MigrationRunDetail {
+  run: MigrationRunSummary;
+  ciRun?: DeployRun | null;
+  migrations: MigrationItem[];
+  logs: DeployLogSummary[];
+  deployment?: { id: string; version: string; status: string; source: string; deployedAt: string } | null;
+  supersededBy?: MigrationRunSummary | null;
+  supersedes: MigrationRunSummary[];
+  history: MigrationRunSummary[];
+}
+
+/** A migration that needs attention (pending, running or failed) — the flare on deployment views. */
+export interface MigrationFlag {
+  id: string;
+  kind: MigrationKind;
+  product: string;
+  service: string;
+  environment: string;
+  version: string;
+  status: MigrationRunStatus;
+  deployEventId?: string | null;
+  queuedAt: string;
+  failedCount: number;
+  failureReason?: string | null;
+}
+
+/** Where one migration name has been seen: per service and environment, how it went there. */
+export interface MigrationSearchHit {
+  product: string;
+  service: string;
+  environment: string;
+  kind: MigrationKind;
+  /** `applied` when any run recorded it applied; otherwise the latest run's word for it. */
+  status: MigrationItemStatus;
+  appliedAt?: string | null;
+  version: string;
+  runId: string;
+  deployEventId?: string | null;
+  seenAt: string;
+  runs: number;
+  error?: string | null;
+}
+
+export interface MigrationSearchResult {
+  query: string;
+  matches: { name: string; score: number; hits: MigrationSearchHit[] }[];
+  truncated: boolean;
 }
 
 // Service search & detail types

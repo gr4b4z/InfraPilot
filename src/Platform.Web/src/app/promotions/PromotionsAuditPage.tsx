@@ -8,6 +8,7 @@ import {
   CheckCircle,
   ChevronDown,
   Clock,
+  FastForward,
   FileText,
   Filter,
   GitPullRequest,
@@ -203,6 +204,12 @@ const ACTION_STYLES: Record<
     icon: Ban,
     color: 'var(--danger)',
     bg: 'var(--danger-bg)',
+  },
+  'promotion.ticket.bypassed': {
+    verb: 'bypassed a work item with its promotion',
+    icon: FastForward,
+    color: 'var(--info)',
+    bg: 'var(--info-bg)',
   },
   'work-item.decisions.reset': {
     verb: 'work-item sign-offs were reset by a new version',

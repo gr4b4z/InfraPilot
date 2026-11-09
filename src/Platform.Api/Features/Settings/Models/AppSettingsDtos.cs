@@ -11,7 +11,29 @@ namespace Platform.Api.Features.Settings.Models;
 public record AppSettingsDto(
     List<EnvironmentConfigDto> Environments,
     List<RoleConfigDto> Roles,
-    List<ActivityTemplateLineDto> ActivityTemplate);
+    List<ActivityTemplateLineDto> ActivityTemplate,
+    // Optional so settings rows written before it existed deserialize unchanged; null means defaults.
+    AnalyticsSettingsDto? Analytics = null);
+
+/// <summary>
+/// How the delivery report ties an incident to the deployment that caused it when the incident names
+/// neither a deploy nor a version: the deploy that was live when it started. Both knobs are echoed
+/// in the report's definitions.
+/// </summary>
+/// <param name="AttributionWindowDays">An incident this many days after a deploy still counts against
+/// it; 0 = no cap (whatever was live is to blame, however old).</param>
+/// <param name="RolloutToleranceMinutes">A deploy's time is usually when the pipeline finished; an
+/// incident that starts this many minutes earlier, mid-rollout, is still blamed on it rather than on
+/// the previous version.</param>
+public record AnalyticsSettingsDto(int AttributionWindowDays = 7, int RolloutToleranceMinutes = 15)
+{
+    public static readonly AnalyticsSettingsDto Default = new();
+
+    /// <summary>Clamped to sane bounds — a negative window or a week of tolerance is a typo, not a policy.</summary>
+    public AnalyticsSettingsDto Clean() => new(
+        Math.Clamp(AttributionWindowDays, 0, 365),
+        Math.Clamp(RolloutToleranceMinutes, 0, 24 * 60));
+}
 
 /// <summary>
 /// One configured environment. <paramref name="Color"/> is an admin-chosen accent used to

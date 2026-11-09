@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Builds;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Migrations;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Settings;
@@ -21,6 +23,7 @@ public class DeploymentService
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceDeletionService _serviceDeletions;
     private readonly ServiceProductOverrideService _productOverrides;
+    private readonly MigrationService? _migrations;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -48,7 +51,10 @@ public class DeploymentService
         UserPreferencesService userPrefs,
         ServiceDeletionService serviceDeletions,
         ServiceProductOverrideService productOverrides,
-        ILogger<DeploymentService> logger)
+        ILogger<DeploymentService> logger,
+        // Optional so the unit tests that build this service by hand need not wire migrations; the
+        // container always supplies it.
+        MigrationService? migrations = null)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
@@ -58,6 +64,7 @@ public class DeploymentService
         _userPrefs = userPrefs;
         _serviceDeletions = serviceDeletions;
         _productOverrides = productOverrides;
+        _migrations = migrations;
         _logger = logger;
     }
 
@@ -162,8 +169,10 @@ public class DeploymentService
         // deploy belongs to, and resolving per-use is how they would drift apart.
         var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
 
-        // Staged, not saved: it rides along with whichever SaveChanges below commits the event.
-        await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
+        // Staged, not saved: it rides along with whichever SaveChanges below commits the event. A
+        // removal is the opposite of evidence that the service is alive, so it never revives one.
+        if (!string.Equals(dto.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase))
+            await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
 
         var replayed = await _db.DeployEvents
             .Where(e => e.Product == product && e.Service == dto.Service
@@ -197,6 +206,9 @@ public class DeploymentService
             // is nothing to close.
             await _promotionHook.OnIngestedAsync(replayed, ct);
 
+            // A replay may carry the hook output the first attempt had not captured yet.
+            if (_migrations is not null) await _migrations.OnDeployIngestedAsync(replayed, ct);
+
             return new IngestResult(replayed, true);
         }
 
@@ -209,12 +221,18 @@ public class DeploymentService
             var previousEvent = await _db.DeployEvents
                 .Where(e => e.Product == product && e.Service == dto.Service && e.Environment == environment)
                 .OrderByDescending(e => e.DeployedAt)
-                .Select(e => new { e.Version })
+                .Select(e => new { e.Version, e.Status })
                 .FirstOrDefaultAsync(ct);
-            previousVersion = previousEvent?.Version;
+            // After a removal the environment ran nothing, so the next deploy has no predecessor.
+            previousVersion = previousEvent is null
+                              || string.Equals(previousEvent.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : previousEvent.Version;
         }
 
-        var status = dto.Status ?? "succeeded";
+        var status = string.Equals(dto.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase)
+            ? DeployEventStatuses.Removed
+            : dto.Status ?? "succeeded";
         var deployEvent = new DeployEvent
         {
             Id = Guid.NewGuid(),
@@ -306,6 +324,10 @@ public class DeploymentService
         // resilient even when the promotion machinery misbehaves.
         await _promotionHook.OnIngestedAsync(deployEvent, ct);
 
+        // The schema migration ran inside this deploy and its output rode along with the logs; data
+        // migrations reported before the deploy arrived are linked to it. Swallows its own failures.
+        if (_migrations is not null) await _migrations.OnDeployIngestedAsync(deployEvent, ct);
+
         return new IngestResult(deployEvent, false);
     }
 
@@ -351,7 +373,7 @@ public class DeploymentService
         foreach (var dto in incoming)
         {
             var name = dto.Name.Trim();
-            var (content, truncated, originalBytes) = CapLogContent(dto.Content ?? "");
+            var (content, truncated, originalBytes) = PrepareLogContent(dto.Content);
             truncated = truncated || dto.Truncated;
 
             if (byName.TryGetValue(name, out var row))
@@ -382,6 +404,14 @@ public class DeploymentService
             });
         }
     }
+
+    /// <summary>
+    /// What a log block stores: the sender's content with secrets redacted (see
+    /// <see cref="SecretRedactor"/> — these logs are readable by everyone signed in), then capped by
+    /// <see cref="CapLogContent"/>. Every log the portal stores, deploy or migration, goes through here.
+    /// </summary>
+    public static (string Content, bool Truncated, int OriginalByteCount) PrepareLogContent(string? content) =>
+        CapLogContent(SecretRedactor.Redact(content));
 
     /// <summary>
     /// Trims content to <see cref="LogContentLimitBytes"/>, keeping the tail and prefixing a marker
@@ -509,10 +539,12 @@ public class DeploymentService
             .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType, signOffEnvs))
             .ToList();
 
-        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);
+        var migrations = _migrations is null ? [] : await _migrations.ForDeployEventAsync(ev, ct);
+
+        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos, migrations);
     }
 
-    private static int CountLines(string content)
+    internal static int CountLines(string content)
     {
         if (content.Length == 0) return 0;
         var lines = 1;
@@ -541,7 +573,9 @@ public class DeploymentService
             .Where(e => e.Product == product && e.Environment == environment)
             // A retired service is not a rollback target — offering its versions in the picker would
             // invite somebody to redeploy the thing that was just migrated away.
-            .ExcludingDeletedServices(_db);
+            .ExcludingDeletedServices(_db)
+            // Nor is a version whose image was removed from the container registry: it cannot be pulled.
+            .ExcludingRetiredVersions(_db);
         if (!string.IsNullOrWhiteSpace(serviceName))
             query = query.Where(e => e.Service == serviceName);
 
@@ -662,6 +696,10 @@ public class DeploymentService
     /// <para>Cells in a <paramref name="retired"/> environment are left out, explicit
     /// <paramref name="environment"/> filter or not: nothing is current in an environment nobody
     /// deploys to. Their history is still on the history and event-detail paths.</para>
+    ///
+    /// <para>So is a cell whose newest event is a <see cref="DeployEventStatuses.Removed"/>: the
+    /// service was taken out of that environment, so nothing of it is current there. The removal
+    /// stays in history, and the next deploy brings the cell back.</para>
     /// </summary>
     private IQueryable<DeployEvent> LatestStateEvents(
         string? product, string? environment, string? serviceName, IReadOnlySet<string> retired)
@@ -692,8 +730,30 @@ public class DeploymentService
 
         return from l in latest
                join e in _db.DeployEvents.AsNoTracking() on l.Id equals e.Id
+               where e.Status != DeployEventStatuses.Removed
                select e;
     }
+
+    /// <summary>
+    /// When each (product, service, environment) last had its service removed. Removals are rare, so
+    /// the read paths that aggregate a cell's newest timestamp over the narrow index (product
+    /// summaries, search) take this small set and drop the cells whose newest event is the removal,
+    /// rather than switching to the per-cell newest-row lookup <see cref="LatestStateEvents"/> does.
+    /// </summary>
+    private async Task<Dictionary<(string Product, string Service, string Environment), DateTimeOffset>> RemovedCellsAsync(
+        CancellationToken ct)
+        => (await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Status == DeployEventStatuses.Removed)
+                .GroupBy(e => new { e.Product, e.Service, e.Environment })
+                .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, RemovedAt = g.Max(e => e.DeployedAt) })
+                .ToListAsync(ct))
+            .ToDictionary(r => (r.Product, r.Service, r.Environment), r => r.RemovedAt);
+
+    // The cell's newest event is its removal when no event is newer than the last removal.
+    private static bool IsRemoved(
+        Dictionary<(string Product, string Service, string Environment), DateTimeOffset> removed,
+        string product, string service, string environment, DateTimeOffset newestAt)
+        => removed.TryGetValue((product, service, environment), out var removedAt) && removedAt >= newestAt;
 
     /// <summary>
     /// The product × environment matrix. Products the caller has hidden are dropped here rather
@@ -719,8 +779,12 @@ public class DeploymentService
             // product page's matrix loses it.
             .ExcludingRetiredEnvironments(retired)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => new { g.Key.Product, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
+            .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
+
+        // A service taken out of an environment stops counting there, as it leaves the matrix.
+        var removed = await RemovedCellsAsync(ct);
+        latest = latest.Where(c => !IsRemoved(removed, c.Product, c.Service, c.Environment, c.DeployedAt)).ToList();
 
         var grouped = latest
             .GroupBy(e => e.Product)
@@ -776,6 +840,10 @@ public class DeploymentService
                 LastDeployedAt = g.Max(e => e.DeployedAt),
             })
             .ToListAsync(ct);
+
+        // An environment the service was taken out of is not one it is in.
+        var removed = await RemovedCellsAsync(ct);
+        rows = rows.Where(r => !IsRemoved(removed, r.Product, r.Service, r.Environment, r.LastDeployedAt)).ToList();
 
         return rows
             .GroupBy(r => new { r.Product, r.Service })
@@ -1024,6 +1092,86 @@ public class DeploymentService
     private IQueryable<DeployEventLog> OldLogsQuery(DateTimeOffset cutoff) =>
         _db.DeployEventLogs
             .Where(l => _db.DeployEvents.Any(e => e.Id == l.DeployEventId && e.DeployedAt < cutoff));
+
+    // --- Secret redaction of stored logs ---
+
+    /*
+     * Ingest redacts secrets before a log is stored (PrepareLogContent). Logs stored before that, or
+     * before a pattern was added, still hold whatever the producer sent; this pass re-applies the
+     * redactor to every stored deploy and migration log. Rows are read in batches so a large table
+     * never sits in memory at once. Running it again is harmless: redaction is idempotent, and an
+     * unchanged row is not written.
+     */
+
+    private const int RedactionBatchSize = 50;
+
+    /// <summary>
+    /// Applies <see cref="SecretRedactor"/> to every stored deploy and migration log. Returns how many
+    /// of each it changed — or, with <paramref name="apply"/> false, would change, writing nothing.
+    /// </summary>
+    public async Task<(int DeployLogs, int MigrationLogs)> RedactStoredLogs(bool apply, CancellationToken ct = default)
+    {
+        var deployLogs = await RedactLogRows(
+            await _db.DeployEventLogs.Select(l => l.Id).ToListAsync(ct),
+            batch => _db.DeployEventLogs.Where(l => batch.Contains(l.Id)),
+            l => l.Content,
+            (l, content) =>
+            {
+                l.Content = content;
+                l.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                l.LineCount = CountLines(content);
+            },
+            apply, ct);
+
+        var migrationLogs = await RedactLogRows(
+            await _db.MigrationRunLogs.Select(l => l.Id).ToListAsync(ct),
+            batch => _db.MigrationRunLogs.Where(l => batch.Contains(l.Id)),
+            l => l.Content,
+            (l, content) =>
+            {
+                l.Content = content;
+                l.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                l.LineCount = CountLines(content);
+            },
+            apply, ct);
+
+        _logger.LogInformation(
+            "Secret redaction {Mode}: {DeployLogs} deploy log block(s), {MigrationLogs} migration log block(s)",
+            apply ? "changed" : "would change", deployLogs, migrationLogs);
+
+        return (deployLogs, migrationLogs);
+    }
+
+    private async Task<int> RedactLogRows<TLog>(
+        List<Guid> ids,
+        Func<Guid[], IQueryable<TLog>> load,
+        Func<TLog, string> read,
+        Action<TLog, string> write,
+        bool apply,
+        CancellationToken ct) where TLog : class
+    {
+        var changed = 0;
+        foreach (var batch in ids.Chunk(RedactionBatchSize))
+        {
+            var query = load(batch);
+            var rows = await (apply ? query : query.AsNoTracking()).ToListAsync(ct);
+            foreach (var row in rows)
+            {
+                var content = read(row);
+                var redacted = SecretRedactor.Redact(content);
+                if (redacted == content) continue;
+                changed++;
+                if (apply) write(row, redacted);
+            }
+            if (apply)
+            {
+                await _db.SaveChangesAsync(ct);
+                // Written rows are done with; tracking up to 512 KiB of content each would only grow.
+                _db.ChangeTracker.Clear();
+            }
+        }
+        return changed;
+    }
 
     // --- Mapping helpers ---
 

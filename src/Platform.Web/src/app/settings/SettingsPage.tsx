@@ -10,8 +10,10 @@ import {
   Undo2,
   Wrench,
   ScrollText,
+  Snowflake,
   Shuffle,
   KeyRound,
+  Gauge,
 } from 'lucide-react';
 
 interface NavItem {
@@ -59,6 +61,12 @@ const NAV: NavItem[] = [
     description: 'Approval policies and gating',
   },
   {
+    to: 'freeze',
+    label: 'Freeze',
+    icon: Snowflake,
+    description: 'Hold promotions for a product into an environment',
+  },
+  {
     to: 'rollbacks',
     label: 'Rollbacks',
     icon: Undo2,
@@ -82,6 +90,12 @@ const NAV: NavItem[] = [
     icon: Wrench,
     description:
       'Data repair: duplicates, stranded promotions and work items, log retention, webhook deliveries and re-sends',
+  },
+  {
+    to: 'analytics',
+    label: 'Delivery Metrics',
+    icon: Gauge,
+    description: 'How the delivery report ties incidents to the deploys that caused them',
   },
   {
     to: 'release-notes-template',

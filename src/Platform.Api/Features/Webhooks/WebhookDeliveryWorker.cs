@@ -193,6 +193,12 @@ public class WebhookDeliveryWorker : BackgroundService
                 : null;
 
             var framed = WebhookRequestBuilder.Build(sub, delivery, secret, message);
+            if (framed.Omitted.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Webhook delivery {DeliveryId} to {Url} was trimmed to fit the target's size limit; omitted: {Omitted}",
+                    delivery.Id, sub.Url, string.Join("; ", framed.Omitted));
+            }
 
             using var request = new HttpRequestMessage(HttpMethod.Post, sub.Url);
             // Content type comes from the framing, not from here: every target but the Teams HTML one
@@ -220,6 +226,17 @@ public class WebhookDeliveryWorker : BackgroundService
             {
                 ScheduleRetryOrFail(delivery, $"HTTP {(int)response.StatusCode}");
             }
+        }
+        catch (WebhookUndeliverableException ex)
+        {
+            // Nothing was sent, and nothing a retry could change: it would frame the same payload
+            // the same way. Failing now puts the reason on the row within seconds, where waiting out
+            // the retry schedule would leave it pending for hours.
+            delivery.HttpStatus = null;
+            delivery.Status = "failed";
+            delivery.ErrorMessage = ex.Message;
+            _logger.LogError("Webhook delivery {DeliveryId} to {Url} not sent: {Reason}",
+                delivery.Id, sub.Url, ex.Message);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

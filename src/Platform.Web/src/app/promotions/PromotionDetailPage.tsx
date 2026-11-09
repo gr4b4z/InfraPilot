@@ -13,7 +13,9 @@ import type {
   PromotionApprovalProgress,
   EligibleRequirement,
   WorkItemContext,
+  PromotionFreeze,
 } from '@/lib/api';
+import { FreezeNotice } from './FreezeNotice';
 import { useAuthStore } from '@/stores/authStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
@@ -40,6 +42,7 @@ import {
   MessageSquare,
   Edit2,
   Trash2,
+  Snowflake,
   Undo2,
   Lock,
 } from 'lucide-react';
@@ -49,6 +52,7 @@ import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
 import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { AssignToAllWorkItems } from '@/components/promotions/AssignToAllWorkItems';
+import { ApproveAllWorkItems } from '@/components/promotions/ApproveAllWorkItems';
 import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import {
   MissingRolesBadge,
@@ -56,6 +60,7 @@ import {
   WorkItemsNeedingAttentionBadge,
 } from '@/components/promotions/MissingRoles';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
@@ -70,6 +75,7 @@ import {
 } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { HelpButton } from '@/components/guide/HelpButton';
+import { LastKnownGoodRollback } from '@/app/deployments/LastKnownGoodRollback';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
@@ -157,6 +163,7 @@ export function PromotionDetailPage() {
   const [approvalProgress, setApprovalProgress] = useState<PromotionApprovalProgress | null>(null);
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
+  const [freeze, setFreeze] = useState<Omit<PromotionFreeze, 'heldCandidates'> | null>(null);
   const [canCancelApproval, setCanCancelApproval] = useState(false);
   // The deploy event that put this version live in the target env — set only once the
   // promotion is Deployed, and the link the "Deployed" timestamp points at.
@@ -191,6 +198,7 @@ export function PromotionDetailPage() {
         setApprovalProgress(data.approvalProgress ?? null);
         setEligibleRequirements(data.eligibleRequirements || []);
         setBypass(data.bypass ?? null);
+        setFreeze(data.freeze ?? null);
         setCanCancelApproval(data.canCancelApproval ?? false);
         setDeploymentEventId(data.deploymentEventId ?? null);
         setFailedDeployments(data.failedDeployments ?? []);
@@ -594,13 +602,16 @@ export function PromotionDetailPage() {
           <WorkItemsCard
             candidate={candidate}
             workItems={bundleWorkItems}
+            requiresApproval={approvalProgress?.requiresApproval ?? true}
             onChanged={fetchData}
           />
 
           {/* Promotion approval — the live gate progress (per step / per requirement), who has
              approved each gate, and an Approve button on every gate the current user can still
              clear, all in one card. Progress and history are visible to everyone; the controls
-             appear only when the current user can act. */}
+             appear only when the current user can act. A Promotion Freeze holding this Pending
+             candidate is announced right above it, before the approver acts. */}
+          {freeze && candidate.status === 'Pending' && <FreezeNotice freeze={freeze} />}
           <div data-guide-anchor="promotion-approval-card">
             <PromotionApprovalCard
               candidate={candidate}
@@ -859,6 +870,13 @@ function FailedDeploymentsBanner({
             <li style={{ color: 'var(--text-muted)' }}>and {attempts.length - 5} earlier</li>
           )}
         </ul>
+        {/* While the promotion is open the failure is usually still live in the environment, and
+            the warning is where the reader decides what to do about it. */}
+        {open && (
+          <div className="mt-3">
+            <LastKnownGoodRollback eventId={latest.id} hideUnavailable />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -974,6 +992,7 @@ function PeopleCard({
   >([]);
   const [userSearchOpen, setUserSearchOpen] = useState(false);
   const [userSearchLoading, setUserSearchLoading] = useState(false);
+  const [directoryUnavailable, setDirectoryUnavailable] = useState(false);
 
   // Debounced directory search (Entra / local users via IIdentityService).
   useEffect(() => {
@@ -988,8 +1007,10 @@ function PeopleCard({
       try {
         const res = await api.searchPromotionUsers(q);
         setUserResults(res.users || []);
+        setDirectoryUnavailable(res.directoryUnavailable === true);
       } catch {
         setUserResults([]);
+        setDirectoryUnavailable(true);
       } finally {
         setUserSearchLoading(false);
       }
@@ -1192,7 +1213,10 @@ function PeopleCard({
                     Searching...
                   </div>
                 )}
-                {!userSearchLoading && userResults.length === 0 && (
+                {!userSearchLoading && directoryUnavailable && (
+                  <DirectoryUnavailableNotice detail="Fill in the name and email below." />
+                )}
+                {!userSearchLoading && userResults.length === 0 && !directoryUnavailable && (
                   <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
                     No matches — fill in manually below.
                   </div>
@@ -1945,7 +1969,7 @@ function ApprovalProgressBody({
   approveBlockedId: string;
   actionLoading: boolean;
 }) {
-  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate } = progress;
+  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate, frozen, blockedReason } = progress;
   const remaining = Math.max(0, totalRequired - totalApproved);
   const approveBlocked = approveBlockedReason !== null;
 
@@ -2059,6 +2083,16 @@ function ApprovalProgressBody({
 
   return (
     <div>
+      {/* A Promotion Freeze blocks the gate even when every requirement below is satisfied. */}
+      {frozen && (
+        <p
+          className="flex items-center gap-1.5 text-[12px] font-medium mb-2"
+          style={{ color: 'var(--info)' }}
+        >
+          <Snowflake size={13} style={{ flexShrink: 0 }} />
+          Held by freeze{blockedReason ? `: ${blockedReason}` : ''}
+        </p>
+      )}
       <div className="flex items-center justify-end mb-3">
         <span
           className="inline-flex items-center gap-1.5 text-[12px] font-medium"
@@ -2331,10 +2365,13 @@ function ApprovalProgressBody({
 function WorkItemsCard({
   candidate,
   workItems,
+  requiresApproval,
   onChanged,
 }: {
   candidate: PromotionCandidate;
   workItems: PromotionSourceEventReference[];
+  /** False for an auto-approve promotion, where there is nothing to sign off. */
+  requiresApproval: boolean;
   onChanged: () => void;
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
@@ -2389,6 +2426,14 @@ function WorkItemsCard({
         </h2>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
+          {/* Every waiting work item signed off at once — the per-item Approve, for the bundle. */}
+          <ApproveAllWorkItems
+            candidate={candidate}
+            workItems={workItems}
+            readOnly={readOnly}
+            requiresApproval={requiresApproval}
+            onChanged={onChanged}
+          />
           {/* One person into a role on every work item at once — the per-row Assign, for the bundle. */}
           <AssignToAllWorkItems
             candidate={candidate}

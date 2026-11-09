@@ -458,6 +458,7 @@ public static class PromotionAuditCategories
         ["promotion.ticket.approved"] = WorkItem,
         ["promotion.ticket.issue-raised"] = WorkItem,
         ["promotion.ticket.blocked"] = WorkItem,
+        ["promotion.ticket.bypassed"] = WorkItem,
         ["work-item.decisions.reset"] = WorkItem,
         ["promotion.comment.added"] = Comment,
         ["promotion.participant.upserted"] = People,

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
-import { api } from '@/lib/api';
+import { api, type AnalyticsSettings } from '@/lib/api';
 import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
 import { resolveEnvKey } from '@/lib/envAlias';
 import { canonicaliseRoleKey, resolveRoleKey } from '@/lib/roleKey';
@@ -63,6 +63,8 @@ interface SettingsState {
    * then to a humanised form of the key. */
   roles: RoleConfig[];
   activityTemplate: ActivityTemplateLine[];
+  /** How the delivery report ties incidents to deploys — see AnalyticsSettings. */
+  analytics: AnalyticsSettings;
   /** True once the server config has been loaded at least once this session. */
   loaded: boolean;
 
@@ -71,6 +73,7 @@ interface SettingsState {
   setEnvironments: (envs: EnvironmentConfig[]) => Promise<void>;
   setRoles: (roles: RoleConfig[]) => Promise<void>;
   setActivityTemplate: (lines: ActivityTemplateLine[]) => Promise<void>;
+  setAnalytics: (analytics: AnalyticsSettings) => Promise<void>;
   getDisplayName: (key: string) => string;
   /** Resolved `#rrggbb` for an environment — the configured colour, or a stable one derived
    *  from the key so every environment is distinguishable even before an admin picks. */
@@ -111,6 +114,8 @@ function humaniseRoleKey(key: string): string {
     .join(' ');
 }
 
+export const DEFAULT_ANALYTICS: AnalyticsSettings = { attributionWindowDays: 7, rolloutToleranceMinutes: 15 };
+
 export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
   { template: '{ref:work-item:key} \u2014 {label:workItemTitle}', style: 'secondary' },
   { template: 'PR: {participant:PR Author}  \u00b7  QA: {participant:QA}  \u00b7  {time}', style: 'muted' },
@@ -125,6 +130,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   activeEnvironments: withoutRetired(DEFAULT_ENVIRONMENTS),
   roles: DEFAULT_ROLES,
   activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
+  analytics: DEFAULT_ANALYTICS,
   loaded: false,
 
   load: async () => {
@@ -135,6 +141,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         activeEnvironments: withoutRetired(s.environments),
         roles: s.roles,
         activityTemplate: s.activityTemplate as ActivityTemplateLine[],
+        analytics: s.analytics ?? DEFAULT_ANALYTICS,
         loaded: true,
       });
     } catch {
@@ -158,6 +165,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setActivityTemplate: async (lines) => {
     await api.saveAppSettings({ ...currentPayload(get), activityTemplate: lines });
     set({ activityTemplate: lines });
+  },
+
+  setAnalytics: async (analytics) => {
+    await api.saveAppSettings({ ...currentPayload(get), analytics });
+    set({ analytics });
   },
 
   // Alias-resolved, here and in the two lookups below: a deploy stored as "productions" before an
@@ -221,8 +233,8 @@ function withoutRetired(envs: EnvironmentConfig[]): EnvironmentConfig[] {
 }
 
 function currentPayload(get: () => SettingsState) {
-  const { environments, roles, activityTemplate } = get();
-  return { environments, roles, activityTemplate };
+  const { environments, roles, activityTemplate, analytics } = get();
+  return { environments, roles, activityTemplate, analytics };
 }
 
 /**

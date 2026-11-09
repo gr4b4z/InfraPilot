@@ -12,8 +12,9 @@ namespace Platform.Integration.Tests;
 /// <list type="bullet">
 ///   <item>The secret is returned once; lists show only its prefix, and only the owner's tokens.</item>
 ///   <item>It works wherever an <c>X-Api-Key</c> does for reads, as its owner.</item>
-///   <item>It cannot do what only a pipeline or an administrator does, cannot make approval
-///         decisions, and cannot manage tokens.</item>
+///   <item>A standard one (the default) cannot do what only a pipeline or an administrator does,
+///         cannot make approval decisions, and cannot manage tokens. QA and Admin tokens are in
+///         <see cref="PersonalAccessTokenAccessTests"/>.</item>
 ///   <item>Revoked and expired tokens stop working.</item>
 /// </list>
 /// </summary>
@@ -60,7 +61,7 @@ public class PersonalAccessTokenTests : IClassFixture<TestFactory>
     }
 
     [Fact]
-    public async Task Token_reads_as_its_owner_but_never_carries_admin()
+    public async Task Standard_token_reads_as_its_owner_but_never_carries_admin()
     {
         using var admin = _factory.CreateAdminClient();
         var (_, secret) = await CreateTokenAsync(admin);
@@ -73,7 +74,7 @@ public class PersonalAccessTokenTests : IClassFixture<TestFactory>
     }
 
     [Fact]
-    public async Task Token_cannot_do_pipeline_work_make_decisions_or_manage_tokens()
+    public async Task Standard_token_cannot_do_pipeline_work_make_decisions_or_manage_tokens()
     {
         using var qa = _factory.CreateAuthenticatedClient("qa@localhost", "qa123");
         var (_, secret) = await CreateTokenAsync(qa);
@@ -140,9 +141,22 @@ public class PersonalAccessTokenTests : IClassFixture<TestFactory>
         Assert.NotEqual(JsonValueKind.Null, row.GetProperty("lastUsedAt").ValueKind);
     }
 
+    [Fact]
+    public async Task A_token_can_live_up_to_a_year()
+    {
+        using var qa = _factory.CreateAuthenticatedClient("qa@localhost", "qa123");
+        var response = await qa.PostAsJsonAsync("/api/me/tokens", new { name = "long-running agent", expiresInDays = 365 });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var lifetime = body.GetProperty("expiresAt").GetDateTimeOffset() - body.GetProperty("createdAt").GetDateTimeOffset();
+        Assert.Equal(TimeSpan.FromDays(365), lifetime);
+    }
+
     [Theory]
     [InlineData("", 30)]
-    [InlineData("ok name", 365)]
+    [InlineData("ok name", 366)]
+    [InlineData("ok name", 0)]
     public async Task Create_rejects_a_missing_name_or_an_unoffered_lifetime(string name, int days)
     {
         using var qa = _factory.CreateAuthenticatedClient("qa@localhost", "qa123");

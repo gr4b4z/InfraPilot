@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Catalog.Models;
+using Platform.Api.Features.Executors;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Catalog;
@@ -70,6 +71,16 @@ public class CatalogService
 
         if (def.Executor is null || string.IsNullOrWhiteSpace(def.Executor.Type))
             errors.Add("'executor' with a 'type' is required");
+
+        var inputIds = (def.Inputs ?? []).Select(i => i.Id).ToHashSet(StringComparer.Ordinal);
+        errors.AddRange(ApprovalRules.Validate(def.Approval, inputIds));
+
+        if (def.Executor?.ParametersMap is { } map)
+        {
+            foreach (var unknown in ExecutorTemplate.UnknownRequestVariables(map.Values))
+                errors.Add($"executor.parameters_map: '{{{{{unknown}}}}}' isn't a request variable; use " +
+                    string.Join(", ", ExecutorTemplate.RequestVariables.Select(v => $"{{{{request.{v}}}}}")));
+        }
 
         return new CatalogValidationResult(errors.Count == 0, errors);
     }

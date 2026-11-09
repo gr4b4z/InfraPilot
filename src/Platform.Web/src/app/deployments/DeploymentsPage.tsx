@@ -12,16 +12,21 @@ import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { useSearchScope, type SearchHit } from '@/stores/searchScopeStore';
 import { useUserPrefsStore } from '@/stores/userPrefsStore';
 import { api } from '@/lib/api';
+import type { PromotionFreezeWindow } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import type { ProductSummary, ServiceSearchResult } from '@/lib/types';
 import { HelpButton } from '@/components/guide/HelpButton';
+import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
+import { FrozenEnvMark } from './FreezeCues';
 
 /** Below this the box is treated as empty — one letter matches half the fleet. */
 const MIN_SEARCH_LENGTH = 2;
 
+const NO_FREEZES = new Map<string, PromotionFreezeWindow>();
+
 export function DeploymentsPage() {
   const { products, loading, fetchProducts } = useDeploymentStore();
-  const { getOrderedEnvironments } = useSettingsStore();
+  const { getOrderedEnvironments, getDisplayName } = useSettingsStore();
   const navigate = useNavigate();
 
   // Which products are shown is a per-user preference rather than URL state, so there is nothing
@@ -45,6 +50,35 @@ export function DeploymentsPage() {
     // and the product filter panel stay where the reader left them.
     fetchProducts({ silent: deploymentsTick > 0 });
   }, [fetchProducts, deploymentsTick]);
+
+  // Active Promotion Freezes, keyed `product::env`, for the snowflake on each frozen cell. Freeze
+  // and lift broadcast as promotion events.
+  const promotionsEnabled = useFeatureFlag(FeatureFlag.Promotions);
+  const promotionsTick = useEntityRefresh(['promotion']);
+  const [freezes, setFreezes] = useState<Map<string, PromotionFreezeWindow>>(new Map());
+  useEffect(() => {
+    if (!promotionsEnabled) return;
+    let cancelled = false;
+    api
+      .listPromotionFreezes()
+      .then((r) => {
+        if (cancelled) return;
+        setFreezes(
+          new Map(
+            r.freezes.map((f) => [
+              `${f.product}::${f.targetEnv}`,
+              { ...f, from: f.frozenAt, until: null, liftedBy: null },
+            ]),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setFreezes(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [promotionsEnabled, promotionsTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -356,6 +390,8 @@ export function DeploymentsPage() {
                     index={index}
                     product={product}
                     allEnvs={allEnvs}
+                    freezes={promotionsEnabled ? freezes : NO_FREEZES}
+                    getDisplayName={getDisplayName}
                     onOpen={() => navigate(`/deployments/${product.product}`)}
                   />
               ))}
@@ -476,17 +512,26 @@ function ProductRow({
   index,
   product,
   allEnvs,
+  freezes,
+  getDisplayName,
   onOpen,
 }: {
   index: number;
   product: ProductSummary;
   allEnvs: string[];
+  /** Active Promotion Freezes keyed `product::env`. */
+  freezes: Map<string, PromotionFreezeWindow>;
+  getDisplayName: (env: string) => string;
   onOpen: () => void;
 }) {
+  const frozenEnvs = allEnvs.filter((env) => freezes.has(`${product.product}::${env}`));
   // `role: null` keeps the implicit row semantics — see useKeyboardListRow.
   const rowProps = useKeyboardListRow(index, onOpen, {
     role: null,
-    label: `${product.product} — open deployments`,
+    label:
+      `${product.product}` +
+      `${frozenEnvs.length > 0 ? `, promotions frozen to ${frozenEnvs.map(getDisplayName).join(', ')}` : ''}` +
+      ` — open deployments`,
   });
 
   return (
@@ -500,10 +545,12 @@ function ProductRow({
       </td>
       {allEnvs.map((env) => {
         const summary = product.environments[env];
+        const freeze = freezes.get(`${product.product}::${env}`);
+        const frozenMark = freeze && <FrozenEnvMark freeze={freeze} envLabel={getDisplayName(env)} />;
         if (!summary) {
           return (
             <td key={env} className="text-center px-4 py-3" style={{ color: 'var(--text-muted)' }}>
-              —
+              <span className="inline-flex items-center gap-1">— {frozenMark}</span>
             </td>
           );
         }
@@ -514,6 +561,7 @@ function ProductRow({
               <span className="inline-flex items-center gap-1" style={{ color: allDeployed ? 'var(--success)' : 'var(--warning)' }}>
                 {allDeployed ? <CheckCircle size={13} /> : <AlertTriangle size={13} />}
                 {summary.deployedServices}/{summary.totalServices}
+                {frozenMark}
               </span>
               {summary.lastDeployedAt && (
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>

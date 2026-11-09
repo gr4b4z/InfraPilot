@@ -7,7 +7,7 @@ summary: >-
   promotion sitting at Approved means one of those links did not hold — and each link leaves
   different evidence.
 source: mpt-release/docs/release-pipelines.md + InfraPilot promotion admin maintenance tools
-as_of: 2026-08-28
+as_of: 2026-11-02
 causes:
   - id: still-in-grace
     title: It has not been waiting long enough to worry about
@@ -88,6 +88,25 @@ causes:
       while without anything being wrong.
     confirm: The next retry time is recorded on the delivery.
     fix: Wait for the retry. Re-announcing now would duplicate the dispatch rather than speed it up.
+
+  - id: dispatch-run-failed
+    title: The deploy workflow failed before committing anything
+    matches_when:
+      - delivery_succeeded
+      - dispatch_run_failed
+      - no_deploy_event_since_approval
+    explanation: >-
+      The webhook arrived and started the mpt-release workflow (Deploy Registered Build or Promote
+      Single Build Manifest), but the run failed before it committed `build-metadata.yaml` — typically
+      the Azure OIDC login, pulling the build manifest, a payload with no build-manifest reference, or
+      a push conflict. With no commit there is no reconcile and no deploy event, so the promotion stays
+      Approved. The workflow left a comment on the promotion naming the failed step and linking the run.
+    confirm: >-
+      Open the run linked in the evidence and read the failed step. If a later attempt of that run
+      succeeded, this note is history and the other causes apply instead.
+    fix: >-
+      Fix what the failed step reports, then re-run the failed jobs on GitHub. The re-run deploys this
+      same promotion; nothing needs re-approving or re-announcing.
 
   - id: no-diff-landing
     title: The commit landed but produced no drift, so nothing deployed

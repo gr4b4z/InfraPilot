@@ -6,7 +6,7 @@ namespace Platform.Api.Infrastructure.Auth;
 /// <summary>
 /// Whether a personal access token's owner still has an account that may sign in. A token carries
 /// a snapshot of its owner taken when it was created, so without this it would keep working after
-/// the owner is disabled or deleted in Entra, until it expires up to 90 days later.
+/// the owner is disabled or deleted in Entra, until it expires up to a year later.
 ///
 /// <para>Checked when a token is used, through <see cref="IIdentityService.GetAccountStatus"/>
 /// (Graph in Msal mode, the local users table in Local mode), and cached per owner for
@@ -21,10 +21,10 @@ namespace Platform.Api.Infrastructure.Auth;
 /// the token stays bounded by its expiry and by revocation.</para>
 ///
 /// <para>The owner's role assignments are not re-checked. Reading a user's app-role assignments
-/// needs Graph's <c>Directory.Read.All</c>, which the portal's Graph app does not hold. A token
-/// cannot carry Admin or make decisions anyway, so the roles it holds change little. Offboarding
+/// needs Graph's <c>Directory.Read.All</c>, which the portal's Graph app does not hold. Offboarding
 /// disables the account, which this catches. An administrator revokes the tokens of someone whose
-/// roles were taken away (Settings → Agent Tokens).</para>
+/// roles were taken away (Settings → Agent Tokens) — QA and Admin tokens above all, which keep
+/// making decisions with the role until they expire.</para>
 /// </summary>
 public class PersonalTokenOwnerCheck
 {
