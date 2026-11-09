@@ -363,7 +363,10 @@ export function CreateRollbackPanel({
                 )}
               </Field>
               {manualService && (
-                <Field label="Roll back to version">
+                <Field
+                  label="Roll back to version"
+                  hint="Versions whose image was removed from the container registry are not listed"
+                >
                   <select
                     value={manualVersion}
                     onChange={(e) => setManualVersion(e.target.value)}
