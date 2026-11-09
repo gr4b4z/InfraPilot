@@ -11,8 +11,13 @@ import { ProductDeploymentsPage } from '@/app/deployments/ProductDeploymentsPage
 import { DeploymentHistoryPage } from '@/app/deployments/DeploymentHistoryPage';
 import { ServiceDetailPage } from '@/app/deployments/ServiceDetailPage';
 import { DeploymentDetailPage } from '@/app/deployments/DeploymentDetailPage';
+import { MigrationsPage } from '@/app/migrations/MigrationsPage';
+import { MigrationDetailPage } from '@/app/migrations/MigrationDetailPage';
 import { ArtifactsPage } from '@/app/artifacts/ArtifactsPage';
 import { AnalyticsPage } from '@/app/analytics/AnalyticsPage';
+import { DeliveryMetricsPage } from '@/app/delivery/DeliveryMetricsPage';
+import { IncidentsPage } from '@/app/incidents/IncidentsPage';
+import { AnalyticsSettings } from '@/app/settings/AnalyticsSettings';
 import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
@@ -28,6 +33,7 @@ import { ActivityTemplateSettings } from '@/app/settings/ActivityTemplateSetting
 import { FeatureFlagSettings } from '@/app/settings/FeatureFlagSettings';
 import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
+import { FreezeSettings } from '@/app/settings/FreezeSettings';
 import { RollbackSettings } from '@/app/settings/RollbackSettings';
 import { MaintenanceSettings } from '@/app/settings/MaintenanceSettings';
 import { ServiceProductsSettings } from '@/app/settings/ServiceProductsSettings';
@@ -39,6 +45,7 @@ import { ReleaseNoteDraftPage } from '@/app/release-notes/ReleaseNoteDraftPage';
 import { ReleaseNoteDetailPage } from '@/app/release-notes/ReleaseNoteDetailPage';
 import { WebhookListPage } from '@/app/webhooks/WebhookListPage';
 import { WebhookDetailPage } from '@/app/webhooks/WebhookDetailPage';
+import { WhatsNewPage } from '@/app/whats-new/WhatsNewPage';
 import { AdminRoute } from '@/components/auth/AdminRoute';
 import { FeatureRoute } from '@/components/auth/FeatureRoute';
 import { QaRoute } from '@/components/auth/QaRoute';
@@ -95,12 +102,15 @@ function App() {
               the event, not of its identity — and ranked above /deployments/:product by the router's
               static-segment-wins rule, so "events" can't be read as a product name. */}
           <Route path="/deployments/events/:id" element={<DeploymentDetailPage />} />
+          <Route path="/migrations" element={<MigrationsPage />} />
+          <Route path="/migrations/:id" element={<MigrationDetailPage />} />
           <Route path="/deployments/:product" element={<ProductDeploymentsPage />} />
           {/* The service's home page — environments, recent versions, promotions. The flat
               per-deploy list keeps living under /history as a sub-page of it. */}
           <Route path="/deployments/:product/:service" element={<ServiceDetailPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
           <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
+          <Route path="/analytics/delivery" element={<FeatureRoute flag={FeatureFlag.Analytics}><DeliveryMetricsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />
           {/* "audit" ahead of the dynamic :id route so it can't be read as a promotion id. */}
           <Route path="/promotions/audit" element={<AdminRoute><FeatureRoute flag={FeatureFlag.Promotions}><PromotionsAuditPage /></FeatureRoute></AdminRoute>} />
@@ -111,6 +121,8 @@ function App() {
               snippets. Every signed-in user manages their own, so it is neither admin- nor
               feature-gated; it is reached from the user menu. */}
           <Route path="/me/agent-access" element={<AgentAccessPage />} />
+          {/* The portal's own changelog. For everyone — each entry says which role it is for. */}
+          <Route path="/whats-new" element={<WhatsNewPage />} />
           {/* Work-item detail. The sign-off grain is (key, product, service, targetEnv): the service
               is a path segment (it names which service's change this is), product and targetEnv ride
               along as query params. The single-segment form is what links looked like before the
@@ -123,6 +135,7 @@ function App() {
           {/* "new" route must come before the dynamic :id route so it isn't captured as an id. */}
           <Route path="/release-notes/:product/new" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDraftPage /></FeatureRoute>} />
           <Route path="/release-notes/:product/:id" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNoteDetailPage /></FeatureRoute>} />
+          <Route path="/incidents" element={<AdminRoute><IncidentsPage /></AdminRoute>} />
           <Route path="/webhooks" element={<AdminRoute><WebhookListPage /></AdminRoute>} />
           <Route path="/webhooks/:id" element={<AdminRoute><WebhookDetailPage /></AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>}>
@@ -133,6 +146,7 @@ function App() {
             <Route path="feature-flags" element={<FeatureFlagSettings />} />
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
+            <Route path="freeze" element={<FreezeSettings />} />
             <Route path="rollbacks" element={<RollbackSettings />} />
             <Route path="service-products" element={<ServiceProductsSettings />} />
             <Route path="agent-tokens" element={<AgentTokensSettings />} />
@@ -140,6 +154,7 @@ function App() {
             {/* The old name, kept as a redirect — this page is where bookmarked one-off fixes live,
                 which is exactly the kind of page that gets bookmarked. */}
             <Route path="deployment-maintenance" element={<Navigate to="../maintenance" replace />} />
+            <Route path="analytics" element={<AnalyticsSettings />} />
             <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>
         </Route>

@@ -5,10 +5,12 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Platform.Api.Features.Settings;
+using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Integration.Tests;
@@ -324,12 +326,53 @@ public class WorkItemRoleAliasAndBulkAssignTests
             var open = await SearchUsersAsync("localhost", "reviewer");
             Assert.Contains("admin@localhost", Emails(open));
             Assert.Empty(open.GetProperty("restrictedTo").EnumerateArray());
+            Assert.False(open.TryGetProperty("directoryUnavailable", out _));
             Assert.Contains("admin@localhost", Emails(await SearchUsersAsync("localhost", role: null)));
         }
         finally
         {
             await ResetSettingsAsync();
         }
+    }
+
+    // An expired Graph client secret (prod, 2026-10-19) made every search come back empty, which the
+    // picker rendered as "No directory matches" — indistinguishable from a typo. The flag is what lets
+    // it say the directory is down instead.
+    [Fact]
+    public async Task UserAndGroupSearch_WhenTheDirectoryFails_SayItIsUnavailable()
+    {
+        using var factory = _factory.WithWebHostBuilder(b =>
+            b.ConfigureTestServices(s => s.AddScoped<IIdentityService, UnreachableDirectory>()));
+        using var client = factory.CreateClient();
+        var login = await client.PostAsJsonAsync(
+            "/api/auth/login", new { email = "admin@localhost", password = "admin123" });
+        login.EnsureSuccessStatusCode();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", (await Deserialize(login)).GetProperty("token").GetString());
+
+        var users = await client.GetAsync("/api/promotions/users/search?q=mateusz");
+        Assert.Equal(HttpStatusCode.OK, users.StatusCode);
+        var usersBody = await Deserialize(users);
+        Assert.Empty(usersBody.GetProperty("users").EnumerateArray());
+        Assert.True(usersBody.GetProperty("directoryUnavailable").GetBoolean());
+
+        var groups = await client.GetAsync("/api/promotions/groups/search?q=org_cto");
+        Assert.Equal(HttpStatusCode.OK, groups.StatusCode);
+        var groupsBody = await Deserialize(groups);
+        Assert.Empty(groupsBody.GetProperty("groups").EnumerateArray());
+        Assert.True(groupsBody.GetProperty("directoryUnavailable").GetBoolean());
+    }
+
+    private sealed class UnreachableDirectory : WorkItemApprovalTests.EmptyIdentityService, IIdentityService
+    {
+        private static Exception Expired() =>
+            new InvalidOperationException("AADSTS7000222: The provided client secret keys are expired.");
+
+        Task<IReadOnlyList<UserInfo>> IIdentityService.SearchUsers(string query, CancellationToken ct)
+            => throw Expired();
+
+        Task<IReadOnlyList<GroupInfo>> IIdentityService.SearchGroups(string query, CancellationToken ct)
+            => throw Expired();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

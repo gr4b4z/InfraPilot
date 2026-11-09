@@ -38,4 +38,15 @@ public enum WorkItemDecision
     /// decision can be changed.
     /// </summary>
     Blocked,
+
+    /// <summary>
+    /// Nobody reviewed the item: an administrator bypassed the approval gate of a promotion that was
+    /// waiting for it, and the item went out with that promotion. Recorded only by
+    /// <see cref="PromotionService.BypassAsync"/>, in the administrator's name — never through the
+    /// sign-off endpoints. It is a record of what happened, not a sign-off: it clears no gate (another
+    /// promotion carrying the item still waits for a real decision), a person's decision on the item
+    /// replaces it, cancelling the bypassed promotion's approval removes it, and a new version
+    /// carrying the item resets it like a hold.
+    /// </summary>
+    Bypassed,
 }

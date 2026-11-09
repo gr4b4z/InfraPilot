@@ -12,7 +12,7 @@ namespace Platform.Integration.Tests;
 /// <summary>
 /// Pins what the work-item queue reads render — <c>GET /api/work-items/me/pending</c> in both its
 /// pending and its <c>status=decided</c> views — over one deterministic data set that exercises every
-/// branch at once: live and dead (orphan) carriers, a ticket shared by two promotions of one service
+/// branch at once: live and dead carriers, a ticket shared by two promotions of one service
 /// and carried by a second service, auto-approve edges, a hidden product, a retired service, decisions
 /// by the caller and by others, reference- and promotion-level participants, policy-required roles and
 /// deployed environments.
@@ -28,7 +28,7 @@ public class WorkItemQueueReadTests
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     // Pending carriers.
-    private static readonly Guid ApiLatest = Id("a1");     // acme/api v3, staging→prod — owns A-1 and A-2
+    private static readonly Guid ApiLatest = Id("a1");     // acme/api v3, staging→prod — owns A-1, A-2 and A-6
     private static readonly Guid ApiUat = Id("a2");        // acme/api v3, uat→prod — a second edge carrying A-1
     private static readonly Guid Web = Id("a3");           // acme/web w7 — A-1 on another service
     private static readonly Guid BatchAuto = Id("a4");     // auto-approve — no sign-off work
@@ -36,8 +36,8 @@ public class WorkItemQueueReadTests
     private static readonly Guid Retired = Id("a6");       // a retired service
     private static readonly Guid MobileDecided = Id("a7"); // every ticket already decided by the caller
 
-    // Dead carriers (the orphan scan).
-    private static readonly Guid ApiSuperseded = Id("b1"); // acme/api v2 — A-1 (claimed), A-3 (orphan), A-4 (approved)
+    // Dead carriers — no row on the pending views, whatever they carry; the decided view still reads them.
+    private static readonly Guid ApiSuperseded = Id("b1"); // acme/api v2 — A-1 (claimed), A-3 (undecided), A-4 (approved)
     private static readonly Guid WorkerRejected = Id("b2"); // acme/worker k1 — C-1 (issue by other), C-2 (mine)
     private static readonly Guid ApiOldest = Id("b3");     // acme/api v1 — an older copy of A-3
     private static readonly Guid BatchAutoDead = Id("b4"); // auto-approve, superseded
@@ -45,7 +45,7 @@ public class WorkItemQueueReadTests
     private static readonly Guid ApiDeployed = Id("b6");   // shipped — neither pending nor orphan
 
     [Fact]
-    public async Task Pending_RendersLiveRowsThenOrphans_WithEveryField()
+    public async Task Pending_RendersLiveRowsOnly_WithEveryField()
     {
         await using var factory = await SeededFactoryAsync();
 
@@ -53,15 +53,15 @@ public class WorkItemQueueReadTests
         var svc = scope.ServiceProvider.GetRequiredService<WorkItemApprovalService>();
         var queue = await svc.GetPendingForCurrentUserAsync(default);
 
-        // Live candidates first (newest first), then the dead ones; a ticket renders once per service,
-        // from the newest carrier that still needs it.
+        // Live candidates only, newest first; a ticket renders once per service, from the newest
+        // carrier that still needs it. Items only dead promotions carry — A-3 (superseded, nobody
+        // decided it) and C-1 (rejected) — have no active promotion, so they are not listed.
         Assert.Equal(new[]
         {
             "A-1/api@v3 Pending x2",
             "A-2/api@v3 Pending x1",
+            "A-6/api@v3 Pending x1",
             "A-1/web@w7 Pending x1",
-            "A-3/api@v2 Superseded x1",
-            "C-1/worker@k1 Rejected x1",
         }, queue.Tickets.Select(Sig));
 
         var a1 = queue.Tickets[0];
@@ -97,7 +97,16 @@ public class WorkItemQueueReadTests
         Assert.Empty(a2.MissingRoles!);
         Assert.Equal("Blocked 1 (a0 i0 b1 p0) api:Blocked:A two", Overall(a2));
 
-        var web = queue.Tickets[2];
+        var a6 = queue.Tickets[2];
+        Assert.Equal(ApiLatest, a6.CandidateId);
+        Assert.Equal("A six", a6.Title);
+        // Nobody on the ticket itself: the promotion-level people stand in, and nobody is qa-owner.
+        Assert.Equal("triggered-by:bob@example.com,assignee:dana@example.com", People(a6));
+        Assert.Equal(new[] { "qa-owner" }, a6.MissingRoles);
+        Assert.Equal(Envs(a1), Envs(a6));
+        Assert.Equal("Pending 1 (a0 i0 b0 p1) api:Pending:A six", Overall(a6));
+
+        var web = queue.Tickets[3];
         Assert.Equal(Web, web.CandidateId);
         Assert.Equal("A one (web)", web.Title);
         Assert.Equal("", People(web));
@@ -106,24 +115,10 @@ public class WorkItemQueueReadTests
         Assert.Equal(new[] { "staging@w7" }, Envs(web));
         Assert.Equal(Overall(a1), Overall(web));
 
-        var a3 = queue.Tickets[3];
-        Assert.Equal(ApiSuperseded, a3.CandidateId);
-        Assert.Equal("A three", a3.Title);
-        Assert.Equal("assignee:dana@example.com", People(a3));
-        Assert.Equal(new[] { "qa-owner" }, a3.MissingRoles);
-        Assert.Equal(new[] { "qa@v2" }, Envs(a3));
-        Assert.Equal("Pending 1 (a0 i0 b0 p1) api:Pending:A three", Overall(a3));
-
-        var c1 = queue.Tickets[4];
-        Assert.Equal(WorkerRejected, c1.CandidateId);
-        Assert.Equal("qa-owner:alice@example.com", People(c1));
-        Assert.Empty(c1.MissingRoles!);
-        Assert.Equal(new[] { "staging@k1" }, Envs(c1));
-        Assert.Equal("Issue 1 (a0 i1 b0 p0) worker:Issue:C one", Overall(c1));
-
         // Only holders of a policy-required role, counted once per rendered row. Eve is qa-owner on
-        // the uat edge's copy of A-1, which the newer promotion owns — so she is not offered.
-        Assert.Equal(new[] { "alice@example.com|Alice|qa-owner|2" }, queue.Assignees.Select(Sig));
+        // the uat edge's copy of A-1, which the newer promotion owns — so she is not offered, and
+        // Alice's qa-owner on the rejected worker promotion's C-1 is not a listed row either.
+        Assert.Equal(new[] { "alice@example.com|Alice|qa-owner|1" }, queue.Assignees.Select(Sig));
     }
 
     [Fact]
@@ -138,18 +133,19 @@ public class WorkItemQueueReadTests
         {
             var queue = await svc.GetPendingForCurrentUserAsync(default, assignee, role);
             // The rollup is computed before narrowing, so every narrowing reports the same one.
-            Assert.Equal(new[] { "alice@example.com|Alice|qa-owner|2" }, queue.Assignees.Select(Sig));
+            Assert.Equal(new[] { "alice@example.com|Alice|qa-owner|1" }, queue.Assignees.Select(Sig));
             return queue.Tickets.Select(t => $"{t.WorkItemKey}/{t.Service}").ToArray();
         }
 
-        Assert.Equal(new[] { "A-1/api", "C-1/worker" }, await Keys("ALICE@example.com"));
-        Assert.Equal(new[] { "A-1/api", "A-2/api", "A-3/api" }, await Keys("dana@example.com"));
+        // No narrowing reaches the dead promotions' items (A-3, C-1).
+        Assert.Equal(new[] { "A-1/api" }, await Keys("ALICE@example.com"));
+        Assert.Equal(new[] { "A-1/api", "A-2/api", "A-6/api" }, await Keys("dana@example.com"));
         // triggered-by records the pipeline run, not an assignment.
         Assert.Empty(await Keys("bob@example.com"));
         Assert.Equal(new[] { "A-1/web" }, await Keys("unassigned"));
-        Assert.Equal(new[] { "A-1/api", "C-1/worker" }, await Keys(null, WorkItemRoleRequirementFilter.Assigned));
+        Assert.Equal(new[] { "A-1/api" }, await Keys(null, WorkItemRoleRequirementFilter.Assigned));
         Assert.Empty(await Keys("dana@example.com", WorkItemRoleRequirementFilter.Assigned));
-        Assert.Equal(new[] { "A-3/api" }, await Keys(null, WorkItemRoleRequirementFilter.Missing));
+        Assert.Equal(new[] { "A-6/api" }, await Keys(null, WorkItemRoleRequirementFilter.Missing));
     }
 
     [Fact]
@@ -304,12 +300,14 @@ public class WorkItemQueueReadTests
                 {
                     WorkItemRef("A-1", body, alice),
                     WorkItemRef("A-2", body, new ParticipantDto("reporter", "Rita", "rita@example.com")),
+                    WorkItemRef("A-6", body),
                     new ReferenceDto("commit", Key: "abc123", Title: "fix login", Content: body,
                         Participants: new[] { new ParticipantDto("author", "Carl", "carl@example.com") }),
                 },
                 participants: new[] { bob, dana }),
             ("A-1", "A one", "fix login", "High", "Bug"),
-            ("A-2", "A two", null, null, null));
+            ("A-2", "A two", null, null, null),
+            ("A-6", "A six", null, null, null));
         Add(Candidate(ApiUat, PromotionStatus.Pending, "api", "v3", TimeSpan.FromHours(2), gated,
                 new[] { WorkItemRef("A-1", body, new ParticipantDto("qa-owner", "Eve", "eve@example.com")) },
                 sourceEnv: "uat"),

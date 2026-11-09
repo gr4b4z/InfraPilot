@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Approvals.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Infrastructure.Auth;
@@ -20,6 +21,7 @@ public class ApprovalService
     private readonly IPlatformEventPublisher _eventPublisher;
     private readonly INotificationService _notificationService;
     private readonly IWebhookDispatcher _webhookDispatcher;
+    private readonly PromotionApprovalAuthorizer _authorizer;
 
     public ApprovalService(
         PlatformDbContext db,
@@ -28,7 +30,8 @@ public class ApprovalService
         ICurrentUser currentUser,
         IPlatformEventPublisher eventPublisher,
         INotificationService notificationService,
-        IWebhookDispatcher webhookDispatcher)
+        IWebhookDispatcher webhookDispatcher,
+        PromotionApprovalAuthorizer authorizer)
     {
         _db = db;
         _stateMachine = stateMachine;
@@ -37,6 +40,52 @@ public class ApprovalService
         _eventPublisher = eventPublisher;
         _notificationService = notificationService;
         _webhookDispatcher = webhookDispatcher;
+        _authorizer = authorizer;
+    }
+
+    /// <summary>
+    /// Whether the current user may decide on <paramref name="approval"/>: not the person who raised
+    /// the request, and, when the request has an approver group, a member of it (admins count as
+    /// members of every group, as for promotions). The group comes from the approval outcome stored
+    /// on submit; requests submitted before that existed fall back to the item's top-level group.
+    /// Needs <c>ServiceRequest</c> loaded; loads its <c>CatalogItem</c> for those older requests.
+    /// </summary>
+    public async Task<DecisionCheck> CheckCanDecide(ApprovalRequest approval, CancellationToken ct = default)
+    {
+        if (approval.Status != "Pending")
+            return new DecisionCheck(false, "This approval is no longer pending.");
+
+        if (approval.Decisions.Any(d => d.ApproverId == _currentUser.Id))
+            return new DecisionCheck(false, "You have already made a decision on this approval.");
+
+        var request = approval.ServiceRequest;
+        if (request is null)
+            return new DecisionCheck(false, "The request for this approval can't be found.");
+
+        if (IsRequester(request))
+            return new DecisionCheck(false, "You raised this request, so someone else has to decide on it.");
+
+        var outcome = request.ApprovalOutcome;
+        if (outcome is null && request.CatalogItem is null)
+            await _db.Entry(request).Reference(r => r.CatalogItem).LoadAsync(ct);
+        var group = outcome is not null
+            ? outcome.ApproverGroup
+            : request.CatalogItem?.Approval?.ApproverGroup;
+        if (!string.IsNullOrEmpty(group) && !await _authorizer.IsInApproverGroupAsync(group, ct))
+            return new DecisionCheck(false, "Only members of this request's approver group can decide on it.");
+
+        return new DecisionCheck(true, null);
+    }
+
+    private bool IsRequester(ServiceRequest request)
+    {
+        // "anonymous" is the no-auth placeholder id, not a person.
+        if (!string.IsNullOrEmpty(request.RequesterId) && request.RequesterId != "anonymous"
+            && string.Equals(request.RequesterId, _currentUser.Id, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return !string.IsNullOrEmpty(request.RequesterEmail) && !string.IsNullOrEmpty(_currentUser.Email)
+            && string.Equals(request.RequesterEmail, _currentUser.Email, StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<ApprovalRequest> CreateApproval(ServiceRequest request, ApprovalStrategy strategy, int? quorumCount, string? approverGroup, int? timeoutHours, string? escalationGroup)
@@ -113,6 +162,10 @@ public class ApprovalService
 
         if (approval.Decisions.Any(d => d.ApproverId == _currentUser.Id))
             throw new InvalidOperationException("You have already made a decision on this approval");
+
+        var check = await CheckCanDecide(approval);
+        if (!check.Allowed)
+            throw new UnauthorizedAccessException(check.Reason);
 
         var approvalDecision = new ApprovalDecision
         {
@@ -212,3 +265,6 @@ public class ApprovalService
         }
     }
 }
+
+/// <summary>Whether the current user may decide on an approval, and if not, why (shown in the portal).</summary>
+public record DecisionCheck(bool Allowed, string? Reason);

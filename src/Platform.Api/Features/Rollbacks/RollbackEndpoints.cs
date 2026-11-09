@@ -99,17 +99,45 @@ public static class RollbackEndpoints
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
+        // The failed-deployment page's "roll back to the last known good version": what it would do
+        // (GET, for the button and its confirmation) and doing it (POST). The server picks the target,
+        // so the two can never disagree about which version is "last known good".
+        group.MapGet("/last-known-good/{eventId:guid}", async (RollbackService svc, Guid eventId, CancellationToken ct) =>
+        {
+            try { return Results.Ok(await svc.GetLastKnownGoodAsync(eventId, ct)); }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        group.MapPost("/last-known-good/{eventId:guid}", async (
+            RollbackService svc, Guid eventId, LastKnownGoodBody? body, CancellationToken ct) =>
+        {
+            try
+            {
+                var r = await svc.CreateLastKnownGoodAsync(eventId, body?.Reason, ct);
+                return Results.Created($"/api/rollbacks/{r.Id}", ToDto(r, canApprove: false, canOverride: false));
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (RollbackAlreadyOpenException ex)
+            {
+                return Results.Json(new { error = ex.Message, rollbackId = ex.RequestId }, statusCode: StatusCodes.Status409Conflict);
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
         group.MapPost("/{id:guid}/approve", (RollbackService svc, Guid id, DecisionBody? body) =>
-            Decide(() => svc.ApproveAsync(id, body?.Comment))).DenyPersonalTokens();
+            Decide(() => svc.ApproveAsync(id, body?.Comment))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         group.MapPost("/{id:guid}/reject", (RollbackService svc, Guid id, DecisionBody? body) =>
-            Decide(() => svc.RejectAsync(id, body?.Comment))).DenyPersonalTokens();
+            Decide(() => svc.RejectAsync(id, body?.Comment))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Admin-only bypass of the approval gate. Not in RollbackAdminEndpoints because it acts on a
         // request in the operator's own queue rather than on configuration, and the 403 for a
         // non-admin caller is more useful here than a 404 from a group they cannot reach.
         group.MapPost("/{id:guid}/override-approval", (RollbackService svc, Guid id, ReasonBody? body) =>
-            Decide(() => svc.OverrideApprovalAsync(id, body?.Reason ?? ""))).DenyPersonalTokens();
+            Decide(() => svc.OverrideApprovalAsync(id, body?.Reason ?? ""))).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Pending: the creator or an admin, reason optional. Approved/RollingBack: admin only, reason
         // required. Both rules are enforced in RollbackService.CancelAsync.
@@ -211,6 +239,8 @@ public static class RollbackEndpoints
     private static object ToItemDto(RollbackItem i, IReadOnlyDictionary<Guid, FailedDeployAttempt>? failedAttempts) => new
     {
         i.Id, i.Service, i.FromVersion, i.ToVersion, status = i.Status.ToString(),
+        // No target: the item takes the service out of the environment.
+        remove = i.ToVersion.Length == 0,
         i.CompletedDeployEventId, i.ExternalRunUrl, i.CompletedAt, i.Note,
         // Open items only: the newest failed deploy of the target version since approval.
         lastFailedAttempt = failedAttempts?.GetValueOrDefault(i.Id),

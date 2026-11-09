@@ -21,7 +21,11 @@ steps:
     anchor: nav-rollbacks
     note: >-
       The page lists open requests at the top and resolved ones below. If you do not see Rollbacks
-      in the navigation, the feature is switched off for this installation.
+      in the navigation, the feature is switched off for this installation. Rolling back because a
+      deploy just failed? The failed deployment's page (and the failed-deploy warning on its
+      promotion) has a **Roll back to last known good version** button that fills all of this in.
+      When the service never deployed successfully in that environment, the same place offers
+      **Remove from the environment** instead.
   - text: Click **New rollback** to open the composer.
     anchor: rollbacks-new-button
   - text: Choose the **Product** that owns the service you want to revert.
@@ -40,7 +44,8 @@ steps:
     anchor: rollback-create-mode
   - text: >-
       In Manual mode, choose the **Service**, then the **Version** to return to. Only versions that
-      have actually run in this environment are offered.
+      have actually run in this environment are offered, plus **Uninstall**, which takes the service
+      out of the environment altogether.
     anchor: rollback-create-service
     note: In Align mode you pick a reference environment here instead of a service and version.
   - text: Add a **Reason**. It is optional, but it is what approvers read first.

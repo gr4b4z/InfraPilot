@@ -158,6 +158,236 @@ public class WebhookRequestBuilderTests
         Assert.Null(Header(request, "X-Hub-Signature"));
     }
 
+    // ── github: the repository_dispatch size limit ──────────────────────────
+    // GitHub answers 422 "client_payload is too large" to a dispatch of 64 KB or more, and a retry
+    // sends the same bytes. A build promotion carrying ~60 work items, each with its full tracker
+    // description, came to ~150 KB — so its approval never reached the deploy workflow at all.
+
+    private static readonly JsonSerializerOptions CamelCase = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    /// <summary>Tracker descriptions are the bulk of a large change set; ~1.7 KB is a typical one.</summary>
+    private static readonly string TicketDescription = string.Concat(Enumerable.Repeat(
+        "Steps to reproduce: open the order, change the quantity and submit. Expected the total to update. ", 17));
+
+    private static object WorkItem(int i) => WorkItem(i, withContent: true, participants: 1);
+
+    private static object WorkItem(int i, bool withContent, int participants) => new
+    {
+        type = "work-item",
+        provider = "jira",
+        key = $"PROJ-{1000 + i}",
+        url = $"https://tracker.example.test/browse/PROJ-{1000 + i}",
+        title = $"Order total does not refresh after edit ({i})",
+        participants = Enumerable.Range(0, participants)
+            .Select(p => new { role = $"qa-{p}", displayName = $"QA Person {p}", email = $"qa{p}@example.test" })
+            .ToArray(),
+        commits = new[] { $"{i:x8}aaaaaaaabbbbbbbbccccccccdddddddd" },
+        content = withContent ? TicketDescription : null,
+    };
+
+    private static object Commit(int i) => new
+    {
+        type = "commit",
+        provider = "github",
+        key = $"{i:x8}aaaaaaaabbbbbbbbccccccccdddddddd",
+        url = $"https://github.example.test/acme/api/commit/{i:x8}aaaaaaaabbbbbbbbccccccccdddddddd",
+        title = $"Fix the order total refresh after an edit, part {i}",
+        occurredAt = "2026-10-15T08:00:00+00:00",
+    };
+
+    private static readonly object[] EssentialReferences =
+    [
+        new { type = "build-manifest", provider = "oci", key = "registry.example.test/acme/api:4.2.0", revision = "sha256:" + new string('a', 64) },
+        new { type = "repository", provider = "github", url = "https://github.example.test/acme/api", revision = "a1b2c3d4" },
+        new { type = "pipeline", provider = "github", key = "123456", url = "https://github.example.test/acme/api/actions/runs/123456", title = "build" },
+    ];
+
+    /// <summary>
+    /// A promotion.approved envelope shaped as the dispatcher writes it, with the essential
+    /// references first and whatever change set the test needs after them.
+    /// </summary>
+    private static string PromotionEnvelope(IEnumerable<object> changeSet, string? note = null)
+        => JsonSerializer.Serialize(new
+        {
+            id = DeliveryId,
+            eventType = "promotion.approved",
+            timestamp = DateTimeOffset.Parse("2026-01-01T00:00:00+00:00"),
+            data = new
+            {
+                candidateId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                product = "acme",
+                service = "api",
+                sourceEnv = "build",
+                targetEnv = "staging",
+                version = "4.2.0",
+                toRevision = "a1b2c3d4",
+                status = "Approved",
+                participants = new[] { new { role = "triggered-by", displayName = "Release Bot" } },
+                references = EssentialReferences.Concat(changeSet).ToArray(),
+                note,
+            },
+        }, CamelCase);
+
+    private static WebhookDelivery DeliveryOf(string payloadJson) => new()
+    {
+        Id = DeliveryId,
+        SubscriptionId = Guid.NewGuid(),
+        EventType = "promotion.approved",
+        PayloadJson = payloadJson,
+        Status = "pending",
+    };
+
+    private static WebhookRequestBuilder.WebhookHttpRequest BuildGitHub(string payloadJson)
+    {
+        var sub = Subscription(WebhookTargetTypes.GitHub);
+        sub.GitHubEventType = "deploy-build";
+        return WebhookRequestBuilder.Build(sub, DeliveryOf(payloadJson), "ghp_token");
+    }
+
+    private static int Utf8Bytes(string s) => System.Text.Encoding.UTF8.GetByteCount(s);
+
+    private static void AssertEssentialReferencesIntact(JsonElement references)
+    {
+        var manifest = references.EnumerateArray().Single(r => r.GetProperty("type").GetString() == "build-manifest");
+        Assert.Equal("registry.example.test/acme/api:4.2.0", manifest.GetProperty("key").GetString());
+        Assert.Equal("sha256:" + new string('a', 64), manifest.GetProperty("revision").GetString());
+
+        var repository = references.EnumerateArray().Single(r => r.GetProperty("type").GetString() == "repository");
+        Assert.Equal("https://github.example.test/acme/api", repository.GetProperty("url").GetString());
+        Assert.Equal("a1b2c3d4", repository.GetProperty("revision").GetString());
+
+        Assert.Single(references.EnumerateArray(), r => r.GetProperty("type").GetString() == "pipeline");
+    }
+
+    [Fact]
+    public void GitHub_APayloadUnderTheLimit_IsSentUnchanged()
+    {
+        var payload = PromotionEnvelope(Enumerable.Range(0, 5).Select(WorkItem));
+
+        var request = BuildGitHub(payload);
+
+        var sent = System.Text.Json.Nodes.JsonNode.Parse(request.Body)!["client_payload"];
+        Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(payload), sent));
+        Assert.Null(sent!["truncated"]);
+        Assert.Null(sent["omitted"]);
+        Assert.Empty(request.Omitted);
+    }
+
+    [Fact]
+    public void GitHub_AnOversizedPayload_DropsReferenceContent_AndFitsUnderTheLimit()
+    {
+        var payload = PromotionEnvelope(Enumerable.Range(0, 64).Select(WorkItem));
+        Assert.True(Utf8Bytes(payload) > 100 * 1024, "the fixture must reproduce the oversized case");
+
+        var request = BuildGitHub(payload);
+
+        Assert.True(Utf8Bytes(request.Body) <= WebhookRequestBuilder.GitHubDispatchBodyLimitBytes);
+        Assert.True(Utf8Bytes(request.Body) < 64_000);
+
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal("deploy-build", body.RootElement.GetProperty("event_type").GetString());
+        var clientPayload = body.RootElement.GetProperty("client_payload");
+        Assert.True(clientPayload.EnumerateObject().Count() <= 10);
+
+        // Consumers can tell, and can tell what is missing.
+        Assert.True(clientPayload.GetProperty("truncated").GetBoolean());
+        Assert.Equal(new[] { "data.references[].content" },
+            clientPayload.GetProperty("omitted").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(new[] { "data.references[].content" }, request.Omitted);
+
+        // The envelope and everything a dispatch workflow reads are untouched.
+        Assert.Equal(DeliveryId.ToString(), clientPayload.GetProperty("id").GetString());
+        Assert.Equal("promotion.approved", clientPayload.GetProperty("eventType").GetString());
+        var data = clientPayload.GetProperty("data");
+        Assert.Equal("22222222-2222-2222-2222-222222222222", data.GetProperty("candidateId").GetString());
+        Assert.Equal("api", data.GetProperty("service").GetString());
+        Assert.Equal("4.2.0", data.GetProperty("version").GetString());
+        Assert.Equal("build", data.GetProperty("sourceEnv").GetString());
+        Assert.Equal("staging", data.GetProperty("targetEnv").GetString());
+        Assert.Equal(1, data.GetProperty("participants").GetArrayLength());
+
+        // Only as much as needed was given up: every reference survives, minus its description.
+        var references = data.GetProperty("references");
+        Assert.Equal(3 + 64, references.GetArrayLength());
+        AssertEssentialReferencesIntact(references);
+        var workItems = references.EnumerateArray().Where(r => r.GetProperty("type").GetString() == "work-item").ToList();
+        Assert.All(workItems, r => Assert.False(r.TryGetProperty("content", out _)));
+        Assert.All(workItems, r => Assert.Equal(1, r.GetProperty("participants").GetArrayLength()));
+        Assert.All(workItems, r => Assert.Equal(1, r.GetProperty("commits").GetArrayLength()));
+        Assert.Equal("PROJ-1000", workItems[0].GetProperty("key").GetString());
+    }
+
+    [Fact]
+    public void GitHub_AChangeSetTooBigEvenWithoutDetail_KeepsOnlyTheEssentialReferences()
+    {
+        // Hundreds of commit references with no description to drop: the field steps find nothing
+        // worth removing, and the change set itself has to go.
+        var payload = PromotionEnvelope(Enumerable.Range(0, 400).Select(Commit));
+        Assert.True(Utf8Bytes(payload) > 64 * 1024, "the fixture must reproduce the oversized case");
+
+        var request = BuildGitHub(payload);
+
+        Assert.True(Utf8Bytes(request.Body) <= WebhookRequestBuilder.GitHubDispatchBodyLimitBytes);
+        using var body = JsonDocument.Parse(request.Body);
+        var clientPayload = body.RootElement.GetProperty("client_payload");
+        Assert.True(clientPayload.GetProperty("truncated").GetBoolean());
+        var omitted = Assert.Single(clientPayload.GetProperty("omitted").EnumerateArray()).GetString();
+        Assert.Contains("400 of 403 references", omitted);
+
+        var references = clientPayload.GetProperty("data").GetProperty("references");
+        Assert.Equal(3, references.GetArrayLength());
+        AssertEssentialReferencesIntact(references);
+    }
+
+    [Fact]
+    public void GitHub_TrimsStepByStep_AndStopsAsSoonAsItFits()
+    {
+        // No descriptions to drop (content is null, which is not worth reporting as lost), but the
+        // reference-level participants are heavy: dropping those is enough, so the commit lists and
+        // every reference stay.
+        var payload = PromotionEnvelope(
+            Enumerable.Range(0, 100).Select(i => WorkItem(i, withContent: false, participants: 12)));
+        Assert.True(Utf8Bytes(payload) > 64 * 1024, "the fixture must reproduce the oversized case");
+
+        var request = BuildGitHub(payload);
+
+        Assert.True(Utf8Bytes(request.Body) <= WebhookRequestBuilder.GitHubDispatchBodyLimitBytes);
+        Assert.Equal(new[] { "data.references[].participants" }, request.Omitted);
+        using var body = JsonDocument.Parse(request.Body);
+        var references = body.RootElement.GetProperty("client_payload").GetProperty("data").GetProperty("references");
+        Assert.Equal(3 + 100, references.GetArrayLength());
+        AssertEssentialReferencesIntact(references);
+        var workItems = references.EnumerateArray().Where(r => r.GetProperty("type").GetString() == "work-item").ToList();
+        Assert.All(workItems, r => Assert.False(r.TryGetProperty("participants", out _)));
+        Assert.All(workItems, r => Assert.Equal(1, r.GetProperty("commits").GetArrayLength()));
+    }
+
+    [Fact]
+    public void GitHub_APayloadThatCannotBeTrimmedToFit_IsRefusedRatherThanSent()
+    {
+        // The bulk is outside the change set, so nothing the trimming may touch would help.
+        var payload = PromotionEnvelope([], note: new string('x', 80 * 1024));
+
+        var ex = Assert.Throws<WebhookUndeliverableException>(() => BuildGitHub(payload));
+
+        Assert.Contains("64 KB", ex.Message);
+        Assert.Contains("a retry sends the same payload", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(WebhookTargetTypes.Generic)]
+    [InlineData(WebhookTargetTypes.AzureDevOps)]
+    public void NonGitHubTargets_SendAnOversizedPayloadVerbatim(string targetType)
+    {
+        // The limit is GitHub's alone; signed targets must keep the exact bytes they always got.
+        var payload = PromotionEnvelope(Enumerable.Range(0, 64).Select(WorkItem));
+
+        var request = WebhookRequestBuilder.Build(Subscription(targetType), DeliveryOf(payload), Secret);
+
+        Assert.Equal(payload, request.Body);
+        Assert.Empty(request.Omitted);
+    }
+
     // ── messaging targets ───────────────────────────────────────────────────
     // These frame a rendered message rather than the envelope, and each platform wants its own
     // wrapper. Nothing here signs or authenticates: the URL is the credential.

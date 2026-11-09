@@ -4,6 +4,8 @@ using Platform.Api.Features.Approvals.Models;
 using Platform.Api.Features.Builds.Models;
 using Platform.Api.Features.Catalog.Models;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Incidents.Models;
+using Platform.Api.Features.Migrations.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
@@ -33,6 +35,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
     public DbSet<Build> Builds => Set<Build>();
+    public DbSet<RetiredVersion> RetiredVersions => Set<RetiredVersion>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
     public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
@@ -50,6 +53,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PromotionApproval> PromotionApprovals => Set<PromotionApproval>();
     public DbSet<PromotionWorkItem> PromotionWorkItems => Set<PromotionWorkItem>();
     public DbSet<PromotionComment> PromotionComments => Set<PromotionComment>();
+    public DbSet<PromotionFreeze> PromotionFreezes => Set<PromotionFreeze>();
     public DbSet<WorkItemApproval> WorkItemApprovals => Set<WorkItemApproval>();
     public DbSet<WorkItemComment> WorkItemComments => Set<WorkItemComment>();
     public DbSet<RollbackRequest> RollbackRequests => Set<RollbackRequest>();
@@ -57,6 +61,10 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<RollbackApproval> RollbackApprovals => Set<RollbackApproval>();
     public DbSet<RollbackPolicy> RollbackPolicies => Set<RollbackPolicy>();
     public DbSet<ReleaseNote> ReleaseNotes => Set<ReleaseNote>();
+    public DbSet<Incident> Incidents => Set<Incident>();
+    public DbSet<MigrationRun> MigrationRuns => Set<MigrationRun>();
+    public DbSet<MigrationRunItem> MigrationRunItems => Set<MigrationRunItem>();
+    public DbSet<MigrationRunLog> MigrationRunLogs => Set<MigrationRunLog>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -120,6 +128,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .HasConversion<string>();
             var inputsJson = e.Property(x => x.InputsJson).HasDefaultValue("{}");
             if (jsonType != null) inputsJson.HasColumnType(jsonType);
+            var approvalOutcomeJson = e.Property(x => x.ApprovalOutcomeJson);
+            if (jsonType != null) approvalOutcomeJson.HasColumnType(jsonType);
+            e.Ignore(x => x.ApprovalOutcome);
             e.HasIndex(x => x.RequesterId);
             e.HasIndex(x => x.Status);
             e.HasIndex(x => x.CorrelationId);
@@ -239,6 +250,20 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .IsDescending(false, false, true);
             // "Which builds came from this branch?" — the question the registry exists to answer.
             e.HasIndex(x => x.Branch);
+        });
+
+        modelBuilder.Entity<RetiredVersion>(e =>
+        {
+            e.ToTable("retired_versions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(500);
+            e.Property(x => x.RetiredBy).HasMaxLength(320).IsRequired();
+            // One row per version; also the lookup every rollback candidate query does.
+            e.HasIndex(x => new { x.Product, x.Service, x.Version }).IsUnique();
+            e.HasIndex(x => x.RetiredAt);
         });
 
         // Deploy Events
@@ -495,6 +520,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
             e.Property(x => x.Prefix).HasMaxLength(20).IsRequired();
             e.Property(x => x.Roles).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.Access).HasMaxLength(20).IsRequired().HasConversion<string>();
             e.Ignore(x => x.RoleList);
             // Every authenticated request with a token looks it up by hash.
             e.HasIndex(x => x.TokenHash).IsUnique();
@@ -640,6 +666,21 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        // Promotion Freezes — one active row per (product, service, target env), where service ""
+        // means the whole product (ADR-0003); lifting deletes the row.
+        modelBuilder.Entity<PromotionFreeze>(e =>
+        {
+            e.ToTable("promotion_freezes");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired().HasDefaultValue("");
+            e.Property(x => x.TargetEnv).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.FrozenBy).HasMaxLength(300).IsRequired();
+            e.Property(x => x.FrozenByEmail).HasMaxLength(300).IsRequired();
+            e.HasIndex(x => new { x.Product, x.Service, x.TargetEnv }).IsUnique();
+        });
+
         modelBuilder.Entity<WorkItemApproval>(e =>
         {
             e.ToTable("work_item_approvals");
@@ -697,6 +738,100 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.HasIndex(x => new { x.Product, x.Environment, x.GeneratedAt })
                 .IsDescending(false, false, true);
             e.HasIndex(x => x.GeneratedAt).IsDescending(true);
+        });
+
+        // Incidents — pointer records for delivery metrics; see Incident.
+        modelBuilder.Entity<Incident>(e =>
+        {
+            e.ToTable("incidents");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200);
+            e.Property(x => x.Source).HasMaxLength(50).HasDefaultValue("manual").IsRequired();
+            e.Property(x => x.ExternalId).HasMaxLength(200);
+            e.Property(x => x.Url).HasMaxLength(2000);
+            e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
+            e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UpdatedBy).HasMaxLength(300);
+            // The correlation query: incidents of a service in an environment, by start time.
+            e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.StartedAt })
+                .IsDescending(false, false, false, true);
+            e.HasIndex(x => x.StartedAt).IsDescending(true);
+            // Upsert key for incidents that live elsewhere. Uniqueness is enforced by the service —
+            // the providers disagree on how a unique index treats NULL external ids.
+            e.HasIndex(x => new { x.Source, x.ExternalId });
+            e.HasIndex(x => x.CausedByDeployEventId);
+        });
+
+        // Database migrations of deployed versions (schema: a Helm hook inside the deploy; data: a
+        // separate step after it). See MigrationService.
+        modelBuilder.Entity<MigrationRun>(e =>
+        {
+            e.ToTable("migration_runs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Kind).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Environment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            e.Property(x => x.RunKey).HasMaxLength(100).HasDefaultValue("").IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(50).IsRequired();
+            e.Property(x => x.SkipReason).HasMaxLength(2000);
+            e.Property(x => x.FailureReason).HasMaxLength(2000);
+            var runJson = e.Property(x => x.RunJson);
+            if (jsonType != null) runJson.HasColumnType(jsonType);
+            e.Ignore(x => x.Run);
+            // Set null, not cascade: a migration that ran is still a fact when the deploy record
+            // behind it is removed (duplicate cleanup, a remap).
+            e.HasOne<DeployEvent>()
+                .WithMany()
+                .HasForeignKey(x => x.DeployEventId)
+                .OnDelete(DeleteBehavior.SetNull);
+            // The upsert key. Unique: every key column is non-null (RunKey defaults to ""), so both
+            // providers agree on what a duplicate is.
+            e.HasIndex(x => new { x.Kind, x.Product, x.Service, x.Environment, x.Version, x.RunKey }).IsUnique();
+            // Supersede and the matrix flare: a cell's data migrations by when they became due.
+            e.HasIndex(x => new { x.Product, x.Service, x.Environment, x.QueuedAt })
+                .IsDescending(false, false, false, true);
+            e.HasIndex(x => new { x.Status, x.Product });
+            e.HasIndex(x => x.QueuedAt).IsDescending(true);
+            e.HasIndex(x => x.DeployEventId);
+            e.HasIndex(x => x.SupersededById);
+        });
+
+        modelBuilder.Entity<MigrationRunItem>(e =>
+        {
+            e.ToTable("migration_run_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Error).HasMaxLength(2000);
+            e.HasOne<MigrationRun>()
+                .WithMany()
+                .HasForeignKey(x => x.MigrationRunId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.MigrationRunId, x.Sequence });
+            // "Has migration X run on staging?" looks rows up by name.
+            e.HasIndex(x => x.Name);
+            e.HasIndex(x => x.Order);
+        });
+
+        modelBuilder.Entity<MigrationRunLog>(e =>
+        {
+            e.ToTable("migration_run_logs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(50);
+            e.Property(x => x.Content).IsRequired();
+            e.Property(x => x.Truncated).HasDefaultValue(false);
+            e.HasOne<MigrationRun>()
+                .WithMany()
+                .HasForeignKey(x => x.MigrationRunId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.MigrationRunId, x.Name }).IsUnique();
         });
 
         // Rollback Requests

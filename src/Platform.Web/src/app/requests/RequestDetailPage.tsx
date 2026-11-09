@@ -281,6 +281,21 @@ export function RequestDetailPage() {
             </div>
           )}
 
+          {/* A rule waived approval for this request */}
+          {!request.approvalRequest && request.approvalOutcome && !request.approvalOutcome.required
+            && request.approvalOutcome.ruleIndex != null && (
+            <div
+              className="rounded-xl border p-5 text-[13px]"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+            >
+              <h2 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+                Approval
+              </h2>
+              No approval needed — set by approval rule{' '}
+              <strong>{request.approvalOutcome.ruleName || `#${request.approvalOutcome.ruleIndex + 1}`}</strong>.
+            </div>
+          )}
+
           {/* Approval info */}
           {request.approvalRequest && (
             <div
@@ -306,6 +321,11 @@ export function RequestDetailPage() {
                   {request.approvalRequest.status}
                 </span>
               </div>
+              {request.approvalOutcome?.ruleIndex != null && (
+                <p className="mb-3 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                  Set by approval rule: <strong>{request.approvalOutcome.ruleName || `#${request.approvalOutcome.ruleIndex + 1}`}</strong>
+                </p>
+              )}
               {request.approvalRequest.decisions?.map((d) => (
                 <div
                   key={d.id}

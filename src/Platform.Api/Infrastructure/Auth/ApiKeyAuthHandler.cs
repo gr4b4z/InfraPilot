@@ -175,6 +175,8 @@ public static class ApiKeyScopes
 {
     /// <summary>POST /api/builds — register a published build in the build registry.</summary>
     public const string BuildRegister = "build:register";
+    /// <summary>POST /api/builds/retired(/restore) — mark versions whose artifacts left the registry.</summary>
+    public const string BuildRetire = "build:retire";
     /// <summary>POST /api/promotions — create a promotion candidate (D16 of external-promotion-creation).</summary>
     public const string PromotionCreate = "promotion:create";
 }

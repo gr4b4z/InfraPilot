@@ -1,6 +1,7 @@
 using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.Features.Settings;
@@ -38,7 +39,8 @@ public static class AppSettingsEndpoints
                 ActivityTemplate: (body.ActivityTemplate ?? [])
                     .Where(l => !string.IsNullOrWhiteSpace(l.Template))
                     .Select(l => new ActivityTemplateLineDto(l.Template, string.IsNullOrWhiteSpace(l.Style) ? "secondary" : l.Style))
-                    .ToList());
+                    .ToList(),
+                Analytics: body.Analytics?.Clean());
 
             // Aliases are the one part of this payload that can be internally inconsistent rather
             // than merely untidy — an alias claimed by two environments, or one that is also an
@@ -125,6 +127,15 @@ public static class AppSettingsEndpoints
 
                 return Results.Ok(ToDto(plan));
             })
+            .RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+
+        // ── Directory health ─────────────────────────────────────────────────
+        // Whether the Graph app can sign in. Every directory read swallows that failure on purpose
+        // (an empty search, "not a member"), so this is how an admin hears of it: the shell polls
+        // it for Admins and shows a banner while `credentialFailure` is set. Null when the last
+        // Graph read got through, and always null without Graph (local directory).
+        group.MapGet("/directory-health", (GraphCredentialHealth health) =>
+                Results.Ok(new { credentialFailure = health.Failure }))
             .RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
         return group;

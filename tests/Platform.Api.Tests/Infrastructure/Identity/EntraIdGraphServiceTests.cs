@@ -2,11 +2,12 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Azure.Core;
+using Azure.Identity;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
-using Microsoft.Kiota.Abstractions.Authentication;
 using NSubstitute;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
@@ -17,24 +18,28 @@ namespace Platform.Api.Tests.Infrastructure.Identity;
 
 /// <summary>
 /// Group-membership reads in <see cref="EntraIdGraphService"/>: the process-wide cache, failure
-/// caching, object-id-only lookups, transitive user membership, and paging. A real
-/// <see cref="GraphServiceClient"/> runs over a fake HTTP handler that serves canned Graph responses
-/// and counts requests — nothing leaves the process.
+/// caching, object-id-only lookups, transitive user membership, and paging — and the app's own
+/// sign-in failing (<see cref="GraphCredentialHealth"/>). A real <see cref="GraphServiceClient"/>
+/// signs in through a fake credential and runs over a fake HTTP handler that serves canned Graph
+/// responses and counts requests — nothing leaves the process.
 /// </summary>
 public class EntraIdGraphServiceTests
 {
     private const string GroupId = "5a7c3b0e-8f1d-4c2a-9b6e-1d2f3a4b5c6d";
 
     private readonly FakeGraphHandler _graph = new();
+    private readonly FakeCredential _credential = new();
     private readonly FakeClock _clock = new();
     private readonly ListLogger<EntraIdGraphService> _log = new();
+    private readonly GraphCredentialHealth _health;
     private readonly EntraIdGraphService _sut;
 
     public EntraIdGraphServiceTests()
     {
-        var client = new GraphServiceClient(new HttpClient(_graph), new AnonymousAuthenticationProvider());
+        var client = new GraphServiceClient(new HttpClient(_graph), _credential);
         var cache = new MemoryCache(new MemoryCacheOptions { Clock = _clock });
-        _sut = new EntraIdGraphService(client, cache, _log);
+        _health = new GraphCredentialHealth(_clock);
+        _sut = new EntraIdGraphService(client, cache, _health, _log);
     }
 
     // ── Cache ────────────────────────────────────────────────────────────────
@@ -330,6 +335,128 @@ public class EntraIdGraphServiceTests
         Assert.Equal(0, _graph.RequestCount);
     }
 
+    // ── Credential health ────────────────────────────────────────────────────
+
+    // What Azure.Identity's ClientSecretCredential threw in prod on 2026-10-19 (ids made up).
+    private const string ExpiredSecret =
+        "ClientSecretCredential authentication failed: AADSTS7000222: The provided client secret keys for app " +
+        "'b8e60444-0000-4000-8000-000000000000' are expired. Visit the Azure portal to create new keys for your " +
+        "app: https://aka.ms/NewClientSecret, or consider using certificate credentials for added security: " +
+        "https://aka.ms/certCreds. Trace ID: 0d6a3c1e-2f4b-4e5a-9c7d-8e9f0a1b2c3d Correlation ID: " +
+        "5f2b7c9d-1e3a-4b6c-8d0e-2f4a6b8c0d1e Timestamp: 2026-10-19 00:15:10Z\n" +
+        "See the troubleshooting guide for more information. " +
+        "https://aka.ms/azsdk/net/identity/clientsecretcredential/troubleshoot";
+
+    [Fact]
+    public async Task An_expired_secret_is_recorded_from_every_kind_of_read()
+    {
+        _credential.FailWith = ExpiredSecret;
+        var since = _clock.UtcNow;
+
+        // Searches let it through for the endpoint to turn into `directoryUnavailable`; the reads
+        // that answer for an approval or a token check swallow it, as they always did.
+        await Assert.ThrowsAsync<AuthenticationFailedException>(() => _sut.SearchUsers("mateusz"));
+        await Assert.ThrowsAsync<AuthenticationFailedException>(() => _sut.SearchGroups("org_cto"));
+        await Assert.ThrowsAsync<AuthenticationFailedException>(() =>
+            _sut.SearchUsersInGroups("mateusz", [new GroupInfo(GroupId, "Release Approvers")]));
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        Assert.Empty(await _sut.GetGroupMembers(GroupId));
+        Assert.Equal(AccountStatus.Unknown, await _sut.GetAccountStatus(UserId));
+
+        // Nothing reached Graph: the sign-in fails before a request goes out.
+        Assert.Equal(0, _graph.RequestCount);
+        var failure = Assert.IsType<GraphCredentialFailure>(_health.Failure);
+        Assert.Equal("AADSTS7000222", failure.Code);
+        Assert.Equal(
+            "The provided client secret keys for app 'b8e60444-0000-4000-8000-000000000000' are expired.",
+            failure.Message);
+        Assert.Equal(since, failure.Since);
+        Assert.Equal(_clock.UtcNow, failure.LastFailedAt);
+    }
+
+    [Fact]
+    public async Task A_credential_failure_is_logged_as_an_error_once_per_window_and_never_as_a_warning()
+    {
+        _credential.FailWith = ExpiredSecret;
+
+        for (var i = 0; i < 3; i++)
+        {
+            await Assert.ThrowsAsync<AuthenticationFailedException>(() => _sut.SearchUsers("mateusz"));
+            Assert.Empty(await _sut.GetGroupMembers(GroupId));
+            Assert.Equal(AccountStatus.Unknown, await _sut.GetAccountStatus(UserId));
+        }
+        var error = Assert.Single(_log.Entries, e => e.Level == LogLevel.Error);
+        Assert.Contains("AADSTS7000222", error.Message);
+        Assert.Contains("GRAPH_CLIENT_SECRET", error.Message);
+        Assert.Equal(0, _log.Count(LogLevel.Warning));
+
+        // Still failing a window later: one more Error, so an alert on Error keeps firing.
+        _clock.Advance(EntraIdGraphService.MembershipTtl + TimeSpan.FromSeconds(1));
+        await Assert.ThrowsAsync<AuthenticationFailedException>(() => _sut.SearchUsers("mateusz"));
+        Assert.Equal(2, _log.Count(LogLevel.Error));
+        Assert.Equal(0, _log.Count(LogLevel.Warning));
+    }
+
+    [Fact]
+    public async Task The_next_read_that_gets_through_clears_the_failure()
+    {
+        _credential.FailWith = ExpiredSecret;
+        await Assert.ThrowsAsync<AuthenticationFailedException>(() => _sut.SearchUsers("mateusz"));
+        Assert.NotNull(_health.Failure);
+
+        _credential.FailWith = null;
+        _graph.Respond = _ => Json(new { value = Array.Empty<object>() });
+        Assert.Empty(await _sut.SearchUsers("mateusz"));
+
+        Assert.Null(_health.Failure);
+        Assert.Contains(_log.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("works again"));
+
+        // A new failure right after is a new outage: logged at Error straight away, with its own start.
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        _credential.FailWith = ExpiredSecret;
+        await Assert.ThrowsAsync<AuthenticationFailedException>(() => _sut.SearchUsers("mateusz"));
+        Assert.Equal(2, _log.Count(LogLevel.Error));
+        Assert.Equal(_clock.UtcNow, _health.Failure!.Since);
+    }
+
+    [Fact]
+    public async Task Graph_answering_with_an_error_still_proves_the_credential_works()
+    {
+        _credential.FailWith = ExpiredSecret;
+        Assert.Equal(AccountStatus.Unknown, await _sut.GetAccountStatus(UserId));
+        Assert.NotNull(_health.Failure);
+
+        // A deleted user's 404 took a token to get.
+        _credential.FailWith = null;
+        _graph.Respond = _ => GraphError(HttpStatusCode.NotFound, "Request_ResourceNotFound");
+        Assert.Equal(AccountStatus.Missing, await _sut.GetAccountStatus(UserId));
+
+        Assert.Null(_health.Failure);
+    }
+
+    [Fact]
+    public async Task A_graph_outage_is_not_a_credential_failure()
+    {
+        _graph.Respond = _ => GraphError(HttpStatusCode.ServiceUnavailable, "serviceNotAvailable");
+
+        Assert.Empty(await _sut.GetGroupMembers(GroupId));
+
+        Assert.Null(_health.Failure);
+        Assert.Equal(1, _log.Count(LogLevel.Warning));
+        Assert.Equal(0, _log.Count(LogLevel.Error));
+    }
+
+    [Fact]
+    public async Task Approval_checks_answer_not_a_member_while_the_credential_fails()
+    {
+        _credential.FailWith = ExpiredSecret;
+
+        var group = new GroupRef(GroupId, "Release Approvers");
+        Assert.False(await AuthorizerFor("member-id", "member@example.com").IsInApproverGroupAsync(group, default));
+
+        Assert.Equal("AADSTS7000222", _health.Failure?.Code);
+    }
+
     // ── Fakes ────────────────────────────────────────────────────────────────
 
     // A page of transitiveMembers/microsoft.graph.user: users only, and — like Graph's cast
@@ -388,10 +515,27 @@ public class EntraIdGraphServiceTests
         }
     }
 
-    private sealed class FakeClock : ISystemClock
+    // The Graph app's client-secret credential: hands out a token, or fails the way Azure.Identity does.
+    private sealed class FakeCredential : TokenCredential
+    {
+        public string? FailWith { get; set; }
+
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
+            => FailWith is null
+                ? new AccessToken("test-token", DateTimeOffset.UtcNow.AddHours(1))
+                : throw new AuthenticationFailedException(FailWith);
+
+        public override ValueTask<AccessToken> GetTokenAsync(
+            TokenRequestContext requestContext, CancellationToken cancellationToken)
+            => new(GetToken(requestContext, cancellationToken));
+    }
+
+    // One clock for the memory cache (ISystemClock) and the credential health (TimeProvider).
+    private sealed class FakeClock : TimeProvider, ISystemClock
     {
         public DateTimeOffset UtcNow { get; private set; } = new(2026, 10, 7, 9, 0, 0, TimeSpan.Zero);
         public void Advance(TimeSpan by) => UtcNow += by;
+        public override DateTimeOffset GetUtcNow() => UtcNow;
     }
 
     private sealed class ListLogger<T> : ILogger<T>

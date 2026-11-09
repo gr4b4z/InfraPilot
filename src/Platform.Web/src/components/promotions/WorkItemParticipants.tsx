@@ -10,6 +10,7 @@ import {
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { AlertTriangle, Plus, Users, X } from 'lucide-react';
@@ -527,6 +528,8 @@ export function InlineUserPicker({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
   const [searching, setSearching] = useState(false);
+  // The last search couldn't reach the directory, so an empty result means "couldn't look".
+  const [unavailable, setUnavailable] = useState(false);
   // The assignable vocabulary — the same list the server validates against, so the popover can't
   // offer a role the write would reject.
   const configuredRoles = useConfiguredRoles();
@@ -551,9 +554,15 @@ export function InlineUserPicker({
     const timer = setTimeout(async () => {
       try {
         const res = await api.searchPromotionUsers(q, effectiveRole || null);
-        if (!cancelled) setResults(res.users);
+        if (!cancelled) {
+          setResults(res.users);
+          setUnavailable(res.directoryUnavailable === true);
+        }
       } catch {
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setUnavailable(true);
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -704,7 +713,18 @@ export function InlineUserPicker({
               Searching...
             </div>
           )}
-          {!searching && results.length === 0 && restricted && (
+          {/* Restricted roles get no manual fallback — membership can't be checked either, and an
+              address typed in would step around the restriction. */}
+          {!searching && unavailable && (
+            <DirectoryUnavailableNotice
+              detail={
+                restricted
+                  ? `Members of ${groupNames} can't be looked up — try again later.`
+                  : 'Enter the full email address instead.'
+              }
+            />
+          )}
+          {!searching && results.length === 0 && restricted && !unavailable && (
             <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
               Nobody in {groupNames} matches &ldquo;{query.trim()}&rdquo;.
             </div>
@@ -720,7 +740,7 @@ export function InlineUserPicker({
             >
               <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
               <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                No directory matches — sent as-is.
+                {unavailable ? 'Sent as-is, without a directory check.' : 'No directory matches — sent as-is.'}
               </span>
             </button>
           )}

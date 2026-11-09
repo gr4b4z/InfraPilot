@@ -39,6 +39,7 @@ public static class PromotionEndpoints
         // List candidates with filters + capability flags.
         group.MapGet("/", async (
             PromotionService svc,
+            PromotionFreezeService freezes,
             PlatformDbContext db,
             EnvironmentAliasResolver environments,
             ParticipantRoleCatalog roleCatalog,
@@ -128,6 +129,7 @@ public static class PromotionEndpoints
 
             // Handed the gate statuses so the work-item gate behind both is evaluated once per request.
             var approvable = await svc.GetApprovableRequirementsManyAsync(candidates, gateStatuses);
+            var heldByFreeze = await freezes.GetHeldByFreezeAsync(candidates);
             var targetVersions = await LoadTargetVersionsAsync(db, candidates);
             var sourceBranches = await LoadSourceBranchesAsync(db, candidates);
             var decidedWorkItems = await LoadDecidedWorkItemKeysAsync(db, candidates);
@@ -153,7 +155,8 @@ public static class PromotionEndpoints
                         decidedWorkItemKeys: decidedKeys,
                         gateStatus: gateStatuses.GetValueOrDefault(c.Id, PromotionGateStatus.None),
                         roleAliases: roleAliases,
-                        summaryReferences: summary);
+                        summaryReferences: summary,
+                        frozen: heldByFreeze.Contains(c.Id));
                 }),
             });
         });
@@ -193,6 +196,21 @@ public static class PromotionEndpoints
             // Work items on this edge that have already been ruled on — they report no role gap.
             var decidedWorkItems = (await LoadDecidedWorkItemKeysAsync(db, new[] { c }))
                 .GetValueOrDefault((c.Product, c.Service, c.TargetEnv));
+
+            // The active Promotion Freeze holding this candidate, if any. A freeze holds only Pending
+            // candidates (ADR-0001), so decided candidates never carry one.
+            var activeFreeze = c.Status == PromotionStatus.Pending
+                ? await svc.FindFreezeAsync(c.Product, c.Service, c.TargetEnv, CancellationToken.None)
+                : null;
+            var freeze = activeFreeze is null ? null : new
+            {
+                product = activeFreeze.Product,
+                service = activeFreeze.IsWholeProduct ? null : activeFreeze.Service,
+                targetEnv = activeFreeze.TargetEnv,
+                reason = activeFreeze.Reason,
+                frozenBy = activeFreeze.FrozenBy,
+                frozenAt = activeFreeze.FrozenAt,
+            };
 
             // Surface an admin bypass, if any. A bypass records NO approval row, so without this a
             // force-approved candidate would show an empty approval trail with no trace of who did it
@@ -279,7 +297,8 @@ public static class PromotionEndpoints
                     fromVersion: target.Baseline,
                     sourceBranch: sourceBranch,
                     decidedWorkItemKeys: decidedWorkItems,
-                    roleAliases: await roleCatalog.MapAsync()),
+                    roleAliases: await roleCatalog.MapAsync(),
+                    frozen: activeFreeze is not null),
                 approvals = approvals.Select(a => new
                 {
                     a.Id,
@@ -312,11 +331,22 @@ public static class PromotionEndpoints
                 comments = comments.Select(ToCommentDto),
                 approvalProgress = progress,
                 bypass,
+                freeze,
                 canCancelApproval,
                 deploymentEventId,
                 failedDeployments,
             });
         });
+
+        // Active Promotion Freezes with their held counts — readable by any signed-in user so the
+        // promotions pages can show freeze cues. Creating / lifting stays under /admin/freezes.
+        group.MapGet("/freezes", async (PromotionFreezeService freezes, CancellationToken ct) =>
+            Results.Ok(new { freezes = await freezes.GetActiveAsync(ct) }));
+
+        // Active and lifted freeze periods, optionally for one product — the deployments pages mark
+        // a deploy that landed inside one. Same audience as /freezes.
+        group.MapGet("/freezes/windows", async (PromotionFreezeService freezes, string? product, CancellationToken ct) =>
+            Results.Ok(new { windows = await freezes.GetWindowsAsync(product, ct) }));
 
         // Participant roles actually *observed* in the data (distinct, frequency-ordered). Note this
         // is the opposite question from "which roles may I assign?" — that one is answered by the
@@ -388,12 +418,16 @@ public static class PromotionEndpoints
             }
             catch (Exception ex)
             {
-                // Graph unreachable / misconfigured — return empty rather than error so the UI
-                // silently falls back to manual entry. Log loudly so dev can see why.
-                log.LogWarning(ex,
+                // Graph unreachable / misconfigured (an expired client secret, say) — return empty
+                // rather than error so the picker still offers manual entry, but flag it: an empty
+                // list alone reads as "nobody matches", which sends people hunting for a typo
+                // instead of reporting an outage. A failing Graph sign-in is the identity service's
+                // to log (Error, once per window) and the admin banner's to show; repeating it here
+                // at Warning for every keystroke only buries it.
+                log.Log(SearchFailureLevel(ex), ex,
                     "User search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
-                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo });
+                return Results.Ok(new { users = Array.Empty<object>(), restrictedTo, directoryUnavailable = true });
             }
         });
 
@@ -438,10 +472,10 @@ public static class PromotionEndpoints
             }
             catch (Exception ex)
             {
-                log.LogWarning(ex,
+                log.Log(SearchFailureLevel(ex), ex,
                     "Group search failed for query '{Query}' via {Provider} — returning empty list",
                     loggableQuery, identity.GetType().Name);
-                return Results.Ok(new { groups = Array.Empty<object>() });
+                return Results.Ok(new { groups = Array.Empty<object>(), directoryUnavailable = true });
             }
         });
 
@@ -560,6 +594,30 @@ public static class PromotionEndpoints
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
+        // "Approve all" on the Work items card: signs off every work item of the promotion still
+        // waiting for a decision, each through the ordinary per-item path. `dryRun=true` lists them,
+        // with titles, for the confirmation; the apply call sends back the `keys` it showed. See
+        // WorkItemApprovalService.ApproveAllOnCandidateAsync.
+        group.MapPost("/{id:guid}/work-items/approvals", async (
+            WorkItemApprovalService svc, Guid id, ApproveAllWorkItemsRequest? body, CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await svc.ApproveAllOnCandidateAsync(
+                    id, body?.DryRun ?? false, body?.Keys, body?.Comment, ct);
+                return Results.Ok(new
+                {
+                    dryRun = result.DryRun,
+                    approved = result.Approved,
+                    unchanged = result.Unchanged,
+                    failed = result.Failed,
+                });
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.QA);
+
         // List comments.
         group.MapGet("/{id:guid}/comments", async (PromotionService svc, Guid id) =>
         {
@@ -633,14 +691,14 @@ public static class PromotionEndpoints
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Reject.
         group.MapPost("/{id:guid}/reject", async (
             PromotionService svc, Guid id, PromotionDecisionRequest? body) =>
         {
             return await RunDecisionAsync(() => svc.RejectAsync(id, body?.Comment));
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Cancel approval — Approved back to Pending, for the wrong row approved by mistake. Only
         // while the candidate hasn't been dispatched; the service refuses everything else. Returns
@@ -662,7 +720,7 @@ public static class PromotionEndpoints
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // Bulk approve — succeeds partially: returns per-id outcome so the UI can show
         // which ones went through and which failed. Rejecting in bulk is intentionally
@@ -726,7 +784,7 @@ public static class PromotionEndpoints
                         workItemsOutstanding = gateStatuses.GetValueOrDefault(o.Id, PromotionGateStatus.None).WorkItemsOutstanding,
                     }),
             });
-        }).DenyPersonalTokens();
+        }).RequirePersonalTokenAccess(PersonalTokenAccess.Admin);
 
         // The target envs a registered build can be promoted to for this service: every edge whose
         // source is the synthetic "build" env and whose policy resolves (service-specific row wins
@@ -997,7 +1055,9 @@ public static class PromotionEndpoints
         RoleAliasMap? roleAliases = null,
         // True ⇒ references go out in the list's `view=summary` shape (see SummaryReference). Only the
         // list asks for it, and only when the caller opted in.
-        bool summaryReferences = false) => new
+        bool summaryReferences = false,
+        // Pending and held by an active Promotion Freeze on (product, targetEnv).
+        bool frozen = false) => new
     {
         id = c.Id,
         product = c.Product,
@@ -1038,6 +1098,8 @@ public static class PromotionEndpoints
             Deployments.WorkItemDisplay.ApplyToReferences(sourceEventReferences ?? Array.Empty<ReferenceDto>()),
             summaryReferences),
         canApprove,
+        // Pending and held by an active Promotion Freeze on (product, targetEnv).
+        frozen,
         // The approval steps this promotion is still short of approvals on, named as the policy names
         // them ("Release Approval"). Empty on anything that isn't Pending, on auto-approve edges, and
         // on responses that don't compute it. Short of approvals is not the same as open: read it
@@ -1268,6 +1330,11 @@ public static class PromotionEndpoints
         => !string.IsNullOrEmpty(haystack)
            && haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
 
+    // Debug for a failing Graph sign-in — EntraIdGraphService already logged it at Error — and
+    // Warning for anything else that broke a directory search.
+    private static LogLevel SearchFailureLevel(Exception ex)
+        => GraphCredentialHealth.CredentialFailureIn(ex) is null ? LogLevel.Warning : LogLevel.Debug;
+
     // Scrubs user-provided strings before they land in a log line. Drops ASCII control
     // characters (including CR/LF) so a crafted query can't inject fake log entries
     // (CWE-117, log forging). Also caps length so a huge value can't blow up log storage.
@@ -1336,4 +1403,9 @@ public record AssignReferenceParticipantTarget(string? Email, string? DisplayNam
 /// somebody in it.</summary>
 public record AssignWorkItemsParticipantRequest(
     string? Role, AssignReferenceParticipantTarget? Assignee, bool? OnlyMissing);
+
+/// <summary>Body for approving every waiting work item of a candidate. <c>DryRun</c> lists them
+/// without writing; <c>Keys</c> limits the apply to the ones the confirmation showed (all waiting
+/// items when omitted); <c>Comment</c> is recorded on every sign-off.</summary>
+public record ApproveAllWorkItemsRequest(bool? DryRun, List<string>? Keys, string? Comment);
 public record CommentRequest(string? Body);
