@@ -53,6 +53,7 @@ public static class Observations
     public const string LogPermissionDenied = "log_permission_denied";
     public const string LogConnectionRefused = "log_connection_refused";
     public const string LogHelmHookFailed = "log_helm_hook_failed";
+    public const string LogChartValuesRejected = "log_chart_values_rejected";
 
     /// <summary>Every flag above, for validating authored playbooks against reality.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -64,6 +65,6 @@ public static class Observations
         DeploySucceeded, DeployFailed, WasRollback, SyntheticSource, NoLogsCaptured, LogsTruncated,
         LogImagePullFailure, LogCrashLoop, LogProbeFailure, LogTimeout, LogHelmUpgradeFailed,
         LogHelmLock, LogHelmNoDeployedRelease, LogInsufficientResources, LogPermissionDenied,
-        LogConnectionRefused, LogHelmHookFailed,
+        LogConnectionRefused, LogHelmHookFailed, LogChartValuesRejected,
     };
 }
