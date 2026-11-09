@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Infrastructure.Jira;
 
@@ -59,7 +58,7 @@ public class JiraTicketExecutor : IExecutor
             }
         }
 
-        var resolvedParams = ResolveParameters(executor.ParametersMap, inputs);
+        var resolvedParams = ExecutorTemplate.ResolveParameters(executor.ParametersMap, inputs, request);
 
         var connection = executor.Connection;
 
@@ -137,25 +136,6 @@ public class JiraTicketExecutor : IExecutor
         {
             return [];
         }
-    }
-
-    private static Dictionary<string, string> ResolveParameters(
-        Dictionary<string, string> parametersMap,
-        Dictionary<string, string> inputs)
-    {
-        var resolved = new Dictionary<string, string>();
-
-        foreach (var (key, template) in parametersMap)
-        {
-            var value = Regex.Replace(template, @"\{\{(\w+)\}\}", match =>
-            {
-                var fieldName = match.Groups[1].Value;
-                return inputs.GetValueOrDefault(fieldName, match.Value);
-            });
-            resolved[key] = value;
-        }
-
-        return resolved;
     }
 
     /// <summary>

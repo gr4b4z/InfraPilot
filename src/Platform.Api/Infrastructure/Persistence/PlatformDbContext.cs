@@ -128,6 +128,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .HasConversion<string>();
             var inputsJson = e.Property(x => x.InputsJson).HasDefaultValue("{}");
             if (jsonType != null) inputsJson.HasColumnType(jsonType);
+            var approvalOutcomeJson = e.Property(x => x.ApprovalOutcomeJson);
+            if (jsonType != null) approvalOutcomeJson.HasColumnType(jsonType);
+            e.Ignore(x => x.ApprovalOutcome);
             e.HasIndex(x => x.RequesterId);
             e.HasIndex(x => x.Status);
             e.HasIndex(x => x.CorrelationId);
