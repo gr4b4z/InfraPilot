@@ -235,6 +235,10 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   `200` with `replayed: true`.
 - `GET /api/builds?product=&service=&branch=&limit=` — newest first, `branch` substring match.
 - `GET /api/builds/{id}` — one build incl. manifest.
+- `POST /api/builds/retired` / `POST /api/builds/retired/restore` — mark versions whose images were
+  removed from the container registry (body `{ reason?, items: [{ product?, service, version }] }`,
+  scope `build:retire`). Rollbacks never offer or target a retired version. `GET /api/builds/retired`
+  lists them.
 - `POST /api/promotions/from-build` `{ buildId, targetEnv }` — promote a registered build
   (targets discoverable via `GET /api/promotions/build-targets?product=&service=`).
 

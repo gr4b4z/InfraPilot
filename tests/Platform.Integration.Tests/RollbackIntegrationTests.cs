@@ -456,6 +456,67 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     }
 
     [Fact]
+    public async Task RetiredVersion_IsNotOffered_NorTargetable_UntilRestored()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.2", Hours(-1));
+        var unknownService = $"never-deployed-{Guid.NewGuid():N}";
+
+        // The registry cleanup removed 1.0's image.
+        var body = new
+        {
+            reason = "registry cleanup",
+            items = new object[]
+            {
+                new { product, service = "api", version = "1.0" },
+                new { service = unknownService, version = "9.9" },
+            },
+        };
+        var retired = await Body(await _apiKey.PostAsJsonAsync("/api/builds/retired", body));
+        Assert.Equal(1, retired.GetProperty("retired").GetInt32());
+        Assert.Equal(1, retired.GetProperty("unknown").GetInt32());
+        var again = await Body(await _apiKey.PostAsJsonAsync("/api/builds/retired", body));
+        Assert.Equal(0, again.GetProperty("retired").GetInt32());
+        Assert.Equal(1, again.GetProperty("alreadyRetired").GetInt32());
+
+        var list = await Body(await _admin.GetAsync($"/api/builds/retired?product={product}&service=api"));
+        Assert.Equal("1.0", list.GetProperty("results").EnumerateArray().Single().GetProperty("version").GetString());
+
+        // The picker no longer lists it, and a rollback to it says why it can't go.
+        var versions = await Body(await _admin.GetAsync(
+            $"/api/deployments/versions?product={product}&environment=staging&serviceName=api"));
+        Assert.Equal(new[] { "1.2", "1.1" },
+            versions.GetProperty("versions").EnumerateArray().Select(v => v.GetProperty("version").GetString()));
+        var preview = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "1.0")));
+        var item = ItemFor(preview, "api");
+        Assert.False(item.GetProperty("eligible").GetBoolean());
+        Assert.Equal("its image was removed from the container registry", item.GetProperty("skipReason").GetString());
+
+        // Restoring the tag makes it a target again.
+        var restored = await Body(await _apiKey.PostAsJsonAsync("/api/builds/retired/restore",
+            new { items = new[] { new { product, service = "api", version = "1.0" } } }));
+        Assert.Equal(1, restored.GetProperty("restored").GetInt32());
+        var after = await Body(await _admin.PostAsJsonAsync("/api/rollbacks/preview", RollbackBody(product, "1.0")));
+        Assert.True(ItemFor(after, "api").GetProperty("eligible").GetBoolean());
+    }
+
+    [Fact]
+    public async Task LastKnownGood_IsUnavailable_WhenTheGoodVersionsImageWasRemoved()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
+        var failed = await IngestAsync(product, "api", "staging", "1.2", Hours(-1), status: "failed");
+        (await _apiKey.PostAsJsonAsync("/api/builds/retired",
+            new { items = new[] { new { product, service = "api", version = "1.1" } } })).EnsureSuccessStatusCode();
+
+        var offer = await Body(await _admin.GetAsync($"/api/rollbacks/last-known-good/{failed}"));
+        Assert.False(offer.GetProperty("available").GetBoolean());
+        Assert.Contains("its image was removed from the container registry", offer.GetProperty("reason").GetString()!);
+    }
+
+    [Fact]
     public async Task LastKnownGood_RestoresTheLastSucceededVersion_AndClosesWhenItLands()
     {
         var product = await FreshEnrolledProductAsync();

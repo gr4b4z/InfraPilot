@@ -114,3 +114,33 @@ public record BuildFacetsDto(
     List<BuildFacetValueDto> Products,
     List<BuildFacetValueDto> Services,
     List<BuildFacetValueDto> Branches);
+
+// --- Retired versions (artifacts removed from the registry) ---
+
+/// <summary>
+/// Body of <c>POST /api/builds/retired</c> and <c>POST /api/builds/retired/restore</c>.
+/// <paramref name="Items"/> holds at most <see cref="RetireVersionsDto.MaxItems"/> entries.
+/// </summary>
+public record RetireVersionsDto(string? Reason, List<RetireVersionItemDto>? Items)
+{
+    public const int MaxItems = 5000;
+}
+
+/// <summary>
+/// One version to retire or restore. <paramref name="Product"/> is optional: the caller (a registry
+/// cleanup) knows the image, not the product. Without it the version is retired under every
+/// product the service has deploy events or builds for.
+/// </summary>
+public record RetireVersionItemDto(string? Product, string? Service, string? Version);
+
+/// <summary>
+/// Outcome of a retire call. <paramref name="Unknown"/> counts items whose service has no deploy
+/// events or builds under any product (nothing to hide, so nothing stored).
+/// </summary>
+public record RetireVersionsResultDto(int Retired, int AlreadyRetired, int Unknown);
+
+/// <summary>Outcome of a restore call: rows removed, and items that were not retired.</summary>
+public record RestoreVersionsResultDto(int Restored, int NotRetired);
+
+public record RetiredVersionDto(
+    Guid Id, string Product, string Service, string Version, string? Reason, string RetiredBy, DateTimeOffset RetiredAt);

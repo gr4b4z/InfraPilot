@@ -216,6 +216,8 @@ public class RollbackService
                 // succeeded deploys only; a bulk align over a failed release is the 2026-09-21 case.
                 var failed = await FailedReplacementAsync(dto.Product, input.Service, dto.TargetEnv, running, ct);
                 var (eligible, reason) = EvaluateTarget(toVersion, current, failed?.Version, history);
+                if (eligible && await IsRetiredAsync(dto.Product, input.Service, toVersion, ct))
+                    (eligible, reason) = (false, RetiredReason);
                 var note = failed is null
                     ? await FailedAttemptNoteAsync(dto.Product, input.Service, dto.TargetEnv, running, ct)
                     : RestoreNote(failed, running);
@@ -264,6 +266,8 @@ public class RollbackService
             }
             var history = await VersionHistoryAsync(dto.Product, service, dto.TargetEnv, ct);
             var (eligible, reason) = EvaluateTarget(refVersion, current, failedVersion: null, history);
+            if (eligible && await IsRetiredAsync(dto.Product, service, refVersion, ct))
+                (eligible, reason) = (false, RetiredReason);
             result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion, eligible, reason, note));
         }
 
@@ -279,6 +283,16 @@ public class RollbackService
     // An empty target uninstalls the service: it leaves the environment altogether. Anything that is
     // there can go: a running version, or a failed deploy with nothing running behind it. A service
     // with nothing in the environment (never deployed, or removed already) has nothing to remove.
+    private const string RetiredReason = "its image was removed from the container registry";
+
+    // A version the registry cleanup retired (see RetiredVersion): deploying it again would pull an
+    // image that no longer exists. Checked after EvaluateTarget, so the other reasons keep priority.
+    private Task<bool> IsRetiredAsync(string product, string service, string version, CancellationToken ct) =>
+        string.IsNullOrWhiteSpace(version)
+            ? Task.FromResult(false)
+            : _db.RetiredVersions.AsNoTracking()
+                .AnyAsync(r => r.Product == product && r.Service == service && r.Version == version, ct);
+
     private static (bool eligible, string? reason) EvaluateTarget(
         string toVersion, string? current, string? failedVersion, HashSet<string> history)
     {
@@ -1078,6 +1092,10 @@ public class RollbackService
                   "secrets, credentials or a dependency."
                 : $"A newer deploy of {evt.Service} in {evt.Environment} has not finished yet.");
         }
+
+        if (running is not null && await IsRetiredAsync(evt.Product, evt.Service, running.Version, ct))
+            return Unavailable($"{running.Version}, the last version that deployed successfully in {evt.Environment}, " +
+                               "can't be deployed again: its image was removed from the container registry.");
 
         var (canCreate, createReason) = await CanCreateAsync(evt.Product, evt.Environment, ct);
 

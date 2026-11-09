@@ -35,6 +35,7 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
     public DbSet<Build> Builds => Set<Build>();
+    public DbSet<RetiredVersion> RetiredVersions => Set<RetiredVersion>();
     public DbSet<DeployEvent> DeployEvents => Set<DeployEvent>();
     public DbSet<DeployEventWorkItem> DeployEventWorkItems => Set<DeployEventWorkItem>();
     public DbSet<DeployEventLog> DeployEventLogs => Set<DeployEventLog>();
@@ -246,6 +247,20 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .IsDescending(false, false, true);
             // "Which builds came from this branch?" — the question the registry exists to answer.
             e.HasIndex(x => x.Branch);
+        });
+
+        modelBuilder.Entity<RetiredVersion>(e =>
+        {
+            e.ToTable("retired_versions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Product).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Service).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Reason).HasMaxLength(500);
+            e.Property(x => x.RetiredBy).HasMaxLength(320).IsRequired();
+            // One row per version; also the lookup every rollback candidate query does.
+            e.HasIndex(x => new { x.Product, x.Service, x.Version }).IsUnique();
+            e.HasIndex(x => x.RetiredAt);
         });
 
         // Deploy Events
