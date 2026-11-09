@@ -297,6 +297,9 @@ public class DiagnosticsService
         ("timed out waiting for the condition", "log_timeout"),
         ("context deadline exceeded", "log_timeout"),
         ("UPGRADE FAILED", "log_helm_upgrade_failed"),
+        // "pre-upgrade hooks failed", "pre-install hooks failed", …: a hook Job (usually the
+        // service's schema migrations) ran and failed, so Helm never rolled the release forward.
+        ("hooks failed", "log_helm_hook_failed"),
         ("another operation (install/upgrade/rollback) is in progress", "log_helm_lock"),
         ("has no deployed releases", "log_helm_no_deployed_release"),
         ("Insufficient cpu", "log_insufficient_resources"),
