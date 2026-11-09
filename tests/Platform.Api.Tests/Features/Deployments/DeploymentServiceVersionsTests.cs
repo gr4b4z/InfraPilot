@@ -89,6 +89,26 @@ public class DeploymentServiceVersionsTests : IDisposable
     }
 
     [Fact]
+    public async Task SkipsVersionsWhoseImageWasRemoved()
+    {
+        var now = DateTimeOffset.UtcNow;
+        Add("v1", now.AddHours(-3));
+        Add("v2", now.AddHours(-2));
+        Add("v3", now.AddHours(-1));
+        // v1 retired for this product only; the same version of another product stays a target.
+        _db.RetiredVersions.Add(new Platform.Api.Features.Builds.Models.RetiredVersion
+        {
+            Id = Guid.NewGuid(), Product = "acme", Service = "api", Version = "v1", RetiredBy = "acr-cleanup",
+        });
+        Add("v1", now.AddHours(-3), product: "other");
+        _db.SaveChanges();
+
+        var versions = await _sut.GetVersions("acme", "prod", "api");
+        Assert.Equal(new[] { "v3", "v2" }, versions.Select(v => v.Version));
+        Assert.Equal(new[] { "v1" }, (await _sut.GetVersions("other", "prod", "api")).Select(v => v.Version));
+    }
+
+    [Fact]
     public async Task SkipsFailedDeploys()
     {
         var now = DateTimeOffset.UtcNow;

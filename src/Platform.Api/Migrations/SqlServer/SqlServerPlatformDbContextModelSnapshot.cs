@@ -193,6 +193,49 @@ namespace Platform.Api.Migrations.SqlServer
                     b.ToTable("builds", (string)null);
                 });
 
+            modelBuilder.Entity("Platform.Api.Features.Builds.Models.RetiredVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTimeOffset>("RetiredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RetiredBy")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("nvarchar(320)");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RetiredAt");
+
+                    b.HasIndex("Product", "Service", "Version")
+                        .IsUnique();
+
+                    b.ToTable("retired_versions", (string)null);
+                });
+
             modelBuilder.Entity("Platform.Api.Features.Catalog.Models.CatalogItem", b =>
                 {
                     b.Property<Guid>("Id")
