@@ -282,7 +282,19 @@ public partial class ReleaseProgressService
         var shipping = services.Where(s => !s.Excluded).ToList();
         var shippingKeys = shipping.Select(s => (s.Product, s.Service)).ToHashSet();
         var shippingEvents = events.Where(e => shippingKeys.Contains((e.Product, e.Service))).ToLookup(e => (e.Product, e.Service));
-        var context = new CheckContext(line, staging, production, shipping, shippingEvents);
+        // The services whose production deploy failed in each run — its last attempt there, so a retry
+        // that went through doesn't count. A deploy run holds every data migration back until all of
+        // its backends are out, so the migrations it queued wait for the next run.
+        var failedByRun = events
+            .Where(e => e.Environment == production)
+            .Select(e => (Event: e, Run: RunUrl(e.Run)))
+            .Where(x => x.Run is not null)
+            .GroupBy(x => (x.Run!, x.Event.Product, x.Event.Service))
+            .Select(g => g.OrderByDescending(x => x.Event.DeployedAt).First())
+            .Where(x => x.Event.Status == "failed")
+            .GroupBy(x => x.Run!)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Event.Service).Distinct().Order(StringComparer.Ordinal).ToList());
+        var context = new CheckContext(line, staging, production, shipping, shippingEvents, failedByRun);
         var checks = new List<ReleaseCheckDto>
         {
             StagingBuildsCheck(context) with { Runs = Aggregate(stagingRuns) },
@@ -526,7 +538,8 @@ public partial class ReleaseProgressService
             .ToList();
 
     private sealed record CheckContext(
-        string Line, string Staging, string Production, List<ReleaseServiceDto> Services, ILookup<(string, string), Ev> Events);
+        string Line, string Staging, string Production, List<ReleaseServiceDto> Services, ILookup<(string, string), Ev> Events,
+        IReadOnlyDictionary<string, List<string>> FailedDeploysByRun);
 
     private const string Waiting = "waiting";
     private const string InProgress = "in_progress";
@@ -755,13 +768,17 @@ public partial class ReleaseProgressService
     /// <summary>
     /// The migrations of every deployed version finished. Services that reported none have nothing to
     /// wait for; the check completes once every service is deployed and nothing is pending, running
-    /// or failed.
+    /// or failed. A data migration still pending from a run in which another service failed to deploy
+    /// was held back by that failure — the run skips them all — and waits for the next run; the check
+    /// warns about it, naming the failed services.
     /// </summary>
     private static ReleaseCheckDto MigrationsCheck(CheckContext c)
     {
         var deployed = c.Services.Where(s => Succeeded(s.Production)).ToList();
         var runs = deployed.SelectMany(s => s.Migrations.Select(m => (Service: s, Run: m))).ToList();
         var issues = new List<ReleaseCheckIssueDto>();
+        // Per run that held data migrations back: its label, the services that failed in it, the held ones.
+        var held = new Dictionary<string, (string Label, List<string> Failed, List<string> Services)>();
         int done = 0, open = 0, failed = 0, applied = 0;
         foreach (var (s, m) in runs)
         {
@@ -781,10 +798,30 @@ public partial class ReleaseProgressService
                     break;
                 default:
                     open++;
-                    issues.Add(new(s.Product, s.Service, $"{kind} migration of {m.Version} is {m.Status}"));
+                    if (HeldBack(c, s, m) is { } hold)
+                    {
+                        issues.Add(new(s.Product, s.Service,
+                            $"Data migration of {m.Version} waits for the next run: {JoinAnd(hold.Failed)} failed to deploy in {hold.Label}"));
+                        if (!held.TryGetValue(hold.Run, out var entry))
+                            held[hold.Run] = entry = (hold.Label, hold.Failed, []);
+                        entry.Services.Add(s.Service);
+                    }
+                    else
+                    {
+                        issues.Add(new(s.Product, s.Service, $"{kind} migration of {m.Version} is {m.Status}"));
+                    }
                     break;
             }
         }
+        var warnings = held.Values
+            .Select(h =>
+            {
+                var services = h.Services.Distinct().Order(StringComparer.Ordinal).ToList();
+                return $"{JoinAnd(h.Failed)} failed to deploy in {h.Label}, so that run skipped the data "
+                    + $"{Plural(services.Count, "migration", "migrations")} of {JoinAnd(services)}. "
+                    + $"{(services.Count == 1 ? "It runs" : "They run")} with the next deploy run to {c.Production}.";
+            })
+            .ToList();
         var notDeployed = c.Services.Count - deployed.Count;
         var summary = deployed.Count == 0
             ? "Waiting for the first production deploy."
@@ -801,8 +838,29 @@ public partial class ReleaseProgressService
             runs.Count == 0 ? null : runs.Min(r => r.Run.QueuedAt),
             open == 0 && finishedAt.Count > 0 ? finishedAt.Max() : null,
             issues,
-            []);
+            []) { Warnings = warnings };
     }
+
+    /// <summary>
+    /// The run that queued <paramref name="m"/>, when it is a data migration still pending there and
+    /// another service's deploy failed in that same run — which is why the run never got to it.
+    /// </summary>
+    private static (string Run, string Label, List<string> Failed)? HeldBack(CheckContext c, ReleaseServiceDto s, ReleaseMigrationDto m)
+    {
+        if (m.Kind != MigrationKinds.Data || m.Status != MigrationRunStatus.Pending || m.Run is null) return null;
+        var run = WholeRun(m.Run.Url);
+        if (run is null || !c.FailedDeploysByRun.TryGetValue(run, out var failedHere)) return null;
+        var others = failedHere.Where(f => !string.Equals(f, s.Service, StringComparison.OrdinalIgnoreCase)).ToList();
+        return others.Count == 0 ? null : (run, m.Run.Label, others);
+    }
+
+    /// <summary>"a", "a and b", "a, b and c".</summary>
+    private static string JoinAnd(IReadOnlyList<string> items) => items.Count switch
+    {
+        0 => "",
+        1 => items[0],
+        _ => string.Join(", ", items.Take(items.Count - 1)) + " and " + items[^1],
+    };
 
     private static string Truncate(string value, int max) => value.Length <= max ? value : value[..(max - 1)] + "…";
 }
