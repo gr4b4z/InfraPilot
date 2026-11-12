@@ -1,4 +1,4 @@
-import type { ReleaseCheckKey, ReleaseCheckState, ReleaseLink, ReleaseStatus, ReleaseStepStatus } from '@/lib/api';
+import type { ReleaseCheckKey, ReleaseCheckState, ReleaseLink, ReleaseManagerGate, ReleaseStatus, ReleaseStepStatus } from '@/lib/api';
 
 /** Colours and words for a release, its steps and its checks — one table, so list and detail agree. */
 export const RELEASE_STATUS: Record<ReleaseStatus, { bg: string; fg: string; label: string }> = {
@@ -116,4 +116,23 @@ export function cleanLinks(links: ReleaseLink[]): ReleaseLink[] {
   return links
     .map((l) => ({ url: l.url.trim(), label: l.label?.trim() || null }))
     .filter((l) => l.url.length > 0);
+}
+
+/**
+ * "mpt: a@x, b@x · mpt-extensions: Release Managers (group)" — the release managers per product, read
+ * off the production gates. Empty when no gate names any.
+ */
+export function describeManagers(gates: ReleaseManagerGate[], products?: string[]): string {
+  const byProduct = new Map<string, Set<string>>();
+  for (const g of gates) {
+    if (products && !products.includes(g.product)) continue;
+    const names = byProduct.get(g.product) ?? new Set<string>();
+    g.users.forEach((u) => names.add(u));
+    g.groups.forEach((x) => names.add(`${x.name || x.id} (group)`));
+    byProduct.set(g.product, names);
+  }
+  return [...byProduct.entries()]
+    .filter(([, names]) => names.size > 0)
+    .map(([product, names]) => `${product}: ${[...names].join(', ')}`)
+    .join(' · ');
 }

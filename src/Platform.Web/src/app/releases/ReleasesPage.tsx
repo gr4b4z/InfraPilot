@@ -7,7 +7,7 @@ import type { ReleaseManagers, ReleaseSummary } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { ListEmptyState } from '@/components/ui/ListEmptyState';
-import { formatTargetDate, releasePath, releaseStatusStyle } from '@/components/releases/releaseStatus';
+import { describeManagers, formatTargetDate, releasePath, releaseStatusStyle } from '@/components/releases/releaseStatus';
 import { ReleaseForm } from './ReleaseForm';
 
 /**
@@ -42,7 +42,7 @@ export function ReleasesPage() {
     api.getReleaseManagers().then(setManagers).catch(() => setManagers(null));
   }, [tick]);
 
-  const managerNames = managers ? [...managers.users, ...managers.groups.map((g) => g.name || g.id)] : [];
+  const managerText = managers ? describeManagers(managers.gates) : '';
 
   const active = items.filter((r) => r.status === 'planned' || r.status === 'in_progress');
   const past = items.filter((r) => r.status === 'completed' || r.status === 'cancelled');
@@ -63,9 +63,9 @@ export function ReleasesPage() {
             </p>
             {managers && (
               <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                {managerNames.length > 0
-                  ? <>Run by the release managers: {managerNames.join(', ')}.</>
-                  : <>No release managers yet, so only admins run releases.</>}
+                {managerText
+                  ? <>Run by admins and the release managers, the approvers of “{managers.requirement}” on the production promotion gates — {managerText}.</>
+                  : <>No production promotion gate has a “{managers.requirement}” requirement, so only admins run releases.</>}
                 {managers.canEdit && (
                   <> <Link to="/settings/releases" className="underline" style={{ color: 'var(--accent)' }}>Change in Settings → Releases</Link></>
                 )}
