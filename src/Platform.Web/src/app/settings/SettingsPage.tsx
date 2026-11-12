@@ -71,7 +71,7 @@ const NAV: NavItem[] = [
     to: 'releases',
     label: 'Releases',
     icon: Milestone,
-    description: 'Who opens and runs releases besides admins',
+    description: 'Which promotion gate requirement makes someone a release manager',
   },
   {
     to: 'rollbacks',

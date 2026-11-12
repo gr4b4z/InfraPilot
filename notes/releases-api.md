@@ -95,21 +95,40 @@ release notes.
 Anyone signed in can read releases. Only admins and the **release managers** can create a release,
 edit it, move its steps, or mark it released, cancelled or reopened. QA has no extra rights here.
 
-- **Release managers** are the people (emails) and directory groups an admin lists in
-  **Settings → Releases**, stored as the platform setting `releases.managers`. An empty list makes
-  nobody a release manager; it never means everyone. Admins don't count as members of the listed
-  groups here: they have the rights anyway.
+- **Release managers** are defined the same way as the promotion approval gates, because they are
+  read from those gates. A product's release managers are the approvers (users and directory groups)
+  of the **Release Manager** requirement on its promotion policy into the release's production
+  environment. That is the product-wide policy, or the service-specific ones when the product has no
+  product-wide policy there. The people who give a product's release approval are the people who run
+  its releases, and both are configured in one place, **Settings → Promotions**.
+  - The requirement name is a setting: **Settings → Releases**, platform setting
+    `releases.managerRequirement`, default `Release Manager`.
+  - A gate with nobody on it makes nobody a release manager.
+  - Admins don't count as members of every group here; they have the rights anyway.
+  - Signing another requirement of the same gate, such as QA Manager, gives no release rights.
+- **Opening a release** of some products needs a release manager of at least one of them. Changing a
+  release's products or production environment needs a release manager of the new ones.
 - **The person named on a release** as its `releaseManager` (email or directory id) can run that
-  release too, even when not on the list. Only admins and release managers create releases, so only
-  they choose who that is.
+  release too, even without signing the gate. Only admins and release managers create releases, so
+  only they choose who that is. The named manager can't move the release to other products or
+  another production environment.
 - **Deleting** a release is for admins only. Anyone else cancels it.
 
 A personal access token acts as its owner, and an admin API key acts as an admin.
 
-`GET /api/releases/managers` returns the list to anyone signed in, so the page can say whom to ask,
-together with `canEdit` (the caller is an admin) and `isReleaseManager`. `PUT /api/releases/managers`
-with `{ "groups": [{ "id": "…", "name": "…" }], "users": ["rm@example.com"] }` replaces it. It is
-admin only and audited. `GET /api/releases` also returns `canCreate` for the caller.
+`GET /api/releases/managers?product=&environment=` is readable by anyone signed in, so the page can
+say whom to ask. It returns:
+
+- `requirement`: the requirement name.
+- `gates`: per product and policy, the step, the requirement, and its `users` and `groups`. With no
+  `environment` given, every production environment is included (marked so in
+  **Settings → Environments**, or named like one).
+- `knownRequirements`: every requirement name the gates use.
+- `canEdit`: the caller is an admin.
+- `isReleaseManager`: the caller is a release manager, for that product or for any product.
+
+`PUT /api/releases/managers` with `{ "requirement": "Release Manager" }` changes the requirement
+name. It is admin only and audited. `GET /api/releases` also returns `canCreate` for the caller.
 
 ## Endpoints
 
@@ -117,7 +136,7 @@ All of them are under `/api/releases`.
 
 | Method and path | What it does |
 |---|---|
-| `GET /managers`, `PUT /managers` | The release managers (see above). PUT is admin only. |
+| `GET /managers`, `PUT /managers` | Who the release managers are, read from the production promotion gates, and which gate requirement defines them (see above). PUT is admin only. |
 | `GET /?status=&product=&limit=&offset=` | List. `status` is `active` (planned and in progress) or one release status. Releases in progress come first, then planned ones, then history, newest first. |
 | `GET /{id}` | One release with its steps and `canManage` for the caller. |
 | `GET /{id}/progress` | The live evidence: `services[]` (staging, promotion, production, failed attempts, migrations) and `checks[]`. |

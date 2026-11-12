@@ -42,19 +42,36 @@ public record ReleaseSummaryDto(
 public record ReleaseListDto(List<ReleaseSummaryDto> Items, int Total, bool CanCreate);
 
 /// <summary>
-/// The release managers: the people (emails) and directory groups who open and run releases besides
-/// administrators. <see cref="CanEdit"/> says whether the caller may change the list (administrators);
-/// <see cref="IsReleaseManager"/> whether the caller is on it.
+/// One gate requirement that makes its approvers release managers: on the promotion policy of
+/// <see cref="Product"/> (and <see cref="Service"/>, for a service-specific policy) from
+/// <see cref="SourceEnv"/> into the production environment <see cref="TargetEnv"/>.
+/// </summary>
+public record ReleaseManagerGateDto(
+    Guid PolicyId,
+    string Product,
+    string? Service,
+    string SourceEnv,
+    string TargetEnv,
+    string Step,
+    string Requirement,
+    List<Platform.Api.Features.Promotions.Models.GroupRef> Groups,
+    List<string> Users);
+
+/// <summary>
+/// Who the release managers are: the approvers of the <see cref="Requirement"/> requirement on the
+/// production promotion gates (<see cref="Gates"/>). <see cref="CanEdit"/> says whether the caller may
+/// change which requirement that is (administrators); <see cref="IsReleaseManager"/> whether the caller
+/// is one, for the products asked about (any product when none was).
+/// <see cref="KnownRequirements"/> lists every requirement name the gates use.
 /// </summary>
 public record ReleaseManagersDto(
-    List<Platform.Api.Features.Promotions.Models.GroupRef> Groups,
-    List<string> Users,
+    string Requirement,
+    List<ReleaseManagerGateDto> Gates,
+    List<string> KnownRequirements,
     bool CanEdit,
     bool IsReleaseManager);
 
-public record UpdateReleaseManagersRequest(
-    List<Platform.Api.Features.Promotions.Models.GroupRef>? Groups,
-    List<string>? Users);
+public record UpdateReleaseManagersRequest(string Requirement);
 
 public record ReleaseDto(
     Guid Id,

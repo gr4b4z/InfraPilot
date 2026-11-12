@@ -32,9 +32,6 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         _qa = factory.CreateAuthenticatedClient("qa@localhost", "qa123");
         _viewer = factory.CreateAuthenticatedClient("viewer@localhost", "viewer123");
         _admin = factory.CreateAdminClient();
-        // Release managers are named by email only here: the test identity stub puts everybody in every group.
-        _admin.PutAsJsonAsync("/api/releases/managers", new { groups = Array.Empty<object>(), users = new[] { ManagerEmail } })
-            .GetAwaiter().GetResult().EnsureSuccessStatusCode();
     }
 
     public void Dispose()
@@ -46,35 +43,55 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     }
 
     [Fact]
-    public async Task ReleaseManagers_AreChosenByAdmins_AndReadableByEveryone()
+    public async Task ReleaseManagers_AreTheApproversOfTheProductionGate()
     {
-        var asViewer = await Json(await _viewer.GetAsync("/api/releases/managers"));
-        Assert.Equal(ManagerEmail, asViewer.GetProperty("users")[0].GetString());
+        var product = Unique("gate");
+        await SeedGate(product, ("QA Review", "QA Manager", "qa@localhost"), ("Release Approval", "Release Manager", ManagerEmail));
+
+        // Everyone reads who they are: the "Release Manager" requirement of the production gate.
+        var asViewer = await Json(await _viewer.GetAsync($"/api/releases/managers?product={product}"));
+        Assert.Equal("Release Manager", asViewer.GetProperty("requirement").GetString());
+        var gate = Assert.Single(asViewer.GetProperty("gates").EnumerateArray());
+        Assert.Equal("Release Approval", gate.GetProperty("step").GetString());
+        Assert.Equal("prod", gate.GetProperty("targetEnv").GetString());
+        Assert.Equal(ManagerEmail, gate.GetProperty("users")[0].GetString());
+        Assert.Contains(asViewer.GetProperty("knownRequirements").EnumerateArray(), r => r.GetString() == "QA Manager");
         Assert.False(asViewer.GetProperty("canEdit").GetBoolean());
         Assert.False(asViewer.GetProperty("isReleaseManager").GetBoolean());
-        Assert.True((await Json(await _rm.GetAsync("/api/releases/managers"))).GetProperty("isReleaseManager").GetBoolean());
+        Assert.True((await Json(await _rm.GetAsync($"/api/releases/managers?product={product}"))).GetProperty("isReleaseManager").GetBoolean());
 
-        // Only admins change the list — a release manager can't add people.
-        Assert.Equal(HttpStatusCode.Forbidden,
-            (await _rm.PutAsJsonAsync("/api/releases/managers", new { users = new[] { ManagerEmail, "qa@localhost" } })).StatusCode);
-
-        // The list says who may open a release; QA alone no longer does.
+        // Signing another requirement of the gate (QA) doesn't make anyone a release manager.
         Assert.True((await Json(await _rm.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
         Assert.False((await Json(await _qa.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
         Assert.True((await Json(await _admin.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
-
-        // An empty list makes nobody a release manager; admins still can.
-        await Json(await _admin.PutAsJsonAsync("/api/releases/managers", new { users = Array.Empty<string>() }));
-        Assert.False((await Json(await _rm.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
         Assert.Equal(HttpStatusCode.Forbidden,
-            (await _rm.PostAsJsonAsync("/api/releases", new { version = "7.1", products = new[] { Unique("empty") } })).StatusCode);
-        await Json(await _admin.PutAsJsonAsync("/api/releases/managers", new { users = new[] { ManagerEmail } }));
+            (await _qa.PostAsJsonAsync("/api/releases", new { version = "7.0", products = new[] { product } })).StatusCode);
+
+        // A release manager of one product can't open a release of a product whose gate doesn't name them.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _rm.PostAsJsonAsync("/api/releases", new { version = "7.1", products = new[] { Unique("nogate") } })).StatusCode);
+
+        // Only admins choose which requirement it is.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _rm.PutAsJsonAsync("/api/releases/managers", new { requirement = "QA Manager" })).StatusCode);
+        try
+        {
+            await Json(await _admin.PutAsJsonAsync("/api/releases/managers", new { requirement = "QA Manager" }));
+            Assert.False((await Json(await _rm.GetAsync($"/api/releases/managers?product={product}"))).GetProperty("isReleaseManager").GetBoolean());
+            Assert.Equal(HttpStatusCode.Created,
+                (await _qa.PostAsJsonAsync("/api/releases", new { version = "7.2", products = new[] { product } })).StatusCode);
+        }
+        finally
+        {
+            await _admin.PutAsJsonAsync("/api/releases/managers", new { requirement = "Release Manager" });
+        }
     }
 
     [Fact]
     public async Task Create_StartsFromTheTemplate_AndOnlyManagersChangeIt()
     {
         var product = Unique("rel");
+        await SeedGate(product, ("Release Approval", "Release Manager", ManagerEmail));
         var created = await _rm.PostAsJsonAsync("/api/releases", new
         {
             version = "v5.10", products = new[] { product },
@@ -115,8 +132,11 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
                 (await reader.PostAsJsonAsync("/api/releases", new { version = "5.11", products = new[] { product } })).StatusCode);
         }
         Assert.Equal(HttpStatusCode.Forbidden, (await _rm.DeleteAsync($"/api/releases/{id}")).StatusCode);
+        // Nor can a release manager move a release to products whose gates don't name them.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _rm.PutAsJsonAsync($"/api/releases/{id}", new { version = "5.10", products = new[] { Unique("elsewhere") } })).StatusCode);
 
-        // The person named as a release's manager runs that release, even when not on the list.
+        // The person named as a release's manager runs that release, even without signing the gate.
         var named = await Json(await _rm.PostAsJsonAsync("/api/releases", new
         {
             version = "5.20", products = new[] { product }, releaseManager = "qa@localhost", releaseManagerName = "QA Engineer",
@@ -155,6 +175,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     public async Task Steps_MoveThroughTheirStates_AndCanBeBackdated()
     {
         var product = Unique("steps");
+        await SeedGate(product, ("Release Approval", "Release Manager", ManagerEmail));
         var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new { version = "6.0", products = new[] { product } }));
         var id = release.GetProperty("id").GetGuid();
         var steps = release.GetProperty("steps").EnumerateArray().ToList();
@@ -236,6 +257,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     public async Task Progress_ReadsTheLineFromDeploysPromotionsAndMigrations()
     {
         var product = Unique("prog");
+        await SeedGate(product, ("Release Approval", "Release Manager", ManagerEmail));
         var t0 = DateTimeOffset.UtcNow.AddDays(-20);
 
         // On the line and shipped: staged, promoted, deployed, migrated.
@@ -375,6 +397,24 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         db.DeployEvents.Add(e);
         await db.SaveChangesAsync();
         return e.Id;
+    }
+
+    /// <summary>
+    /// A staging → prod promotion policy for the product with the given approval requirements, each
+    /// naming one approver by email — group membership can't be tested here, the test identity stub
+    /// puts everybody in every group.
+    /// </summary>
+    private async Task SeedGate(string product, params (string Step, string Requirement, string User)[] requirements)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var policy = new PromotionPolicy { Id = Guid.NewGuid(), Product = product, SourceEnv = "staging", TargetEnv = "prod" };
+        policy.ApprovalSteps = requirements
+            .GroupBy(r => r.Step)
+            .Select(g => new ApprovalStep(g.Key, g.Select(r => new ApproverRequirement(r.Requirement, [], [r.User])).ToList()))
+            .ToList();
+        db.PromotionPolicies.Add(policy);
+        await db.SaveChangesAsync();
     }
 
     private async Task SeedCandidate(

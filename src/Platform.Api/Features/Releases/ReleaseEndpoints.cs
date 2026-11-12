@@ -6,7 +6,8 @@ namespace Platform.Api.Features.Releases;
 /// <summary>
 /// <c>/api/releases</c> — versioned releases and their checklists (see <see cref="Release"/>).
 /// Registered for any signed-in caller; <see cref="ReleaseService"/> decides who may change what:
-/// administrators and the release managers (<c>/managers</c>) run releases, everyone else reads them.
+/// administrators and the release managers (<c>/managers</c>: the approvers of the release-manager
+/// requirement on the production promotion gates) run releases, everyone else reads them.
 /// The <c>/progress</c> read is the portal's own evidence for the release — computed on each call.
 /// </summary>
 public static class ReleaseEndpoints
@@ -20,22 +21,29 @@ public static class ReleaseEndpoints
             return Results.Ok(await releases.ListAsync(status, product, Math.Clamp(limit ?? 50, 1, 200), Math.Max(offset ?? 0, 0), ct));
         });
 
-        // Who besides administrators opens and runs releases. Readable by everyone, so the page can say
-        // who to ask; changed by administrators only.
-        group.MapGet("/managers", async (ReleaseService releases, ICurrentUser user, CancellationToken ct) =>
+        // Who besides administrators opens and runs releases: the approvers of the release-manager
+        // requirement on the production promotion gates. Readable by everyone, so the page can say who
+        // to ask; which requirement it is, is changed by administrators only.
+        group.MapGet("/managers", async (
+            ReleaseService releases, ICurrentUser user, string? product, string? environment, CancellationToken ct) =>
         {
-            var managers = await releases.GetManagersAsync(ct);
+            var gates = await releases.GetManagerGatesAsync(product, environment, ct);
+            var isManager = string.IsNullOrWhiteSpace(product)
+                ? await releases.IsReleaseManagerAnywhereAsync(ct)
+                : await releases.IsReleaseManagerOfAsync([product], environment ?? "prod", ct);
             return Results.Ok(new ReleaseManagersDto(
-                managers.Groups, managers.Users, user.IsAdmin, await releases.IsReleaseManagerAsync(ct)));
+                await releases.GetManagerRequirementAsync(ct), gates, await releases.GetGateRequirementNamesAsync(ct),
+                user.IsAdmin, isManager));
         });
 
         group.MapPut("/managers", (ReleaseService releases, ICurrentUser user, UpdateReleaseManagersRequest body, CancellationToken ct) =>
             Handle(async () =>
             {
                 if (body is null) return Results.BadRequest(new { error = "request body is required" });
-                var saved = await releases.SetManagersAsync(
-                    new Platform.Api.Features.Rollbacks.Models.PrincipalSet(body.Groups ?? [], body.Users ?? []), ct);
-                return Results.Ok(new ReleaseManagersDto(saved.Groups, saved.Users, user.IsAdmin, await releases.IsReleaseManagerAsync(ct)));
+                var requirement = await releases.SetManagerRequirementAsync(body.Requirement, ct);
+                return Results.Ok(new ReleaseManagersDto(
+                    requirement, await releases.GetManagerGatesAsync(null, null, ct), await releases.GetGateRequirementNamesAsync(ct),
+                    user.IsAdmin, await releases.IsReleaseManagerAnywhereAsync(ct)));
             }));
 
         group.MapGet("/{id:guid}", async (ReleaseService releases, Guid id, CancellationToken ct) =>

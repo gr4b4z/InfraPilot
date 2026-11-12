@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Releases.Models;
-using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
@@ -28,10 +27,13 @@ public sealed class ReleaseForbiddenException(string message) : Exception(messag
 /// derives the release status the same way, leaves an audit entry and tells open pages to refresh.
 ///
 /// <para><b>Who may change a release.</b> Anyone signed in can read them. Administrators and the
-/// release managers — the people and directory groups an administrator lists under Settings →
-/// Releases (<see cref="ManagersSettingKey"/>) — open releases and run them: edit them, move their
-/// steps, close them. The person named as a release's manager can run that release too. Deleting one
-/// is for administrators only — a release that happened is cancelled or reopened, not removed.</para>
+/// release managers open releases and run them: edit them, move their steps, close them. A release
+/// manager is whoever can sign the "Release Manager" requirement (the name is a setting,
+/// <see cref="ManagerRequirementSettingKey"/>) of the production promotion gate of one of the
+/// release's products — the same people who give that gate's release approval, configured in one
+/// place, Settings → Promotions. The person named as a release's manager can run that release too.
+/// Deleting one is for administrators only — a release that happened is cancelled or reopened, not
+/// removed.</para>
 /// </summary>
 public partial class ReleaseService
 {
@@ -50,11 +52,14 @@ public partial class ReleaseService
     private readonly IAuditLogger _audit;
     private readonly IPlatformEventPublisher _events;
     private readonly PromotionApprovalAuthorizer _principals;
+    private readonly AppSettingsService _appSettings;
 
     public ReleaseService(
         PlatformDbContext db, EnvironmentAliasResolver environments, ICurrentUser user,
-        IAuditLogger audit, IPlatformEventPublisher events, PromotionApprovalAuthorizer principals)
+        IAuditLogger audit, IPlatformEventPublisher events, PromotionApprovalAuthorizer principals,
+        AppSettingsService appSettings)
     {
+        _appSettings = appSettings;
         _db = db;
         _environments = environments;
         _user = user;
@@ -63,81 +68,166 @@ public partial class ReleaseService
         _principals = principals;
     }
 
-    // ── Release managers ─────────────────────────────────────────────────────
+    // ── Release managers: the production promotion gate ──────────────────────
 
-    /// <summary>The platform setting holding the release managers, a JSON <see cref="PrincipalSet"/>.</summary>
-    public const string ManagersSettingKey = "releases.managers";
+    /// <summary>
+    /// The platform setting naming the approval-gate requirement whose approvers are the release
+    /// managers. Unset means <see cref="DefaultManagerRequirement"/>.
+    /// </summary>
+    public const string ManagerRequirementSettingKey = "releases.managerRequirement";
+    public const string DefaultManagerRequirement = "Release Manager";
 
-    private bool? _isReleaseManager;
+    private string? _managerRequirement;
+    private IReadOnlySet<string>? _productionEnvironments;
+    private readonly Dictionary<string, bool> _managerOf = new(StringComparer.OrdinalIgnoreCase);
 
-    public async Task<PrincipalSet> GetManagersAsync(CancellationToken ct)
+    public async Task<string> GetManagerRequirementAsync(CancellationToken ct)
     {
+        if (_managerRequirement is not null) return _managerRequirement;
         var value = await _db.PlatformSettings.AsNoTracking()
-            .Where(s => s.Key == ManagersSettingKey)
+            .Where(s => s.Key == ManagerRequirementSettingKey)
             .Select(s => s.Value)
             .FirstOrDefaultAsync(ct);
-        if (string.IsNullOrWhiteSpace(value)) return new PrincipalSet();
-        try
-        {
-            var set = JsonSerializer.Deserialize<PrincipalSet>(value, Json);
-            return set is null ? new PrincipalSet() : new PrincipalSet(set.Groups ?? [], set.Users ?? []);
-        }
-        catch (JsonException) { return new PrincipalSet(); }
+        return _managerRequirement = string.IsNullOrWhiteSpace(value) ? DefaultManagerRequirement : value.Trim();
     }
 
-    public async Task<PrincipalSet> SetManagersAsync(PrincipalSet managers, CancellationToken ct)
+    public async Task<string> SetManagerRequirementAsync(string? requirement, CancellationToken ct)
     {
         if (!_user.IsAdmin)
-            throw new ReleaseForbiddenException("Only administrators can choose the release managers.");
-        var groups = (managers.Groups ?? [])
-            .Where(g => g is not null && !string.IsNullOrWhiteSpace(g.Id))
-            .Select(g => new GroupRef(g.Id.Trim(), string.IsNullOrWhiteSpace(g.Name) ? g.Id.Trim() : g.Name.Trim()))
-            .DistinctBy(g => g.Id, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var users = Names(managers.Users, "users", MaxServiceNames);
-        if (groups.Count > MaxServiceNames) throw new ReleaseValidationException($"'groups' has more than {MaxServiceNames} entries.");
-        var clean = new PrincipalSet(groups, users);
+            throw new ReleaseForbiddenException("Only administrators can choose where the release managers come from.");
+        var clean = Required(requirement, "requirement", 200);
+        var before = await GetManagerRequirementAsync(ct);
 
-        var before = await GetManagersAsync(ct);
-        var row = await _db.PlatformSettings.FirstOrDefaultAsync(s => s.Key == ManagersSettingKey, ct);
+        var row = await _db.PlatformSettings.FirstOrDefaultAsync(s => s.Key == ManagerRequirementSettingKey, ct);
         if (row is null)
         {
-            row = new PlatformSetting { Key = ManagersSettingKey };
+            row = new PlatformSetting { Key = ManagerRequirementSettingKey };
             _db.PlatformSettings.Add(row);
         }
-        row.Value = JsonSerializer.Serialize(clean, Json);
+        row.Value = clean;
         row.UpdatedAt = DateTimeOffset.UtcNow;
         row.UpdatedBy = Actor;
         await _db.SaveChangesAsync(ct);
-        _isReleaseManager = null;
+        _managerRequirement = clean;
+        _managerOf.Clear();
 
-        await _audit.Log(AuditModule, "release.managers-updated", _user.Id, _user.Name, "user",
-            "ReleaseManagers", null, before, clean);
+        await _audit.Log(AuditModule, "release.manager-requirement-updated", _user.Id, _user.Name, "user",
+            "ReleaseManagers", null, new { requirement = before }, new { requirement = clean });
         await _events.PublishEntityChanged(new EntityChangedEvent { Entity = "release", Action = "managers-updated" });
         return clean;
     }
 
+    /// <summary>Every requirement name the promotion gates use — what the setting can point at.</summary>
+    public async Task<List<string>> GetGateRequirementNamesAsync(CancellationToken ct) =>
+        (await _db.PromotionPolicies.AsNoTracking().ToListAsync(ct))
+            .SelectMany(p => p.ApprovalSteps)
+            .SelectMany(step => step.Requirements)
+            .Select(r => (r.Name ?? "").Trim())
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     /// <summary>
-    /// Whether the caller is one of the release managers. An empty list makes nobody one — it never
-    /// means everybody — and an administrator does not count as a member of every group here, so the
-    /// answer says what the setting says.
+    /// Where the release managers are defined: per product, the promotion policies into the production
+    /// environment — the product-wide ones, or the service-specific ones when the product has no
+    /// product-wide policy there — and each of their requirements named like the setting.
+    /// <paramref name="environment"/> null means every production environment (marked so in
+    /// Settings → Environments, or named like one).
     /// </summary>
-    public async Task<bool> IsReleaseManagerAsync(CancellationToken ct)
+    public async Task<List<ReleaseManagerGateDto>> GetManagerGatesAsync(string? product, string? environment, CancellationToken ct)
     {
-        if (_isReleaseManager is { } known) return known;
-        var managers = await GetManagersAsync(ct);
-        var email = !string.IsNullOrEmpty(_user.Email) ? _user.Email : _user.Id;
-        _isReleaseManager = !managers.IsEmpty && !string.IsNullOrEmpty(email)
-            && await _principals.IsInPrincipalSetAsync(managers.Groups, managers.Users, email, ct, allowAdminShortcut: false);
-        return _isReleaseManager.Value;
+        var requirement = await GetManagerRequirementAsync(ct);
+        var env = string.IsNullOrWhiteSpace(environment) ? null : await _environments.ResolveAsync(environment, ct);
+        var query = _db.PromotionPolicies.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(product)) query = query.Where(p => p.Product == product);
+        var policies = await query.ToListAsync(ct);
+        var production = env is null ? await ProductionEnvironmentsAsync(ct) : null;
+        policies = policies
+            .Where(p => env is not null
+                ? string.Equals(p.TargetEnv, env, StringComparison.OrdinalIgnoreCase)
+                : production!.Contains(p.TargetEnv))
+            .ToList();
+
+        var gates = new List<ReleaseManagerGateDto>();
+        foreach (var cell in policies.GroupBy(p => (p.Product, TargetEnv: p.TargetEnv.ToLowerInvariant())))
+        {
+            var productWide = cell.Where(p => p.Service is null).ToList();
+            foreach (var policy in productWide.Count > 0 ? productWide : cell.ToList())
+            foreach (var step in policy.ApprovalSteps)
+            foreach (var req in step.Requirements.Where(r => string.Equals((r.Name ?? "").Trim(), requirement, StringComparison.OrdinalIgnoreCase)))
+            {
+                gates.Add(new ReleaseManagerGateDto(
+                    policy.Id, policy.Product, policy.Service, policy.SourceEnv, policy.TargetEnv,
+                    step.Name, req.Name, req.Groups ?? [], req.Users ?? []));
+            }
+        }
+        return gates
+            .OrderBy(g => g.Product, StringComparer.Ordinal)
+            .ThenBy(g => g.Service is not null)
+            .ThenBy(g => g.Service, StringComparer.Ordinal)
+            .ThenBy(g => g.SourceEnv, StringComparer.Ordinal)
+            .ToList();
     }
 
-    /// <summary>Administrators and release managers open releases.</summary>
-    public async Task<bool> CanCreateAsync(CancellationToken ct) => _user.IsAdmin || await IsReleaseManagerAsync(ct);
+    private async Task<IReadOnlySet<string>> ProductionEnvironmentsAsync(CancellationToken ct)
+    {
+        if (_productionEnvironments is not null) return _productionEnvironments;
+        var settings = await _appSettings.GetSettings(ct);
+        var marked = settings.Environments.Where(e => e.IsProduction).Select(e => e.Key);
+        var targets = await _db.PromotionPolicies.AsNoTracking().Select(p => p.TargetEnv).Distinct().ToListAsync(ct);
+        return _productionEnvironments = marked
+            .Concat(targets.Where(Platform.Api.Features.Analytics.EnvironmentStage.IsProductionByName))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
 
-    /// <summary>Administrators, release managers, and the person named as this release's manager run it.</summary>
+    /// <summary>
+    /// Whether the caller can sign the release-manager requirement of the production gate of any of
+    /// <paramref name="products"/> — what makes someone a release manager of a release of them. An
+    /// administrator does not count as a member of every group here, and a gate with nobody on it
+    /// makes nobody a release manager.
+    /// </summary>
+    public async Task<bool> IsReleaseManagerOfAsync(IEnumerable<string> products, string environment, CancellationToken ct)
+    {
+        var list = products.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList();
+        var key = $"{environment}|{string.Join(',', list)}";
+        if (_managerOf.TryGetValue(key, out var known)) return known;
+        var result = false;
+        foreach (var product in list)
+        {
+            if (await IsOnGatesAsync(await GetManagerGatesAsync(product, environment, ct), ct)) { result = true; break; }
+        }
+        return _managerOf[key] = result;
+    }
+
+    /// <summary>Whether the caller is a release manager of any product — may open a release at all.</summary>
+    public async Task<bool> IsReleaseManagerAnywhereAsync(CancellationToken ct)
+    {
+        const string key = "*";
+        if (_managerOf.TryGetValue(key, out var known)) return known;
+        return _managerOf[key] = await IsOnGatesAsync(await GetManagerGatesAsync(null, null, ct), ct);
+    }
+
+    private async Task<bool> IsOnGatesAsync(List<ReleaseManagerGateDto> gates, CancellationToken ct)
+    {
+        var email = !string.IsNullOrEmpty(_user.Email) ? _user.Email : _user.Id;
+        if (string.IsNullOrEmpty(email) || gates.Count == 0) return false;
+        var groups = gates.SelectMany(g => g.Groups).DistinctBy(g => g.Id, StringComparer.OrdinalIgnoreCase).ToList();
+        var users = gates.SelectMany(g => g.Users).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (groups.Count == 0 && users.Count == 0) return false;
+        return await _principals.IsInPrincipalSetAsync(groups, users, email, ct, allowAdminShortcut: false);
+    }
+
+    /// <summary>Administrators, and release managers of any product, may open a release.</summary>
+    public async Task<bool> CanCreateAsync(CancellationToken ct) => _user.IsAdmin || await IsReleaseManagerAnywhereAsync(ct);
+
+    /// <summary>
+    /// Administrators, the release managers of its products, and the person named as its manager run a
+    /// release.
+    /// </summary>
     public async Task<bool> CanManageAsync(Release release, CancellationToken ct) =>
-        IsNamedManager(release) || await CanCreateAsync(ct);
+        _user.IsAdmin || IsNamedManager(release)
+        || await IsReleaseManagerOfAsync(ParseList(release.ProductsJson), release.ProductionEnvironment, ct);
 
     private bool IsNamedManager(Release release) =>
         !string.IsNullOrWhiteSpace(release.ReleaseManager)
@@ -195,12 +285,14 @@ public partial class ReleaseService
     public async Task<ReleaseDto> CreateAsync(CreateReleaseRequest request, CancellationToken ct)
     {
         if (!await CanCreateAsync(ct))
-            throw new ReleaseForbiddenException("Only administrators and release managers can open a release.");
+            throw new ReleaseForbiddenException(
+                $"Only administrators and release managers can open a release. Release managers are the approvers of the '{await GetManagerRequirementAsync(ct)}' requirement on a production promotion gate.");
 
         var clean = await CleanAsync(
             request.Version, request.Products, request.Title, request.StagingEnvironment, request.ProductionEnvironment,
             request.TargetDate, request.ReleaseManager, request.ReleaseManagerName, request.Notes,
             request.IncludedServices, request.ExcludedServices, request.StartedAt, request.Links, ct);
+        await EnsureInScopeAsync(clean, alsoNamed: false, ct);
         await EnsureUniqueAsync(clean, exceptId: null, ct);
 
         var now = DateTimeOffset.UtcNow;
@@ -241,6 +333,12 @@ public partial class ReleaseService
             request.Version, request.Products, request.Title, request.StagingEnvironment, request.ProductionEnvironment,
             request.TargetDate, request.ReleaseManager, request.ReleaseManagerName, request.Notes,
             request.IncludedServices, request.ExcludedServices, request.StartedAt, request.Links, ct);
+        // Changing the products or the production environment needs a release manager of the new ones:
+        // the named manager may edit their release, not move it to products nobody let them run.
+        var sameScope = string.Equals(row.ProductionEnvironment, clean.ProductionEnvironment, StringComparison.OrdinalIgnoreCase)
+            && ParseList(row.ProductsJson).Order(StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(clean.Products.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+        await EnsureInScopeAsync(clean, alsoNamed: sameScope && IsNamedManager(row), ct);
         await EnsureUniqueAsync(clean, exceptId: id, ct);
 
         var before = Snapshot(row);
@@ -661,6 +759,14 @@ public partial class ReleaseService
             if (step.Title == old.Title) step.Title = now.Title;
             if (step.Description == old.Description) step.Description = now.Description;
         }
+    }
+
+    private async Task EnsureInScopeAsync(Clean clean, bool alsoNamed, CancellationToken ct)
+    {
+        if (_user.IsAdmin || alsoNamed) return;
+        if (!await IsReleaseManagerOfAsync(clean.Products, clean.ProductionEnvironment, ct))
+            throw new ReleaseForbiddenException(
+                $"You are not a release manager of {string.Join(", ", clean.Products)}: that is whoever can sign the '{await GetManagerRequirementAsync(ct)}' requirement of the product's promotion gate into {clean.ProductionEnvironment}.");
     }
 
     private async Task EnsureCanManageAsync(Release row, CancellationToken ct)

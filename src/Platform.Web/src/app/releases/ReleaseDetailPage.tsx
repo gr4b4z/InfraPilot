@@ -40,6 +40,7 @@ import {
   CHECK_STATE,
   STEP_STATUS,
   cleanLinks,
+  describeManagers,
   formatTargetDate,
   fromLocalInput,
   releaseStatusStyle,
@@ -85,6 +86,7 @@ export function ReleaseDetailPage() {
   const [confirm, setConfirm] = useState<'complete' | 'cancel' | 'delete' | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [managers, setManagers] = useState<string | null>(null);
 
   useDocumentTitle([release?.title ?? 'Release', 'Releases']);
 
@@ -107,6 +109,19 @@ export function ReleaseDetailPage() {
       .catch((e) => { if (!cancelled) setProgressError(e instanceof Error ? e.message : 'Failed to load the checks'); });
     return () => { cancelled = true; };
   }, [id, releaseTick, recordsTick]);
+
+  // Who may run it besides admins: the approvers of the release-manager requirement on its products'
+  // production gates.
+  const productsKey = release ? `${release.productionEnvironment}|${release.products.join(',')}` : '';
+  useEffect(() => {
+    if (!productsKey) return;
+    const [environment, list] = productsKey.split('|');
+    let cancelled = false;
+    api.getReleaseManagers({ environment })
+      .then((m) => { if (!cancelled) setManagers(describeManagers(m.gates, list.split(',')) || `nobody on a “${m.requirement}” gate`); })
+      .catch(() => { if (!cancelled) setManagers(null); });
+    return () => { cancelled = true; };
+  }, [productsKey]);
 
   const checks = useMemo(
     () => new Map((progress?.checks ?? []).map((c) => [c.key, c])),
@@ -180,6 +195,7 @@ export function ReleaseDetailPage() {
               {release.startedAt && <>Started {fmt(release.startedAt)}. </>}
               {release.completedAt && <>Released {fmt(release.completedAt)}. </>}
               {release.cancelledAt && <>Cancelled {fmt(release.cancelledAt)}{release.cancelReason ? `: ${release.cancelReason}` : ''}. </>}
+              {managers && <>Run by admins and the release managers ({managers}).</>}
             </p>
           </div>
         </div>

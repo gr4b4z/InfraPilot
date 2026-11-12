@@ -1677,11 +1677,15 @@ class ApiClient {
     return this.request<Release>(`/releases/${id}`);
   }
 
-  getReleaseManagers() {
-    return this.request<ReleaseManagers>(`/releases/managers`);
+  getReleaseManagers(params?: { product?: string; environment?: string }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<ReleaseManagers>(`/releases/managers${query}`);
   }
 
-  updateReleaseManagers(payload: { groups: PromotionPolicyGroupRef[]; users: string[] }) {
+  updateReleaseManagers(payload: { requirement: string }) {
     return this.request<ReleaseManagers>(`/releases/managers`, { method: 'PUT', body: JSON.stringify(payload) });
   }
 
@@ -3454,13 +3458,31 @@ export interface ReleaseList {
   canCreate: boolean;
 }
 
-/** Who besides admins opens and runs releases (Settings → Releases). */
-export interface ReleaseManagers {
+/** One gate requirement whose approvers are release managers: a product's promotion gate into production. */
+export interface ReleaseManagerGate {
+  policyId: string;
+  product: string;
+  service: string | null;
+  sourceEnv: string;
+  targetEnv: string;
+  step: string;
+  requirement: string;
   groups: PromotionPolicyGroupRef[];
   users: string[];
-  /** The caller may change the list (admins). */
+}
+
+/**
+ * Who besides admins opens and runs releases: the approvers of `requirement` ("Release Manager")
+ * on the production promotion gates. Which requirement it is, is set in Settings → Releases.
+ */
+export interface ReleaseManagers {
+  requirement: string;
+  gates: ReleaseManagerGate[];
+  /** Every requirement name the promotion gates use. */
+  knownRequirements: string[];
+  /** The caller may change which requirement it is (admins). */
   canEdit: boolean;
-  /** The caller is on the list. */
+  /** The caller is a release manager — of the product asked about, or of any product. */
   isReleaseManager: boolean;
 }
 
