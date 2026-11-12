@@ -81,7 +81,7 @@ export function describeLink(url: string, label?: string | null): { text: string
   }
   let path = u.pathname;
   try { path = decodeURIComponent(path); } catch { /* keep it encoded */ }
-  const host = u.host.toLowerCase();
+  const host = u.hostname.toLowerCase();
   const named = (text: string, kind: LinkKind) => ({ text: label || text, kind });
 
   const buildId = u.searchParams.get('buildId');
@@ -98,7 +98,8 @@ export function describeLink(url: string, label?: string | null): { text: string
   const version = u.searchParams.get('version');
   if (m && version?.startsWith('GT')) return named(`${m[1]} tag ${version.slice(2)}`, 'tag');
   if (m) return named(m[1], 'repo');
-  if (host.endsWith('atlassian.net')) {
+  // The site itself or one of its subdomains — never a look-alike such as notatlassian.net.
+  if (host === 'atlassian.net' || host.endsWith('.atlassian.net')) {
     m = path.match(/\/browse\/([A-Z][A-Z0-9]+-\d+)/i);
     if (m) return named(m[1].toUpperCase(), 'ticket');
     if (/\/projects\/[^/]+\/versions\/\d+/.test(path)) return named('Jira release version', 'ticket');

@@ -40,6 +40,7 @@ import {
   CHECK_STATE,
   STEP_STATUS,
   cleanLinks,
+  describeLink,
   describeManagers,
   formatTargetDate,
   fromLocalInput,
@@ -846,6 +847,10 @@ function ServicesTable({ progress, release }: { progress: ReleaseProgress | null
   );
 }
 
+function runHost(url: string): string | null {
+  try { return new URL(url).hostname.toLowerCase(); } catch { return null; }
+}
+
 /** A small icon link to the pipeline run (or the service's job in it) behind a deploy or migration. */
 function RunIcon({ run }: { run: ReleaseRunRef | null }) {
   if (!run) return null;
@@ -885,9 +890,10 @@ function LinksSection({ release, progress, onEdit }: { release: Release; progres
   // Every pipeline run any check read, once each: SDP runs, mpt-release workflow runs.
   const runs = [...new Map((progress?.checks ?? []).flatMap((c) => c.runs).map((r) => [r.url, r])).values()];
   const byProvider = runs.reduce<Record<string, number>>((acc, r) => {
-    // A producer that sent only a link still says where it ran.
-    const azure = r.provider === 'azure-devops' || /[?&]buildId=\d+/.test(r.url);
-    const github = r.provider === 'github-actions' || /github\.com\/[^/]+\/[^/]+\/actions\/runs\//.test(r.url);
+    // A producer that sent only a link still says where it ran: read it off the parsed address.
+    const kind = describeLink(r.url);
+    const github = r.provider === 'github-actions' || (kind.kind === 'run' && runHost(r.url) === 'github.com');
+    const azure = r.provider === 'azure-devops' || (kind.kind === 'run' && !github);
     const key = azure ? 'Azure DevOps' : github ? 'GitHub Actions' : 'other';
     acc[key] = (acc[key] ?? 0) + 1;
     return acc;
