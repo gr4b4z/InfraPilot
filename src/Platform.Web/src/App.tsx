@@ -22,6 +22,8 @@ import { PromotionsPage } from '@/app/promotions/PromotionsPage';
 import { PromotionsAuditPage } from '@/app/promotions/PromotionsAuditPage';
 import { PromotionDetailPage } from '@/app/promotions/PromotionDetailPage';
 import { RollbacksPage } from '@/app/rollbacks/RollbacksPage';
+import { ReleasesPage } from '@/app/releases/ReleasesPage';
+import { ReleaseDetailPage } from '@/app/releases/ReleaseDetailPage';
 import { MyQueuePage } from '@/app/me/MyQueuePage';
 import { MyTasksPage } from '@/app/me/MyTasksPage';
 import { AgentAccessPage } from '@/app/me/AgentAccessPage';
@@ -35,6 +37,7 @@ import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
 import { FreezeSettings } from '@/app/settings/FreezeSettings';
 import { RollbackSettings } from '@/app/settings/RollbackSettings';
+import { ReleaseSettings } from '@/app/settings/ReleaseSettings';
 import { MaintenanceSettings } from '@/app/settings/MaintenanceSettings';
 import { ServiceProductsSettings } from '@/app/settings/ServiceProductsSettings';
 import { AgentTokensSettings } from '@/app/settings/AgentTokensSettings';
@@ -130,6 +133,9 @@ function App() {
           <Route path="/work-items/:service/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><WorkItemDetailPage /></FeatureRoute>} />
           <Route path="/work-items/:key" element={<FeatureRoute flag={FeatureFlag.Promotions}><LegacyWorkItemRedirect /></FeatureRoute>} />
           <Route path="/rollbacks" element={<FeatureRoute flag={FeatureFlag.Rollbacks}><RollbacksPage /></FeatureRoute>} />
+          {/* Releases read promotions, so they live and die with that feature. */}
+          <Route path="/releases" element={<FeatureRoute flag={FeatureFlag.Promotions}><ReleasesPage /></FeatureRoute>} />
+          <Route path="/releases/:id" element={<FeatureRoute flag={FeatureFlag.Promotions}><ReleaseDetailPage /></FeatureRoute>} />
           <Route path="/release-notes" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesIndexPage /></FeatureRoute>} />
           <Route path="/release-notes/:product" element={<FeatureRoute flag={FeatureFlag.ReleaseNotes}><ReleaseNotesPage /></FeatureRoute>} />
           {/* "new" route must come before the dynamic :id route so it isn't captured as an id. */}
@@ -147,6 +153,7 @@ function App() {
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
             <Route path="freeze" element={<FreezeSettings />} />
+            <Route path="releases" element={<ReleaseSettings />} />
             <Route path="rollbacks" element={<RollbackSettings />} />
             <Route path="service-products" element={<ServiceProductsSettings />} />
             <Route path="agent-tokens" element={<AgentTokensSettings />} />

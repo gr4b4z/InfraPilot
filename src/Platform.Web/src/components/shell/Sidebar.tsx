@@ -19,6 +19,7 @@ import {
   History,
   Inbox,
   ListTodo,
+  Milestone,
   Package,
   ScrollText,
   Undo2,
@@ -110,6 +111,14 @@ const navGroups: NavGroup[] = [
       { to: '/analytics/delivery', label: 'Delivery metrics', icon: Gauge, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
       { to: '/artifacts', label: 'Artifacts', icon: Package },
+    ],
+  },
+  {
+    // Versioned release trains, version cut to production sign-off. Built on promotions, so gated with them.
+    label: 'Releases',
+    featureFlag: FeatureFlag.Promotions,
+    items: [
+      { to: '/releases', label: 'Releases', icon: Milestone },
     ],
   },
   {

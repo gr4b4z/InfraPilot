@@ -14,6 +14,7 @@ import {
   Shuffle,
   KeyRound,
   Gauge,
+  Milestone,
 } from 'lucide-react';
 
 interface NavItem {
@@ -65,6 +66,12 @@ const NAV: NavItem[] = [
     label: 'Freeze',
     icon: Snowflake,
     description: 'Hold promotions for a product into an environment',
+  },
+  {
+    to: 'releases',
+    label: 'Releases',
+    icon: Milestone,
+    description: 'Which promotion gate requirement makes someone a release manager',
   },
   {
     to: 'rollbacks',
