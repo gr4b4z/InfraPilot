@@ -632,3 +632,8 @@ body {
   40%  { opacity: 1; }
   100% { box-shadow: 0 0 0 4px var(--accent-muted, rgba(0, 0, 0, 0.08)); opacity: 1; }
 }
+
+/* DateField draws its own calendar button; hide the browser's, where it has one, so there is only one. */
+.date-field::-webkit-calendar-picker-indicator {
+  display: none;
+}

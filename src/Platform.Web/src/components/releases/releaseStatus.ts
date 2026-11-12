@@ -25,6 +25,7 @@ export const CHECK_STATE: Record<ReleaseCheckState, { bg: string; fg: string; la
 /** What the portal measures for a step — shown above the numbers. */
 export const CHECK_LABEL: Record<ReleaseCheckKey, string> = {
   'staging-builds': 'Builds on staging',
+  'staging-qa': 'QA Review',
   'production-promotions': 'Production promotions',
   'production-deploys': 'Production deployments',
   'production-migrations': 'Migrations',
