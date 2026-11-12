@@ -1685,7 +1685,7 @@ class ApiClient {
     return this.request<ReleaseManagers>(`/releases/managers${query}`);
   }
 
-  updateReleaseManagers(payload: { requirement: string }) {
+  updateReleaseManagers(payload: { requirement?: string; qaStep?: string }) {
     return this.request<ReleaseManagers>(`/releases/managers`, { method: 'PUT', body: JSON.stringify(payload) });
   }
 
@@ -1712,6 +1712,11 @@ class ApiClient {
 
   deleteReleaseStep(id: string, stepId: string) {
     return this.request<Release>(`/releases/${id}/steps/${stepId}`, { method: 'DELETE' });
+  }
+
+  /** Replace the services left out of the release (product/service); every other service of its products ships. */
+  setReleaseServices(id: string, excluded: string[]) {
+    return this.request<Release>(`/releases/${id}/services`, { method: 'PUT', body: JSON.stringify({ excluded }) });
   }
 
   completeRelease(id: string, completedAt?: string) {
@@ -3403,7 +3408,7 @@ export interface IncidentList {
 
 export type ReleaseStatus = 'planned' | 'in_progress' | 'completed' | 'cancelled';
 export type ReleaseStepStatus = 'pending' | 'in_progress' | 'done' | 'skipped';
-export type ReleaseCheckKey = 'staging-builds' | 'production-promotions' | 'production-deploys' | 'production-migrations';
+export type ReleaseCheckKey = 'staging-builds' | 'staging-qa' | 'production-promotions' | 'production-deploys' | 'production-migrations';
 export type ReleaseCheckState = 'waiting' | 'in_progress' | 'complete' | 'attention';
 
 /** A link with an optional label; without one the page names it from the address. */
@@ -3429,6 +3434,8 @@ export interface ReleaseStep {
   note: string | null;
   links: ReleaseLink[];
   custom: boolean;
+  /** Only some releases need it (the maintenance page); while still to do it doesn't count. */
+  optional: boolean;
 }
 
 export interface ReleaseSummary {
@@ -3439,8 +3446,6 @@ export interface ReleaseSummary {
   status: ReleaseStatus;
   /** yyyy-MM-dd */
   targetDate: string | null;
-  releaseManager: string | null;
-  releaseManagerName: string | null;
   startedAt: string | null;
   completedAt: string | null;
   cancelledAt: string | null;
@@ -3477,6 +3482,10 @@ export interface ReleaseManagerGate {
  */
 export interface ReleaseManagers {
   requirement: string;
+  /** The approval step that is the QA gate, for the Test on staging check. */
+  qaStep: string;
+  /** Every approval step name the gates use. */
+  knownSteps: string[];
   gates: ReleaseManagerGate[];
   /** Every requirement name the promotion gates use. */
   knownRequirements: string[];
@@ -3498,13 +3507,11 @@ export interface Release {
   stagingEnvironment: string;
   productionEnvironment: string;
   targetDate: string | null;
-  releaseManager: string | null;
-  releaseManagerName: string | null;
   status: ReleaseStatus;
   notes: string | null;
   /** Where the release lives outside the portal: the issue-tracker version, the plan, the retro. */
   links: ReleaseLink[];
-  includedServices: string[];
+  /** Services of the products left out of the release, as product/service. */
   excludedServices: string[];
   startedAt: string | null;
   completedAt: string | null;
@@ -3526,11 +3533,7 @@ export interface ReleaseInput {
   stagingEnvironment?: string | null;
   productionEnvironment?: string | null;
   targetDate?: string | null;
-  releaseManager?: string | null;
-  releaseManagerName?: string | null;
   notes?: string | null;
-  includedServices?: string[];
-  excludedServices?: string[];
   startedAt?: string | null;
   links?: ReleaseLink[];
 }
@@ -3571,6 +3574,32 @@ export interface ReleasePromotion {
   approvedAt: string | null;
   deployedAt: string | null;
   externalRunUrl: string | null;
+  /** Approval steps a pending promotion is still short of ("QA Review", "Release Approval"). */
+  outstandingSteps: string[];
+  /** A pending promotion held by its work-item gate. */
+  workItemsOutstanding: boolean;
+  workItems: ReleaseWorkItems | null;
+  /** The QA gate. */
+  qaReview: 'approved' | 'pending' | 'rejected' | 'not-required';
+  qaApprovedAt: string | null;
+  qaApprovedBy: string | null;
+}
+
+export interface ReleaseWorkItems {
+  total: number;
+  approved: number;
+  issues: number;
+  blocked: number;
+}
+
+/** The newest registered build of the release for a service. */
+export interface ReleaseBuild {
+  id: string;
+  version: string;
+  branch: string;
+  buildId: string | null;
+  buildUrl: string | null;
+  createdAt: string;
 }
 
 export interface ReleaseMigration {
@@ -3589,7 +3618,11 @@ export interface ReleaseMigration {
 export interface ReleaseService {
   product: string;
   service: string;
-  included: boolean;
+  /** Left out of the release by a release manager: listed, not counted by the checks. */
+  excluded: boolean;
+  /** Has a build or promotion of the version line; false for a service on a version scheme of its own. */
+  onLine: boolean;
+  build: ReleaseBuild | null;
   staging: ReleaseDeploy | null;
   promotion: ReleasePromotion | null;
   production: ReleaseDeploy | null;
@@ -3631,6 +3664,8 @@ export interface ReleaseCheck {
 export interface ReleaseProgress {
   releaseId: string;
   version: string;
+  /** The approval step that is the QA gate ("QA Review"). */
+  qaStep: string;
   computedAt: string;
   from: string;
   to: string;

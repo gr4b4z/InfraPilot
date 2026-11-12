@@ -11,23 +11,31 @@ The release is gated with the Promotions feature flag, because its checks read p
 
 ## Scope: which services are in a release
 
-A service is in a release when, in one of the release's `products`, it ran or was promoted with a
-version on the line in the release's staging or production environment. On the line means:
+**Every service of the release's products is in it.** That means each service present on the
+release's staging or production environment by the end of the window (its newest event there is not
+a removal). Services an admin has retired are not services.
 
-| Version | On `5.10`? |
-|---|---|
-| `5.10`, `5.10.0`, `5.10.27-g425981a8`, `v5.10.3`, `5.10-rc1` | yes |
-| `5.100.1`, `15.10.1`, `5.9.31-gf167cabc`, `5.1.246-gd6a6cfef` | no |
+A release manager leaves services out from the **Services** tile on the release page: a checklist of
+every service of the products, like **Mass approve**. A left-out service stays on the list, marked as
+not shipping, and the checks stop counting it. The API stores them as `excludedServices`
+(`product/service`), replaced as a whole with `PUT /api/releases/{id}/services { "excluded": [...] }`.
 
-Two lists adjust this:
+What a service's records are depends on its versions:
 
-- `includedServices`: services on their own version scheme that ship with the train anyway. For 5.10
-  these were mpt-extension-adobe (`5.1.x`) and mpt-interim-renewals (`0.1.0-n`). Everything such a
-  service deploys or promotes inside the window counts.
-- `excludedServices`: services on the line that are not shipping, such as a 5.10 build still waiting
-  on its work items.
+- **On the line:** its deploys to staging and production and its promotions to production with a
+  version on the release's line.
 
-Each entry is `service` or `product/service`. Services that an admin has retired are always left out.
+  | Version | On `5.10`? |
+  |---|---|
+  | `5.10`, `5.10.0`, `5.10.27-g425981a8`, `v5.10.3`, `5.10-rc1` | yes |
+  | `5.100.1`, `15.10.1`, `5.9.31-gf167cabc`, `5.1.246-gd6a6cfef` | no |
+
+- **On a version scheme of its own:** a service with nothing on the line, such as mpt-extension-adobe
+  (`5.1.x`) or mpt-interim-renewals (`0.1.0-n`) in 5.10. Everything it deployed and promoted inside
+  the window counts. The progress response marks these with `onLine: false`.
+
+A service of the products that wasn't part of the train (no build, nothing promoted) shows up as open
+on every check until it is left out.
 
 ## The evidence window
 
@@ -36,7 +44,7 @@ completed release goes on describing the day it shipped after the line's next ho
 
 There are two refinements:
 
-- The lower bound applies only to included services. Nothing is on the line before the line exists.
+- The lower bound applies only to services off the line. Nothing is on the line before the line exists.
 - Promotions are read only up to the moment the **Approve the production promotions** step was marked
   done. A promotion raised after the approval round closed is that service's next change (a hotfix or
   a fresh build), not part of this release.
@@ -46,6 +54,7 @@ There are two refinements:
 | Check (`check`) | Done per service when | Needs attention when |
 |---|---|---|
 | `staging-builds` | A line build succeeded on staging, or is already in production | The newest staging deploy failed |
+| `staging-qa` | Its promotion passed the QA gate: the approval step named **QA Review** (Settings → Releases) is signed, the promotion is approved, or its gate has no such step | A promotion was rejected |
 | `production-promotions` | Its promotion is Approved, Deploying or Deployed, or production already runs what staging has | A promotion was rejected |
 | `production-deploys` | Production runs a succeeded line deploy, and no newer approved version is still waiting to deploy | The newest production deploy failed |
 | `production-migrations` | Every migration run of the version production runs (the schema run of that deploy and the newest data run) finished | A migration failed |
@@ -53,6 +62,24 @@ There are two refinements:
 Each check returns `state` (`waiting`, `in_progress`, `complete` or `attention`), `done`/`total`, a
 one-line `summary`, `firstAt`/`lastAt` (the range of the underlying approvals, deploys or migrations),
 `issues` (the services still open and why), and `runs` (the pipeline runs it read, see below).
+
+On the page, each checked step shows a table of the release's services: the ones the check still waits
+for, with why, and all of them on request.
+
+| Step | Columns |
+|---|---|
+| Build and Staging | Build (the newest registered build of the release), deploy to staging, promotion to production |
+| Test on staging | Promotion to production, work items signed off, QA Review |
+| Approve the production promotions | Promotion to production, work items, approval (approved, or the steps it still waits for) |
+| Deploy to production | Approved version, production deployment, failed attempts |
+| Run schema and data migrations | What production runs, schema migration, data migration |
+
+For this, each service in the progress response carries `build` (from the build registry, of the line or
+inside the window), and its `promotion` carries `outstandingSteps`, `workItemsOutstanding`, `workItems`
+(`total`, `approved`, `issues`, `blocked`, judged per instance like the promotion's own gate) and
+`qaReview` (`approved`, `pending`, `rejected` or `not-required`) with `qaApprovedAt`/`qaApprovedBy`.
+The response names the QA step as `qaStep`. It is a setting next to the release-manager requirement
+(`releases.qaStep`, default `QA Review`; `PUT /api/releases/managers { "qaStep": "…" }`).
 
 A service's promotion is the newest one still in play: its newest non-superseded candidate, or the
 newest candidate when all of them were superseded.
@@ -108,10 +135,8 @@ edit it, move its steps, or mark it released, cancelled or reopened. QA has no e
   - Signing another requirement of the same gate, such as QA Manager, gives no release rights.
 - **Opening a release** of some products needs a release manager of at least one of them. Changing a
   release's products or production environment needs a release manager of the new ones.
-- **The person named on a release** as its `releaseManager` (email or directory id) can run that
-  release too, even without signing the gate. Only admins and release managers create releases, so
-  only they choose who that is. The named manager can't move the release to other products or
-  another production environment.
+- **A release has no release manager of its own.** Nobody is named on it; its release managers are
+  whoever approves its products' promotions to production, as above.
 - **Deleting** a release is for admins only. Anyone else cancels it.
 
 A personal access token acts as its owner, and an admin API key acts as an admin.
@@ -141,7 +166,8 @@ All of them are under `/api/releases`.
 | `GET /{id}` | One release with its steps and `canManage` for the caller. |
 | `GET /{id}/progress` | The live evidence: `services[]` (staging, promotion, production, failed attempts, migrations) and `checks[]`. |
 | `POST /` | Create. The checklist comes from the default template (below). Returns `201`, or `409` with `existingId` when one of the products already has a release of that version. A cancelled release frees its version. |
-| `PUT /{id}` | Replace the details (version, products, environments, dates, release manager, scope lists, notes). |
+| `PUT /{id}` | Replace the details (version, products, environments, start, links, notes). |
+| `PUT /{id}/services` | `{ excluded: ["product/service", …] }`. The services left out of the release; every other service of its products ships. |
 | `PATCH /{id}/steps/{stepId}` | Move or edit a step. See below. |
 | `POST /{id}/steps` | Add a step: `{ title, description?, owner?, afterStepId? }`. Added steps are `custom`, and only they can be deleted. |
 | `DELETE /{id}/steps/{stepId}` | Remove a custom step. A template step is skipped instead. |
@@ -152,18 +178,18 @@ All of them are under `/api/releases`.
 
 ### Create
 
+Only `version` and `products` are required, and the **New release** form asks for those plus the
+release date. Everything else has a default and is set later with `PUT` (the page's **Edit**).
+
 ```jsonc
 {
   "version": "5.11",                       // major.minor; a leading "v" is dropped
   "products": ["mpt", "mpt-extensions", "mpt-support-tools"],
+  "targetDate": "2027-01-14",              // the planned production date
+  // ── Details: optional, defaults shown ──
   "title": "Release 5.11",                 // default "Release {version}"
   "stagingEnvironment": "staging",         // default "staging", aliases resolved
   "productionEnvironment": "prod",         // default "prod"
-  "targetDate": "2027-01-14",              // the planned production date
-  "releaseManager": "rm@example.com",      // default: the caller
-  "releaseManagerName": "Release Manager",
-  "includedServices": ["mpt-extensions/mpt-extension-adobe"],
-  "excludedServices": [],
   "startedAt": null,                       // set it to record a release that is already under way
   "notes": "Scope, downtime, decisions",
   "links": [
@@ -207,14 +233,21 @@ InfraPortal, the marketplace SDP and mpt-release runs, Jira and the release plan
 |---|---|---|---|
 | Plan the scope and release date | Release manager | — | Scope meeting on 12 Oct. Jira fixVersion with release date 12 Nov. Plan: code freeze 2 Nov, go/no-go 6 Nov, release 12 Nov. |
 | Start the release line | Release manager | — | 27 Oct, 12:21–12:47: `5.10.0` tags on `release/5` of every repo, cut from a workstation. One repo was tagged a day late. |
-| Build and deploy to staging | Developers | `staging-builds` | First 5.10 component reached staging on 28 Oct 07:34. Fixes came as new `5.10.x` builds until release day. |
+| Build and Staging | Developers | `staging-builds` | First 5.10 component reached staging on 28 Oct 07:34. Fixes came as new `5.10.x` builds until release day. |
 | Code freeze | Release manager | — | 2 Nov 08:35: staging branch cut. A failed install was fixed with a hand-edited manifest and a re-run. |
-| Test on staging | QA | — | Regression and acceptance tests, then the QA green light. No system records the green light. |
+| Test on staging | QA | `staging-qa` | Regression and acceptance tests, work items signed off, and the QA Review gate signed on every promotion (09:00 on release day). |
 | Go / no-go | Release manager | — | 6 Nov: no downtime, so no maintenance page; DevOps runs the deploy. |
 | Approve the production promotions | Release manager | `production-promotions` | 12 Nov 09:00–09:01: Mass approve of QA Review and Release Approval. One service was approved again at 10:26 after a hotfix build. |
+| Enable maintenance page *(optional)* | DevOps | — | Skipped: no downtime. |
 | Deploy to production | DevOps | `production-deploys` | 09:07–09:56 through SDP (after an approval on the Azure DevOps production environment) and mpt-release. One service failed twice on a schema-migration timeout, then shipped as a new build at 10:33–10:43. |
 | Run schema and data migrations | DevOps | `production-migrations` | Schema migrations ran inside the deploys. Data migrations ran 10:43–11:29, part of them started by hand. |
+| Disable maintenance page *(optional)* | DevOps | — | Skipped: no downtime. |
 | Sanity test in production | QA | — | QA sanity testing and sign-off. No system records it. |
+
+The maintenance-page steps (`maintenance-on`, `maintenance-off`) are `optional: true`: only a release
+that needs downtime uses them. Skip them otherwise. While an optional step is still `pending` it doesn't
+count: the list's `stepsClosed`/`stepsTotal` and `currentStep` leave it out, and so does the page.
+Started or skipped, it counts like any other step.
 
 Release-specific manual work, such as a data export before one service's deploy, goes in as a custom
 step (5.10 had one, tracked in Jira). The template is copied when a release is created, so changing it

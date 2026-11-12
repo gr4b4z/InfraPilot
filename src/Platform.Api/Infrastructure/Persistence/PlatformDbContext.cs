@@ -847,12 +847,9 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
             e.Property(x => x.ProductsJson).HasMaxLength(4000).HasDefaultValue("[]").IsRequired();
             e.Property(x => x.StagingEnvironment).HasMaxLength(100).IsRequired();
             e.Property(x => x.ProductionEnvironment).HasMaxLength(100).IsRequired();
-            e.Property(x => x.ReleaseManager).HasMaxLength(300);
-            e.Property(x => x.ReleaseManagerName).HasMaxLength(300);
             e.Property(x => x.Status).HasMaxLength(20).IsRequired();
             e.Property(x => x.Notes).HasMaxLength(8000);
             e.Property(x => x.LinksJson).HasDefaultValue("[]").IsRequired();
-            e.Property(x => x.IncludedServicesJson).HasMaxLength(8000).HasDefaultValue("[]").IsRequired();
             e.Property(x => x.ExcludedServicesJson).HasMaxLength(8000).HasDefaultValue("[]").IsRequired();
             e.Property(x => x.CancelReason).HasMaxLength(2000);
             e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();

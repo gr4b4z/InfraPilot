@@ -104,17 +104,24 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal("5.10", release.GetProperty("version").GetString());
         Assert.Equal("Release 5.10", release.GetProperty("title").GetString());
         Assert.Equal("planned", release.GetProperty("status").GetString());
-        Assert.Equal("user@localhost", release.GetProperty("releaseManager").GetString());
+        // A release has no release manager of its own: its products' production gates say who runs it.
+        Assert.False(release.TryGetProperty("releaseManager", out _));
         Assert.Equal("staging", release.GetProperty("stagingEnvironment").GetString());
         Assert.Equal("prod", release.GetProperty("productionEnvironment").GetString());
         Assert.True(release.GetProperty("canManage").GetBoolean());
         Assert.Equal("Issue tracker version", release.GetProperty("links")[0].GetProperty("label").GetString());
         var steps = release.GetProperty("steps").EnumerateArray().ToList();
-        Assert.Equal(10, steps.Count);
+        Assert.Equal(12, steps.Count);
         Assert.Equal("plan", steps[0].GetProperty("key").GetString());
         Assert.Equal("Start the 5.10 release line", steps[1].GetProperty("title").GetString());
         Assert.Equal("production-sanity", steps[^1].GetProperty("key").GetString());
-        Assert.Equal(4, steps.Count(s => s.GetProperty("check").ValueKind == JsonValueKind.String));
+        Assert.Equal(5, steps.Count(s => s.GetProperty("check").ValueKind == JsonValueKind.String));
+        // The maintenance page wraps the production deploy and migrations, for a release that needs downtime.
+        var keys = steps.Select(s => s.GetProperty("key").GetString()).ToList();
+        Assert.Equal(keys.IndexOf("production-deploys") - 1, keys.IndexOf("maintenance-on"));
+        Assert.Equal(keys.IndexOf("production-migrations") + 1, keys.IndexOf("maintenance-off"));
+        Assert.Equal(["maintenance-on", "maintenance-off"],
+            steps.Where(s => s.GetProperty("optional").GetBoolean()).Select(s => s.GetProperty("key").GetString()).ToArray());
 
         // Anyone signed in reads it; only admins and release managers change it. QA is no exception.
         var stepId = steps[0].GetProperty("id").GetGuid();
@@ -136,19 +143,6 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal(HttpStatusCode.Forbidden,
             (await _rm.PutAsJsonAsync($"/api/releases/{id}", new { version = "5.10", products = new[] { Unique("elsewhere") } })).StatusCode);
 
-        // The person named as a release's manager runs that release, even without signing the gate.
-        var named = await Json(await _rm.PostAsJsonAsync("/api/releases", new
-        {
-            version = "5.20", products = new[] { product }, releaseManager = "qa@localhost", releaseManagerName = "QA Engineer",
-        }));
-        var namedId = named.GetProperty("id").GetGuid();
-        var namedStep = named.GetProperty("steps")[0].GetProperty("id").GetGuid();
-        Assert.True((await Json(await _qa.GetAsync($"/api/releases/{namedId}"))).GetProperty("canManage").GetBoolean());
-        Assert.Equal(HttpStatusCode.OK,
-            (await _qa.PatchAsJsonAsync($"/api/releases/{namedId}/steps/{namedStep}", new { status = "in_progress" })).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden,
-            (await _viewer.PatchAsJsonAsync($"/api/releases/{namedId}/steps/{namedStep}", new { status = "done" })).StatusCode);
-
         // One 5.10 per product.
         var duplicate = await _admin.PostAsJsonAsync("/api/releases", new { version = "5.10", products = new[] { "other", product } });
         Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
@@ -160,12 +154,19 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
             (await _rm.PostAsJsonAsync("/api/releases", new { version = "5.12", products = Array.Empty<string>() })).StatusCode);
 
         var list = await Json(await _viewer.GetAsync($"/api/releases?product={product}"));
-        Assert.Equal(2, list.GetProperty("total").GetInt32()); // 5.10 and the named manager's 5.20
+        Assert.Equal(1, list.GetProperty("total").GetInt32());
         Assert.False(list.GetProperty("canCreate").GetBoolean());
         var summary = list.GetProperty("items")[0];
+        // Optional steps nobody has started don't count; once skipped (or started) they do.
         Assert.Equal(0, summary.GetProperty("stepsClosed").GetInt32());
         Assert.Equal(10, summary.GetProperty("stepsTotal").GetInt32());
         Assert.Equal("Plan the scope and release date", summary.GetProperty("currentStep").GetString());
+        var maintenanceOn = steps.Single(s => s.GetProperty("key").GetString() == "maintenance-on").GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await _rm.PatchAsJsonAsync($"/api/releases/{id}/steps/{maintenanceOn}", new { status = "skipped" })).StatusCode);
+        summary = (await Json(await _viewer.GetAsync($"/api/releases?product={product}"))).GetProperty("items")[0];
+        Assert.Equal(1, summary.GetProperty("stepsClosed").GetInt32());
+        Assert.Equal(11, summary.GetProperty("stepsTotal").GetInt32());
 
         Assert.Equal(HttpStatusCode.NoContent, (await _admin.DeleteAsync($"/api/releases/{id}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await _admin.GetAsync($"/api/releases/{id}")).StatusCode);
@@ -231,12 +232,12 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         var goNoGo = steps.First(s => s.GetProperty("key").GetString() == "go-no-go").GetProperty("id").GetGuid();
         var added = await Json(await _rm.PostAsJsonAsync($"/api/releases/{id}/steps", new { title = "Export account team data", owner = "DevOps", afterStepId = goNoGo }));
         var ordered = added.GetProperty("steps").EnumerateArray().Select(s => s.GetProperty("title").GetString()).ToList();
-        Assert.Equal(11, ordered.Count);
+        Assert.Equal(13, ordered.Count);
         Assert.Equal("Export account team data", ordered[ordered.IndexOf("Go / no-go") + 1]);
         var custom = added.GetProperty("steps").EnumerateArray().First(s => s.GetProperty("custom").GetBoolean()).GetProperty("id").GetGuid();
         Assert.Equal(HttpStatusCode.BadRequest, (await _rm.DeleteAsync($"/api/releases/{id}/steps/{plan}")).StatusCode);
         var removed = await Json(await _rm.DeleteAsync($"/api/releases/{id}/steps/{custom}"));
-        Assert.Equal(10, removed.GetProperty("steps").GetArrayLength());
+        Assert.Equal(12, removed.GetProperty("steps").GetArrayLength());
 
         // Closing and reopening the release.
         var completed = await Json(await _rm.PostAsJsonAsync($"/api/releases/{id}/complete", new { completedAt = "2026-11-12T12:00:00Z" }));
@@ -280,31 +281,46 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         await SeedDeploy(product, "svc-c", "staging", "5.10.0", "succeeded", t0.AddDays(4));
         await SeedCandidate(product, "svc-c", "5.10.0", PromotionStatus.Pending, t0.AddDays(4), null, null);
 
-        // Its own version scheme, shipping with the train because it is named.
+        // Its own version scheme: no 5.10 build, but approved during the release.
         await SeedDeploy(product, "svc-x", "staging", "1.2.3", "succeeded", t0.AddDays(5));
         await SeedCandidate(product, "svc-x", "1.2.3", PromotionStatus.Approved, t0.AddDays(5), t0.AddDays(10).AddMinutes(-9), null);
 
-        // Not in the release: the previous line, a line that only starts the same, and an excluded service.
+        // Services the release manager will leave out: the previous line, a line that only starts the same, and one not shipping.
         await SeedDeploy(product, "svc-old", "staging", "5.9.4-gcccc", "succeeded", t0.AddDays(1));
         await SeedDeploy(product, "svc-d", "staging", "5.100.1", "succeeded", t0.AddDays(1));
         await SeedDeploy(product, "svc-skip", "staging", "5.10.1", "succeeded", t0.AddDays(1));
         await SeedCandidate(product, "svc-skip", "5.10.1", PromotionStatus.Pending, t0.AddDays(1), null, null);
 
-        var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new
-        {
-            version = "5.10",
-            products = new[] { product },
-            startedAt = t0,
-            includedServices = new[] { "svc-x" },
-            excludedServices = new[] { $"{product}/svc-skip" },
-        }));
+        var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new { version = "5.10", products = new[] { product }, startedAt = t0 }));
         var id = release.GetProperty("id").GetGuid();
+
+        // Every service of the product is in the release until the release manager leaves it out.
+        var first = await Json(await _viewer.GetAsync($"/api/releases/{id}/progress"));
+        var everyService = first.GetProperty("services").EnumerateArray().ToDictionary(s => s.GetProperty("service").GetString()!);
+        Assert.Equal(["svc-a", "svc-b", "svc-c", "svc-d", "svc-old", "svc-skip", "svc-x"], everyService.Keys.Order().ToArray());
+        Assert.All(everyService.Values, s => Assert.False(s.GetProperty("excluded").GetBoolean()));
+        Assert.Equal(7, first.GetProperty("checks").EnumerateArray()
+            .First(c => c.GetProperty("key").GetString() == "production-promotions").GetProperty("total").GetInt32());
+        // A service on its own version scheme is read from what it did during the release.
+        Assert.False(everyService["svc-x"].GetProperty("onLine").GetBoolean());
+        Assert.True(everyService["svc-a"].GetProperty("onLine").GetBoolean());
+        Assert.Equal("1.2.3", everyService["svc-x"].GetProperty("promotion").GetProperty("version").GetString());
+
+        // Left out from the Services list: still listed, no longer counted. Only release managers choose.
+        var leftOut = new[] { $"{product}/svc-skip", $"{product}/svc-old", $"{product}/svc-d" };
+        Assert.Equal(HttpStatusCode.Forbidden, (await _qa.PutAsJsonAsync($"/api/releases/{id}/services", new { excluded = leftOut })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await _rm.PutAsJsonAsync($"/api/releases/{id}/services", new { excluded = new[] { "another-product/svc-a" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await _rm.PutAsJsonAsync($"/api/releases/{id}/services", new { excluded = new[] { "svc-a" } })).StatusCode);
+        var scoped = await Json(await _rm.PutAsJsonAsync($"/api/releases/{id}/services", new { excluded = leftOut }));
+        Assert.Equal(3, scoped.GetProperty("excludedServices").GetArrayLength());
 
         var progress = await Json(await _viewer.GetAsync($"/api/releases/{id}/progress"));
         var services = progress.GetProperty("services").EnumerateArray().ToDictionary(s => s.GetProperty("service").GetString()!);
-        Assert.Equal(["svc-a", "svc-b", "svc-c", "svc-x"], services.Keys.Order().ToArray());
-        Assert.True(services["svc-x"].GetProperty("included").GetBoolean());
-        Assert.False(services["svc-a"].GetProperty("included").GetBoolean());
+        Assert.Equal(7, services.Count);
+        Assert.True(services["svc-skip"].GetProperty("excluded").GetBoolean());
+        Assert.False(services["svc-x"].GetProperty("excluded").GetBoolean());
         Assert.Equal("5.10.3-gbbbb", services["svc-b"].GetProperty("promotion").GetProperty("version").GetString());
         Assert.Equal(2, services["svc-b"].GetProperty("productionFailures").GetInt32());
         Assert.Equal("failed", services["svc-b"].GetProperty("production").GetProperty("status").GetString());
@@ -366,6 +382,64 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal("5.10.1-gaaaa", laterA.GetProperty("promotion").GetProperty("version").GetString());
     }
 
+    [Fact]
+    public async Task StepTables_CarryBuildsTheQaGateAndWorkItems()
+    {
+        var product = Unique("qa");
+        await SeedGate(product, ("Release Approval", "Release Manager", ManagerEmail));
+        var t0 = DateTimeOffset.UtcNow.AddDays(-5);
+
+        // Built, staged, QA signed (one work item open), waiting for release approval.
+        await SeedBuild(product, "svc-q", "5.12.4-gqqqq", t0.AddDays(1));
+        await SeedDeploy(product, "svc-q", "staging", "5.12.4-gqqqq", "succeeded", t0.AddDays(1).AddHours(1));
+        var q = await SeedCandidate(product, "svc-q", "5.12.4-gqqqq", PromotionStatus.Pending, t0.AddDays(1).AddHours(2), null, null, withGates: true);
+        await SeedApproval(q, "QA Review", t0.AddDays(2));
+        await SeedWorkItems(product, "svc-q", q, ("MPT-1", WorkItemDecision.Approved), ("MPT-2", null));
+
+        // Staged, QA not signed yet, both work items approved.
+        await SeedDeploy(product, "svc-w", "staging", "5.12.1", "succeeded", t0.AddDays(1));
+        var w = await SeedCandidate(product, "svc-w", "5.12.1", PromotionStatus.Pending, t0.AddDays(1).AddHours(1), null, null, withGates: true);
+        await SeedWorkItems(product, "svc-w", w, ("MPT-3", WorkItemDecision.Approved), ("MPT-4", WorkItemDecision.Approved));
+
+        // Approved outright: past every gate, QA included.
+        await SeedDeploy(product, "svc-a", "staging", "5.12.2", "succeeded", t0.AddDays(1));
+        await SeedCandidate(product, "svc-a", "5.12.2", PromotionStatus.Approved, t0.AddDays(1).AddHours(1), t0.AddDays(3), null, withGates: true);
+
+        var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new { version = "5.12", products = new[] { product }, startedAt = t0 }));
+        var steps = release.GetProperty("steps").EnumerateArray().ToDictionary(x => x.GetProperty("key").GetString()!);
+        Assert.Equal("Build and Staging", steps["staging-builds"].GetProperty("title").GetString());
+        Assert.Equal("staging-qa", steps["staging-testing"].GetProperty("check").GetString());
+
+        var progress = await Json(await _viewer.GetAsync($"/api/releases/{release.GetProperty("id").GetGuid()}/progress"));
+        Assert.Equal("QA Review", progress.GetProperty("qaStep").GetString());
+        var services = progress.GetProperty("services").EnumerateArray().ToDictionary(x => x.GetProperty("service").GetString()!);
+
+        Assert.Equal("5.12.4-gqqqq", services["svc-q"].GetProperty("build").GetProperty("version").GetString());
+        Assert.Equal(JsonValueKind.Null, services["svc-w"].GetProperty("build").ValueKind);
+
+        var pq = services["svc-q"].GetProperty("promotion");
+        Assert.Equal("approved", pq.GetProperty("qaReview").GetString());
+        Assert.Equal(["Release Approval"], pq.GetProperty("outstandingSteps").EnumerateArray().Select(x => x.GetString()).ToArray());
+        Assert.Equal(2, pq.GetProperty("workItems").GetProperty("total").GetInt32());
+        Assert.Equal(1, pq.GetProperty("workItems").GetProperty("approved").GetInt32());
+        var pw = services["svc-w"].GetProperty("promotion");
+        Assert.Equal("pending", pw.GetProperty("qaReview").GetString());
+        Assert.Equal(2, pw.GetProperty("workItems").GetProperty("approved").GetInt32());
+        Assert.Equal("approved", services["svc-a"].GetProperty("promotion").GetProperty("qaReview").GetString());
+
+        var qa = progress.GetProperty("checks").EnumerateArray().First(c => c.GetProperty("key").GetString() == "staging-qa");
+        Assert.Equal("in_progress", qa.GetProperty("state").GetString());
+        Assert.Equal(2, qa.GetProperty("done").GetInt32());
+        Assert.Equal(3, qa.GetProperty("total").GetInt32());
+        var issue = Assert.Single(qa.GetProperty("issues").EnumerateArray());
+        Assert.Equal("svc-w", issue.GetProperty("service").GetString());
+        Assert.Contains("2 of 2 work items", issue.GetProperty("problem").GetString());
+
+        // Only the approved one is through the approval round.
+        var approvals = progress.GetProperty("checks").EnumerateArray().First(c => c.GetProperty("key").GetString() == "production-promotions");
+        Assert.Equal(1, approvals.GetProperty("done").GetInt32());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}"[..20];
@@ -417,17 +491,76 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         await db.SaveChangesAsync();
     }
 
-    private async Task SeedCandidate(
+    private async Task<Guid> SeedCandidate(
         string product, string service, string version, PromotionStatus status,
-        DateTimeOffset createdAt, DateTimeOffset? approvedAt, DateTimeOffset? deployedAt)
+        DateTimeOffset createdAt, DateTimeOffset? approvedAt, DateTimeOffset? deployedAt, bool withGates = false)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var id = Guid.NewGuid();
+        // The gate a real promotion carries: QA Review, then Release Approval.
+        var snapshot = withGates
+            ? JsonSerializer.Serialize(new ResolvedPolicySnapshot(null, null)
+            {
+                ApprovalSteps =
+                [
+                    new ApprovalStep("QA Review", [new ApproverRequirement("QA Manager", [], ["qa@localhost"])]),
+                    new ApprovalStep("Release Approval", [new ApproverRequirement("Release Manager", [], [ManagerEmail])]),
+                ],
+            }, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            : null;
         db.PromotionCandidates.Add(new PromotionCandidate
         {
-            Id = Guid.NewGuid(), Product = product, Service = service, SourceEnv = "staging", TargetEnv = "prod",
+            Id = id, Product = product, Service = service, SourceEnv = "staging", TargetEnv = "prod",
             Version = version, Status = status, CreatedAt = createdAt, ApprovedAt = approvedAt, DeployedAt = deployedAt,
-            ParticipantsJson = "[]",
+            ParticipantsJson = "[]", ResolvedPolicyJson = snapshot,
+        });
+        await db.SaveChangesAsync();
+        return id;
+    }
+
+    private async Task SeedApproval(Guid candidateId, string step, DateTimeOffset at)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        db.PromotionApprovals.Add(new PromotionApproval
+        {
+            Id = Guid.NewGuid(), CandidateId = candidateId, ApproverEmail = "qa@localhost", ApproverName = "QA Engineer",
+            Decision = PromotionDecision.Approved, StepName = step, RequirementName = "QA Manager", CreatedAt = at,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SeedWorkItems(string product, string service, Guid candidateId, params (string Key, WorkItemDecision? Decision)[] items)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        foreach (var (key, decision) in items)
+        {
+            db.PromotionWorkItems.Add(new PromotionWorkItem
+            {
+                Id = Guid.NewGuid(), CandidateId = candidateId, WorkItemKey = key, Product = product, Service = service, TargetEnv = "prod",
+            });
+            if (decision is { } d)
+            {
+                db.WorkItemApprovals.Add(new WorkItemApproval
+                {
+                    Id = Guid.NewGuid(), WorkItemKey = key, Product = product, Service = service, TargetEnv = "prod",
+                    ApproverEmail = "qa@localhost", ApproverName = "QA Engineer", Decision = d,
+                });
+            }
+        }
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SeedBuild(string product, string service, string version, DateTimeOffset at)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        db.Builds.Add(new Platform.Api.Features.Builds.Models.Build
+        {
+            Id = Guid.NewGuid(), Product = product, Service = service, Version = version, Branch = "release/5",
+            BuildId = "1234", BuildUrl = "https://ci.example.com/builds/1234", CreatedAt = at,
         });
         await db.SaveChangesAsync();
     }

@@ -31,8 +31,8 @@ public sealed class ReleaseForbiddenException(string message) : Exception(messag
 /// manager is whoever can sign the "Release Manager" requirement (the name is a setting,
 /// <see cref="ManagerRequirementSettingKey"/>) of the production promotion gate of one of the
 /// release's products — the same people who give that gate's release approval, configured in one
-/// place, Settings → Promotions. The person named as a release's manager can run that release too.
-/// Deleting one is for administrators only — a release that happened is cancelled or reopened, not
+/// place, Settings → Promotions. A release has no release manager of its own: its release managers are
+/// the people who approve its products' promotions to production. Deleting one is for administrators only — a release that happened is cancelled or reopened, not
 /// removed.</para>
 /// </summary>
 public partial class ReleaseService
@@ -76,6 +76,49 @@ public partial class ReleaseService
     /// </summary>
     public const string ManagerRequirementSettingKey = "releases.managerRequirement";
     public const string DefaultManagerRequirement = "Release Manager";
+
+    /// <summary>The platform setting naming the approval step that is the QA gate (Test on staging).</summary>
+    public const string QaStepSettingKey = "releases.qaStep";
+    public const string DefaultQaStep = "QA Review";
+
+    public async Task<string> GetQaStepAsync(CancellationToken ct)
+    {
+        var value = await _db.PlatformSettings.AsNoTracking()
+            .Where(s => s.Key == QaStepSettingKey).Select(s => s.Value).FirstOrDefaultAsync(ct);
+        return string.IsNullOrWhiteSpace(value) ? DefaultQaStep : value.Trim();
+    }
+
+    public async Task<string> SetQaStepAsync(string? step, CancellationToken ct)
+    {
+        if (!_user.IsAdmin)
+            throw new ReleaseForbiddenException("Only administrators can choose the QA gate.");
+        var clean = Required(step, "qaStep", 200);
+        var before = await GetQaStepAsync(ct);
+        var row = await _db.PlatformSettings.FirstOrDefaultAsync(s => s.Key == QaStepSettingKey, ct);
+        if (row is null)
+        {
+            row = new PlatformSetting { Key = QaStepSettingKey };
+            _db.PlatformSettings.Add(row);
+        }
+        row.Value = clean;
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        row.UpdatedBy = Actor;
+        await _db.SaveChangesAsync(ct);
+        await _audit.Log(AuditModule, "release.qa-step-updated", _user.Id, _user.Name, "user",
+            "ReleaseManagers", null, new { qaStep = before }, new { qaStep = clean });
+        await _events.PublishEntityChanged(new EntityChangedEvent { Entity = "release", Action = "managers-updated" });
+        return clean;
+    }
+
+    /// <summary>Every approval step name the promotion gates use — what the QA setting can point at.</summary>
+    public async Task<List<string>> GetGateStepNamesAsync(CancellationToken ct) =>
+        (await _db.PromotionPolicies.AsNoTracking().ToListAsync(ct))
+            .SelectMany(p => p.ApprovalSteps)
+            .Select(s => (s.Name ?? "").Trim())
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private string? _managerRequirement;
     private IReadOnlySet<string>? _productionEnvironments;
@@ -221,18 +264,9 @@ public partial class ReleaseService
     /// <summary>Administrators, and release managers of any product, may open a release.</summary>
     public async Task<bool> CanCreateAsync(CancellationToken ct) => _user.IsAdmin || await IsReleaseManagerAnywhereAsync(ct);
 
-    /// <summary>
-    /// Administrators, the release managers of its products, and the person named as its manager run a
-    /// release.
-    /// </summary>
+    /// <summary>Administrators and the release managers of its products run a release.</summary>
     public async Task<bool> CanManageAsync(Release release, CancellationToken ct) =>
-        _user.IsAdmin || IsNamedManager(release)
-        || await IsReleaseManagerOfAsync(ParseList(release.ProductsJson), release.ProductionEnvironment, ct);
-
-    private bool IsNamedManager(Release release) =>
-        !string.IsNullOrWhiteSpace(release.ReleaseManager)
-        && (string.Equals(release.ReleaseManager, _user.Email, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(release.ReleaseManager, _user.Id, StringComparison.OrdinalIgnoreCase));
+        _user.IsAdmin || await IsReleaseManagerOfAsync(ParseList(release.ProductsJson), release.ProductionEnvironment, ct);
 
     // ── Reads ────────────────────────────────────────────────────────────────
 
@@ -290,9 +324,8 @@ public partial class ReleaseService
 
         var clean = await CleanAsync(
             request.Version, request.Products, request.Title, request.StagingEnvironment, request.ProductionEnvironment,
-            request.TargetDate, request.ReleaseManager, request.ReleaseManagerName, request.Notes,
-            request.IncludedServices, request.ExcludedServices, request.StartedAt, request.Links, ct);
-        await EnsureInScopeAsync(clean, alsoNamed: false, ct);
+            request.TargetDate, request.Notes, request.StartedAt, request.Links, ct);
+        await EnsureInScopeAsync(clean, ct);
         await EnsureUniqueAsync(clean, exceptId: null, ct);
 
         var now = DateTimeOffset.UtcNow;
@@ -305,12 +338,6 @@ public partial class ReleaseService
             UpdatedAt = now,
         };
         Apply(row, clean);
-        // An unnamed release manager is the person opening the release.
-        if (row.ReleaseManager is null)
-        {
-            row.ReleaseManager = Actor;
-            row.ReleaseManagerName = string.IsNullOrWhiteSpace(_user.Name) ? null : _user.Name;
-        }
         row.Steps = ReleaseStepTemplate.Build(row.Id, row.Version, now);
         row.Status = DeriveStatus(row, now);
 
@@ -331,21 +358,16 @@ public partial class ReleaseService
 
         var clean = await CleanAsync(
             request.Version, request.Products, request.Title, request.StagingEnvironment, request.ProductionEnvironment,
-            request.TargetDate, request.ReleaseManager, request.ReleaseManagerName, request.Notes,
-            request.IncludedServices, request.ExcludedServices, request.StartedAt, request.Links, ct);
+            request.TargetDate, request.Notes, request.StartedAt, request.Links, ct);
         // Changing the products or the production environment needs a release manager of the new ones:
-        // the named manager may edit their release, not move it to products nobody let them run.
-        var sameScope = string.Equals(row.ProductionEnvironment, clean.ProductionEnvironment, StringComparison.OrdinalIgnoreCase)
-            && ParseList(row.ProductsJson).Order(StringComparer.OrdinalIgnoreCase)
-                .SequenceEqual(clean.Products.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
-        await EnsureInScopeAsync(clean, alsoNamed: sameScope && IsNamedManager(row), ct);
+        // the right to run a release can't come from products it no longer has.
+        await EnsureInScopeAsync(clean, ct);
         await EnsureUniqueAsync(clean, exceptId: id, ct);
 
         var before = Snapshot(row);
         var versionChanged = !string.Equals(row.Version, clean.Version, StringComparison.Ordinal);
         var oldVersion = row.Version;
         Apply(row, clean);
-        // A blank release manager on update means "nobody named", not "whoever is editing".
         if (versionChanged) RetitleTemplateSteps(row, oldVersion);
         Touch(row);
         await _db.SaveChangesAsync(ct);
@@ -435,6 +457,41 @@ public partial class ReleaseService
             nameof(Release), id, snapshot, null);
         await PublishAsync(row, "deleted");
         return true;
+    }
+
+    /// <summary>
+    /// Leave services out of the release, or bring them back: <paramref name="excluded"/> replaces the
+    /// list of left-out services, each as <c>product/service</c> of one of the release's products.
+    /// Every other service of the products ships with it.
+    /// </summary>
+    public async Task<ReleaseDto?> SetExcludedServicesAsync(Guid id, List<string>? excluded, CancellationToken ct)
+    {
+        var row = await Load(id, tracking: true, ct);
+        if (row is null) return null;
+        await EnsureCanManageAsync(row, ct);
+
+        var products = ParseList(row.ProductsJson);
+        var clean = new List<string>();
+        foreach (var entry in Names(excluded, "excluded", 1000))
+        {
+            var slash = entry.IndexOf('/');
+            if (slash <= 0 || slash == entry.Length - 1)
+                throw new ReleaseValidationException($"'{entry}' must be written as product/service.");
+            var product = entry[..slash].Trim();
+            if (!products.Contains(product, StringComparer.OrdinalIgnoreCase))
+                throw new ReleaseValidationException($"'{product}' is not one of this release's products.");
+            clean.Add($"{product}/{entry[(slash + 1)..].Trim()}");
+        }
+
+        var before = Snapshot(row);
+        row.ExcludedServicesJson = JsonSerializer.Serialize(clean.Order(StringComparer.Ordinal).ToList(), Json);
+        Touch(row);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log(AuditModule, "release.services-updated", _user.Id, _user.Name, "user",
+            nameof(Release), row.Id, before, Snapshot(row));
+        await PublishAsync(row, "updated");
+        return await ToDtoAsync(row, ct);
     }
 
     // ── Step writes ──────────────────────────────────────────────────────────
@@ -591,8 +648,7 @@ public partial class ReleaseService
 
     private sealed record Clean(
         string Version, string Title, List<string> Products, string StagingEnvironment, string ProductionEnvironment,
-        DateOnly? TargetDate, string? ReleaseManager, string? ReleaseManagerName, string? Notes,
-        List<string> IncludedServices, List<string> ExcludedServices, DateTimeOffset? StartedAt, List<ReleaseLink> Links);
+        DateOnly? TargetDate, string? Notes, DateTimeOffset? StartedAt, List<ReleaseLink> Links);
 
     [GeneratedRegex(@"^\d{1,4}\.\d{1,4}$")]
     private static partial Regex VersionLine();
@@ -607,8 +663,7 @@ public partial class ReleaseService
 
     private async Task<Clean> CleanAsync(
         string? version, List<string>? products, string? title, string? staging, string? production,
-        DateOnly? targetDate, string? releaseManager, string? releaseManagerName, string? notes,
-        List<string>? included, List<string>? excluded, DateTimeOffset? startedAt, List<ReleaseLink>? links,
+        DateOnly? targetDate, string? notes, DateTimeOffset? startedAt, List<ReleaseLink>? links,
         CancellationToken ct)
     {
         var line = NormalizeVersion(version)
@@ -624,12 +679,6 @@ public partial class ReleaseService
 
         if (startedAt is { } s) NotInFuture(s, "startedAt", DateTimeOffset.UtcNow);
 
-        var includedList = Names(included, "includedServices", MaxServiceNames);
-        var excludedList = Names(excluded, "excludedServices", MaxServiceNames);
-        var both = includedList.Intersect(excludedList, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-        if (both is not null)
-            throw new ReleaseValidationException($"'{both}' cannot be both included in and excluded from the release.");
-
         return new Clean(
             line,
             Optional(title, "title", 200) ?? $"Release {line}",
@@ -637,11 +686,7 @@ public partial class ReleaseService
             stagingEnv,
             productionEnv,
             targetDate,
-            Optional(releaseManager, "releaseManager", 300),
-            Optional(releaseManagerName, "releaseManagerName", 300),
             Optional(notes, "notes", 8000),
-            includedList,
-            excludedList,
             startedAt,
             CleanLinks(links, "links"));
     }
@@ -739,11 +784,7 @@ public partial class ReleaseService
         row.StagingEnvironment = c.StagingEnvironment;
         row.ProductionEnvironment = c.ProductionEnvironment;
         row.TargetDate = c.TargetDate;
-        row.ReleaseManager = c.ReleaseManager;
-        row.ReleaseManagerName = c.ReleaseManager is null ? null : c.ReleaseManagerName;
         row.Notes = c.Notes;
-        row.IncludedServicesJson = JsonSerializer.Serialize(c.IncludedServices, Json);
-        row.ExcludedServicesJson = JsonSerializer.Serialize(c.ExcludedServices, Json);
         row.LinksJson = JsonSerializer.Serialize(c.Links, Json);
         row.StartedAt = c.StartedAt ?? row.StartedAt;
     }
@@ -761,9 +802,9 @@ public partial class ReleaseService
         }
     }
 
-    private async Task EnsureInScopeAsync(Clean clean, bool alsoNamed, CancellationToken ct)
+    private async Task EnsureInScopeAsync(Clean clean, CancellationToken ct)
     {
-        if (_user.IsAdmin || alsoNamed) return;
+        if (_user.IsAdmin) return;
         if (!await IsReleaseManagerOfAsync(clean.Products, clean.ProductionEnvironment, ct))
             throw new ReleaseForbiddenException(
                 $"You are not a release manager of {string.Join(", ", clean.Products)}: that is whoever can sign the '{await GetManagerRequirementAsync(ct)}' requirement of the product's promotion gate into {clean.ProductionEnvironment}.");
@@ -812,8 +853,8 @@ public partial class ReleaseService
     private static object Snapshot(Release r) => new
     {
         r.Version, r.Title, Products = ParseList(r.ProductsJson), r.StagingEnvironment, r.ProductionEnvironment,
-        r.TargetDate, r.ReleaseManager, r.Status, r.StartedAt, r.CompletedAt, r.CancelledAt, r.CancelReason,
-        IncludedServices = ParseList(r.IncludedServicesJson), ExcludedServices = ParseList(r.ExcludedServicesJson),
+        r.TargetDate, r.Status, r.StartedAt, r.CompletedAt, r.CancelledAt, r.CancelReason,
+        ExcludedServices = ParseList(r.ExcludedServicesJson),
         Links = ParseLinks(r.LinksJson),
     };
 
@@ -825,24 +866,40 @@ public partial class ReleaseService
     private static List<ReleaseStep> Ordered(Release r) => r.Steps.OrderBy(s => s.Order).ThenBy(s => s.Title).ToList();
 
     public static ReleaseStepDto ToStepDto(ReleaseStep s) => new(
-        s.Id, s.Order, s.Key, s.Title, s.Description, s.Owner, s.Check, s.Status,
-        s.StartedAt, s.CompletedAt, s.CompletedBy, s.CompletedByName, s.Note, ParseLinks(s.LinksJson), s.Custom);
+        s.Id, s.Order, s.Key, LegacyTitle(s), s.Description, s.Owner,
+        s.Check ?? (s.Custom ? null : ReleaseChecks.ForStepKey(s.Key)), s.Status,
+        s.StartedAt, s.CompletedAt, s.CompletedBy, s.CompletedByName, s.Note, ParseLinks(s.LinksJson), s.Custom,
+        IsOptional(s));
+
+    private static bool IsOptional(ReleaseStep s) => !s.Custom && ReleaseStepTemplate.IsOptional(s.Key);
+
+    /// <summary>
+    /// The steps a release's progress is measured on: all of them, except an optional step nobody has
+    /// started — a release without downtime never touches its maintenance page.
+    /// </summary>
+    private static bool Counts(ReleaseStep s) => !IsOptional(s) || s.Status != ReleaseStepStatuses.Pending;
+
+    /// <summary>Releases opened before the step was renamed keep their old default title on record.</summary>
+    private static string LegacyTitle(ReleaseStep s) =>
+        !s.Custom && s.Key == "staging-builds" && s.Title.StartsWith("Build and deploy ", StringComparison.Ordinal)
+            ? "Build and Staging"
+            : s.Title;
 
     public static ReleaseSummaryDto ToSummary(Release r)
     {
-        var steps = Ordered(r);
+        var steps = Ordered(r).Where(Counts).ToList();
         return new ReleaseSummaryDto(
             r.Id, r.Version, r.Title, ParseList(r.ProductsJson), r.Status, r.TargetDate,
-            r.ReleaseManager, r.ReleaseManagerName, r.StartedAt, r.CompletedAt, r.CancelledAt,
+            r.StartedAt, r.CompletedAt, r.CancelledAt,
             steps.Count(s => ReleaseStepStatuses.IsClosed(s.Status)), steps.Count,
-            steps.FirstOrDefault(s => !ReleaseStepStatuses.IsClosed(s.Status))?.Title,
+            steps.FirstOrDefault(s => !ReleaseStepStatuses.IsClosed(s.Status)) is { } open ? LegacyTitle(open) : null,
             r.CreatedAt, r.UpdatedAt);
     }
 
     public async Task<ReleaseDto> ToDtoAsync(Release r, CancellationToken ct) => new(
         r.Id, r.Version, r.Title, ParseList(r.ProductsJson), r.StagingEnvironment, r.ProductionEnvironment,
-        r.TargetDate, r.ReleaseManager, r.ReleaseManagerName, r.Status, r.Notes, ParseLinks(r.LinksJson),
-        ParseList(r.IncludedServicesJson), ParseList(r.ExcludedServicesJson),
+        r.TargetDate, r.Status, r.Notes, ParseLinks(r.LinksJson),
+        ParseList(r.ExcludedServicesJson),
         r.StartedAt, r.CompletedAt, r.CancelledAt, r.CancelReason,
         r.CreatedBy, r.CreatedByName, r.CreatedAt, r.UpdatedBy, r.UpdatedAt,
         Ordered(r).Select(ToStepDto).ToList(),

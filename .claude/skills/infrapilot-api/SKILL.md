@@ -269,11 +269,12 @@ renders a draft; `POST /api/release-notes/generate` persists it and fires the
 Versioned release trains (`5.10`, `6.0`) with a checklist the release manager moves on by hand.
 `GET /api/releases` lists them, and `GET /api/releases/{id}` returns one with its steps.
 `GET /api/releases/{id}/progress` is the live evidence: per service, the staging build, the production
-promotion, the production deploy and its migrations, plus the four checks (`staging-builds`,
+promotion (gates, work items, QA Review), the production deploy and its migrations, plus the checks (`staging-builds`, `staging-qa`,
 `production-promotions`, `production-deploys`, `production-migrations`), each with the SDP and
-mpt-release `runs` it read. Writes are for admins, the release managers (the approvers of the
-"Release Manager" requirement on the product's production promotion gate, `GET /api/releases/managers`)
-and the release's named manager: `POST /api/releases`
+mpt-release `runs` it read. Writes are for admins and the release managers (the approvers of the
+"Release Manager" requirement on the product's production promotion gate, `GET /api/releases/managers`):
+`POST /api/releases` (only `version` and `products` required; every service of the products is in
+the release), `PUT /api/releases/{id}/services` (`{ excluded: ["product/service"] }` leaves services out)
 (with release `links`), `PATCH /api/releases/{id}/steps/{stepId}` (status, dates, note, `links`;
 backdating is allowed), and `POST /api/releases/{id}/complete|cancel|reopen`. See
 `notes/releases-api.md`.

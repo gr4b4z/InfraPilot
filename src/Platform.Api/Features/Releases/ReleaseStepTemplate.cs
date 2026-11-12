@@ -9,10 +9,24 @@ namespace Platform.Api.Features.Releases;
 /// migrations land, and have QA sanity test production. Every release gets its own copy, so
 /// changing this list never rewrites a release that already happened; the release manager adds or
 /// skips steps on the release itself.
+///
+/// Optional steps — the maintenance page around the production deploy — are only for a release that
+/// needs downtime. They are skipped when it doesn't, and don't hold the release while nobody has
+/// started them (see <see cref="IsOptional"/>).
 /// </summary>
 public static class ReleaseStepTemplate
 {
-    public sealed record StepDefinition(string Key, string Title, string Description, string Owner, string? Check);
+    public sealed record StepDefinition(
+        string Key, string Title, string Description, string Owner, string? Check, bool Optional = false);
+
+    public const string MaintenanceOn = "maintenance-on";
+    public const string MaintenanceOff = "maintenance-off";
+
+    private static readonly HashSet<string> OptionalKeys =
+        Default("0.0").Where(d => d.Optional).Select(d => d.Key).ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>Whether a standard step with this key is optional. Steps a release manager adds never are.</summary>
+    public static bool IsOptional(string key) => OptionalKeys.Contains(key);
 
     public static IReadOnlyList<StepDefinition> Default(string version) =>
     [
@@ -25,8 +39,8 @@ public static class ReleaseStepTemplate
             $"Tag the release branches with {version}.0, so every build from them comes out as {version}.x.",
             "Release manager", null),
         new("staging-builds",
-            $"Build and deploy {version} to staging",
-            $"Each service is rebuilt from its release branch and promoted to staging. The portal counts the services running a {version} build there.",
+            "Build and Staging",
+            $"Each service is built from its release branch, deployed to staging and promoted towards production. The portal follows each service's {version} build, staging deploy and production promotion.",
             "Developers", ReleaseChecks.StagingBuilds),
         new("code-freeze",
             "Code freeze",
@@ -34,16 +48,20 @@ public static class ReleaseStepTemplate
             "Release manager", null),
         new("staging-testing",
             "Test on staging",
-            "QA runs the regression and acceptance tests on staging and gives the green light for production.",
-            "QA", null),
+            "QA tests the release on staging, signs off the work items and approves each production promotion's QA Review gate. Done when every promotion has passed QA Review.",
+            "QA", ReleaseChecks.StagingQa),
         new("go-no-go",
             "Go / no-go",
             "Confirm the scope, whether production needs downtime, and who runs the deployment.",
             "Release manager", null),
         new("production-promotions",
             "Approve the production promotions",
-            "On release day, approve every service's promotion to production, usually in one go with Mass approve on the Promotions page.",
+            "On release day, approve every service's promotion to production, usually in one go with Mass approve on the Promotions page. Done when every promotion is approved.",
             "Release manager", ReleaseChecks.ProductionPromotions),
+        new(MaintenanceOn,
+            "Enable maintenance page",
+            "If the release needs downtime, switch production to the maintenance page before the deployments start. Skip it when the release goes out without downtime.",
+            "DevOps", null, Optional: true),
         new("production-deploys",
             "Deploy to production",
             "The release pipelines deploy the approved promotions. The portal follows each service's production deployment and flags the ones that failed.",
@@ -52,6 +70,10 @@ public static class ReleaseStepTemplate
             "Run schema and data migrations",
             "Schema migrations run inside each deployment and data migrations after it. The portal checks that every migration of the deployed versions finished.",
             "DevOps", ReleaseChecks.ProductionMigrations),
+        new(MaintenanceOff,
+            "Disable maintenance page",
+            "Once the deployments and migrations are done, switch the maintenance page off so people can use production again. Skip it if the maintenance page wasn't switched on.",
+            "DevOps", null, Optional: true),
         new("production-sanity",
             "Sanity test in production",
             "QA sanity tests production and signs the release off.",
