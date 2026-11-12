@@ -3659,6 +3659,11 @@ export interface ReleaseCheck {
   issues: ReleaseCheckIssue[];
   /** The pipeline runs the measurement read, oldest first. */
   runs: ReleaseRun[];
+  /**
+   * What the people running the release should know that the numbers don't say, one sentence each —
+   * e.g. that a failed deploy held a run's data migrations back until the next run.
+   */
+  warnings: string[];
 }
 
 export interface ReleaseProgress {

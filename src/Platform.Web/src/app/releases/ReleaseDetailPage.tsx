@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowLeft,
   CalendarDays,
   ChevronDown,
@@ -657,6 +658,9 @@ function StepItem({
 
       {step.description && <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>{step.description}</p>}
 
+      {/* Shown folded too: a warning is what someone scanning the steps has to see. */}
+      {check && <CheckWarnings check={check} />}
+
       {expanded && <>
 
       {step.key === 'production-promotions' && step.status !== 'done' && step.status !== 'skipped' && (
@@ -723,6 +727,22 @@ function CheckSummary({ check }: { check: ReleaseCheck }) {
       {check.summary}
       {range && <span style={{ color: 'var(--text-muted)' }}> · {range}</span>}
     </p>
+  );
+}
+
+/** What the check wants a person to know beyond its numbers — e.g. data migrations held back by a failed deploy. */
+function CheckWarnings({ check }: { check: ReleaseCheck }) {
+  if (!check.warnings?.length) return null;
+  return (
+    <div className="mt-1.5 space-y-1" data-check-warnings={check.key}>
+      {check.warnings.map((w) => (
+        <p key={w} role="status" className="flex items-start gap-1.5 text-[12px] rounded-md px-2 py-1.5"
+          style={{ backgroundColor: 'var(--warning-bg)', color: 'var(--text-primary)' }}>
+          <AlertTriangle size={13} className="shrink-0 mt-px" style={{ color: 'var(--warning)' }} />
+          <span>{w}</span>
+        </p>
+      ))}
+    </div>
   );
 }
 

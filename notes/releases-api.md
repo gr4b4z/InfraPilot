@@ -61,7 +61,19 @@ There are two refinements:
 
 Each check returns `state` (`waiting`, `in_progress`, `complete` or `attention`), `done`/`total`, a
 one-line `summary`, `firstAt`/`lastAt` (the range of the underlying approvals, deploys or migrations),
-`issues` (the services still open and why), and `runs` (the pipeline runs it read, see below).
+`issues` (the services still open and why), `runs` (the pipeline runs it read, see below), and
+`warnings` (sentences the step shows in a warning box, folded or not; usually empty).
+
+**Data migrations held back by a failed deploy.** A deploy run starts its data migrations only once
+every backend of the run deployed, so one failed deploy skips them all; the ones its deploys queued
+stay `pending` and the next run picks them up (marketplace SDP reads them back from
+`GET /api/migrations/runs?kind=data&status=pending`). `production-migrations` recognises them: a
+pending data migration whose run (`run.runUrl`) also has a failed production deploy — the service's
+last attempt in that run — gets the issue *"Data migration of 5.10.133 waits for the next run:
+swo-platform failed to deploy in marketplace-sdp-prod 8971132"*, and the check one warning per run:
+*"swo-platform failed to deploy in marketplace-sdp-prod 8971132, so that run skipped the data
+migrations of mpt-helpdesk and mpt-notifications. They run with the next deploy run to prod."* The
+state stays `in_progress`; once the next run reports them running or succeeded, it all goes away.
 
 On the page, each checked step shows a table of the release's services: the ones the check still waits
 for, with why, and all of them on request.
