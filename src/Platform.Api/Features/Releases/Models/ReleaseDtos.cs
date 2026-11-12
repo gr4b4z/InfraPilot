@@ -262,7 +262,14 @@ public record ReleaseCheckDto(
     DateTimeOffset? LastAt,
     List<ReleaseCheckIssueDto> Issues,
     // The pipeline runs the measurement read, oldest first.
-    List<ReleaseRunDto> Runs);
+    List<ReleaseRunDto> Runs)
+{
+    /// <summary>
+    /// What the people running the release should know that the numbers don't say, one sentence each
+    /// — e.g. that a failed deploy held back a run's data migrations until the next run.
+    /// </summary>
+    public List<string> Warnings { get; init; } = [];
+}
 
 public record ReleaseProgressDto(
     Guid ReleaseId,
