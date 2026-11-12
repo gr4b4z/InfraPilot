@@ -37,6 +37,7 @@ import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
 import { FreezeSettings } from '@/app/settings/FreezeSettings';
 import { RollbackSettings } from '@/app/settings/RollbackSettings';
+import { ReleaseSettings } from '@/app/settings/ReleaseSettings';
 import { MaintenanceSettings } from '@/app/settings/MaintenanceSettings';
 import { ServiceProductsSettings } from '@/app/settings/ServiceProductsSettings';
 import { AgentTokensSettings } from '@/app/settings/AgentTokensSettings';
@@ -152,6 +153,7 @@ function App() {
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
             <Route path="freeze" element={<FreezeSettings />} />
+            <Route path="releases" element={<ReleaseSettings />} />
             <Route path="rollbacks" element={<RollbackSettings />} />
             <Route path="service-products" element={<ServiceProductsSettings />} />
             <Route path="agent-tokens" element={<AgentTokensSettings />} />

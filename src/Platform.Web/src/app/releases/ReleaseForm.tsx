@@ -166,6 +166,7 @@ export function ReleaseForm({
           <label className={field}>
             <span className={labelClass} style={labelStyle}>Release manager</span>
             <input value={manager} onChange={(e) => setManager(e.target.value)} placeholder="name@example.com" className={inputClass} style={inputStyle} />
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Can run this release, like the release managers.</span>
           </label>
           <label className={field}>
             <span className={labelClass} style={labelStyle}>Release manager's name</span>

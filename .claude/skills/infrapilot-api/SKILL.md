@@ -271,7 +271,8 @@ Versioned release trains (`5.10`, `6.0`) with a checklist the release manager mo
 `GET /api/releases/{id}/progress` is the live evidence: per service, the staging build, the production
 promotion, the production deploy and its migrations, plus the four checks (`staging-builds`,
 `production-promotions`, `production-deploys`, `production-migrations`), each with the SDP and
-mpt-release `runs` it read. Writes are admin, QA or the named release manager: `POST /api/releases`
+mpt-release `runs` it read. Writes are for admins, the release managers (`GET /api/releases/managers`;
+admins set them) and the release's named manager: `POST /api/releases`
 (with release `links`), `PATCH /api/releases/{id}/steps/{stepId}` (status, dates, note, `links`;
 backdating is allowed), and `POST /api/releases/{id}/complete|cancel|reopen`. See
 `notes/releases-api.md`.
