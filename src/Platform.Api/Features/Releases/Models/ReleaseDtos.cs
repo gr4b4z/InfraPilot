@@ -38,7 +38,23 @@ public record ReleaseSummaryDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
-public record ReleaseListDto(List<ReleaseSummaryDto> Items, int Total);
+// CanCreate: whether the caller may open a release (an administrator or a release manager).
+public record ReleaseListDto(List<ReleaseSummaryDto> Items, int Total, bool CanCreate);
+
+/// <summary>
+/// The release managers: the people (emails) and directory groups who open and run releases besides
+/// administrators. <see cref="CanEdit"/> says whether the caller may change the list (administrators);
+/// <see cref="IsReleaseManager"/> whether the caller is on it.
+/// </summary>
+public record ReleaseManagersDto(
+    List<Platform.Api.Features.Promotions.Models.GroupRef> Groups,
+    List<string> Users,
+    bool CanEdit,
+    bool IsReleaseManager);
+
+public record UpdateReleaseManagersRequest(
+    List<Platform.Api.Features.Promotions.Models.GroupRef>? Groups,
+    List<string>? Users);
 
 public record ReleaseDto(
     Guid Id,
@@ -65,7 +81,7 @@ public record ReleaseDto(
     string? UpdatedBy,
     DateTimeOffset UpdatedAt,
     List<ReleaseStepDto> Steps,
-    // Whether the caller may change this release (admin, QA, or its release manager).
+    // Whether the caller may change this release (an administrator, a release manager, or the one named on it).
     bool CanManage);
 
 /// <summary>

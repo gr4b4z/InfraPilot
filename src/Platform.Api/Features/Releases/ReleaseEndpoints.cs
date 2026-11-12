@@ -1,10 +1,12 @@
 using Platform.Api.Features.Releases.Models;
+using Platform.Api.Infrastructure.Auth;
 
 namespace Platform.Api.Features.Releases;
 
 /// <summary>
 /// <c>/api/releases</c> — versioned releases and their checklists (see <see cref="Release"/>).
-/// Registered for any signed-in caller; <see cref="ReleaseService"/> decides who may change what.
+/// Registered for any signed-in caller; <see cref="ReleaseService"/> decides who may change what:
+/// administrators and the release managers (<c>/managers</c>) run releases, everyone else reads them.
 /// The <c>/progress</c> read is the portal's own evidence for the release — computed on each call.
 /// </summary>
 public static class ReleaseEndpoints
@@ -17,6 +19,24 @@ public static class ReleaseEndpoints
                 return Results.BadRequest(new { error = $"'status' must be active or one of {string.Join(", ", ReleaseStatuses.All)}." });
             return Results.Ok(await releases.ListAsync(status, product, Math.Clamp(limit ?? 50, 1, 200), Math.Max(offset ?? 0, 0), ct));
         });
+
+        // Who besides administrators opens and runs releases. Readable by everyone, so the page can say
+        // who to ask; changed by administrators only.
+        group.MapGet("/managers", async (ReleaseService releases, ICurrentUser user, CancellationToken ct) =>
+        {
+            var managers = await releases.GetManagersAsync(ct);
+            return Results.Ok(new ReleaseManagersDto(
+                managers.Groups, managers.Users, user.IsAdmin, await releases.IsReleaseManagerAsync(ct)));
+        });
+
+        group.MapPut("/managers", (ReleaseService releases, ICurrentUser user, UpdateReleaseManagersRequest body, CancellationToken ct) =>
+            Handle(async () =>
+            {
+                if (body is null) return Results.BadRequest(new { error = "request body is required" });
+                var saved = await releases.SetManagersAsync(
+                    new Platform.Api.Features.Rollbacks.Models.PrincipalSet(body.Groups ?? [], body.Users ?? []), ct);
+                return Results.Ok(new ReleaseManagersDto(saved.Groups, saved.Users, user.IsAdmin, await releases.IsReleaseManagerAsync(ct)));
+            }));
 
         group.MapGet("/{id:guid}", async (ReleaseService releases, Guid id, CancellationToken ct) =>
         {

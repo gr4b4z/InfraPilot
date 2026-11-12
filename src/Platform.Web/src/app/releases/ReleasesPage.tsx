@@ -3,9 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { CalendarDays, Milestone, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { ReleaseSummary } from '@/lib/api';
+import type { ReleaseManagers, ReleaseSummary } from '@/lib/api';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import { useAuthStore } from '@/stores/authStore';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
 import { ListEmptyState } from '@/components/ui/ListEmptyState';
 import { formatTargetDate, releasePath, releaseStatusStyle } from '@/components/releases/releaseStatus';
@@ -14,15 +13,16 @@ import { ReleaseForm } from './ReleaseForm';
 /**
  * Releases — the versioned release trains (5.10, 6.0) from version cut to production sign-off.
  * The ones under way come first as cards, each with how far its checklist has got and the step it
- * is on; finished and cancelled ones follow as a table. Administrators and QA open new ones.
+ * is on; finished and cancelled ones follow as a table. Everyone can follow them; admins and the
+ * release managers (Settings → Releases) open and run them, and the page says who those are.
  */
 export function ReleasesPage() {
   useDocumentTitle(['Releases']);
   const navigate = useNavigate();
-  const user = useAuthStore((s) => s.user);
-  const canCreate = (user?.isAdmin ?? false) || (user?.isQA ?? false);
-
   const [items, setItems] = useState<ReleaseSummary[]>([]);
+  // The API decides who may open a release; the page only mirrors it.
+  const [canCreate, setCanCreate] = useState(false);
+  const [managers, setManagers] = useState<ReleaseManagers | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -32,11 +32,17 @@ export function ReleasesPage() {
     let cancelled = false;
     api
       .listReleases({ limit: 200 })
-      .then((res) => { if (!cancelled) { setItems(res.items); setError(null); } })
+      .then((res) => { if (!cancelled) { setItems(res.items); setCanCreate(res.canCreate); setError(null); } })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load releases'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [tick]);
+
+  useEffect(() => {
+    api.getReleaseManagers().then(setManagers).catch(() => setManagers(null));
+  }, [tick]);
+
+  const managerNames = managers ? [...managers.users, ...managers.groups.map((g) => g.name || g.id)] : [];
 
   const active = items.filter((r) => r.status === 'planned' || r.status === 'in_progress');
   const past = items.filter((r) => r.status === 'completed' || r.status === 'cancelled');
@@ -55,6 +61,16 @@ export function ReleasesPage() {
               Versioned releases from the version cut to the production sign-off. Each step is moved on by hand;
               the portal checks the builds, promotions, deployments and migrations as they happen.
             </p>
+            {managers && (
+              <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                {managerNames.length > 0
+                  ? <>Run by the release managers: {managerNames.join(', ')}.</>
+                  : <>No release managers yet, so only admins run releases.</>}
+                {managers.canEdit && (
+                  <> <Link to="/settings/releases" className="underline" style={{ color: 'var(--accent)' }}>Change in Settings → Releases</Link></>
+                )}
+              </p>
+            )}
           </div>
         </div>
         {canCreate && (
@@ -83,7 +99,7 @@ export function ReleasesPage() {
           title="No releases yet"
           body={canCreate
             ? 'Open a release with New release when its version line is about to be cut, and follow it here to production.'
-            : 'Releases appear here once the release manager opens one.'}
+            : 'Releases appear here once a release manager opens one.'}
         />
       ) : (
         <>

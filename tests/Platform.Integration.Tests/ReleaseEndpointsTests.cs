@@ -17,7 +17,10 @@ namespace Platform.Integration.Tests;
 /// </summary>
 public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.ReleasesFactory>, IDisposable
 {
+    private const string ManagerEmail = "user@localhost";
+
     private readonly ReleasesFactory _factory;
+    private readonly HttpClient _rm;
     private readonly HttpClient _qa;
     private readonly HttpClient _viewer;
     private readonly HttpClient _admin;
@@ -25,23 +28,54 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     public ReleaseEndpointsTests(ReleasesFactory factory)
     {
         _factory = factory;
+        _rm = factory.CreateAuthenticatedClient(ManagerEmail, "user123");
         _qa = factory.CreateAuthenticatedClient("qa@localhost", "qa123");
         _viewer = factory.CreateAuthenticatedClient("viewer@localhost", "viewer123");
         _admin = factory.CreateAdminClient();
+        // Release managers are named by email only here: the test identity stub puts everybody in every group.
+        _admin.PutAsJsonAsync("/api/releases/managers", new { groups = Array.Empty<object>(), users = new[] { ManagerEmail } })
+            .GetAwaiter().GetResult().EnsureSuccessStatusCode();
     }
 
     public void Dispose()
     {
+        _rm.Dispose();
         _qa.Dispose();
         _viewer.Dispose();
         _admin.Dispose();
     }
 
     [Fact]
+    public async Task ReleaseManagers_AreChosenByAdmins_AndReadableByEveryone()
+    {
+        var asViewer = await Json(await _viewer.GetAsync("/api/releases/managers"));
+        Assert.Equal(ManagerEmail, asViewer.GetProperty("users")[0].GetString());
+        Assert.False(asViewer.GetProperty("canEdit").GetBoolean());
+        Assert.False(asViewer.GetProperty("isReleaseManager").GetBoolean());
+        Assert.True((await Json(await _rm.GetAsync("/api/releases/managers"))).GetProperty("isReleaseManager").GetBoolean());
+
+        // Only admins change the list — a release manager can't add people.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _rm.PutAsJsonAsync("/api/releases/managers", new { users = new[] { ManagerEmail, "qa@localhost" } })).StatusCode);
+
+        // The list says who may open a release; QA alone no longer does.
+        Assert.True((await Json(await _rm.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
+        Assert.False((await Json(await _qa.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
+        Assert.True((await Json(await _admin.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
+
+        // An empty list makes nobody a release manager; admins still can.
+        await Json(await _admin.PutAsJsonAsync("/api/releases/managers", new { users = Array.Empty<string>() }));
+        Assert.False((await Json(await _rm.GetAsync("/api/releases?limit=1"))).GetProperty("canCreate").GetBoolean());
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _rm.PostAsJsonAsync("/api/releases", new { version = "7.1", products = new[] { Unique("empty") } })).StatusCode);
+        await Json(await _admin.PutAsJsonAsync("/api/releases/managers", new { users = new[] { ManagerEmail } }));
+    }
+
+    [Fact]
     public async Task Create_StartsFromTheTemplate_AndOnlyManagersChangeIt()
     {
         var product = Unique("rel");
-        var created = await _qa.PostAsJsonAsync("/api/releases", new
+        var created = await _rm.PostAsJsonAsync("/api/releases", new
         {
             version = "v5.10", products = new[] { product },
             links = new[] { new { label = "Issue tracker version", url = "https://tracker.example.com/versions/510" } },
@@ -53,7 +87,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal("5.10", release.GetProperty("version").GetString());
         Assert.Equal("Release 5.10", release.GetProperty("title").GetString());
         Assert.Equal("planned", release.GetProperty("status").GetString());
-        Assert.Equal("qa@localhost", release.GetProperty("releaseManager").GetString());
+        Assert.Equal("user@localhost", release.GetProperty("releaseManager").GetString());
         Assert.Equal("staging", release.GetProperty("stagingEnvironment").GetString());
         Assert.Equal("prod", release.GetProperty("productionEnvironment").GetString());
         Assert.True(release.GetProperty("canManage").GetBoolean());
@@ -65,15 +99,35 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal("production-sanity", steps[^1].GetProperty("key").GetString());
         Assert.Equal(4, steps.Count(s => s.GetProperty("check").ValueKind == JsonValueKind.String));
 
-        // Anyone signed in reads it; only admins, QA and its release manager change it.
-        var asViewer = await Json(await _viewer.GetAsync($"/api/releases/{id}"));
-        Assert.False(asViewer.GetProperty("canManage").GetBoolean());
+        // Anyone signed in reads it; only admins and release managers change it. QA is no exception.
         var stepId = steps[0].GetProperty("id").GetGuid();
+        foreach (var reader in new[] { _viewer, _qa })
+        {
+            var seen = await Json(await reader.GetAsync($"/api/releases/{id}"));
+            Assert.False(seen.GetProperty("canManage").GetBoolean());
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await reader.PatchAsJsonAsync($"/api/releases/{id}/steps/{stepId}", new { status = "done" })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await reader.PutAsJsonAsync($"/api/releases/{id}", new { version = "5.10", products = new[] { product } })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await reader.PostAsJsonAsync($"/api/releases/{id}/complete", new { })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await reader.PostAsJsonAsync("/api/releases", new { version = "5.11", products = new[] { product } })).StatusCode);
+        }
+        Assert.Equal(HttpStatusCode.Forbidden, (await _rm.DeleteAsync($"/api/releases/{id}")).StatusCode);
+
+        // The person named as a release's manager runs that release, even when not on the list.
+        var named = await Json(await _rm.PostAsJsonAsync("/api/releases", new
+        {
+            version = "5.20", products = new[] { product }, releaseManager = "qa@localhost", releaseManagerName = "QA Engineer",
+        }));
+        var namedId = named.GetProperty("id").GetGuid();
+        var namedStep = named.GetProperty("steps")[0].GetProperty("id").GetGuid();
+        Assert.True((await Json(await _qa.GetAsync($"/api/releases/{namedId}"))).GetProperty("canManage").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK,
+            (await _qa.PatchAsJsonAsync($"/api/releases/{namedId}/steps/{namedStep}", new { status = "in_progress" })).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden,
-            (await _viewer.PatchAsJsonAsync($"/api/releases/{id}/steps/{stepId}", new { status = "done" })).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden,
-            (await _viewer.PostAsJsonAsync("/api/releases", new { version = "5.11", products = new[] { product } })).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await _qa.DeleteAsync($"/api/releases/{id}")).StatusCode);
+            (await _viewer.PatchAsJsonAsync($"/api/releases/{namedId}/steps/{namedStep}", new { status = "done" })).StatusCode);
 
         // One 5.10 per product.
         var duplicate = await _admin.PostAsJsonAsync("/api/releases", new { version = "5.10", products = new[] { "other", product } });
@@ -81,12 +135,13 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal(id, (await Json(duplicate)).GetProperty("existingId").GetGuid());
 
         Assert.Equal(HttpStatusCode.BadRequest,
-            (await _qa.PostAsJsonAsync("/api/releases", new { version = "5.10.1", products = new[] { product } })).StatusCode);
+            (await _rm.PostAsJsonAsync("/api/releases", new { version = "5.10.1", products = new[] { product } })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest,
-            (await _qa.PostAsJsonAsync("/api/releases", new { version = "5.12", products = Array.Empty<string>() })).StatusCode);
+            (await _rm.PostAsJsonAsync("/api/releases", new { version = "5.12", products = Array.Empty<string>() })).StatusCode);
 
         var list = await Json(await _viewer.GetAsync($"/api/releases?product={product}"));
-        Assert.Equal(1, list.GetProperty("total").GetInt32());
+        Assert.Equal(2, list.GetProperty("total").GetInt32()); // 5.10 and the named manager's 5.20
+        Assert.False(list.GetProperty("canCreate").GetBoolean());
         var summary = list.GetProperty("items")[0];
         Assert.Equal(0, summary.GetProperty("stepsClosed").GetInt32());
         Assert.Equal(10, summary.GetProperty("stepsTotal").GetInt32());
@@ -100,7 +155,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     public async Task Steps_MoveThroughTheirStates_AndCanBeBackdated()
     {
         var product = Unique("steps");
-        var release = await Json(await _qa.PostAsJsonAsync("/api/releases", new { version = "6.0", products = new[] { product } }));
+        var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new { version = "6.0", products = new[] { product } }));
         var id = release.GetProperty("id").GetGuid();
         var steps = release.GetProperty("steps").EnumerateArray().ToList();
         var plan = steps[0].GetProperty("id").GetGuid();
@@ -122,7 +177,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         var planStep = StepById(afterPlan, plan);
         Assert.Equal("done", planStep.GetProperty("status").GetString());
         Assert.Equal(DateTimeOffset.Parse("2026-10-12T10:00:00Z"), planStep.GetProperty("startedAt").GetDateTimeOffset());
-        Assert.Equal("qa@localhost", planStep.GetProperty("completedBy").GetString());
+        Assert.Equal("user@localhost", planStep.GetProperty("completedBy").GetString());
         Assert.Equal("Scope agreed", planStep.GetProperty("note").GetString());
         // Links keep their order, lose duplicates, and keep a label only when one was given.
         var links = planStep.GetProperty("links").EnumerateArray().ToList();
@@ -153,28 +208,28 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
 
         // Custom steps go where they are put, and only they can be removed.
         var goNoGo = steps.First(s => s.GetProperty("key").GetString() == "go-no-go").GetProperty("id").GetGuid();
-        var added = await Json(await _qa.PostAsJsonAsync($"/api/releases/{id}/steps", new { title = "Export account team data", owner = "DevOps", afterStepId = goNoGo }));
+        var added = await Json(await _rm.PostAsJsonAsync($"/api/releases/{id}/steps", new { title = "Export account team data", owner = "DevOps", afterStepId = goNoGo }));
         var ordered = added.GetProperty("steps").EnumerateArray().Select(s => s.GetProperty("title").GetString()).ToList();
         Assert.Equal(11, ordered.Count);
         Assert.Equal("Export account team data", ordered[ordered.IndexOf("Go / no-go") + 1]);
         var custom = added.GetProperty("steps").EnumerateArray().First(s => s.GetProperty("custom").GetBoolean()).GetProperty("id").GetGuid();
-        Assert.Equal(HttpStatusCode.BadRequest, (await _qa.DeleteAsync($"/api/releases/{id}/steps/{plan}")).StatusCode);
-        var removed = await Json(await _qa.DeleteAsync($"/api/releases/{id}/steps/{custom}"));
+        Assert.Equal(HttpStatusCode.BadRequest, (await _rm.DeleteAsync($"/api/releases/{id}/steps/{plan}")).StatusCode);
+        var removed = await Json(await _rm.DeleteAsync($"/api/releases/{id}/steps/{custom}"));
         Assert.Equal(10, removed.GetProperty("steps").GetArrayLength());
 
         // Closing and reopening the release.
-        var completed = await Json(await _qa.PostAsJsonAsync($"/api/releases/{id}/complete", new { completedAt = "2026-11-12T12:00:00Z" }));
+        var completed = await Json(await _rm.PostAsJsonAsync($"/api/releases/{id}/complete", new { completedAt = "2026-11-12T12:00:00Z" }));
         Assert.Equal("completed", completed.GetProperty("status").GetString());
         Assert.Equal(HttpStatusCode.BadRequest,
-            (await _qa.PostAsJsonAsync($"/api/releases/{id}/cancel", new { reason = "changed our mind" })).StatusCode);
-        var reopened = await Json(await _qa.PostAsync($"/api/releases/{id}/reopen", null));
+            (await _rm.PostAsJsonAsync($"/api/releases/{id}/cancel", new { reason = "changed our mind" })).StatusCode);
+        var reopened = await Json(await _rm.PostAsync($"/api/releases/{id}/reopen", null));
         Assert.Equal("in_progress", reopened.GetProperty("status").GetString());
-        var cancelled = await Json(await _qa.PostAsJsonAsync($"/api/releases/{id}/cancel", new { reason = "merged into 6.1" }));
+        var cancelled = await Json(await _rm.PostAsJsonAsync($"/api/releases/{id}/cancel", new { reason = "merged into 6.1" }));
         Assert.Equal("cancelled", cancelled.GetProperty("status").GetString());
 
         // A cancelled release frees its line for the product.
         Assert.Equal(HttpStatusCode.Created,
-            (await _qa.PostAsJsonAsync("/api/releases", new { version = "6.0", products = new[] { product } })).StatusCode);
+            (await _rm.PostAsJsonAsync("/api/releases", new { version = "6.0", products = new[] { product } })).StatusCode);
     }
 
     [Fact]
@@ -213,7 +268,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         await SeedDeploy(product, "svc-skip", "staging", "5.10.1", "succeeded", t0.AddDays(1));
         await SeedCandidate(product, "svc-skip", "5.10.1", PromotionStatus.Pending, t0.AddDays(1), null, null);
 
-        var release = await Json(await _qa.PostAsJsonAsync("/api/releases", new
+        var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new
         {
             version = "5.10",
             products = new[] { product },
@@ -282,7 +337,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
 
         // Completed releases keep describing the day they shipped: later records are outside the window.
         await Json(await Patch(id, approvalStep, new { status = "in_progress" }));
-        await _qa.PostAsJsonAsync($"/api/releases/{id}/complete", new { completedAt = t0.AddDays(11) });
+        await _rm.PostAsJsonAsync($"/api/releases/{id}/complete", new { completedAt = t0.AddDays(11) });
         await SeedCandidate(product, "svc-a", "5.10.2-gdddd", PromotionStatus.Pending, t0.AddDays(12), null, null);
         var later = await Json(await _viewer.GetAsync($"/api/releases/{id}/progress"));
         var laterA = later.GetProperty("services").EnumerateArray().First(s => s.GetProperty("service").GetString() == "svc-a");
@@ -294,7 +349,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}"[..20];
 
     private Task<HttpResponseMessage> Patch(Guid id, Guid stepId, object body) =>
-        _qa.PatchAsJsonAsync($"/api/releases/{id}/steps/{stepId}", body);
+        _rm.PatchAsJsonAsync($"/api/releases/{id}/steps/{stepId}", body);
 
     private static JsonElement StepById(JsonElement release, Guid stepId) =>
         release.GetProperty("steps").EnumerateArray().First(s => s.GetProperty("id").GetGuid() == stepId);

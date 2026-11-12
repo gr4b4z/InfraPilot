@@ -1677,6 +1677,14 @@ class ApiClient {
     return this.request<Release>(`/releases/${id}`);
   }
 
+  getReleaseManagers() {
+    return this.request<ReleaseManagers>(`/releases/managers`);
+  }
+
+  updateReleaseManagers(payload: { groups: PromotionPolicyGroupRef[]; users: string[] }) {
+    return this.request<ReleaseManagers>(`/releases/managers`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
   /** What the portal's records say about the release — computed on every call. */
   getReleaseProgress(id: string) {
     return this.request<ReleaseProgress>(`/releases/${id}/progress`);
@@ -3442,6 +3450,18 @@ export interface ReleaseSummary {
 export interface ReleaseList {
   items: ReleaseSummary[];
   total: number;
+  /** Whether the caller may open a release: an admin or a release manager. */
+  canCreate: boolean;
+}
+
+/** Who besides admins opens and runs releases (Settings → Releases). */
+export interface ReleaseManagers {
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+  /** The caller may change the list (admins). */
+  canEdit: boolean;
+  /** The caller is on the list. */
+  isReleaseManager: boolean;
 }
 
 /**

@@ -92,10 +92,24 @@ release notes.
 
 ## Who may change a release
 
-Anyone signed in can read releases. Admins and QA can create one. A release can then be changed by an
-admin, by QA, or by the person named as its `releaseManager` (email or directory id). Only admins can
-delete a release; anyone else cancels it. A personal access token acts as its owner, and an admin API
-key acts as an admin.
+Anyone signed in can read releases. Only admins and the **release managers** can create a release,
+edit it, move its steps, or mark it released, cancelled or reopened. QA has no extra rights here.
+
+- **Release managers** are the people (emails) and directory groups an admin lists in
+  **Settings → Releases**, stored as the platform setting `releases.managers`. An empty list makes
+  nobody a release manager; it never means everyone. Admins don't count as members of the listed
+  groups here: they have the rights anyway.
+- **The person named on a release** as its `releaseManager` (email or directory id) can run that
+  release too, even when not on the list. Only admins and release managers create releases, so only
+  they choose who that is.
+- **Deleting** a release is for admins only. Anyone else cancels it.
+
+A personal access token acts as its owner, and an admin API key acts as an admin.
+
+`GET /api/releases/managers` returns the list to anyone signed in, so the page can say whom to ask,
+together with `canEdit` (the caller is an admin) and `isReleaseManager`. `PUT /api/releases/managers`
+with `{ "groups": [{ "id": "…", "name": "…" }], "users": ["rm@example.com"] }` replaces it. It is
+admin only and audited. `GET /api/releases` also returns `canCreate` for the caller.
 
 ## Endpoints
 
@@ -103,6 +117,7 @@ All of them are under `/api/releases`.
 
 | Method and path | What it does |
 |---|---|
+| `GET /managers`, `PUT /managers` | The release managers (see above). PUT is admin only. |
 | `GET /?status=&product=&limit=&offset=` | List. `status` is `active` (planned and in progress) or one release status. Releases in progress come first, then planned ones, then history, newest first. |
 | `GET /{id}` | One release with its steps and `canManage` for the caller. |
 | `GET /{id}/progress` | The live evidence: `services[]` (staging, promotion, production, failed attempts, migrations) and `checks[]`. |

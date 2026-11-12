@@ -1,10 +1,14 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Promotions;
+using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Releases.Models;
+using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.Realtime;
 
@@ -23,10 +27,11 @@ public sealed class ReleaseForbiddenException(string message) : Exception(messag
 /// Releases and their checklists. Every write goes through here so it validates the same way,
 /// derives the release status the same way, leaves an audit entry and tells open pages to refresh.
 ///
-/// <para><b>Who may change a release.</b> Anyone signed in can read them. Administrators and QA
-/// create releases; a release can then be changed by an administrator, QA, or the person named as
-/// its release manager. Deleting one is for administrators only — a release that happened is
-/// cancelled or reopened, not removed.</para>
+/// <para><b>Who may change a release.</b> Anyone signed in can read them. Administrators and the
+/// release managers — the people and directory groups an administrator lists under Settings →
+/// Releases (<see cref="ManagersSettingKey"/>) — open releases and run them: edit them, move their
+/// steps, close them. The person named as a release's manager can run that release too. Deleting one
+/// is for administrators only — a release that happened is cancelled or reopened, not removed.</para>
 /// </summary>
 public partial class ReleaseService
 {
@@ -44,26 +49,100 @@ public partial class ReleaseService
     private readonly ICurrentUser _user;
     private readonly IAuditLogger _audit;
     private readonly IPlatformEventPublisher _events;
+    private readonly PromotionApprovalAuthorizer _principals;
 
     public ReleaseService(
         PlatformDbContext db, EnvironmentAliasResolver environments, ICurrentUser user,
-        IAuditLogger audit, IPlatformEventPublisher events)
+        IAuditLogger audit, IPlatformEventPublisher events, PromotionApprovalAuthorizer principals)
     {
         _db = db;
         _environments = environments;
         _user = user;
         _audit = audit;
         _events = events;
+        _principals = principals;
     }
 
-    /// <summary>Administrators and QA open releases.</summary>
-    public bool CanCreate => _user.IsAdmin || _user.IsQA;
+    // ── Release managers ─────────────────────────────────────────────────────
 
-    public bool CanManage(Release release) =>
-        _user.IsAdmin || _user.IsQA
-        || (!string.IsNullOrWhiteSpace(release.ReleaseManager)
-            && (string.Equals(release.ReleaseManager, _user.Email, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(release.ReleaseManager, _user.Id, StringComparison.OrdinalIgnoreCase)));
+    /// <summary>The platform setting holding the release managers, a JSON <see cref="PrincipalSet"/>.</summary>
+    public const string ManagersSettingKey = "releases.managers";
+
+    private bool? _isReleaseManager;
+
+    public async Task<PrincipalSet> GetManagersAsync(CancellationToken ct)
+    {
+        var value = await _db.PlatformSettings.AsNoTracking()
+            .Where(s => s.Key == ManagersSettingKey)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(value)) return new PrincipalSet();
+        try
+        {
+            var set = JsonSerializer.Deserialize<PrincipalSet>(value, Json);
+            return set is null ? new PrincipalSet() : new PrincipalSet(set.Groups ?? [], set.Users ?? []);
+        }
+        catch (JsonException) { return new PrincipalSet(); }
+    }
+
+    public async Task<PrincipalSet> SetManagersAsync(PrincipalSet managers, CancellationToken ct)
+    {
+        if (!_user.IsAdmin)
+            throw new ReleaseForbiddenException("Only administrators can choose the release managers.");
+        var groups = (managers.Groups ?? [])
+            .Where(g => g is not null && !string.IsNullOrWhiteSpace(g.Id))
+            .Select(g => new GroupRef(g.Id.Trim(), string.IsNullOrWhiteSpace(g.Name) ? g.Id.Trim() : g.Name.Trim()))
+            .DistinctBy(g => g.Id, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var users = Names(managers.Users, "users", MaxServiceNames);
+        if (groups.Count > MaxServiceNames) throw new ReleaseValidationException($"'groups' has more than {MaxServiceNames} entries.");
+        var clean = new PrincipalSet(groups, users);
+
+        var before = await GetManagersAsync(ct);
+        var row = await _db.PlatformSettings.FirstOrDefaultAsync(s => s.Key == ManagersSettingKey, ct);
+        if (row is null)
+        {
+            row = new PlatformSetting { Key = ManagersSettingKey };
+            _db.PlatformSettings.Add(row);
+        }
+        row.Value = JsonSerializer.Serialize(clean, Json);
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        row.UpdatedBy = Actor;
+        await _db.SaveChangesAsync(ct);
+        _isReleaseManager = null;
+
+        await _audit.Log(AuditModule, "release.managers-updated", _user.Id, _user.Name, "user",
+            "ReleaseManagers", null, before, clean);
+        await _events.PublishEntityChanged(new EntityChangedEvent { Entity = "release", Action = "managers-updated" });
+        return clean;
+    }
+
+    /// <summary>
+    /// Whether the caller is one of the release managers. An empty list makes nobody one — it never
+    /// means everybody — and an administrator does not count as a member of every group here, so the
+    /// answer says what the setting says.
+    /// </summary>
+    public async Task<bool> IsReleaseManagerAsync(CancellationToken ct)
+    {
+        if (_isReleaseManager is { } known) return known;
+        var managers = await GetManagersAsync(ct);
+        var email = !string.IsNullOrEmpty(_user.Email) ? _user.Email : _user.Id;
+        _isReleaseManager = !managers.IsEmpty && !string.IsNullOrEmpty(email)
+            && await _principals.IsInPrincipalSetAsync(managers.Groups, managers.Users, email, ct, allowAdminShortcut: false);
+        return _isReleaseManager.Value;
+    }
+
+    /// <summary>Administrators and release managers open releases.</summary>
+    public async Task<bool> CanCreateAsync(CancellationToken ct) => _user.IsAdmin || await IsReleaseManagerAsync(ct);
+
+    /// <summary>Administrators, release managers, and the person named as this release's manager run it.</summary>
+    public async Task<bool> CanManageAsync(Release release, CancellationToken ct) =>
+        IsNamedManager(release) || await CanCreateAsync(ct);
+
+    private bool IsNamedManager(Release release) =>
+        !string.IsNullOrWhiteSpace(release.ReleaseManager)
+        && (string.Equals(release.ReleaseManager, _user.Email, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(release.ReleaseManager, _user.Id, StringComparison.OrdinalIgnoreCase));
 
     // ── Reads ────────────────────────────────────────────────────────────────
 
@@ -95,13 +174,13 @@ public partial class ReleaseService
             .Include(r => r.Steps)
             .AsSplitQuery()
             .ToListAsync(ct);
-        return new ReleaseListDto(rows.Select(ToSummary).ToList(), total);
+        return new ReleaseListDto(rows.Select(ToSummary).ToList(), total, await CanCreateAsync(ct));
     }
 
     public async Task<ReleaseDto?> GetAsync(Guid id, CancellationToken ct)
     {
         var row = await Load(id, tracking: false, ct);
-        return row is null ? null : ToDto(row);
+        return row is null ? null : await ToDtoAsync(row, ct);
     }
 
     internal Task<Release?> Load(Guid id, bool tracking, CancellationToken ct)
@@ -115,8 +194,8 @@ public partial class ReleaseService
 
     public async Task<ReleaseDto> CreateAsync(CreateReleaseRequest request, CancellationToken ct)
     {
-        if (!CanCreate)
-            throw new ReleaseForbiddenException("Only administrators and QA can open a release.");
+        if (!await CanCreateAsync(ct))
+            throw new ReleaseForbiddenException("Only administrators and release managers can open a release.");
 
         var clean = await CleanAsync(
             request.Version, request.Products, request.Title, request.StagingEnvironment, request.ProductionEnvironment,
@@ -149,14 +228,14 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.created", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, null, Snapshot(row));
         await PublishAsync(row, "created");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<ReleaseDto?> UpdateAsync(Guid id, UpdateReleaseRequest request, CancellationToken ct)
     {
         var row = await Load(id, tracking: true, ct);
         if (row is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
 
         var clean = await CleanAsync(
             request.Version, request.Products, request.Title, request.StagingEnvironment, request.ProductionEnvironment,
@@ -176,14 +255,14 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.updated", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, before, Snapshot(row));
         await PublishAsync(row, "updated");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<ReleaseDto?> CompleteAsync(Guid id, CompleteReleaseRequest request, CancellationToken ct)
     {
         var row = await Load(id, tracking: true, ct);
         if (row is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
         if (row.CancelledAt is not null)
             throw new ReleaseValidationException("A cancelled release cannot be completed. Reopen it first.");
 
@@ -201,14 +280,14 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.completed", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, before, Snapshot(row));
         await PublishAsync(row, "completed");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<ReleaseDto?> CancelAsync(Guid id, CancelReleaseRequest request, CancellationToken ct)
     {
         var row = await Load(id, tracking: true, ct);
         if (row is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
         var reason = Required(request?.Reason, "reason", 2000);
         if (row.CompletedAt is not null)
             throw new ReleaseValidationException("A completed release cannot be cancelled. Reopen it first.");
@@ -222,14 +301,14 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.cancelled", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, before, Snapshot(row));
         await PublishAsync(row, "cancelled");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<ReleaseDto?> ReopenAsync(Guid id, CancellationToken ct)
     {
         var row = await Load(id, tracking: true, ct);
         if (row is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
 
         var before = Snapshot(row);
         row.CompletedAt = null;
@@ -241,7 +320,7 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.reopened", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, before, Snapshot(row));
         await PublishAsync(row, "reopened");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct)
@@ -268,7 +347,7 @@ public partial class ReleaseService
         if (row is null) return null;
         var step = row.Steps.FirstOrDefault(s => s.Id == stepId);
         if (step is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
         if (request is null) throw new ReleaseValidationException("request body is required");
 
         var now = DateTimeOffset.UtcNow;
@@ -335,14 +414,14 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.step-updated", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, before, StepSnapshot(step), new { stepId = step.Id, step.Key });
         await PublishAsync(row, "updated");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<ReleaseDto?> AddStepAsync(Guid id, AddReleaseStepRequest request, CancellationToken ct)
     {
         var row = await Load(id, tracking: true, ct);
         if (row is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
         if (request is null) throw new ReleaseValidationException("request body is required");
         if (row.Steps.Count >= 50) throw new ReleaseValidationException("A release has at most 50 steps.");
 
@@ -385,7 +464,7 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.step-added", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, null, StepSnapshot(step), new { stepId = step.Id });
         await PublishAsync(row, "updated");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     public async Task<ReleaseDto?> DeleteStepAsync(Guid id, Guid stepId, CancellationToken ct)
@@ -394,7 +473,7 @@ public partial class ReleaseService
         if (row is null) return null;
         var step = row.Steps.FirstOrDefault(s => s.Id == stepId);
         if (step is null) return null;
-        EnsureCanManage(row);
+        await EnsureCanManageAsync(row, ct);
         if (!step.Custom)
             throw new ReleaseValidationException("Only steps added to this release can be removed. Skip a standard step instead.");
 
@@ -407,7 +486,7 @@ public partial class ReleaseService
         await _audit.Log(AuditModule, "release.step-removed", _user.Id, _user.Name, "user",
             nameof(Release), row.Id, snapshot, null, new { stepId });
         await PublishAsync(row, "updated");
-        return ToDto(row);
+        return await ToDtoAsync(row, ct);
     }
 
     // ── Validation ───────────────────────────────────────────────────────────
@@ -584,10 +663,10 @@ public partial class ReleaseService
         }
     }
 
-    private void EnsureCanManage(Release row)
+    private async Task EnsureCanManageAsync(Release row, CancellationToken ct)
     {
-        if (!CanManage(row))
-            throw new ReleaseForbiddenException("Only administrators, QA and the release manager can change this release.");
+        if (!await CanManageAsync(row, ct))
+            throw new ReleaseForbiddenException("Only administrators and release managers can change this release.");
     }
 
     private void Touch(Release row)
@@ -654,12 +733,12 @@ public partial class ReleaseService
             r.CreatedAt, r.UpdatedAt);
     }
 
-    public ReleaseDto ToDto(Release r) => new(
+    public async Task<ReleaseDto> ToDtoAsync(Release r, CancellationToken ct) => new(
         r.Id, r.Version, r.Title, ParseList(r.ProductsJson), r.StagingEnvironment, r.ProductionEnvironment,
         r.TargetDate, r.ReleaseManager, r.ReleaseManagerName, r.Status, r.Notes, ParseLinks(r.LinksJson),
         ParseList(r.IncludedServicesJson), ParseList(r.ExcludedServicesJson),
         r.StartedAt, r.CompletedAt, r.CancelledAt, r.CancelReason,
         r.CreatedBy, r.CreatedByName, r.CreatedAt, r.UpdatedBy, r.UpdatedAt,
         Ordered(r).Select(ToStepDto).ToList(),
-        CanManage(r));
+        await CanManageAsync(r, ct));
 }
