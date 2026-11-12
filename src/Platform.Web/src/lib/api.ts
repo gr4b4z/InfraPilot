@@ -1661,6 +1661,63 @@ class ApiClient {
     return this.request<void>(`/incidents/${id}`, { method: 'DELETE' });
   }
 
+  // ── Releases ────────────────────────────────────────────────────────────
+
+  listReleases(params?: { status?: string; product?: string; limit?: number; offset?: number }) {
+    const entries: [string, string][] = [];
+    if (params?.status) entries.push(['status', params.status]);
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.offset) entries.push(['offset', String(params.offset)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<ReleaseList>(`/releases${query}`);
+  }
+
+  getRelease(id: string) {
+    return this.request<Release>(`/releases/${id}`);
+  }
+
+  /** What the portal's records say about the release — computed on every call. */
+  getReleaseProgress(id: string) {
+    return this.request<ReleaseProgress>(`/releases/${id}/progress`);
+  }
+
+  createRelease(payload: ReleaseInput) {
+    return this.request<Release>(`/releases`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateRelease(id: string, payload: ReleaseInput) {
+    return this.request<Release>(`/releases/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  updateReleaseStep(id: string, stepId: string, payload: ReleaseStepUpdate) {
+    return this.request<Release>(`/releases/${id}/steps/${stepId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  addReleaseStep(id: string, payload: { title: string; description?: string; owner?: string; afterStepId?: string }) {
+    return this.request<Release>(`/releases/${id}/steps`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  deleteReleaseStep(id: string, stepId: string) {
+    return this.request<Release>(`/releases/${id}/steps/${stepId}`, { method: 'DELETE' });
+  }
+
+  completeRelease(id: string, completedAt?: string) {
+    return this.request<Release>(`/releases/${id}/complete`, { method: 'POST', body: JSON.stringify({ completedAt }) });
+  }
+
+  cancelRelease(id: string, reason: string) {
+    return this.request<Release>(`/releases/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+  }
+
+  reopenRelease(id: string) {
+    return this.request<Release>(`/releases/${id}/reopen`, { method: 'POST' });
+  }
+
+  deleteRelease(id: string) {
+    return this.request<void>(`/releases/${id}`, { method: 'DELETE' });
+  }
+
   /**
    * The Delivery metrics report: DORA plus flow, quality, cadence and data-quality metrics over the
    * given products pooled as one population (empty = every product), with per-product and
@@ -3328,6 +3385,215 @@ export interface IncidentInput {
 export interface IncidentList {
   items: Incident[];
   total: number;
+}
+
+// ── Releases ──────────────────────────────────────────────────────────────
+
+export type ReleaseStatus = 'planned' | 'in_progress' | 'completed' | 'cancelled';
+export type ReleaseStepStatus = 'pending' | 'in_progress' | 'done' | 'skipped';
+export type ReleaseCheckKey = 'staging-builds' | 'production-promotions' | 'production-deploys' | 'production-migrations';
+export type ReleaseCheckState = 'waiting' | 'in_progress' | 'complete' | 'attention';
+
+/** A link with an optional label; without one the page names it from the address. */
+export interface ReleaseLink {
+  label: string | null;
+  url: string;
+}
+
+/** One step of a release's checklist. `check` names the measurement the portal makes for it, if any. */
+export interface ReleaseStep {
+  id: string;
+  order: number;
+  key: string;
+  title: string;
+  description: string | null;
+  owner: string | null;
+  check: ReleaseCheckKey | null;
+  status: ReleaseStepStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  completedBy: string | null;
+  completedByName: string | null;
+  note: string | null;
+  links: ReleaseLink[];
+  custom: boolean;
+}
+
+export interface ReleaseSummary {
+  id: string;
+  version: string;
+  title: string;
+  products: string[];
+  status: ReleaseStatus;
+  /** yyyy-MM-dd */
+  targetDate: string | null;
+  releaseManager: string | null;
+  releaseManagerName: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  stepsClosed: number;
+  stepsTotal: number;
+  currentStep: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleaseList {
+  items: ReleaseSummary[];
+  total: number;
+}
+
+/**
+ * A versioned release: a version line ("5.10") shipping a set of products from staging to
+ * production, with the checklist the release manager drives.
+ */
+export interface Release {
+  id: string;
+  version: string;
+  title: string;
+  products: string[];
+  stagingEnvironment: string;
+  productionEnvironment: string;
+  targetDate: string | null;
+  releaseManager: string | null;
+  releaseManagerName: string | null;
+  status: ReleaseStatus;
+  notes: string | null;
+  /** Where the release lives outside the portal: the issue-tracker version, the plan, the retro. */
+  links: ReleaseLink[];
+  includedServices: string[];
+  excludedServices: string[];
+  startedAt: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedBy: string | null;
+  updatedAt: string;
+  steps: ReleaseStep[];
+  canManage: boolean;
+}
+
+export interface ReleaseInput {
+  version: string;
+  products: string[];
+  title?: string | null;
+  stagingEnvironment?: string | null;
+  productionEnvironment?: string | null;
+  targetDate?: string | null;
+  releaseManager?: string | null;
+  releaseManagerName?: string | null;
+  notes?: string | null;
+  includedServices?: string[];
+  excludedServices?: string[];
+  startedAt?: string | null;
+  links?: ReleaseLink[];
+}
+
+/** Null or absent leaves a field as it is; an empty string clears a text field, an empty list the links. */
+export interface ReleaseStepUpdate {
+  status?: ReleaseStepStatus;
+  note?: string;
+  links?: ReleaseLink[];
+  startedAt?: string | null;
+  completedAt?: string | null;
+  title?: string;
+  description?: string;
+  owner?: string;
+}
+
+/** The pipeline run behind a deploy or a migration; `url` goes to the service's own job when known. */
+export interface ReleaseRunRef {
+  provider: string | null;
+  label: string;
+  url: string;
+}
+
+export interface ReleaseDeploy {
+  eventId: string;
+  version: string;
+  status: string;
+  deployedAt: string;
+  run: ReleaseRunRef | null;
+}
+
+export interface ReleasePromotion {
+  id: string;
+  sourceEnv: string;
+  version: string;
+  status: 'Pending' | 'Approved' | 'Deploying' | 'Deployed' | 'Superseded' | 'Rejected';
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+  externalRunUrl: string | null;
+}
+
+export interface ReleaseMigration {
+  id: string;
+  kind: 'schema' | 'data';
+  version: string;
+  status: string;
+  queuedAt: string;
+  completedAt: string | null;
+  appliedCount: number;
+  failedCount: number;
+  failureReason: string | null;
+  run: ReleaseRunRef | null;
+}
+
+export interface ReleaseService {
+  product: string;
+  service: string;
+  included: boolean;
+  staging: ReleaseDeploy | null;
+  promotion: ReleasePromotion | null;
+  production: ReleaseDeploy | null;
+  productionFailures: number;
+  migrations: ReleaseMigration[];
+}
+
+export interface ReleaseCheckIssue {
+  product: string;
+  service: string;
+  problem: string;
+}
+
+/** One pipeline run behind a check, with how many of the release's services it handled. */
+export interface ReleaseRun {
+  provider: string | null;
+  label: string;
+  url: string;
+  services: number;
+  succeeded: number;
+  failed: number;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+
+export interface ReleaseCheck {
+  key: ReleaseCheckKey;
+  state: ReleaseCheckState;
+  done: number;
+  total: number;
+  summary: string;
+  firstAt: string | null;
+  lastAt: string | null;
+  issues: ReleaseCheckIssue[];
+  /** The pipeline runs the measurement read, oldest first. */
+  runs: ReleaseRun[];
+}
+
+export interface ReleaseProgress {
+  releaseId: string;
+  version: string;
+  computedAt: string;
+  from: string;
+  to: string;
+  services: ReleaseService[];
+  checks: ReleaseCheck[];
 }
 
 // ── Delivery metrics ──────────────────────────────────────────────────────

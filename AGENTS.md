@@ -21,7 +21,8 @@ When the `infraportal` MCP server is connected (this repo's `.mcp.json` points i
 promotion/deployment diagnostics the REST API lacks. See `notes/mcp-server.md`.
 
 Full API payload references live in `notes/` (`deployment-ingest-api.md`, `promotions-api.md`,
-`build-registry-api.md`, `analytics-api.md`, `release-notes.md`, `migrations-api.md`, `mcp-server.md`).
+`build-registry-api.md`, `analytics-api.md`, `release-notes.md`, `migrations-api.md`, `releases-api.md`,
+`mcp-server.md`).
 
 ## What's new entries (the portal's changelog)
 
