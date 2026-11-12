@@ -264,6 +264,20 @@ Feature-flagged (off by default). `GET /api/release-notes/preview?product=&envir
 renders a draft; `POST /api/release-notes/generate` persists it and fires the
 `release_note.generated` webhook; `GET /api/release-notes` / `/{id}` list and fetch.
 
+## Releases
+
+Versioned release trains (`5.10`, `6.0`) with a checklist the release manager moves on by hand.
+`GET /api/releases` lists them, and `GET /api/releases/{id}` returns one with its steps.
+`GET /api/releases/{id}/progress` is the live evidence: per service, the staging build, the production
+promotion, the production deploy and its migrations, plus the four checks (`staging-builds`,
+`production-promotions`, `production-deploys`, `production-migrations`), each with the SDP and
+mpt-release `runs` it read. Writes are for admins, the release managers (the approvers of the
+"Release Manager" requirement on the product's production promotion gate, `GET /api/releases/managers`)
+and the release's named manager: `POST /api/releases`
+(with release `links`), `PATCH /api/releases/{id}/steps/{stepId}` (status, dates, note, `links`;
+backdating is allowed), and `POST /api/releases/{id}/complete|cancel|reopen`. See
+`notes/releases-api.md`.
+
 ## Error handling
 
 | Status | Meaning | What to do |
@@ -279,4 +293,4 @@ renders a draft; `POST /api/release-notes/generate` persists it and fires the
 
 Full payload shapes and semantics live in the InfraPilot repo under `notes/`:
 `deployment-ingest-api.md`, `promotions-api.md`, `build-registry-api.md`, `analytics-api.md`,
-`release-notes.md`, `migrations-api.md`. Consult them when a field's exact behaviour matters.
+`release-notes.md`, `migrations-api.md`, `releases-api.md`. Consult them when a field's exact behaviour matters.

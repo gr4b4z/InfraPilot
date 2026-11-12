@@ -19,6 +19,7 @@ using Platform.Api.Features.Guides;
 using Platform.Api.Features.Knowledge;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.ReleaseNotes;
+using Platform.Api.Features.Releases;
 using Platform.Api.Features.Rollbacks;
 using Platform.Api.Features.Settings;
 using Platform.Api.Features.Executors;
@@ -258,6 +259,8 @@ builder.Services.AddScoped<AnalyticsService>();
 builder.Services.AddScoped<DeliveryMetricsService>();
 builder.Services.AddScoped<IncidentService>();
 builder.Services.AddScoped<Platform.Api.Features.Migrations.MigrationService>();
+builder.Services.AddScoped<Platform.Api.Features.Releases.ReleaseService>();
+builder.Services.AddScoped<Platform.Api.Features.Releases.ReleaseProgressService>();
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();
@@ -514,6 +517,8 @@ app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(Aut
 app.MapGroup("/api/promotions/audit").MapPromotionAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/rollbacks").MapRollbackEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Releases are readable by everyone signed in; ReleaseService decides who may change one.
+app.MapGroup("/api/releases").MapReleaseEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);

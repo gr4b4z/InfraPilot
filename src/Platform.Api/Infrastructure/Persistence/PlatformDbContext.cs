@@ -7,6 +7,7 @@ using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Incidents.Models;
 using Platform.Api.Features.Migrations.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Releases.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
 using Platform.Api.Features.Requests.Models;
@@ -65,6 +66,8 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<MigrationRun> MigrationRuns => Set<MigrationRun>();
     public DbSet<MigrationRunItem> MigrationRunItems => Set<MigrationRunItem>();
     public DbSet<MigrationRunLog> MigrationRunLogs => Set<MigrationRunLog>();
+    public DbSet<Release> Releases => Set<Release>();
+    public DbSet<ReleaseStep> ReleaseSteps => Set<ReleaseStep>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -832,6 +835,55 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .HasForeignKey(x => x.MigrationRunId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(x => new { x.MigrationRunId, x.Name }).IsUnique();
+        });
+
+        // Versioned releases (5.10, 6.0) and their checklists. See ReleaseService / ReleaseProgressService.
+        modelBuilder.Entity<Release>(e =>
+        {
+            e.ToTable("releases");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Version).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Title).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ProductsJson).HasMaxLength(4000).HasDefaultValue("[]").IsRequired();
+            e.Property(x => x.StagingEnvironment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ProductionEnvironment).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ReleaseManager).HasMaxLength(300);
+            e.Property(x => x.ReleaseManagerName).HasMaxLength(300);
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Notes).HasMaxLength(8000);
+            e.Property(x => x.LinksJson).HasDefaultValue("[]").IsRequired();
+            e.Property(x => x.IncludedServicesJson).HasMaxLength(8000).HasDefaultValue("[]").IsRequired();
+            e.Property(x => x.ExcludedServicesJson).HasMaxLength(8000).HasDefaultValue("[]").IsRequired();
+            e.Property(x => x.CancelReason).HasMaxLength(2000);
+            e.Property(x => x.CreatedBy).HasMaxLength(300).IsRequired();
+            e.Property(x => x.CreatedByName).HasMaxLength(300).IsRequired();
+            e.Property(x => x.UpdatedBy).HasMaxLength(300);
+            e.HasMany(x => x.Steps)
+                .WithOne()
+                .HasForeignKey(x => x.ReleaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Not unique: one version line per product is enforced by the service, since two
+            // products may run trains that both reach 5.10, and a cancelled release frees its line.
+            e.HasIndex(x => x.Version);
+            e.HasIndex(x => new { x.Status, x.CreatedAt });
+        });
+
+        modelBuilder.Entity<ReleaseStep>(e =>
+        {
+            e.ToTable("release_steps");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Key).HasMaxLength(50).IsRequired();
+            e.Property(x => x.Title).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Description).HasMaxLength(2000);
+            e.Property(x => x.Owner).HasMaxLength(100);
+            e.Property(x => x.Check).HasMaxLength(50);
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            e.Property(x => x.CompletedBy).HasMaxLength(300);
+            e.Property(x => x.CompletedByName).HasMaxLength(300);
+            e.Property(x => x.Note).HasMaxLength(4000);
+            e.Property(x => x.LinksJson).HasDefaultValue("[]").IsRequired();
+            e.Property(x => x.Custom).HasDefaultValue(false);
+            e.HasIndex(x => new { x.ReleaseId, x.Order });
         });
 
         // Rollback Requests
