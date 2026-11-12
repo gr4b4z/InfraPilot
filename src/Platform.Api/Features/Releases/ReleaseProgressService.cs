@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Migrations.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Releases.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -17,23 +18,33 @@ namespace Platform.Api.Features.Releases;
 /// Computed on every read, never stored: deploy events, promotions and migration reports keep
 /// arriving (and get backfilled) after a release is written down.
 ///
-/// <para><b>Which records count.</b> In the release's products: deploys to its staging and production
-/// environments and promotions to its production environment whose version is on the line (see
-/// <see cref="OnLine"/>), up to the end of the window; for the explicitly included services, every
-/// deploy and promotion inside the window. Explicitly excluded services and retired services are left
-/// out. Migrations are matched to the version production runs, whenever they were reported.</para>
+/// <para><b>Which services.</b> Every service of the release's products — each one present on its
+/// staging or production environment by the end of the window — unless the release manager left it out
+/// (<see cref="Release.ExcludedServicesJson"/>, chosen from this same list). Left-out services are
+/// listed with <c>Excluded</c> but not counted by the checks. Retired services are not services.</para>
 ///
-/// <para><b>The window</b> runs from the version cut (<see cref="Release.StartedAt"/>, else creation)
+/// <para><b>Which records count.</b> For a service with anything on the line (see <see cref="OnLine"/>):
+/// its deploys to staging and production and its promotions to production of the line, up to the end of
+/// the window. For a service on a version scheme of its own (5.1.x while the train is 5.10): everything
+/// it deployed and promoted inside the window. Migrations are matched to the version production runs,
+/// whenever they were reported.</para>
+///
+/// <para><b>The window</b> runs from the release's start (<see cref="Release.StartedAt"/>, else creation)
 /// to completion (else now), so a closed release goes on describing what shipped that day after the
-/// line's next hotfix. The lower bound only applies to included services: nothing is on the line
+/// line's next hotfix. The lower bound only applies to services off the line: nothing is on the line
 /// before the line exists. Promotions are read only up to the moment the approval step was marked
 /// done, when it is: a promotion raised after the approval round is the service's next change.</para>
 /// </summary>
 public partial class ReleaseProgressService
 {
     private readonly PlatformDbContext _db;
+    private readonly PromotionService _promotions;
 
-    public ReleaseProgressService(PlatformDbContext db) => _db = db;
+    public ReleaseProgressService(PlatformDbContext db, PromotionService promotions)
+    {
+        _db = db;
+        _promotions = promotions;
+    }
 
     public async Task<ReleaseProgressDto?> GetAsync(Guid id, CancellationToken ct)
     {
@@ -82,7 +93,6 @@ public partial class ReleaseProgressService
     public async Task<ReleaseProgressDto> ComputeAsync(Release release, DateTimeOffset now, CancellationToken ct)
     {
         var products = ReleaseService.ParseList(release.ProductsJson);
-        var included = ReleaseService.ParseList(release.IncludedServicesJson).Select(ParseServiceName).ToList();
         var excluded = ReleaseService.ParseList(release.ExcludedServicesJson).Select(ParseServiceName).ToList();
         var staging = release.StagingEnvironment;
         var production = release.ProductionEnvironment;
@@ -105,6 +115,27 @@ public partial class ReleaseProgressService
         var vDash = "v" + dash;
         var envs = new List<string> { staging, production };
 
+        // Every service of the products: each one present on staging or production by the end of the
+        // window — its newest event there is not its removal. Retired services are not services.
+        var cells = await _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .Where(e => products.Contains(e.Product) && envs.Contains(e.Environment) && e.DeployedAt <= to)
+            .GroupBy(e => new { e.Product, e.Service, e.Environment })
+            .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, Latest = g.Max(e => e.DeployedAt) })
+            .ToListAsync(ct);
+        var removedAt = (await _db.DeployEvents.AsNoTracking()
+                .Where(e => products.Contains(e.Product) && envs.Contains(e.Environment) && e.DeployedAt <= to
+                    && e.Status == DeployEventStatuses.Removed)
+                .GroupBy(e => new { e.Product, e.Service, e.Environment })
+                .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, RemovedAt = g.Max(e => e.DeployedAt) })
+                .ToListAsync(ct))
+            .ToDictionary(r => (r.Product, r.Service, r.Environment), r => r.RemovedAt);
+        var present = cells
+            .Where(c => !(removedAt.TryGetValue((c.Product, c.Service, c.Environment), out var removed) && removed >= c.Latest))
+            .Select(c => (c.Product, c.Service))
+            .ToHashSet();
+
+        // A service's records of the line: deploys to staging and production, promotions to production.
         var events = await _db.DeployEvents.AsNoTracking()
             .ExcludingDeletedServices(_db)
             .Where(e => products.Contains(e.Product) && envs.Contains(e.Environment)
@@ -124,37 +155,31 @@ public partial class ReleaseProgressService
             .ToListAsync(ct);
         candidates = candidates.Where(c => OnLine(c.Version, line)).ToList();
 
-        // Services shipping with the train on a version scheme of their own: everything they did in the window.
-        if (included.Count > 0)
+        var onLine = events.Select(e => (e.Product, e.Service)).Concat(candidates.Select(c => (c.Product, c.Service))).ToHashSet();
+
+        // A service on a version scheme of its own (5.1.x while the train is 5.10) has nothing on the
+        // line: what it deployed and promoted during the release is what it shipped with it.
+        var offLine = present.Where(k => !onLine.Contains(k)).ToHashSet();
+        if (offLine.Count > 0)
         {
-            var names = included.Select(i => i.Service).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var extraEvents = (await _db.DeployEvents.AsNoTracking()
-                    .ExcludingDeletedServices(_db)
+            var names = offLine.Select(k => k.Service).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            events.AddRange((await _db.DeployEvents.AsNoTracking()
                     .Where(e => products.Contains(e.Product) && names.Contains(e.Service) && envs.Contains(e.Environment)
                         && e.DeployedAt >= from && e.DeployedAt <= to && e.Status != DeployEventStatuses.Removed)
                     .Select(e => new Ev(e.Id, e.Product, e.Service, e.Environment, e.Version, e.Status, e.DeployedAt, e.RunJson))
                     .ToListAsync(ct))
-                .Where(e => included.Any(i => i.Matches(e.Product, e.Service)))
-                .ToList();
-            var extraCandidates = (await _db.PromotionCandidates.AsNoTracking()
-                    .ExcludingDeletedServices(_db)
+                .Where(e => offLine.Contains((e.Product, e.Service))));
+            candidates.AddRange((await _db.PromotionCandidates.AsNoTracking()
                     .Where(c => products.Contains(c.Product) && names.Contains(c.Service) && c.TargetEnv == production
                         && c.CreatedAt >= from && c.CreatedAt <= promotionsTo)
                     .Select(c => new Cand(c.Id, c.Product, c.Service, c.SourceEnv, c.Version, c.Status, c.CreatedAt, c.ApprovedAt, c.DeployedAt, c.ExternalRunUrl))
                     .ToListAsync(ct))
-                .Where(c => included.Any(i => i.Matches(c.Product, c.Service)))
-                .ToList();
-
-            events = events.Concat(extraEvents).DistinctBy(e => e.Id).ToList();
-            candidates = candidates.Concat(extraCandidates).DistinctBy(c => c.Id).ToList();
+                .Where(c => offLine.Contains((c.Product, c.Service))));
         }
 
-        bool IsExcluded(string product, string service) => excluded.Any(x => x.Matches(product, service));
-        events = events.Where(e => !IsExcluded(e.Product, e.Service)).ToList();
-        candidates = candidates.Where(c => !IsExcluded(c.Product, c.Service)).ToList();
+        bool IsExcluded((string Product, string Service) k) => excluded.Any(x => x.Matches(k.Product, k.Service));
 
-        var keys = events.Select(e => (e.Product, e.Service))
-            .Concat(candidates.Select(c => (c.Product, c.Service)))
+        var keys = present.Concat(onLine)
             .Distinct()
             .OrderBy(k => k.Product, StringComparer.Ordinal)
             .ThenBy(k => k.Service, StringComparer.Ordinal)
@@ -181,6 +206,18 @@ public partial class ReleaseProgressService
                 .ToListAsync(ct);
         var migrationsByKey = migrationRows.ToLookup(m => (m.Product, m.Service));
 
+        // The promotion that carries each service to production: the newest one still in play.
+        var effective = new Dictionary<(string, string), Cand>();
+        foreach (var key in keys)
+        {
+            var cands = candidatesByKey[key].OrderByDescending(c => c.CreatedAt).ToList();
+            var chosen = cands.FirstOrDefault(c => c.Status != PromotionStatus.Superseded) ?? cands.FirstOrDefault();
+            if (chosen is not null) effective[key] = chosen;
+        }
+        var qaStep = await QaStepAsync(ct);
+        var gates = await GateInfoAsync(effective.Values.ToList(), qaStep, ct);
+        var builds = await BuildsAsync(products, line, keys, offLine, from, to, ct);
+
         var services = new List<ReleaseServiceDto>();
         // The pipeline runs behind each measurement, as (run, service, outcome) hits grouped later.
         var stagingRuns = new List<RunHit>();
@@ -189,19 +226,22 @@ public partial class ReleaseProgressService
         var promotionRuns = new List<RunHit>();
         foreach (var key in keys)
         {
+            var isExcluded = IsExcluded(key);
             var mine = eventsByKey[key].OrderByDescending(e => e.DeployedAt).ToList();
             var stagingLatest = mine.FirstOrDefault(e => e.Environment == staging);
             var prodEvents = mine.Where(e => e.Environment == production).ToList();
             productionNow.TryGetValue(key, out var prodSucceeded);
             var prodShown = prodSucceeded ?? prodEvents.FirstOrDefault();
 
-            var cands = candidatesByKey[key].OrderByDescending(c => c.CreatedAt).ToList();
-            var promotion = cands.FirstOrDefault(c => c.Status != PromotionStatus.Superseded) ?? cands.FirstOrDefault();
+            effective.TryGetValue(key, out var promotion);
 
-            if (stagingLatest is not null) stagingRuns.Add(new RunHit(stagingLatest.Run, key.Service, stagingLatest.Status, stagingLatest.DeployedAt));
-            foreach (var e in prodEvents) productionRuns.Add(new RunHit(e.Run, key.Service, e.Status, e.DeployedAt));
-            if (promotion?.ExternalRunUrl is { Length: > 0 } dispatched)
-                promotionRuns.Add(new RunHit(new DeployRun(RunUrl: dispatched), key.Service, "succeeded", promotion.ApprovedAt ?? promotion.CreatedAt));
+            if (!isExcluded)
+            {
+                if (stagingLatest is not null) stagingRuns.Add(new RunHit(stagingLatest.Run, key.Service, stagingLatest.Status, stagingLatest.DeployedAt));
+                foreach (var e in prodEvents) productionRuns.Add(new RunHit(e.Run, key.Service, e.Status, e.DeployedAt));
+                if (promotion?.ExternalRunUrl is { Length: > 0 } dispatched)
+                    promotionRuns.Add(new RunHit(new DeployRun(RunUrl: dispatched), key.Service, "succeeded", promotion.ApprovedAt ?? promotion.CreatedAt));
+            }
 
             var migrations = new List<ReleaseMigrationDto>();
             if (prodSucceeded is not null)
@@ -222,32 +262,174 @@ public partial class ReleaseProgressService
                     migrations.Add(new ReleaseMigrationDto(
                         m.Id, m.Kind, m.Version, m.Status, m.QueuedAt, m.CompletedAt, m.AppliedCount, m.FailedCount, m.FailureReason,
                         RunRef(run)));
-                    migrationRuns.Add(new RunHit(run, key.Service, m.Status, m.CompletedAt ?? m.QueuedAt));
+                    if (!isExcluded) migrationRuns.Add(new RunHit(run, key.Service, m.Status, m.CompletedAt ?? m.QueuedAt));
                 }
             }
 
             services.Add(new ReleaseServiceDto(
                 key.Product, key.Service,
-                included.Any(i => i.Matches(key.Product, key.Service)),
+                isExcluded,
+                onLine.Contains(key),
+                builds.GetValueOrDefault(key),
                 stagingLatest is null ? null : ToDeploy(stagingLatest),
-                promotion is null ? null : new ReleasePromotionDto(
-                    promotion.Id, promotion.SourceEnv, promotion.Version, promotion.Status.ToString(),
-                    promotion.CreatedAt, promotion.ApprovedAt, promotion.DeployedAt, promotion.ExternalRunUrl),
+                promotion is null ? null : ToPromotion(promotion, gates.GetValueOrDefault(promotion.Id)),
                 prodShown is null ? null : ToDeploy(prodShown),
                 prodEvents.Count(e => e.Status == "failed"),
                 migrations));
         }
 
-        var context = new CheckContext(line, staging, production, services, eventsByKey);
+        // The checks measure the services that ship; the ones left out are listed, not counted.
+        var shipping = services.Where(s => !s.Excluded).ToList();
+        var shippingKeys = shipping.Select(s => (s.Product, s.Service)).ToHashSet();
+        var shippingEvents = events.Where(e => shippingKeys.Contains((e.Product, e.Service))).ToLookup(e => (e.Product, e.Service));
+        var context = new CheckContext(line, staging, production, shipping, shippingEvents);
         var checks = new List<ReleaseCheckDto>
         {
             StagingBuildsCheck(context) with { Runs = Aggregate(stagingRuns) },
+            QaCheck(context, qaStep),
             PromotionsCheck(context) with { Runs = Aggregate(promotionRuns) },
             DeploysCheck(context) with { Runs = Aggregate(productionRuns) },
             MigrationsCheck(context) with { Runs = Aggregate(migrationRuns) },
         };
 
-        return new ReleaseProgressDto(release.Id, release.Version, now, from, to, services, checks);
+        return new ReleaseProgressDto(release.Id, release.Version, qaStep, now, from, to, services, checks);
+    }
+
+    // ── Gates, work items and builds ─────────────────────────────────────────
+
+    private async Task<string> QaStepAsync(CancellationToken ct)
+    {
+        var value = await _db.PlatformSettings.AsNoTracking()
+            .Where(s => s.Key == ReleaseService.QaStepSettingKey).Select(s => s.Value).FirstOrDefaultAsync(ct);
+        return string.IsNullOrWhiteSpace(value) ? ReleaseService.DefaultQaStep : value.Trim();
+    }
+
+    private sealed record GateInfo(
+        List<string> OutstandingSteps, bool WorkItemsOutstanding, ReleaseWorkItemsDto? WorkItems,
+        string QaReview, DateTimeOffset? QaApprovedAt, string? QaApprovedBy);
+
+    private static readonly JsonSerializerOptions SnapshotJson = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Per promotion: the approval steps it is still short of (the promotions page's own answer,
+    /// <see cref="PromotionService.GetGateStatusesAsync"/>), its work items and how far their sign-off
+    /// has got, and where it stands on the QA gate — the approval step named <paramref name="qaStep"/>.
+    /// </summary>
+    private async Task<Dictionary<Guid, GateInfo>> GateInfoAsync(List<Cand> cands, string qaStep, CancellationToken ct)
+    {
+        var result = new Dictionary<Guid, GateInfo>();
+        if (cands.Count == 0) return result;
+        var ids = cands.Select(c => c.Id).ToList();
+
+        var entities = await _db.PromotionCandidates.AsNoTracking().Where(c => ids.Contains(c.Id)).ToListAsync(ct);
+        // A promotion without a policy snapshot (imported, or older than snapshots) has no gate to read.
+        var withSnapshot = entities.Where(c => !string.IsNullOrEmpty(c.ResolvedPolicyJson)).ToList();
+        var statuses = await _promotions.GetGateStatusesAsync(withSnapshot, ct);
+        var hasQaStep = withSnapshot.ToDictionary(c => c.Id, c =>
+        {
+            try
+            {
+                var snapshot = JsonSerializer.Deserialize<ResolvedPolicySnapshot>(c.ResolvedPolicyJson!, SnapshotJson);
+                return snapshot?.ApprovalSteps.Any(step => step.Requirements.Count > 0
+                    && string.Equals((step.Name ?? "").Trim(), qaStep, StringComparison.OrdinalIgnoreCase)) ?? false;
+            }
+            catch (JsonException) { return false; }
+        });
+
+        var qaApprovals = (await _db.PromotionApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.CandidateId) && a.Decision == PromotionDecision.Approved && a.StepName != null)
+                .Select(a => new { a.CandidateId, a.StepName, a.ApproverName, a.CreatedAt })
+                .ToListAsync(ct))
+            .Where(a => string.Equals((a.StepName ?? "").Trim(), qaStep, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(a => a.CandidateId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(a => a.CreatedAt).First());
+
+        var items = await _db.PromotionWorkItems.AsNoTracking()
+            .Where(w => ids.Contains(w.CandidateId))
+            .Select(w => new { w.CandidateId, w.WorkItemKey, w.Product, w.Service, w.TargetEnv })
+            .ToListAsync(ct);
+        var itemKeys = items.Select(w => w.WorkItemKey).Distinct().ToList();
+        var decisions = itemKeys.Count == 0
+            ? new()
+            : (await _db.WorkItemApprovals.AsNoTracking()
+                    .Where(a => itemKeys.Contains(a.WorkItemKey))
+                    .Select(a => new { a.WorkItemKey, a.Product, a.Service, a.TargetEnv, a.Decision })
+                    .ToListAsync(ct))
+                .ToLookup(a => (a.WorkItemKey, a.Product, a.Service, a.TargetEnv), a => a.Decision)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var c in cands)
+        {
+            var status = statuses.GetValueOrDefault(c.Id) ?? PromotionGateStatus.None;
+            ReleaseWorkItemsDto? workItems = null;
+            var mine = items.Where(w => w.CandidateId == c.Id).DistinctBy(w => w.WorkItemKey).ToList();
+            if (mine.Count > 0)
+            {
+                int approved = 0, issues = 0, blocked = 0;
+                foreach (var w in mine)
+                {
+                    // Judged per instance, the way the promotion's own work-item gate judges them.
+                    var rows = decisions.GetValueOrDefault((w.WorkItemKey, w.Product, w.Service, w.TargetEnv)) ?? [];
+                    switch (WorkItemOverallStatus.StateOf(rows))
+                    {
+                        case WorkItemInstanceState.Approved: approved++; break;
+                        case WorkItemInstanceState.Issue: issues++; break;
+                        case WorkItemInstanceState.Blocked: blocked++; break;
+                    }
+                }
+                workItems = new ReleaseWorkItemsDto(mine.Count, approved, issues, blocked);
+            }
+
+            qaApprovals.TryGetValue(c.Id, out var qaApproval);
+            var qa = c.Status switch
+            {
+                PromotionStatus.Approved or PromotionStatus.Deploying or PromotionStatus.Deployed => "approved",
+                PromotionStatus.Rejected => "rejected",
+                PromotionStatus.Pending when hasQaStep.TryGetValue(c.Id, out var has) && !has => "not-required",
+                PromotionStatus.Pending when hasQaStep.ContainsKey(c.Id)
+                    && !status.OutstandingSteps.Any(x => string.Equals(x, qaStep, StringComparison.OrdinalIgnoreCase)) => "approved",
+                _ => qaApproval is not null && c.Status == PromotionStatus.Pending ? "approved" : "pending",
+            };
+            result[c.Id] = new GateInfo(
+                status.OutstandingSteps.ToList(), status.WorkItemsOutstanding, workItems, qa,
+                qaApproval?.CreatedAt ?? (qa == "approved" ? c.ApprovedAt : null), qaApproval?.ApproverName);
+        }
+        return result;
+    }
+
+    private static ReleasePromotionDto ToPromotion(Cand c, GateInfo? gate) => new(
+        c.Id, c.SourceEnv, c.Version, c.Status.ToString(), c.CreatedAt, c.ApprovedAt, c.DeployedAt, c.ExternalRunUrl,
+        gate?.OutstandingSteps ?? [], gate?.WorkItemsOutstanding ?? false, gate?.WorkItems,
+        gate?.QaReview ?? "pending", gate?.QaApprovedAt, gate?.QaApprovedBy);
+
+    /// <summary>
+    /// The newest registered build of the release per service: of the line, or — for a service on a
+    /// version scheme of its own — inside the window.
+    /// </summary>
+    private async Task<Dictionary<(string, string), ReleaseBuildDto>> BuildsAsync(
+        List<string> products, string line, List<(string Product, string Service)> keys,
+        HashSet<(string Product, string Service)> offLine, DateTimeOffset from, DateTimeOffset to, CancellationToken ct)
+    {
+        var dot = line + ".";
+        var dash = line + "-";
+        var vDot = "v" + dot;
+        var services = keys.Select(k => k.Service).Distinct().ToList();
+        var rows = await _db.Builds.AsNoTracking()
+            .Where(b => products.Contains(b.Product) && services.Contains(b.Service) && b.CreatedAt <= to)
+            .Where(b => b.Version == line || b.Version.StartsWith(dot) || b.Version.StartsWith(dash) || b.Version.StartsWith(vDot)
+                || b.CreatedAt >= from)
+            .Select(b => new { b.Id, b.Product, b.Service, b.Version, b.Branch, b.BuildId, b.BuildUrl, b.CreatedAt })
+            .ToListAsync(ct);
+        var wanted = keys.ToHashSet();
+        return rows
+            .Where(b => wanted.Contains((b.Product, b.Service)))
+            .Where(b => offLine.Contains((b.Product, b.Service)) ? b.CreatedAt >= from : OnLine(b.Version, line))
+            .GroupBy(b => (b.Product, b.Service))
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(b => b.CreatedAt)
+                    .Select(b => new ReleaseBuildDto(b.Id, b.Version, b.Branch, b.BuildId, b.BuildUrl, b.CreatedAt))
+                    .First());
     }
 
     private static ReleaseDeployDto ToDeploy(Ev e) => new(e.Id, e.Version, e.Status, e.DeployedAt, RunRef(e.Run));
@@ -388,6 +570,63 @@ public partial class ReleaseProgressService
             done, total, summary,
             stagingSucceeded.Count == 0 ? null : stagingSucceeded.Min(e => e.DeployedAt),
             stagingSucceeded.Count == 0 ? null : stagingSucceeded.Max(e => e.DeployedAt),
+            issues,
+            []);
+    }
+
+    /// <summary>
+    /// Every service's production promotion through the QA gate — the approval step named
+    /// <paramref name="qaStep"/>. A promotion whose gate has no such step has nothing to wait for; an
+    /// approved one is past it.
+    /// </summary>
+    private static ReleaseCheckDto QaCheck(CheckContext c, string qaStep)
+    {
+        var total = c.Services.Count;
+        var issues = new List<ReleaseCheckIssueDto>();
+        int done = 0, waiting = 0, rejected = 0, missing = 0;
+        var approvedAt = new List<DateTimeOffset>();
+        foreach (var s in c.Services)
+        {
+            var p = s.Promotion;
+            var alreadyShipped = Succeeded(s.Production) && (s.Staging is null || s.Staging.Version == s.Production!.Version);
+            if (p is null)
+            {
+                if (alreadyShipped) { done++; continue; }
+                missing++;
+                issues.Add(new(s.Product, s.Service, $"No promotion to {c.Production} raised yet"));
+                continue;
+            }
+            switch (p.QaReview)
+            {
+                case "approved":
+                case "not-required":
+                    done++;
+                    if (p.QaApprovedAt is { } at) approvedAt.Add(at);
+                    break;
+                case "rejected":
+                    rejected++;
+                    issues.Add(new(s.Product, s.Service, $"The promotion of {p.Version} was rejected"));
+                    break;
+                default:
+                    waiting++;
+                    var progress = p.WorkItems is { } w ? $" ({w.Approved + w.Issues} of {w.Total} work items signed off)" : "";
+                    issues.Add(new(s.Product, s.Service, $"{qaStep} not signed for {p.Version}{progress}"));
+                    break;
+            }
+        }
+        var parts = new List<string>();
+        if (waiting > 0) parts.Add($"{waiting} waiting for {qaStep}");
+        if (rejected > 0) parts.Add($"{rejected} rejected");
+        if (missing > 0) parts.Add($"{missing} not raised");
+        var summary = total == 0
+            ? $"No promotion of {c.Line} to {c.Production} yet."
+            : $"{done} of {total} passed {qaStep}" + (parts.Count > 0 ? $"; {string.Join(", ", parts)}." : ".");
+        return new ReleaseCheckDto(
+            ReleaseChecks.StagingQa,
+            total == 0 ? Waiting : rejected > 0 ? Attention : done == total ? Complete : InProgress,
+            done, total, summary,
+            approvedAt.Count == 0 ? null : approvedAt.Min(),
+            approvedAt.Count == 0 ? null : approvedAt.Max(),
             issues,
             []);
     }

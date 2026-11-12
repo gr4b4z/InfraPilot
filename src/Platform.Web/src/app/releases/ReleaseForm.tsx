@@ -4,19 +4,24 @@ import { api } from '@/lib/api';
 import type { Release, ReleaseInput, ReleaseLink } from '@/lib/api';
 import { Dialog } from '@/components/ui/Dialog';
 import { MultiValueInput } from '@/components/ui/MultiValueInput';
+import { DateField } from '@/components/ui/DateField';
 import { inputClass, inputStyle, labelClass, labelStyle } from '@/app/settings/formStyles';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useAuthStore } from '@/stores/authStore';
 import { cleanLinks, fromLocalInput, toLocalInput } from '@/components/releases/releaseStatus';
 import { LinksEditor } from '@/components/releases/ReleaseLinks';
 
 /**
- * Open a release, or change one's details. The checklist comes from the standard template on
- * create; steps are then moved on the release page itself.
+ * Open a release, or change one's details.
  *
- * "Already started?" takes a date in the past, which is how a release that is under way (or over)
- * is recorded after the fact — the portal reads deploys and promotions from that point on for the
- * services that are named rather than matched by version.
+ * Opening one asks for three things only: the version, the products and the release date. Everything
+ * else is a detail added later with Edit, and has a default until then — the name ("Release 5.11"),
+ * staging and prod, every service of its products, no links or notes. Nobody is named as its release
+ * manager: those are the approvers of its products' promotions to production. The checklist comes from
+ * the standard template; steps are moved on the release page.
+ *
+ * "Already started?" (Edit only) takes a date in the past, which is how a release that is under way
+ * (or over) is recorded after the fact — the portal reads deploys and promotions from that point on
+ * for the services that are named rather than matched by version.
  */
 export function ReleaseForm({
   release,
@@ -27,7 +32,7 @@ export function ReleaseForm({
   onClose: () => void;
   onSaved: (saved: Release) => void;
 }) {
-  const user = useAuthStore((s) => s.user);
+  const isNew = !release;
   const { activeEnvironments } = useSettingsStore();
   const versionRef = useRef<HTMLInputElement>(null);
 
@@ -35,13 +40,9 @@ export function ReleaseForm({
   const [title, setTitle] = useState(release?.title ?? '');
   const [products, setProducts] = useState<string[]>(release?.products ?? []);
   const [targetDate, setTargetDate] = useState(release?.targetDate ?? '');
-  const [manager, setManager] = useState(release ? release.releaseManager ?? '' : user?.email ?? '');
-  const [managerName, setManagerName] = useState(release ? release.releaseManagerName ?? '' : user?.name ?? '');
   const [staging, setStaging] = useState(release?.stagingEnvironment ?? 'staging');
   const [production, setProduction] = useState(release?.productionEnvironment ?? 'prod');
   const [startedAt, setStartedAt] = useState(toLocalInput(release?.startedAt));
-  const [included, setIncluded] = useState<string[]>(release?.includedServices ?? []);
-  const [excluded, setExcluded] = useState<string[]>(release?.excludedServices ?? []);
   const [notes, setNotes] = useState(release?.notes ?? '');
   const [links, setLinks] = useState<ReleaseLink[]>(release?.links.length ? release.links : [{ label: null, url: '' }]);
   const [saving, setSaving] = useState(false);
@@ -63,18 +64,15 @@ export function ReleaseForm({
   const save = async () => {
     setSaving(true);
     setError(null);
-    const payload: ReleaseInput = {
+    // A new release sends only what was asked for; the API fills in the rest.
+    const payload: ReleaseInput = isNew ? { version: line, products, targetDate: targetDate || null } : {
       version: line,
       products,
       title: title.trim() || null,
       stagingEnvironment: staging,
       productionEnvironment: production,
       targetDate: targetDate || null,
-      releaseManager: manager.trim() || null,
-      releaseManagerName: managerName.trim() || null,
       notes: notes.trim() || null,
-      includedServices: included,
-      excludedServices: excluded,
       startedAt: fromLocalInput(startedAt),
       links: cleanLinks(links),
     };
@@ -89,7 +87,7 @@ export function ReleaseForm({
 
   const field = 'flex flex-col gap-1';
   return (
-    <Dialog onClose={onClose} ariaLabel={release ? 'Edit release' : 'New release'} initialFocusRef={versionRef} width={640}>
+    <Dialog onClose={onClose} ariaLabel={release ? 'Edit release' : 'New release'} initialFocusRef={versionRef} width={isNew ? 520 : 640}>
       <div className="flex items-center justify-between px-5 py-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
         <h2 className="text-[15px] font-semibold">{release ? `Edit ${release.title}` : 'New release'}</h2>
         <button onClick={onClose} className="p-1 rounded hover:bg-[var(--bg-secondary)]" aria-label="Close">
@@ -101,7 +99,7 @@ export function ReleaseForm({
         className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto"
         onSubmit={(e) => { e.preventDefault(); if (canSave) void save(); }}
       >
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className={`grid grid-cols-1 gap-3 ${isNew ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
           <label className={field}>
             <span className={labelClass} style={labelStyle}>Version</span>
             <input
@@ -117,16 +115,23 @@ export function ReleaseForm({
               <span className="text-[11px]" style={{ color: 'var(--danger)' }}>A release line such as 5.11 or 6.0</span>
             )}
           </label>
-          <label className={`${field} sm:col-span-2`}>
-            <span className={labelClass} style={labelStyle}>Name</span>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={validLine ? `Release ${line}` : 'Release 5.11'}
-              className={inputClass}
-              style={inputStyle}
-            />
-          </label>
+          {isNew ? (
+            <label className={field}>
+              <span className={labelClass} style={labelStyle}>Release date</span>
+              <DateField value={targetDate} onChange={setTargetDate} className={inputClass} style={inputStyle} ariaLabel="Release date" />
+            </label>
+          ) : (
+            <label className={`${field} sm:col-span-2`}>
+              <span className={labelClass} style={labelStyle}>Name</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={validLine ? `Release ${line}` : 'Release 5.11'}
+                className={inputClass}
+                style={inputStyle}
+              />
+            </label>
+          )}
         </div>
 
         <div className={field}>
@@ -143,10 +148,19 @@ export function ReleaseForm({
           </span>
         </div>
 
+        {isNew && (
+          <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            Every service of these products is part of the release; leave some out later from the release's
+            <b>Services</b> tile. The name, environments, links and notes can be added with <b>Edit</b>. It is run by the
+            release managers of its products: the people who approve their promotions to production.
+          </p>
+        )}
+
+        {!isNew && (<>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label className={field}>
             <span className={labelClass} style={labelStyle}>Release date</span>
-            <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className={inputClass} style={inputStyle} />
+            <DateField value={targetDate} onChange={setTargetDate} className={inputClass} style={inputStyle} ariaLabel="Release date" />
           </label>
           <label className={field}>
             <span className={labelClass} style={labelStyle}>Tested on</span>
@@ -162,46 +176,13 @@ export function ReleaseForm({
           </label>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className={field}>
-            <span className={labelClass} style={labelStyle}>Release manager</span>
-            <input value={manager} onChange={(e) => setManager(e.target.value)} placeholder="name@example.com" className={inputClass} style={inputStyle} />
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Can run this release, like the release managers.</span>
-          </label>
-          <label className={field}>
-            <span className={labelClass} style={labelStyle}>Release manager's name</span>
-            <input value={managerName} onChange={(e) => setManagerName(e.target.value)} className={inputClass} style={inputStyle} />
-          </label>
-        </div>
-
-        <details className="rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-color)' }} open={!!(release && (included.length || excluded.length || startedAt))}>
-          <summary className="text-[13px] cursor-pointer select-none" style={{ color: 'var(--text-secondary)' }}>
-            Scope and history
-          </summary>
-          <div className="space-y-3 pt-3">
-            <div className={field}>
-              <span className={labelClass} style={labelStyle}>Also ships</span>
-              <MultiValueInput values={included} onChange={setIncluded} placeholder="service or product/service" ariaLabel="Services that also ship" />
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                Services on a version scheme of their own that go out with this release.
-              </span>
-            </div>
-            <div className={field}>
-              <span className={labelClass} style={labelStyle}>Not shipping</span>
-              <MultiValueInput values={excluded} onChange={setExcluded} placeholder="service or product/service" ariaLabel="Services not shipping" />
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                Services with a {validLine ? line : 'x.y'} version that are not part of this release.
-              </span>
-            </div>
-            <label className={field}>
-              <span className={labelClass} style={labelStyle}>Already started?</span>
-              <input type="datetime-local" value={startedAt} onChange={(e) => setStartedAt(e.target.value)} className={inputClass} style={inputStyle} />
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                When planning or the version cut began. Leave empty for a release that starts now.
-              </span>
-            </label>
-          </div>
-        </details>
+        <label className={field}>
+          <span className={labelClass} style={labelStyle}>Already started?</span>
+          <DateField type="datetime-local" value={startedAt} onChange={setStartedAt} className={inputClass} style={inputStyle} ariaLabel="Already started" />
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            When planning or the version cut began. Leave empty for a release that starts now.
+          </span>
+        </label>
 
         <div className={field}>
           <span className={labelClass} style={labelStyle}>Links</span>
@@ -222,6 +203,7 @@ export function ReleaseForm({
             style={inputStyle}
           />
         </label>
+        </>)}
 
         {error && <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{error}</p>}
 

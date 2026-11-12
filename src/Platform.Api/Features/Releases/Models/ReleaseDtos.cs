@@ -15,7 +15,10 @@ public record ReleaseStepDto(
     string? CompletedByName,
     string? Note,
     List<ReleaseLink> Links,
-    bool Custom);
+    bool Custom,
+    // A standard step only some releases need (the maintenance page). While still to do it doesn't
+    // count towards the release's progress.
+    bool Optional);
 
 /// <summary>A release as the list shows it: identity, dates and how far its checklist has got.</summary>
 public record ReleaseSummaryDto(
@@ -25,15 +28,13 @@ public record ReleaseSummaryDto(
     List<string> Products,
     string Status,
     DateOnly? TargetDate,
-    string? ReleaseManager,
-    string? ReleaseManagerName,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     DateTimeOffset? CancelledAt,
-    // Steps done or skipped, out of all steps.
+    // Steps done or skipped, out of all steps — leaving out optional steps nobody has started.
     int StepsClosed,
     int StepsTotal,
-    // The first step still open, in order — what the release is on now. Null when all are closed.
+    // The first of those still open, in order — what the release is on now. Null when all are closed.
     string? CurrentStep,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
@@ -66,12 +67,15 @@ public record ReleaseManagerGateDto(
 /// </summary>
 public record ReleaseManagersDto(
     string Requirement,
+    // The approval step that is the QA gate, for the Test on staging check, and every step name the gates use.
+    string QaStep,
+    List<string> KnownSteps,
     List<ReleaseManagerGateDto> Gates,
     List<string> KnownRequirements,
     bool CanEdit,
     bool IsReleaseManager);
 
-public record UpdateReleaseManagersRequest(string Requirement);
+public record UpdateReleaseManagersRequest(string? Requirement = null, string? QaStep = null);
 
 public record ReleaseDto(
     Guid Id,
@@ -81,12 +85,10 @@ public record ReleaseDto(
     string StagingEnvironment,
     string ProductionEnvironment,
     DateOnly? TargetDate,
-    string? ReleaseManager,
-    string? ReleaseManagerName,
     string Status,
     string? Notes,
     List<ReleaseLink> Links,
-    List<string> IncludedServices,
+    // Services of the products left out of the release, as product/service.
     List<string> ExcludedServices,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
@@ -98,7 +100,7 @@ public record ReleaseDto(
     string? UpdatedBy,
     DateTimeOffset UpdatedAt,
     List<ReleaseStepDto> Steps,
-    // Whether the caller may change this release (an administrator, a release manager, or the one named on it).
+    // Whether the caller may change this release: an administrator or a release manager of its products.
     bool CanManage);
 
 /// <summary>
@@ -113,11 +115,7 @@ public record CreateReleaseRequest(
     string? StagingEnvironment = null,
     string? ProductionEnvironment = null,
     DateOnly? TargetDate = null,
-    string? ReleaseManager = null,
-    string? ReleaseManagerName = null,
     string? Notes = null,
-    List<string>? IncludedServices = null,
-    List<string>? ExcludedServices = null,
     DateTimeOffset? StartedAt = null,
     List<ReleaseLink>? Links = null);
 
@@ -129,11 +127,7 @@ public record UpdateReleaseRequest(
     string? StagingEnvironment = null,
     string? ProductionEnvironment = null,
     DateOnly? TargetDate = null,
-    string? ReleaseManager = null,
-    string? ReleaseManagerName = null,
     string? Notes = null,
-    List<string>? IncludedServices = null,
-    List<string>? ExcludedServices = null,
     DateTimeOffset? StartedAt = null,
     List<ReleaseLink>? Links = null);
 
@@ -159,6 +153,9 @@ public record AddReleaseStepRequest(
     string? Owner = null,
     Guid? AfterStepId = null);
 
+/// <summary>The services of the products left out of the release, as <c>product/service</c>; replaces the list.</summary>
+public record SetReleaseServicesRequest(List<string>? Excluded);
+
 public record CompleteReleaseRequest(DateTimeOffset? CompletedAt = null);
 
 public record CancelReleaseRequest(string Reason);
@@ -183,7 +180,23 @@ public record ReleasePromotionDto(
     DateTimeOffset? ApprovedAt,
     DateTimeOffset? DeployedAt,
     // The run the approval dispatched, when the deploying pipeline reported it back.
-    string? ExternalRunUrl);
+    string? ExternalRunUrl,
+    // The approval steps a pending promotion is still short of ("QA Review", "Release Approval").
+    List<string> OutstandingSteps,
+    // A pending promotion held by its work-item gate.
+    bool WorkItemsOutstanding,
+    // Its work items and how far their sign-off has got; null when it carries none.
+    ReleaseWorkItemsDto? WorkItems,
+    // The QA gate: "approved", "pending", "rejected", or "not-required" when the gate has no such step.
+    string QaReview,
+    DateTimeOffset? QaApprovedAt,
+    string? QaApprovedBy);
+
+/// <summary>A promotion's work items: <see cref="Approved"/> signed off, <see cref="Issues"/> cleared with a flag, <see cref="Blocked"/> held.</summary>
+public record ReleaseWorkItemsDto(int Total, int Approved, int Issues, int Blocked);
+
+/// <summary>The newest registered build of the release for a service.</summary>
+public record ReleaseBuildDto(Guid Id, string Version, string Branch, string? BuildId, string? BuildUrl, DateTimeOffset CreatedAt);
 
 public record ReleaseMigrationDto(
     Guid Id,
@@ -201,8 +214,13 @@ public record ReleaseMigrationDto(
 public record ReleaseServiceDto(
     string Product,
     string Service,
-    // Named in the release's included services rather than matched by version.
-    bool Included,
+    // Left out of the release by the release manager: listed, not counted by the checks.
+    bool Excluded,
+    // Has a build or promotion of the version line. False for a service on a version scheme of its
+    // own, whose records are then the ones inside the release window.
+    bool OnLine,
+    // The newest registered build of the release (build registry).
+    ReleaseBuildDto? Build,
     // The newest deploy of the release on staging, whatever became of it.
     ReleaseDeployDto? Staging,
     // The promotion that carries the service to production (the newest one still in play).
@@ -249,6 +267,8 @@ public record ReleaseCheckDto(
 public record ReleaseProgressDto(
     Guid ReleaseId,
     string Version,
+    // The approval step that is the QA gate ("QA Review"), as Settings → Releases names it.
+    string QaStep,
     DateTimeOffset ComputedAt,
     // The evidence window: version cut (or creation) to completion (or now).
     DateTimeOffset From,
