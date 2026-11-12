@@ -32,17 +32,20 @@ public static class ReleaseEndpoints
                 ? await releases.IsReleaseManagerAnywhereAsync(ct)
                 : await releases.IsReleaseManagerOfAsync([product], environment ?? "prod", ct);
             return Results.Ok(new ReleaseManagersDto(
-                await releases.GetManagerRequirementAsync(ct), gates, await releases.GetGateRequirementNamesAsync(ct),
-                user.IsAdmin, isManager));
+                await releases.GetManagerRequirementAsync(ct), await releases.GetQaStepAsync(ct), await releases.GetGateStepNamesAsync(ct),
+                gates, await releases.GetGateRequirementNamesAsync(ct), user.IsAdmin, isManager));
         });
 
         group.MapPut("/managers", (ReleaseService releases, ICurrentUser user, UpdateReleaseManagersRequest body, CancellationToken ct) =>
             Handle(async () =>
             {
-                if (body is null) return Results.BadRequest(new { error = "request body is required" });
-                var requirement = await releases.SetManagerRequirementAsync(body.Requirement, ct);
+                if (body is null || (body.Requirement is null && body.QaStep is null))
+                    return Results.BadRequest(new { error = "set 'requirement', 'qaStep' or both" });
+                if (body.Requirement is not null) await releases.SetManagerRequirementAsync(body.Requirement, ct);
+                if (body.QaStep is not null) await releases.SetQaStepAsync(body.QaStep, ct);
                 return Results.Ok(new ReleaseManagersDto(
-                    requirement, await releases.GetManagerGatesAsync(null, null, ct), await releases.GetGateRequirementNamesAsync(ct),
+                    await releases.GetManagerRequirementAsync(ct), await releases.GetQaStepAsync(ct), await releases.GetGateStepNamesAsync(ct),
+                    await releases.GetManagerGatesAsync(null, null, ct), await releases.GetGateRequirementNamesAsync(ct),
                     user.IsAdmin, await releases.IsReleaseManagerAnywhereAsync(ct)));
             }));
 
@@ -72,6 +75,9 @@ public static class ReleaseEndpoints
                 if (body is null) return Results.BadRequest(new { error = "request body is required" });
                 return OkOrNotFound(await releases.UpdateAsync(id, body, ct));
             }));
+
+        group.MapPut("/{id:guid}/services", (ReleaseService releases, Guid id, SetReleaseServicesRequest body, CancellationToken ct) =>
+            Handle(async () => OkOrNotFound(await releases.SetExcludedServicesAsync(id, body?.Excluded, ct))));
 
         group.MapPost("/{id:guid}/complete", (ReleaseService releases, Guid id, CompleteReleaseRequest? body, CancellationToken ct) =>
             Handle(async () => OkOrNotFound(await releases.CompleteAsync(id, body ?? new CompleteReleaseRequest(), ct))));

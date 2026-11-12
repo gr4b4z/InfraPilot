@@ -14,7 +14,8 @@ import { ReleaseForm } from './ReleaseForm';
  * Releases — the versioned release trains (5.10, 6.0) from version cut to production sign-off.
  * The ones under way come first as cards, each with how far its checklist has got and the step it
  * is on; finished and cancelled ones follow as a table. Everyone can follow them; admins and the
- * release managers (Settings → Releases) open and run them, and the page says who those are.
+ * release managers — the approvers of each product's promotions to production — open and run them,
+ * and the page says who those are.
  */
 export function ReleasesPage() {
   useDocumentTitle(['Releases']);
@@ -121,7 +122,6 @@ export function ReleasesPage() {
                       <th className={th}>Products</th>
                       <th className={th}>Started</th>
                       <th className={th}>Released</th>
-                      <th className={th}>Release manager</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -147,7 +147,6 @@ export function ReleasesPage() {
                           <td className={td} style={{ color: 'var(--text-secondary)' }}>
                             {r.completedAt ? new Date(r.completedAt).toLocaleString() : r.cancelledAt ? `Cancelled ${new Date(r.cancelledAt).toLocaleDateString()}` : '—'}
                           </td>
-                          <td className={td} style={{ color: 'var(--text-secondary)' }}>{r.releaseManagerName ?? r.releaseManager ?? '—'}</td>
                         </tr>
                       );
                     })}
@@ -203,7 +202,7 @@ function ActiveReleaseCard({ release: r }: { release: ReleaseSummary }) {
         </div>
       </div>
       <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
-        {r.releaseManagerName ?? r.releaseManager ?? 'No release manager'} · updated {formatDistanceToNow(new Date(r.updatedAt), { addSuffix: true })}
+        Updated {formatDistanceToNow(new Date(r.updatedAt), { addSuffix: true })}
       </p>
     </Link>
   );

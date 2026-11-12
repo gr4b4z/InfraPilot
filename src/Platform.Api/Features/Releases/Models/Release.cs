@@ -9,11 +9,11 @@ namespace Platform.Api.Features.Releases.Models;
 /// read time (see <see cref="ReleaseProgressService"/>), never copied in, so a backfilled deploy or
 /// a late migration report shows up on the release without anybody touching it.
 ///
-/// <para><b>Scope.</b> A service belongs to the release when, in one of <see cref="Products"/>, it
-/// ran or was promoted with a version on the line (<c>5.10</c>, <c>5.10.x</c>, <c>5.10.x-…</c>) in
-/// <see cref="StagingEnvironment"/> or <see cref="ProductionEnvironment"/>. Services on their own
-/// version scheme that ship with the train anyway are named in <see cref="IncludedServices"/>, and
-/// a service that is on the line but not shipping is named in <see cref="ExcludedServices"/>.</para>
+/// <para><b>Scope.</b> Every service of the release's products ships with it — each one present on
+/// <see cref="StagingEnvironment"/> or <see cref="ProductionEnvironment"/> — except those the release
+/// manager left out (<see cref="ExcludedServicesJson"/>). A service's records are its builds and
+/// promotions of the version line (<c>5.10</c>, <c>5.10.x</c>, <c>5.10.x-…</c>), or, for a service on a
+/// version scheme of its own, whatever it deployed and promoted during the release.</para>
 ///
 /// <para><b>Window.</b> Evidence is read from <see cref="StartedAt"/> (the version cut; the creation
 /// time until then) up to <see cref="CompletedAt"/>, so a completed release keeps describing the day
@@ -41,10 +41,6 @@ public class Release
     /// <summary>The planned production release date.</summary>
     public DateOnly? TargetDate { get; set; }
 
-    /// <summary>Who runs the release: an email (or directory id) and a display name.</summary>
-    public string? ReleaseManager { get; set; }
-    public string? ReleaseManagerName { get; set; }
-
     /// <summary>One of <see cref="ReleaseStatuses"/>. Derived from the dates and steps on every write.</summary>
     public string Status { get; set; } = ReleaseStatuses.Planned;
 
@@ -58,10 +54,10 @@ public class Release
     /// </summary>
     public string LinksJson { get; set; } = "[]";
 
-    /// <summary>Services that ship with the release although their versions are not on the line (JSON array).</summary>
-    public string IncludedServicesJson { get; set; } = "[]";
-
-    /// <summary>Services on the line that do not ship with this release (JSON array).</summary>
+    /// <summary>
+    /// Services of the products that do not ship with this release, as a JSON array of
+    /// <c>product/service</c>. Empty by default: every service of the products ships.
+    /// </summary>
     public string ExcludedServicesJson { get; set; } = "[]";
 
     /// <summary>When the release got going — planning or the version cut. Set by the first step that starts, or by hand.</summary>
@@ -158,6 +154,9 @@ public static class ReleaseChecks
     /// <summary>Services running a build of the line on the staging environment.</summary>
     public const string StagingBuilds = "staging-builds";
 
+    /// <summary>Production promotions that passed the QA gate (the "QA Review" approval step).</summary>
+    public const string StagingQa = "staging-qa";
+
     /// <summary>Staging → production promotions of those builds, and how many are approved.</summary>
     public const string ProductionPromotions = "production-promotions";
 
@@ -167,5 +166,19 @@ public static class ReleaseChecks
     /// <summary>Schema and data migrations of the deployed versions in production.</summary>
     public const string ProductionMigrations = "production-migrations";
 
-    public static readonly string[] All = [StagingBuilds, ProductionPromotions, ProductionDeploys, ProductionMigrations];
+    public static readonly string[] All = [StagingBuilds, StagingQa, ProductionPromotions, ProductionDeploys, ProductionMigrations];
+
+    /// <summary>
+    /// The check a template step carries, by its key — for steps of releases opened before the step had
+    /// one, which store none.
+    /// </summary>
+    public static string? ForStepKey(string key) => key switch
+    {
+        "staging-builds" => StagingBuilds,
+        "staging-testing" => StagingQa,
+        "production-promotions" => ProductionPromotions,
+        "production-deploys" => ProductionDeploys,
+        "production-migrations" => ProductionMigrations,
+        _ => null,
+    };
 }

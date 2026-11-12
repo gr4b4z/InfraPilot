@@ -1588,13 +1588,6 @@ namespace Platform.Api.Migrations.Postgres
                         .HasColumnType("character varying(8000)")
                         .HasDefaultValue("[]");
 
-                    b.Property<string>("IncludedServicesJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(8000)
-                        .HasColumnType("character varying(8000)")
-                        .HasDefaultValue("[]");
-
                     b.Property<string>("LinksJson")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -1616,14 +1609,6 @@ namespace Platform.Api.Migrations.Postgres
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)")
                         .HasDefaultValue("[]");
-
-                    b.Property<string>("ReleaseManager")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.Property<string>("ReleaseManagerName")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
 
                     b.Property<string>("StagingEnvironment")
                         .IsRequired()

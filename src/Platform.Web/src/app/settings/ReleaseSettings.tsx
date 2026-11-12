@@ -16,6 +16,7 @@ import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
 export function ReleaseSettings() {
   const [data, setData] = useState<ReleaseManagers | null>(null);
   const [requirement, setRequirement] = useState('');
+  const [qaStep, setQaStep] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -23,7 +24,7 @@ export function ReleaseSettings() {
 
   useEffect(() => {
     api.getReleaseManagers()
-      .then((m) => { setData(m); setRequirement(m.requirement); })
+      .then((m) => { setData(m); setRequirement(m.requirement); setQaStep(m.qaStep); })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load the release managers'))
       .finally(() => setLoading(false));
   }, []);
@@ -32,9 +33,10 @@ export function ReleaseSettings() {
     setSaving(true);
     setError(null);
     try {
-      const m = await api.updateReleaseManagers({ requirement: requirement.trim() });
+      const m = await api.updateReleaseManagers({ requirement: requirement.trim(), qaStep: qaStep.trim() });
       setData(m);
       setRequirement(m.requirement);
+      setQaStep(m.qaStep);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -46,7 +48,7 @@ export function ReleaseSettings() {
 
   const th = 'text-left font-medium px-2 py-1.5 whitespace-nowrap';
   const td = 'px-2 py-2 align-top';
-  const unchanged = data !== null && requirement.trim() === data.requirement;
+  const unchanged = data !== null && requirement.trim() === data.requirement && qaStep.trim() === data.qaStep;
 
   return (
     <section className="rounded-xl border p-5 space-y-4" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
@@ -83,10 +85,28 @@ export function ReleaseSettings() {
             </span>
           </label>
 
+          <label className="block max-w-md">
+            <span className={labelClass} style={labelStyle}>QA gate step</span>
+            <input
+              value={qaStep}
+              onChange={(e) => setQaStep(e.target.value)}
+              list="release-qa-steps"
+              placeholder="QA Review"
+              className={`${inputClass} w-full mt-1`}
+              style={inputStyle}
+            />
+            <datalist id="release-qa-steps">
+              {(data?.knownSteps ?? []).map((st) => <option key={st} value={st} />)}
+            </datalist>
+            <span className="block text-[12px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              The approval step QA signs. <b>Test on staging</b> is complete when every promotion of the release has passed it.
+            </span>
+          </label>
+
           <div className="flex items-center gap-3">
             <button
               onClick={() => void save()}
-              disabled={saving || !requirement.trim() || unchanged}
+              disabled={saving || !requirement.trim() || !qaStep.trim() || unchanged}
               className="px-3 py-1.5 rounded-lg text-[13px] font-medium text-white disabled:opacity-50"
               style={{ backgroundColor: 'var(--accent)' }}
             >
