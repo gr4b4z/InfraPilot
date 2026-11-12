@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Migrations.Models;
@@ -383,6 +384,56 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
     }
 
     [Fact]
+    public async Task Migrations_HeldBackByAFailedDeploy_WarnUntilTheNextRunRunsThem()
+    {
+        var product = Unique("held");
+        await SeedGate(product, ("Release Approval", "Release Manager", ManagerEmail));
+        var t0 = DateTimeOffset.UtcNow.AddDays(-2);
+        const string failedRun = """{"provider":"azure-devops","runId":"8971132","workflowName":"marketplace-sdp-prod","runUrl":"https://dev.azure.example.com/MPT/_build/results?buildId=8971132&view=logs"}""";
+        const string hotfixRun = """{"provider":"azure-devops","runId":"8971293","workflowName":"marketplace-sdp-prod","runUrl":"https://dev.azure.example.com/MPT/_build/results?buildId=8971293&view=logs"}""";
+        const string otherRun = """{"provider":"azure-devops","runId":"8971400","workflowName":"marketplace-sdp-prod","runUrl":"https://dev.azure.example.com/MPT/_build/results?buildId=8971400&view=logs"}""";
+
+        // swo-platform failed in the release's run; the others deployed and queued their data
+        // migrations, which the run then skipped.
+        await SeedDeploy(product, "swo-platform", "prod", "5.10.23", "failed", t0.AddHours(1), failedRun);
+        await SeedDeploy(product, "mpt-helpdesk", "prod", "5.10.133", "succeeded", t0.AddHours(1), failedRun);
+        await SeedDeploy(product, "mpt-notifications", "prod", "5.10.8", "succeeded", t0.AddHours(1), failedRun);
+        await SeedMigration(product, "mpt-helpdesk", "5.10.133", MigrationKinds.Data, MigrationRunStatus.Pending, null, t0.AddHours(1), 0, failedRun);
+        await SeedMigration(product, "mpt-notifications", "5.10.8", MigrationKinds.Data, MigrationRunStatus.Pending, null, t0.AddHours(1), 0, failedRun);
+        // Pending in a run where nothing failed: that run simply hasn't got to it.
+        await SeedDeploy(product, "mpt-procurement", "prod", "5.10.1", "succeeded", t0.AddHours(1), otherRun);
+        await SeedMigration(product, "mpt-procurement", "5.10.1", MigrationKinds.Data, MigrationRunStatus.Pending, null, t0.AddHours(1), 0, otherRun);
+
+        var release = await Json(await _rm.PostAsJsonAsync("/api/releases", new { version = "5.10", products = new[] { product }, startedAt = t0 }));
+        var id = release.GetProperty("id").GetGuid();
+
+        var check = (await Json(await _viewer.GetAsync($"/api/releases/{id}/progress"))).GetProperty("checks").EnumerateArray()
+            .First(c => c.GetProperty("key").GetString() == "production-migrations");
+        Assert.Equal("in_progress", check.GetProperty("state").GetString());
+        var warning = Assert.Single(check.GetProperty("warnings").EnumerateArray()).GetString();
+        Assert.Equal(
+            "swo-platform failed to deploy in marketplace-sdp-prod 8971132, so that run skipped the data migrations of "
+            + "mpt-helpdesk and mpt-notifications. They run with the next deploy run to prod.",
+            warning);
+        var problems = check.GetProperty("issues").EnumerateArray()
+            .ToDictionary(i => i.GetProperty("service").GetString()!, i => i.GetProperty("problem").GetString()!);
+        Assert.Equal("Data migration of 5.10.133 waits for the next run: swo-platform failed to deploy in marketplace-sdp-prod 8971132",
+            problems["mpt-helpdesk"]);
+        Assert.Equal("Data migration of 5.10.1 is pending", problems["mpt-procurement"]);
+
+        // The hotfix run deploys swo-platform and runs the waiting data migrations with it.
+        await SeedDeploy(product, "swo-platform", "prod", "5.10.27", "succeeded", t0.AddHours(2), hotfixRun);
+        foreach (var (service, version) in new[] { ("mpt-helpdesk", "5.10.133"), ("mpt-notifications", "5.10.8"), ("mpt-procurement", "5.10.1") })
+            await MarkDataMigrationRun(product, service, version, MigrationRunStatus.Succeeded, hotfixRun, t0.AddHours(2).AddMinutes(10));
+
+        var after = (await Json(await _viewer.GetAsync($"/api/releases/{id}/progress"))).GetProperty("checks").EnumerateArray()
+            .First(c => c.GetProperty("key").GetString() == "production-migrations");
+        Assert.Equal("complete", after.GetProperty("state").GetString());
+        Assert.Empty(after.GetProperty("warnings").EnumerateArray());
+        Assert.Empty(after.GetProperty("issues").EnumerateArray());
+    }
+
+    [Fact]
     public async Task StepTables_CarryBuildsTheQaGateAndWorkItems()
     {
         var product = Unique("qa");
@@ -567,7 +618,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
 
     private async Task SeedMigration(
         string product, string service, string version, string kind, string status, Guid? deployEventId,
-        DateTimeOffset queuedAt, int applied)
+        DateTimeOffset queuedAt, int applied, string? runJson = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
@@ -575,9 +626,25 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         {
             Id = Guid.NewGuid(), Kind = kind, Product = product, Service = service, Environment = "prod", Version = version,
             RunKey = deployEventId is null ? "" : $"deploy:{deployEventId}", Status = status, Source = "test",
-            DeployEventId = deployEventId, QueuedAt = queuedAt, CompletedAt = queuedAt.AddMinutes(2),
-            AppliedCount = applied, TotalCount = applied,
+            DeployEventId = deployEventId, QueuedAt = queuedAt,
+            CompletedAt = status == MigrationRunStatus.Pending ? null : queuedAt.AddMinutes(2),
+            AppliedCount = applied, TotalCount = applied, RunJson = runJson,
         });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>A later run ran the data migration: what the pipeline's reports leave on the row.</summary>
+    private async Task MarkDataMigrationRun(string product, string service, string version, string status, string runJson, DateTimeOffset at)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var run = await db.MigrationRuns.SingleAsync(m =>
+            m.Kind == MigrationKinds.Data && m.Product == product && m.Service == service && m.Version == version);
+        run.Status = status;
+        run.RunJson = runJson;
+        run.StartedAt = at;
+        run.CompletedAt = at.AddMinutes(5);
+        run.Attempts++;
         await db.SaveChangesAsync();
     }
 

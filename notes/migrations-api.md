@@ -7,6 +7,16 @@ Database migrations of deployed versions, read-only in the portal. Two kinds:
 | `schema` | Inside the deployment, as the Helm `pre-install,pre-upgrade` hook job `{chart}-migrations` (`migrate --schema`). The new pods never start on a schema they don't know, so a failed schema migration is a failed deploy. | **Read from the deploy event's own logs** — nothing extra to send. See [Schema migrations from deploy logs](#schema-migrations-from-deploy-logs). A producer may also report one explicitly. |
 | `data` | After the deployment, as a separate job (`migrate --data`), once the APIs it depends on are out. mpt-release queues it and runs it from the **Data Migration** workflow; marketplace SDP runs it in the `execute_data_migrations` job. | **Reported** through `POST /api/migrations/runs`: `pending` when the deploy queues it, `running` when the job starts, `succeeded` / `failed` / `skipped` when it ends. |
 
+**The portal is marketplace SDP's list of data migrations still to run.** Each SDP deploy leg of a
+service with a data migration reports it `pending` the moment the deploy succeeds. The run's
+`execute_data_migrations` job waits for every backend, so one failed deploy skips the whole job and its
+data migrations stay `pending`. The next SDP run to that environment reads them back
+(`GET /api/migrations/runs?product=mpt&environment=…&kind=data&status=pending`) and runs them with its
+own, whatever it deploys — only for the version the environment runs now, never for one queued by a
+run that is still going, and each one only while it is still `pending` when its job starts. The
+release's `production-migrations` check warns while a failed deploy holds them back
+([releases-api.md](releases-api.md#checks)).
+
 Like promotions, **a newer data migration supersedes an older one**: only the newest version's data
 migration of a (product, service, environment) is ever run, so when one is reported every older
 `pending` or `failed` one there becomes `superseded`, pointing at it. Schema migrations never supersede
