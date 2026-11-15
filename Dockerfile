@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS api-build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS api-build
 WORKDIR /src
 
 COPY InfraPilot.slnx ./
