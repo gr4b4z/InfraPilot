@@ -1440,6 +1440,14 @@ class ApiClient {
   }
 
   /**
+   * Every address that is the signed-in user: the sign-in name first, then the directory's other
+   * addresses for them (their mail, when it differs). See `AuthUser.emails`.
+   */
+  getMyEmails() {
+    return this.request<{ email: string; emails: string[] }>(`/me/emails`);
+  }
+
+  /**
    * Everything the hidden-products control needs. `products` is deliberately the UNFILTERED list —
    * every other product-bearing endpoint already has the hidden set applied, so this is the only
    * call that can still see a hidden product and therefore the only one that can offer to unhide it.

@@ -3,6 +3,7 @@ import { MsalProvider, useMsal } from '@azure/msal-react';
 import { InteractionStatus } from '@azure/msal-browser';
 import { getMsalInstance, isMsalEnabled, initializeMsal, reauthenticate, getActiveAccount } from '@/lib/auth';
 import { useAuthStore, createAuthUser } from '@/stores/authStore';
+import { api } from '@/lib/api';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useUserPrefsStore } from '@/stores/userPrefsStore';
@@ -36,6 +37,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       useFeatureFlagsStore.getState().load();
       useSettingsStore.getState().load();
       useUserPrefsStore.getState().load();
+      // The token only carries the sign-in name; the directory knows the user's other addresses.
+      // Without them the sign-in name still works, so a failure is not worth surfacing.
+      api
+        .getMyEmails()
+        .then((res) => useAuthStore.getState().setEmails(res.emails ?? []))
+        .catch(() => undefined);
     }
   }, [isAuthenticated]);
 

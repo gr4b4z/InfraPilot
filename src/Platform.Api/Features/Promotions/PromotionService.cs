@@ -3665,7 +3665,6 @@ public class PromotionService
         // Cache group membership lookups: one Graph call per unique approver group across all
         // candidates' requirement trees.
         var groupMembership = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        var email = _currentUser.Email;
 
         foreach (var c in list)
         {
@@ -3690,8 +3689,9 @@ public class PromotionService
                 ri++;
                 if (approvedByMe is not null && approvedByMe.Contains((step.Name ?? "", req.Name ?? ""))) continue;
                 var reqRef = new RequirementRef(step.Name ?? "", req.Name ?? "");
-                // User-list match is free; check it first.
-                if (req.Users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase)))
+                // User-list match is free; check it first. Any of the user's addresses: the list
+                // names people by their mail, which need not be the address they signed in with.
+                if (req.Users.Any(u => _currentUser.IsMe(u)))
                 {
                     authorized.Add((ri, reqRef));
                     continue;

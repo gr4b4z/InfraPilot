@@ -55,6 +55,18 @@ public class StubIdentityService : IIdentityService
         };
     }
 
+    /// <summary>
+    /// A local user has exactly one address, the one they sign in with. Any other id is null (cannot
+    /// say), never the "Dev User" fallback <see cref="GetUser"/> answers with: an address returned
+    /// here makes its owner the person that address names.
+    /// </summary>
+    public async Task<IReadOnlyList<string>?> GetEmailAddresses(string userId, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(userId, out var guid)) return null;
+        var email = await _db.LocalUsers.Where(u => u.Id == guid).Select(u => u.Email).FirstOrDefaultAsync(ct);
+        return email is null ? null : [email];
+    }
+
     public async Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
     {
         var users = await _db.LocalUsers
