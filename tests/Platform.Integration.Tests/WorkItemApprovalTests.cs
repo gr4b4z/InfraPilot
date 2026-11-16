@@ -2022,6 +2022,7 @@ public class WorkItemApprovalTests
         public string Id { get; set; } = "test-user-id";
         public string Name { get; set; } = "Test User";
         public string Email { get; set; } = "test@example.com";
+        public IReadOnlyList<string> Emails => [Email];
         public List<string> RolesList { get; set; } = new();
         public List<string> GroupsList { get; set; } = new();
         public IReadOnlyList<string> Roles => RolesList;
@@ -2047,6 +2048,9 @@ public class WorkItemApprovalTests
 
         public Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
             => Task.FromResult(AccountStatus.Unknown);
+
+        public Task<IReadOnlyList<string>?> GetEmailAddresses(string userId, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<string>?>(null);
 
         public Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<UserInfo>>(Array.Empty<UserInfo>());

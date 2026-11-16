@@ -21,14 +21,30 @@ public class CurrentUser : ICurrentUser
     // JWT names, so ClaimTypes.Email never matches an Entra token. Probe all of them (v2 first, then
     // v1, then the ws-fed-mapped fallbacks) so Email is never empty for a real signed-in user —
     // an empty Email silently breaks approver Users-list matching and approval de-duplication.
-    public string Email =>
+    public string Email => EmailOf(User);
+
+    /// <summary>
+    /// <see cref="Email"/>, then the directory's other addresses for the user, which
+    /// <see cref="DirectoryEmailClaimsTransformation"/> adds to the principal after sign-in.
+    /// </summary>
+    public IReadOnlyList<string> Emails =>
+        new[] { Email }
+            .Concat(User?.FindAll(DirectoryEmailClaimsTransformation.ClaimType).Select(c => c.Value) ?? [])
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList()
+            .AsReadOnly();
+
+    /// <summary>The signed-in address of <paramref name="principal"/>, as <see cref="Email"/> reads it.</summary>
+    internal static string EmailOf(ClaimsPrincipal? principal) =>
         FirstNonBlank(
-            User?.FindFirstValue("preferred_username"),
-            User?.FindFirstValue("upn"),
-            User?.FindFirstValue("email"),
-            User?.FindFirstValue("unique_name"),
-            User?.FindFirstValue(ClaimTypes.Email),
-            User?.FindFirstValue(ClaimTypes.Upn))
+            principal?.FindFirstValue("preferred_username"),
+            principal?.FindFirstValue("upn"),
+            principal?.FindFirstValue("email"),
+            principal?.FindFirstValue("unique_name"),
+            principal?.FindFirstValue(ClaimTypes.Email),
+            principal?.FindFirstValue(ClaimTypes.Upn))
         ?? "";
 
     private static string? FirstNonBlank(params string?[] values) =>

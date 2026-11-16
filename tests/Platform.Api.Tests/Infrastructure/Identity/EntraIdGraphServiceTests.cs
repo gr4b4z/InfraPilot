@@ -335,6 +335,61 @@ public class EntraIdGraphServiceTests
         Assert.Equal(0, _graph.RequestCount);
     }
 
+    // ── Email addresses (recognising a person by their mail) ─────────────────
+
+    [Fact]
+    public async Task Email_addresses_are_the_mail_the_sign_in_name_and_the_smtp_proxies()
+    {
+        // A sign-in name cut short, the way a long name can be: the mail is the address others use.
+        _graph.Respond = _ => Json(new
+        {
+            id = UserId,
+            mail = "Firstname.Longlastname@example.com",
+            userPrincipalName = "firstname.longlast@example.com",
+            proxyAddresses = new[]
+            {
+                "SMTP:Firstname.Longlastname@example.com",
+                "smtp:f.longlastname@example.com",
+                "SIP:firstname.longlastname@example.com",
+                "X500:/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Recipients/cn=abc",
+            },
+        });
+
+        var addresses = await _sut.GetEmailAddresses(UserId);
+
+        Assert.Equal(
+            ["Firstname.Longlastname@example.com", "firstname.longlast@example.com", "f.longlastname@example.com"],
+            addresses);
+        var request = Assert.Single(_graph.Requests);
+        Assert.Contains($"/users/{UserId}", request);
+        Assert.Contains("$select=id,mail,userPrincipalName,proxyAddresses", request);
+    }
+
+    [Fact]
+    public async Task Email_addresses_of_a_deleted_user_are_none()
+    {
+        _graph.Respond = _ => GraphError(HttpStatusCode.NotFound, "Request_ResourceNotFound");
+
+        Assert.Empty((await _sut.GetEmailAddresses(UserId))!);
+    }
+
+    [Fact]
+    public async Task An_unanswered_email_lookup_is_null_and_warned_about_once_per_ttl()
+    {
+        _graph.Respond = _ => GraphError(HttpStatusCode.TooManyRequests, "TooManyRequests");
+
+        Assert.Null(await _sut.GetEmailAddresses(UserId));
+        Assert.Null(await _sut.GetEmailAddresses(UserId));
+        Assert.Equal(1, _log.Count(LogLevel.Warning));
+    }
+
+    [Fact]
+    public async Task Email_addresses_of_a_non_object_id_are_null_without_a_round_trip()
+    {
+        Assert.Null(await _sut.GetEmailAddresses("apikey:pipeline"));
+        Assert.Equal(0, _graph.RequestCount);
+    }
+
     // ── Credential health ────────────────────────────────────────────────────
 
     // What Azure.Identity's ClientSecretCredential threw in prod on 2026-10-19 (ids made up).

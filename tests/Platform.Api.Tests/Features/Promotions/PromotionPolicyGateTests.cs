@@ -160,6 +160,29 @@ public class PromotionPolicyGateTests : IDisposable
     }
 
     [Fact]
+    public async Task User_Listed_By_Their_Mail_Is_Authorized_When_Signed_In_Under_Another_Address()
+    {
+        // The user list comes from the people picker, which stores mail; this user's sign-in name
+        // is a shortened form of it. The directory's addresses make them the same person.
+        var steps = new List<ApprovalStep>
+        {
+            new("Step", new() { new ApproverRequirement("R", new(), new() { "Firstname.Longlastname@example.com" }, 1) }),
+        };
+        var candidate = SeedCandidate(steps);
+
+        AsUser("long-id", "firstname.longlast@example.com", "Longlastname, Firstname");
+        _currentUser.Emails.Returns(new List<string>
+        {
+            "firstname.longlast@example.com", "Firstname.Longlastname@example.com",
+        }.AsReadOnly());
+
+        Assert.True(await _sut.CanUserApproveAsync(candidate));
+        var listed = await _sut.GetApprovableRequirementsManyAsync([candidate]);
+        Assert.Single(listed[candidate.Id]);
+        Assert.Equal(PromotionStatus.Approved, (await _sut.ApproveAsync(candidate.Id, null)).Status);
+    }
+
+    [Fact]
     public async Task User_In_RequirementGroup_ViaGraph_IsAuthorized()
     {
         _identity.GetGroupMembers("release", Arg.Any<CancellationToken>())
