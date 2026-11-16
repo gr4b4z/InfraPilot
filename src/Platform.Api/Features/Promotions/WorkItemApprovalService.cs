@@ -577,6 +577,12 @@ public class WorkItemApprovalService
         var assigneeEmail = (assigneeFilterActive && !assigneeIsUnassigned)
             ? trimmedAssignee!.ToLowerInvariant()
             : null;
+        // The addresses that count as that person. Asking for yourself ("Assigned to me", which sends
+        // your sign-in name) matches every address you have: a ticket names its QA owner by their mail,
+        // which need not be the address you signed in with. Anyone else is matched as given.
+        var assigneeEmails = assigneeEmail is null
+            ? null
+            : new HashSet<string>(_currentUser.SamePersonAs(assigneeEmail), StringComparer.OrdinalIgnoreCase);
 
         // Candidate-scoped work-item index — the candidate is self-contained, so its tickets come
         // from PromotionWorkItem by candidate id (not from deploy-event bundles). Display columns
@@ -787,9 +793,8 @@ public class WorkItemApprovalService
                     }
                     else if (assigneeFilterActive)
                     {
-                        // Specific email narrows.
-                        keep = inMatchRoles.Any(p =>
-                            string.Equals(p.Email, assigneeEmail, StringComparison.OrdinalIgnoreCase));
+                        // Specific person narrows — any of their addresses (see assigneeEmails).
+                        keep = inMatchRoles.Any(p => p.Email is not null && assigneeEmails!.Contains(p.Email.Trim()));
                     }
                     else
                     {

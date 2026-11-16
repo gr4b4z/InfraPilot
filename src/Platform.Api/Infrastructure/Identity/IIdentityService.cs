@@ -34,6 +34,20 @@ public interface IIdentityService
     /// answer may stop a credential.
     /// </summary>
     Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every email address the directory knows account <paramref name="userId"/> by: its mail, its
+    /// sign-in name and its other mail addresses. Records name a person by whichever address their
+    /// source had (a ticket's QA owner arrives as their mail, the people picker stores mail), while
+    /// the person signs in with a sign-in name that need not be the same: a long name cut short, or
+    /// a name change. This is how the portal still recognises them (see
+    /// <see cref="Platform.Api.Infrastructure.Auth.DirectoryEmailClaimsTransformation"/>).
+    ///
+    /// <para>Null when the directory cannot say (unreachable, throttled, an id it does not issue);
+    /// an empty list when it says the account has none. Never throws for a lookup that fails.</para>
+    /// </summary>
+    Task<IReadOnlyList<string>?> GetEmailAddresses(string userId, CancellationToken ct = default);
+
     Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default);
     Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default);
 
