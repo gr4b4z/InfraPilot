@@ -169,6 +169,9 @@ builder.Services.AddDeploymentIngestionRateLimit(builder.Configuration);
 // Infrastructure
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+// The directory's other addresses for the signed-in person (mail vs sign-in name), so records that
+// name them by their mail still count as theirs. Scoped like the stub directory it may read.
+builder.Services.AddScoped<IClaimsTransformation, DirectoryEmailClaimsTransformation>();
 builder.Services.AddScoped<PersonalAccessTokenService>();
 // Scoped because the stub directory it reads is; its answers live in the shared memory cache.
 builder.Services.AddScoped<PersonalTokenOwnerCheck>();
@@ -525,6 +528,8 @@ app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorizatio
 app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
 // The signed-in user's own preferences. Any authenticated user, no role gate — these are personal.
 app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization();
+// Their addresses (sign-in name and mail), for the web app's "is this me?".
+app.MapGroup("/api/me").MapCurrentUserEndpoints().RequireAuthorization();
 // Their personal access tokens — a signed-in session only, so a token cannot mint another.
 app.MapGroup("/api/me/tokens").MapPersonalAccessTokenEndpoints().RequireAuthorization(AuthorizationPolicies.SignedInSession);
 // Everyone's tokens, for administrators: find and revoke any of them (Settings → Agent Tokens).

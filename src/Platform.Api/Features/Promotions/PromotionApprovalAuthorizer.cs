@@ -68,7 +68,7 @@ public class PromotionApprovalAuthorizer
         {
             var members = await _identity.GetGroupMembers(approverGroup, ct);
             return members.Any(m =>
-                string.Equals(m.Email, _currentUser.Email, StringComparison.OrdinalIgnoreCase) ||
+                _currentUser.IsMe(m.Email) ||
                 string.Equals(m.Id, _currentUser.Id, StringComparison.OrdinalIgnoreCase));
         }
         catch (Exception ex)
@@ -100,6 +100,10 @@ public class PromotionApprovalAuthorizer
     /// <para>Group membership is resolved for the <b>current</b> user (the only identity
     /// <see cref="IIdentityService"/>/<see cref="ICurrentUser"/> can answer for), so callers pass the
     /// current user's email; any other email can only match through the explicit user list.</para>
+    ///
+    /// <para>The user list names people by their mail (it is filled from the people picker). For the
+    /// current user every one of their addresses matches (<see cref="CurrentUserEmails.SamePersonAs"/>),
+    /// so someone whose sign-in name differs from their mail is still on the list.</para>
     /// </summary>
     public async Task<bool> IsInPrincipalSetAsync(
         IReadOnlyList<GroupRef> groups,
@@ -108,7 +112,8 @@ public class PromotionApprovalAuthorizer
         CancellationToken ct,
         bool allowAdminShortcut = true)
     {
-        if (users.Any(u => string.Equals(u, email, StringComparison.OrdinalIgnoreCase)))
+        var addresses = _currentUser.SamePersonAs(email);
+        if (users.Any(u => addresses.Contains(u?.Trim() ?? "", StringComparer.OrdinalIgnoreCase)))
             return true;
 
         foreach (var group in groups)

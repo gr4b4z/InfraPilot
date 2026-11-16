@@ -222,6 +222,57 @@ public class EntraIdGraphService : IIdentityService
         return true;
     }
 
+    /// <summary>
+    /// <c>users/{id}?$select=id,mail,userPrincipalName,proxyAddresses</c> — within the
+    /// <c>User.Read.All</c> the Graph app already holds. Not cached here: the caller decides how long
+    /// an answer holds. A 404 is an account with no addresses; anything else that goes wrong is null
+    /// (cannot say), logged, never thrown.
+    /// </summary>
+    public async Task<IReadOnlyList<string>?> GetEmailAddresses(string userId, CancellationToken ct = default)
+    {
+        // An Entra object id is a GUID; anything else is not this directory's to answer for.
+        if (!Guid.TryParse(userId, out var objectId)) return null;
+
+        try
+        {
+            var user = await ReadGraphAsync(() => _graphClient.Users[objectId.ToString("D")].GetAsync(r =>
+                r.QueryParameters.Select = ["id", "mail", "userPrincipalName", "proxyAddresses"], cancellationToken: ct));
+            return user?.Id is null ? null : EmailAddressesOf(user);
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        {
+            return [];
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // A credential failure is already logged, once for every lookup (ReadGraphAsync).
+            if (GraphCredentialHealth.CredentialFailureIn(ex) is null
+                && FirstInWindow($"graph-addresses-failed:{objectId:D}"))
+                _logger.LogWarning(ex,
+                    "Email address lookup failed for {User}; recognising them by their sign-in name only", objectId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The account's mail, sign-in name and SMTP proxy addresses (<c>smtp:</c> entries, the primary
+    /// one included), trimmed and without duplicates. Other proxy kinds (<c>SIP:</c>, <c>X500:</c>)
+    /// are not mail addresses.
+    /// </summary>
+    internal static IReadOnlyList<string> EmailAddressesOf(User user)
+    {
+        const string smtp = "smtp:";
+        var proxies = (user.ProxyAddresses ?? [])
+            .Where(p => p is not null && p.StartsWith(smtp, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p![smtp.Length..]);
+        return new[] { user.Mail, user.UserPrincipalName }
+            .Concat(proxies)
+            .Select(a => a?.Trim())
+            .Where(a => !string.IsNullOrEmpty(a))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList()!;
+    }
+
     public async Task<UserInfo?> GetUser(string userId, CancellationToken ct = default)
     {
         var user = await ReadGraphAsync(() => _graphClient.Users[userId].GetAsync(cancellationToken: ct));
