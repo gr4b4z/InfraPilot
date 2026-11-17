@@ -4,6 +4,10 @@ Services move one at a time and keep product `mpt`. The gap analysis and the lis
 are in mpt-release `docs/marketplace-sdp-migration-gaps.md`. This page is the per-service checklist,
 what the first migration (`mpt-spotlight`, 2026-10-22) taught, and the log.
 
+Moving a service's source and build from Azure DevOps to GitHub is the next, separate step. It is
+in [migrate-spotlight-to-github.md](migrate-spotlight-to-github.md), and the reusable procedure is
+the runbook SS-CICD-RB-007 in the CTO & Platforms Confluence space.
+
 ## The rule
 
 Exactly one deployer per service per environment, switched in one sitting. The August–September
