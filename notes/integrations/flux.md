@@ -71,7 +71,8 @@ The notification-controller's event, as posted by a `generic-hmac` provider. The
     "cluster": "staging-weu-1",   // Alert eventMetadata
     "product": "checkout",        // HelmRelease annotation event.toolkit.fluxcd.io/product
     "service": "checkout-api",    // HelmRelease annotation event.toolkit.fluxcd.io/service
-    "app-version": "1.3.0"        // optional: HelmRelease annotation event.toolkit.fluxcd.io/app-version
+    "app-version": "1.3.0",       // chart appVersion (helm-controller); not used as the version
+    "release-version": "1.3.0"    // optional: HelmRelease annotation event.toolkit.fluxcd.io/release-version
   }
 }
 ```
@@ -83,7 +84,7 @@ The notification-controller's event, as posted by a `generic-hmac` provider. The
 | `product` | `metadata.product` — required |
 | `service` | `metadata.service`, else `involvedObject.name` |
 | `environment` | `metadata.environment` — required; resolved through environment aliases like any ingest |
-| `version` | `metadata.app-version`, else `metadata.revision` |
+| `version` | `metadata.release-version` (the HelmRelease's `event.toolkit.fluxcd.io/release-version` annotation), else `metadata.revision` (the chart version). `metadata.app-version` is ignored: helm-controller fills it from the chart's `appVersion`, which is not what was promoted |
 | `status` | `InstallSucceeded`, `UpgradeSucceeded` → `succeeded`; `InstallFailed`, `UpgradeFailed`, `RollbackFailed`, `UninstallFailed` → `failed`; `UninstallSucceeded` → `removed` |
 | `source` | `helm-deploy` |
 | `deployedAt` | `timestamp`, so a retry of the same event is a replay |

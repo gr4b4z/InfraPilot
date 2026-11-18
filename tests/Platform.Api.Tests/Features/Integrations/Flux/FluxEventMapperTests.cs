@@ -94,17 +94,33 @@ public class FluxEventMapperTests
     }
 
     [Fact]
-    public void AppVersion_WinsOverChartRevision()
+    public void ReleaseVersion_WinsOverChartRevision()
     {
         var dto = Mapped(Event(metadata: new()
         {
-            ["revision"] = "1.3.0",
-            ["app-version"] = "1.3.0-44.abc1234",
+            ["revision"] = "2.3.0",
+            ["release-version"] = "1.3.0-44.abc1234",
             ["environment"] = "staging",
             ["product"] = "checkout",
         })).Event;
 
         Assert.Equal("1.3.0-44.abc1234", dto.Version);
+    }
+
+    [Fact]
+    public void ChartAppVersion_IsNotTheVersion()
+    {
+        // helm-controller adds app-version from the chart's appVersion; the promoted version is the
+        // chart version (revision) when no release-version is set.
+        var dto = Mapped(Event(metadata: new()
+        {
+            ["revision"] = "1.15.0",
+            ["app-version"] = "v1.15.0",
+            ["environment"] = "staging",
+            ["product"] = "checkout",
+        })).Event;
+
+        Assert.Equal("1.15.0", dto.Version);
     }
 
     [Fact]

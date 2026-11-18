@@ -48,7 +48,11 @@ public static class FluxEventMapper
         var product = Get(metadata, "product");
         var service = Get(metadata, "service") ?? evt.InvolvedObject?.Name;
         var environment = Get(metadata, "environment");
-        var version = Get(metadata, "app-version") ?? Get(metadata, "revision");
+        // The version the GitOps repository promoted: its release-version annotation when it sets one
+        // (an app whose version is its image tag, on a shared chart), else the chart version. Never
+        // app-version: helm-controller fills it from the chart's appVersion, which describes the
+        // chart, not what was promoted, and differs from the chart version for most external charts.
+        var version = Get(metadata, "release-version") ?? Get(metadata, "revision");
         var cluster = Get(metadata, "cluster") ?? client;
 
         var errors = new List<string>();
@@ -57,7 +61,7 @@ public static class FluxEventMapper
         if (service is null) errors.Add("'metadata.service' or 'involvedObject.name' is required");
         if (environment is null)
             errors.Add("'metadata.environment' is required (eventMetadata on the Alert)");
-        if (version is null) errors.Add("'metadata.app-version' or 'metadata.revision' is required");
+        if (version is null) errors.Add("'metadata.release-version' or 'metadata.revision' is required");
         if (evt.Timestamp is null || evt.Timestamp == default) errors.Add("'timestamp' is required");
         if (errors.Count > 0) return new Invalid(errors);
 
@@ -83,6 +87,7 @@ public static class FluxEventMapper
             ["client"] = client,
         };
         if (Get(metadata, "revision") is { } revision) flux["revision"] = revision;
+        if (Get(metadata, "app-version") is { } appVersion) flux["appVersion"] = appVersion;
 
         return new Mapped(new CreateDeployEventDto(
             Product: product!,
