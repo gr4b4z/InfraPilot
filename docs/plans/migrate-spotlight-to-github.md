@@ -79,6 +79,10 @@ a GitHub-built `release/5` build has reached staging.
   - **v5, 2026-11-18 (status Active):** repository naming. The GitHub repository and its data file
     take the mkp-release component name (Steps 2 and 3, with `<ado-repo>` in the import and lock
     commands), a "Service name not allowed" troubleshooting row, and a link to .github#113.
+  - **v6, 2026-11-18 (status Active):** corrects v5's example. acx-extension-adobe and
+    acx-extension-aws are already on GitHub (`acx-adobe-vipm-extension`, `acx-aws-extension`) and
+    are in the `.github` allow-list, so they keep their names. The rename-at-import rule applies to
+    services still on Azure DevOps.
 - **The repos:** they only link it, via a README note.
   - mkp-spotlight: ADO PR 153777. Merge it after the runbook is published.
   - mkp-web-spotlight: ADO PR 153782, committed with `--no-verify` at the user's OK. Its PR build
