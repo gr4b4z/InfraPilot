@@ -6,7 +6,9 @@ what the first migration (`mkp-spotlight`, 2026-10-22) taught, and the log.
 
 Moving a service's source and build from Azure DevOps to GitHub is the next, separate step. It is
 in [migrate-spotlight-to-github.md](migrate-spotlight-to-github.md), and the reusable procedure is
-the runbook SS-CICD-RB-007 in the CTO & Platforms Confluence space.
+the runbook SS-CICD-RB-007 in the CTO & Platforms Confluence space. A repository imported from
+Azure DevOps takes its mkp-release component name on GitHub ("Repository naming", under "Helm
+readiness for GitHub" below).
 
 ## The rule
 
@@ -220,7 +222,7 @@ mkp-release Helm component for what stops that. "own" means a per-service chart 
 |---|---|---|
 | nav-stats, csp-pricing-fix, interim-renewals, marketo-sync, nav-tools, platform-stats, weekly-digest, aws-management, platform-support | acx-service@2.2.0 | none |
 | mkp-extensions, -producthub, -procurement, -nav-billing, acx-extension-mscsp | own | ADO repos; `apipool` |
-| mkp-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name |
+| mkp-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name. Resolved 2026-11-18: the existing GitHub repositories (delivery's is `mkp-extension-dcrm`) keep their names and publish under the component name through the `.github` allow-list ([.github#113](https://github.com/acmetrix/.github/pull/113)) |
 | mkp-extension-scrm | own | manifest at the repo root; image component `api`; its build is disabled. With `main` in the `mkp` `build → dev` policy, re-enabling it auto-deploys to dev |
 | acx-extension-adobe, acx-extension-aws | own + alias Service | needs extra objects |
 | acx-extension-nav | own + 4 workers + cli chart | needs multiple workers |
@@ -231,13 +233,32 @@ mkp-release Helm component for what stops that. "own" means a per-service chart 
 
 | Owner | Blocker | Blocks |
 |---|---|---|
-| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name` | adobe, installation, usage-reporting, delivery, acx-extension-adobe/aws: their repository and component names differ |
+| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name`. Resolved 2026-11-18 ("Repository naming", below) | No longer blocks. adobe, installation, usage-reporting and delivery go through the `.github` allow-list ([.github#113](https://github.com/acmetrix/.github/pull/113)); acx-extension-adobe/aws are named after the component at import |
 | `acx-service` | No extra objects or Service aliases | acx-extension-adobe/aws |
 | | No multiple workers | acx-extension-nav |
 | | No config-only mode | mkp-extension-operations |
 | | `values.schema.json` forbids `nodeSelector` / `tolerations` on `api` (`additionalProperties: false`), so `apipool` placement is lost | Every service that wants `apipool`, mkp-spotlight first (its decision 6). The fix would be `acx-service` 2.4.0 with the keys |
 | mkp-release | Hard-codes the `acx-service` version it seeds, 2.2.0. The chart is already at 2.3.0 | Every new `acx-service` seed |
-| ops-infra-terraform | `stack` is gone since fe0796e (2026-11-17). Each new data file needs `acr_publish: true`, or the ACR push fails with AADSTS700213 | Every repository that publishes to ACR |
+| ops-infra-terraform | `stack` is gone since fe0796e (2026-11-17). Each new data file, `data/repositories/<component>.yaml`, needs `acr_publish: true`, or the ACR push fails with AADSTS700213 | Every repository that publishes to ACR |
+
+**Repository naming (decided 2026-11-18).**
+- **Repositories migrated from Azure DevOps** take the mkp-release component name as their GitHub
+  name (`gh ado2gh migrate-repo --github-repo <component>`), and their ops-infra-terraform data
+  file is `data/repositories/<component>.yaml`. That covers acx-extension-adobe and
+  acx-extension-aws, whose ADO repository names differ from their components, and every later
+  service. reusable-ci then names the service, the image paths and the build metadata correctly,
+  with no exception.
+- **Repositories already on GitHub under another name** (those of mkp-extension-adobe,
+  -installation and -usage-reporting, and `mkp-extension-dcrm` for -delivery) keep their names.
+  They publish under their component name through a platform-owned allow-list in
+  `acmetrix/.github`
+  ([.github#113](https://github.com/acmetrix/.github/pull/113), being reworked).
+- **The allow-list is closed.** A migrated repository is never added to it; rename it to the
+  component instead.
+- **No GitHub App Variables permission is needed.** ops-infra-terraform#165, which kept the list in
+  a repository variable, is being closed as superseded.
+- **Spotlight is unaffected:** `mkp-spotlight` and `mkp-web-spotlight` already match their
+  component names.
 
 **Do not revoke app `38449d1e`.** The chart publish and mkp-release's `deploy-registered-build.yml`
 still log in to ACR as `38449d1e`. ops-infra-terraform `data/registry.yaml` names a deleted workflow
