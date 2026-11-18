@@ -209,6 +209,50 @@ to, the one mkp-release `main` already declares for dev.
 | A same-version takeover deploy does not roll pods. Config from the Helm Secret only reaches a pod when its container next starts, and a pod already crash-looping fails Helm-Deploy's readiness check. | Before the cutover, look at restart counts (`kubectl get pods`). A takeover marked failed for this reason clears with the next real rollout. Reconcile will not retry it on its own: the status file exists and the version matches. |
 | Reconcile Dev runs queue behind each other, and each redeploys from the commit that triggered it. With web deploys taking about 10 minutes, five dispatches took about 90 minutes to drain. | Expect it. Dispatch everything at once rather than waiting between services. |
 
+## Helm readiness for GitHub (2026-11-18 audit)
+
+A service built on GitHub deploys with the shared chart `ops-helm-charts/charts/acx-service` and a
+`deploy/deployment-manifest.yaml` in its build metadata, as mkp-spotlight will
+([migrate-spotlight-to-github.md](migrate-spotlight-to-github.md)). This audit checked every
+mkp-release Helm component for what stops that. "own" means a per-service chart today.
+
+| Component(s) | Chart | Blocker |
+|---|---|---|
+| nav-stats, csp-pricing-fix, interim-renewals, marketo-sync, nav-tools, platform-stats, weekly-digest, aws-management, platform-support | acx-service@2.2.0 | none |
+| mkp-extensions, -producthub, -procurement, -nav-billing, acx-extension-mscsp | own | ADO repos; `apipool` |
+| mkp-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name |
+| mkp-extension-scrm | own | manifest at the repo root; image component `api`; its build is disabled. With `main` in the `mkp` `build → dev` policy, re-enabling it auto-deploys to dev |
+| acx-extension-adobe, acx-extension-aws | own + alias Service | needs extra objects |
+| acx-extension-nav | own + 4 workers + cli chart | needs multiple workers |
+| mkp-extension-operations | config-only chart + weekly schedule | redesign as a cronjob |
+| ops-litellm | third-party chart | stays on its own chart |
+
+**Blockers, by owner:**
+
+| Owner | Blocker | Blocks |
+|---|---|---|
+| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name` | adobe, installation, usage-reporting, delivery, acx-extension-adobe/aws: their repository and component names differ |
+| `acx-service` | No extra objects or Service aliases | acx-extension-adobe/aws |
+| | No multiple workers | acx-extension-nav |
+| | No config-only mode | mkp-extension-operations |
+| | `values.schema.json` forbids `nodeSelector` / `tolerations` on `api` (`additionalProperties: false`), so `apipool` placement is lost | Every service that wants `apipool`, mkp-spotlight first (its decision 6). The fix would be `acx-service` 2.4.0 with the keys |
+| mkp-release | Hard-codes the `acx-service` version it seeds, 2.2.0. The chart is already at 2.3.0 | Every new `acx-service` seed |
+| ops-infra-terraform | `stack` is gone since fe0796e (2026-11-17). Each new data file needs `acr_publish: true`, or the ACR push fails with AADSTS700213 | Every repository that publishes to ACR |
+
+**Do not revoke app `38449d1e`.** The chart publish and mkp-release's `deploy-registered-build.yml`
+still log in to ACR as `38449d1e`. ops-infra-terraform `data/registry.yaml` names a deleted workflow
+as its only consumer, which is wrong. Revoke it only after both have moved to `a5a2409f`.
+
+**Deprecation candidates found:**
+- `.github`: the schema blocks `helm`, `deployment`, `role` and `central_release`;
+- `.github`: the reusable workflows with no callers: reusable-service-build,
+  reusable-service-publish, reusable-docker-build and reusable-dotnet-ci;
+- `.github`: the `dispatch_release` input alias;
+- `acx-service`: the `dbup` block (mkp-spotlight's cli image only feeds it; `migrations.schema` is
+  the replacement);
+- mkp-release: the dead `pipelines/deploy/helm/scripts/Prepare-Helm-Values.ps1` and
+  `Convert-FlatToNested.ps1`.
+
 ## Not covered yet
 
 - **Teams card.** The `deployment.created` Teams Logic App matches pipeline title `marketplace-sdp`,
