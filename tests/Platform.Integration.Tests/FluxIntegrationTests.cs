@@ -196,6 +196,67 @@ public class FluxIntegrationTests : IClassFixture<FluxIntegrationTests.FluxFacto
         Assert.Empty(evt.GetProperty("references").EnumerateArray());
     }
 
+    private async Task IngestAsync(string product, string version, DateTimeOffset at, string ticket)
+    {
+        var response = await _apiKeyClient.PostAsJsonAsync("/api/deployments/events", new
+        {
+            product,
+            service = "api",
+            environment = "staging",
+            version,
+            source = "integration-test",
+            deployedAt = at,
+            status = "succeeded",
+            references = new object[]
+            {
+                new { type = "work-item", provider = "jira", key = ticket, title = $"Ticket {ticket}" },
+                new { type = "commit", provider = "github", key = $"sha-{version}" },
+            },
+        });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rollback_TakesReferencesOfTheVersionsItUndoes()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await IngestAsync("flux-rb", "1.0.0", now.AddMinutes(-30), "RB-1");
+        await IngestAsync("flux-rb", "1.1.0", now.AddMinutes(-20), "RB-2");
+        await IngestAsync("flux-rb", "1.2.0", now.AddMinutes(-10), "RB-3");
+
+        var response = await PostFluxAsync(FluxEvent("flux-rb", "api", "staging", "1.0.0", timestamp: now));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await Json(response);
+        Assert.True(body.GetProperty("isRollback").GetBoolean());
+        Assert.Equal(["1.1.0", "1.2.0"],
+            body.GetProperty("rolledBackVersions").EnumerateArray().Select(v => v.GetString()!).ToArray());
+
+        var evt = await EventAsync(body.GetProperty("id").GetString()!);
+        Assert.True(evt.GetProperty("isRollback").GetBoolean());
+        var keys = evt.GetProperty("references").EnumerateArray()
+            .Select(r => r.GetProperty("key").GetString()).ToList();
+        Assert.Contains("RB-2", keys);
+        Assert.Contains("RB-3", keys);
+        Assert.Contains("sha-1.2.0", keys);
+        Assert.DoesNotContain("RB-1", keys);
+    }
+
+    [Fact]
+    public async Task RedeployOfTheCurrentVersion_IsNotARollback()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await IngestAsync("flux-redeploy", "1.0.0", now.AddMinutes(-20), "RD-1");
+        await IngestAsync("flux-redeploy", "1.1.0", now.AddMinutes(-10), "RD-2");
+
+        var response = await PostFluxAsync(FluxEvent("flux-redeploy", "api", "staging", "1.1.0", timestamp: now));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await Json(response);
+        Assert.False(body.GetProperty("isRollback").GetBoolean());
+        Assert.Empty(body.GetProperty("rolledBackVersions").EnumerateArray());
+    }
+
     [Fact]
     public async Task SameEventTwice_IsAReplay()
     {

@@ -63,7 +63,8 @@ body: |
   Services that a cluster's Flux installs from a GitOps repository report through the Flux
   integration (`notes/integrations/flux.md`). They also write `helm-deploy`, with
   `run.provider: flux` and `run.workflowName: "Flux <cluster>"`. Their references are copied from
-  the promotion the deploy delivered.
+  the promotion the deploy delivered; a rollback (`isRollback: true`) carries the references of the
+  versions it undid.
 related:
   - delivery-tracks
   - service-topology

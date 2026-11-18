@@ -52,7 +52,9 @@ public static class FluxEndpoints
                 stored.Version,
                 stored.PreviousVersion,
                 stored.Status,
+                stored.IsRollback,
                 result.PromotionId,
+                result.RolledBackVersions,
                 result.Ingest.Replayed,
             };
             return result.Ingest.Replayed
