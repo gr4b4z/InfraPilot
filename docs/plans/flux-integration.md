@@ -46,7 +46,7 @@ sign-offs and rollbacks keep working as they do today. Flux replaces the deliver
 promotion test → staging:
   Flux (test) installs the version, posts UpgradeSucceeded
     → POST /api/integrations/flux/events                        [Flux → InfraPortal]
-    → deployment.created webhook → repository_dispatch          [InfraPortal → GitOps repo]
+    → deployment.completed webhook → repository_dispatch        [InfraPortal → GitOps repo]
     → workflow computes the net change set (compare, PRs, Jira keys)
     → POST /api/promotions with references                      [GitOps repo → InfraPortal]
   sign-offs, approval                                           [InfraPortal]
@@ -76,7 +76,7 @@ promotion test → staging:
 | Status values | `DeployEventStatuses` → `src/Platform.Api/Features/Deployments/Models/DeployEvent.cs:68` |
 | API-key policy and scopes | `ApiKeyAuthHandler.PolicyName` → `src/Platform.Api/Infrastructure/Auth/ApiKeyAuthHandler.cs:14`; `ApiKeyScopes` → `:174` |
 | Route groups | `src/Platform.Api/Program.cs:506` (`/api/deployments`, group-level `CanApprove`) |
-| `deployment.created` webhook | `src/Platform.Api/Features/Webhooks/NotificationTemplates.cs:34`; catalogue `knowledge/webhook-catalogue.yaml` |
+| `deployment.created` webhook | dispatched on insert only: `DeploymentService.cs:301`; template `src/Platform.Api/Features/Webhooks/NotificationTemplates.cs:34`; catalogue `knowledge/webhook-catalogue.yaml` |
 | Real-deploy sources for analytics | `knowledge/deploy-event-sources.yaml` (`helm-deploy`, `run.workflowName` discriminator) |
 
 There is no route group for adapters of third-party formats today. `/api/webhooks` is the admin
@@ -154,15 +154,40 @@ New `DeploymentService.CompleteInProgressAsync(FluxDeployOutcome outcome, Cancel
    `IngestEventWithResult` does, so both paths agree on the key.
 2. Find the newest event with that `(Product, Service, Environment, Version)`, `Status == in_progress`
    and `CreatedAt` within `Integrations:Flux:InProgressLookbackHours` (default 24).
-3. **Found:** set `Status`; append the `flux event` log block; merge `metadata.flux` into
-   `MetadataJson`. `References`, `Participants`, `Run`, `DeployedAt` and `Source` stay as the
-   pipeline sent them. Run the promotion hook (`OnIngestedAsync`) so a `succeeded` closes the
-   candidate. Return `updated`.
+3. **Found:** set `Status`; set `DeployedAt` to the Flux `timestamp` and keep the pipeline's value
+   in `metadata.flux.requestedAt` (D9); append the `flux event` log block; merge `metadata.flux`
+   into `MetadataJson`. `References`, `Participants`, `Run` and `Source` stay as the pipeline sent
+   them. Then do what an insert does after saving: dispatch the completion webhook (§3.4.1) and run
+   the promotion hook (`OnIngestedAsync`). The hook only runs on ingest today, so without this call
+   a `succeeded` completion would never close the candidate. Return `updated`.
 4. **Not found:** build a `CreateDeployEventDto` from the mapping and call `IngestEventWithResult`.
    Its replay guard makes Flux retries of the same event harmless (same `deployedAt` = Flux
    `timestamp`). Return `created` or `replayed`.
 
 `IngestEventWithResult` and the existing replay semantics are untouched.
+
+Moving `DeployedAt` changes the row's natural key. A pipeline retry of its `in_progress` POST that
+arrives **after** Flux completed the row no longer replays and inserts a second `in_progress` row.
+The pipeline posts right after its commit and Flux completes minutes later, so the window is small;
+the stale-row sweep (open question 1) cleans up what slips through.
+
+#### 3.4.1 Webhooks on completion
+
+`deployment.created` is dispatched only when a row is **inserted** (`DeploymentService.cs:301`),
+with the row's `status`. A replay or an update dispatches nothing. With Flux the insert happens
+when the pipeline posts `in_progress`, so subscribers get `deployment.created` with
+`status: in_progress` and nothing when the deployment actually finishes.
+
+That matters for the *Create promotion* workflow (§3.8): it needs to hear "version V succeeded on
+test" to open the test → staging candidate. Completion therefore dispatches a new event,
+**`deployment.completed`**, with the same payload as `deployment.created` and the final `status`
+(`succeeded`, `failed` or `removed`). `deployment.created` keeps its meaning (a row was recorded) and
+existing subscribers do not receive the same deployment twice. Subscribers that react to finished
+deployments subscribe to `deployment.completed` and filter on `status`.
+
+An event ingested with a final status straight away (the adapter's minimal row, or any other
+sender) dispatches `deployment.created` as today and `deployment.completed` as well, so a
+subscriber of `deployment.completed` sees every finished deployment whichever path recorded it.
 
 ### 3.5 Responses
 
@@ -220,8 +245,8 @@ tens of kilobytes (D3).
 
 GitHub Actions, replacing the delivery part of `Reconcile <env>`:
 
-- **Create promotion** — `repository_dispatch` from `deployment.created` (a `succeeded` event on the
-  source environment) → compute the net change set → `POST /api/promotions`.
+- **Create promotion** — `repository_dispatch` from `deployment.completed` with `status: succeeded`
+  on the source environment → compute the net change set → `POST /api/promotions`.
 - **Promote** — `promotion.approved` / `rollback.approved` → commit the version to
   `apps/<service>/<env>/` → read the candidate's references (`GET /api/promotions/{id}`, `full`
   view) → `POST /api/deployments/events` with `status: in_progress`.
@@ -244,7 +269,7 @@ shared action; the payload format does not change.
 - **D3** — References are computed once, at promotion creation, and copied into the `in_progress`
   event. Flux never carries them.
 - **D4** — Completion updates the existing `in_progress` row instead of inserting a second one;
-  references, participants, run and `deployedAt` stay the pipeline's.
+  references, participants and run stay the pipeline's.
 - **D5** — `source: helm-deploy`, so Flux deployments count in analytics like today's reconciles;
   `run.workflowName: "Flux <cluster>"` tells them apart for events the adapter ingests itself.
 - **D6** — Dedicated scope `integration:flux`; a cluster key cannot create promotions or register
@@ -252,23 +277,21 @@ shared action; the payload format does not change.
 - **D7** — Disabled by default (`Integrations:Flux:Enabled`).
 - **D8** — No What's new entry: the change is API-only and nobody meets it in the portal
   (`AGENTS.md`).
+- **D9** — Completion moves `deployedAt` to the Flux install time. It is when the version went
+  live: the promotion hook stamps `Deployed` with it (`MarkDeployedAsync(..., landing.DeployedAt)`),
+  overtaken candidates are judged by it, and lead time ends at it. The pipeline's time is kept in
+  `metadata.flux.requestedAt`.
+- **D10** — Completion dispatches a new `deployment.completed` webhook (§3.4.1);
+  `deployment.created` is unchanged.
 
 ### 4.2 Open questions
 
-1. **Completion and `deployment.created`.** Completing a row fires no webhook today
-   (only `deployment.created` exists). The *Create promotion* workflow needs a signal when a
-   version succeeds on the source environment. Options: fire `deployment.created` on completion,
-   or add `deployment.completed`. Leaning towards a new event, so existing subscribers do not see
-   the same deployment twice.
-2. **`deployedAt` of a completed row.** It keeps the pipeline's timestamp (commit time), not
-   Flux's install time. Analytics lead time is measured to `deployedAt`. Store the Flux time in
-   `metadata.flux.timestamp` only, or also move `deployedAt`?
-3. **Stale `in_progress` rows.** A commit Flux never applies leaves a row `in_progress` forever.
+1. **Stale `in_progress` rows.** A commit Flux never applies leaves a row `in_progress` forever.
    Mark them `failed` after the lookback window (background sweep), or leave them?
-4. **Replay filling references.** Should a replay of `/api/deployments/events` add references to a
+2. **Replay filling references.** Should a replay of `/api/deployments/events` add references to a
    row that has none (the pipeline was late and the adapter created a minimal row first)?
-5. **Network.** The endpoint must be reachable from every cluster's egress (NAT prefix per cluster).
-6. **Flux header support.** The `headers` key in the provider secret is assumed to work with the
+3. **Network.** The endpoint must be reachable from every cluster's egress (NAT prefix per cluster).
+4. **Flux header support.** The `headers` key in the provider secret is assumed to work with the
    `microsoft.flux` extension's notification-controller; verify on the first test, fall back to
    `generic-hmac` with signature verification if not.
 
@@ -298,6 +321,15 @@ lookback; resolves aliases and service→product overrides the same way as inges
 event when nothing matches; a repeated Flux event is a replay; `succeeded` closes a pending promotion
 candidate on the target environment.
 
+### Task 3a: `deployment.completed` webhook (TDD)
+
+**Files:** `DeploymentService.cs` (dispatch on completion and on a final-status insert),
+`Features/Webhooks/NotificationTemplates.cs` (default template), webhook event list used by the
+subscription UI.
+Tests: completion dispatches `deployment.completed` with the final status and no `deployment.created`;
+a `succeeded` insert dispatches both; an `in_progress` insert dispatches only `deployment.created`;
+filters (product, environment, service) apply.
+
 ### Task 4: Endpoint and integration tests
 
 **Files:** `IntegrationEndpoints.cs`, `FluxEndpoints.cs`, `Program.cs`.
@@ -306,7 +338,8 @@ Tests: `200` / `201` / `202` / `400` / `403` / `404`; rate limit applies; a user
 ### Task 5: Docs
 
 `notes/integrations/flux.md` (payload, mapping, responses, `Provider`/`Alert` example);
-`notes/deployment-ingest-api.md` (pointer to integrations); `knowledge/deploy-event-sources.yaml`
+`notes/deployment-ingest-api.md` (pointer to integrations, `in_progress` completion);
+`knowledge/webhook-catalogue.yaml` (`deployment.completed`); `knowledge/deploy-event-sources.yaml`
 (`run.workflowName: "Flux <cluster>"`); `AGENTS.md` (list the new note); `GLOSSARY.md` if the term
 *Integration* is adopted.
 
