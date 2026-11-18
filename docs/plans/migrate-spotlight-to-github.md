@@ -76,6 +76,9 @@ a GitHub-built `release/5` build has reached staging.
     #111 → #1676, the `instance.yaml` edits in the same window as the first build, a "What the
     GitHub build no longer produces" note in Step 8, five new troubleshooting rows, and links to
     the three PRs.
+  - **v5, 2026-11-18 (status Active):** repository naming. The GitHub repository and its data file
+    take the mpt-release component name (Steps 2 and 3, with `<ado-repo>` in the import and lock
+    commands), a "Service name not allowed" troubleshooting row, and a link to .github#113.
 - **The repos:** they only link it, via a README note.
   - mpt-spotlight: ADO PR 153777. Merge it after the runbook is published.
   - mpt-web-spotlight: ADO PR 153782, committed with `--no-verify` at the user's OK. Its PR build
@@ -461,6 +464,9 @@ ADO-only OpenAPI lint step goes too.
    - **The command:**
      `gh ado2gh migrate-repo --ado-org softwareone-pc --ado-team-project MPT --ado-repo <repo>
      --github-org softwareone-platform --github-repo <repo> --target-repo-visibility internal`.
+   - **Repository name (decided 2026-11-18):** `--github-repo` is the mpt-release component name
+     ([migrate-mpt-services.md](migrate-mpt-services.md), "Repository naming"). Spotlight already
+     complies: `mpt-spotlight` and `mpt-web-spotlight` are both component names.
    - **It creates the repository itself**, and it does nothing if the name already exists. So
      Terraform must not create the repositories. The data-file PR adopts them afterwards with
      `import {}` blocks in `live/github/imports.tf` (the `.github` pattern).
