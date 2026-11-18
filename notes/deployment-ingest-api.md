@@ -2,6 +2,9 @@
 
 Endpoint for CI/CD pipelines to report deployment events to InfraPilot.
 
+Systems that report in their own format have adapters under `/api/integrations/` that map onto this
+model. Flux: `notes/integrations/flux.md`.
+
 ```
 POST /api/deployments/events
 ```

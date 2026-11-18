@@ -141,6 +141,30 @@ public class DeploymentService
         => (await IngestEventWithResult(dto, ct)).Event;
 
     /// <summary>
+    /// The product and environment a deploy of <paramref name="service"/> is stored under, exactly as
+    /// <see cref="IngestEventWithResult"/> stores it. Public so a caller that looks something up by
+    /// that key before ingesting (the Flux adapter, matching a promotion candidate) cannot disagree
+    /// with the row that ingest then writes.
+    /// </summary>
+    public async Task<(string Product, string Environment)> ResolveKeyAsync(
+        string product, string service, string environment, CancellationToken ct = default)
+    {
+        // Casing/punctuation canonicalisation (appsettings `Normalization:*`), then the admin's
+        // alias map: a sender that calls production "prod" stores under whichever key an admin
+        // curated, so one environment does not arrive as three.
+        var resolvedEnvironment = await ResolveEnvironmentAsync(environment, ct);
+
+        // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
+        // so an admin override for the service wins over what was sent (ServiceProductOverride).
+        // Resolved once, before anything reads it: the revive probe, the replay key, the
+        // PreviousVersion derivation and the stored row all have to agree on which product this
+        // deploy belongs to, and resolving per-use is how they would drift apart.
+        var resolvedProduct = await _productOverrides.ResolveProductAsync(product, service, ct);
+
+        return (resolvedProduct, resolvedEnvironment);
+    }
+
+    /// <summary>
     /// Ingests a deploy event idempotently. A row whose natural key
     /// <c>(Product, Service, Environment, Version, DeployedAt, Source)</c> — the same key
     /// <see cref="RemoveDuplicates"/> uses — already exists is treated as a replay: the existing
@@ -157,17 +181,7 @@ public class DeploymentService
     {
         var norm = _normalization.CurrentValue;
 
-        // Casing/punctuation canonicalisation (appsettings `Normalization:*`), then the admin's
-        // alias map: a sender that calls production "prod" stores under whichever key an admin
-        // curated, so one environment does not arrive as three.
-        var environment = await ResolveEnvironmentAsync(dto.Environment, ct);
-
-        // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
-        // so an admin override for the service wins over what was sent (ServiceProductOverride).
-        // Resolved once, before anything reads it: the revive probe, the replay key, the
-        // PreviousVersion derivation and the stored row all have to agree on which product this
-        // deploy belongs to, and resolving per-use is how they would drift apart.
-        var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
+        var (product, environment) = await ResolveKeyAsync(dto.Product, dto.Service, dto.Environment, ct);
 
         // Staged, not saved: it rides along with whichever SaveChanges below commits the event. A
         // removal is the opposite of evidence that the service is alive, so it never revives one.
