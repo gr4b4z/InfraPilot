@@ -270,7 +270,7 @@ public static class DeploymentEndpoints
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "succeeded", "failed", "in_progress", DeployEventStatuses.Removed };
 
-    private static List<string> Validate(CreateDeployEventDto dto)
+    internal static List<string> Validate(CreateDeployEventDto dto)
     {
         var errors = new List<string>();
         if (string.IsNullOrWhiteSpace(dto.Product)) errors.Add("'product' is required");

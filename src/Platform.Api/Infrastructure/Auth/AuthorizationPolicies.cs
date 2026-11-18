@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Platform.Api.Features.Integrations.Flux;
 
 namespace Platform.Api.Infrastructure.Auth;
 
@@ -9,6 +10,7 @@ public static class AuthorizationPolicies
     public const string AuditViewer = "AuditViewer";
     public const string DeploymentIngestion = "DeploymentIngestion";
     public const string SignedInSession = "SignedInSession";
+    public const string FluxIntegration = "FluxIntegration";
 
     /// <summary>Both Entra (human) and ApiKey (machine) schemes are accepted.</summary>
     private static readonly string[] AllSchemes = ["Bearer", ApiKeyAuthHandler.SchemeName];
@@ -42,7 +44,13 @@ public static class AuthorizationPolicies
             // themselves: a token must not be able to mint or revoke tokens.
             .AddPolicy(SignedInSession, p =>
                 p.AddAuthenticationSchemes("Bearer")
-                 .RequireAuthenticatedUser());
+                 .RequireAuthenticatedUser())
+            // Flux notification-controller, signed with a per-client HMAC secret. Only this scheme:
+            // an API key or a user session cannot post Flux events, and a Flux secret opens nothing else.
+            .AddPolicy(FluxIntegration, p =>
+                p.AddAuthenticationSchemes(FluxSignatureAuthHandler.SchemeName)
+                 .RequireAuthenticatedUser()
+                 .RequireClaim("auth_method", FluxSignatureAuthHandler.AuthMethod));
 
         return services;
     }
