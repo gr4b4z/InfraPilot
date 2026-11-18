@@ -16,6 +16,7 @@ using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Diagnostics;
 using Platform.Api.Features.Guides;
+using Platform.Api.Features.Integrations;
 using Platform.Api.Features.Knowledge;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.ReleaseNotes;
@@ -162,7 +163,11 @@ else
 }
 var isMsal = authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase);
 builder.Services.AddAuthentication()
-    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { });
+    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { })
+    .AddScheme<AuthenticationSchemeOptions, Platform.Api.Features.Integrations.Flux.FluxSignatureAuthHandler>(
+        Platform.Api.Features.Integrations.Flux.FluxSignatureAuthHandler.SchemeName, _ => { });
+builder.Services.Configure<Platform.Api.Features.Integrations.Flux.FluxIntegrationOptions>(
+    builder.Configuration.GetSection(Platform.Api.Features.Integrations.Flux.FluxIntegrationOptions.SectionName));
 builder.Services.AddPlatformAuthorization(builder.Configuration);
 builder.Services.AddDeploymentIngestionRateLimit(builder.Configuration);
 
@@ -245,6 +250,7 @@ builder.Services.AddScoped<BuildService>();
 builder.Services.AddScoped<RetiredVersionService>();
 builder.Services.AddScoped<Platform.Api.Features.Builds.IBuildIngestHook, Platform.Api.Features.Builds.BuildIngestHook>();
 builder.Services.AddScoped<DeploymentService>();
+builder.Services.AddScoped<Platform.Api.Features.Integrations.Flux.FluxIngestService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceDeletionService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceProductOverrideService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceProductRemapService>();
@@ -504,6 +510,9 @@ app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(Autho
 app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/builds").MapBuildEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Adapters for systems that report in their own format (Flux). No group policy: each adapter
+// authenticates its own sender.
+app.MapGroup("/api/integrations").MapIntegrationEndpoints(app.Configuration);
 app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // Incident records are admin-only; the metrics they feed are on the delivery report for everyone.
 app.MapGroup("/api/incidents").MapIncidentEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
