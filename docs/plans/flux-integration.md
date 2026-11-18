@@ -11,31 +11,27 @@ the **release repository** whose `Reconcile <env>` workflow deploys today.
 ## 1. Goal & motivation
 
 Services move from pipeline-driven `helm upgrade` to **Flux**: a cluster reconciles itself from a
-GitOps repository, and a deployment is a commit to that repository. InfraPortal
-must keep showing those deployments exactly as it does today — one deploy event per deployment,
-with its commits, pull requests and work items, closing the promotion that asked for it.
+GitOps repository, and a deployment is a commit to that repository. InfraPortal must keep showing
+those deployments exactly as it does today — one deploy event per deployment, with its commits,
+pull requests and work items, closing the promotion that asked for it.
 
-Today the release repository's `Reconcile <env>` workflow does everything in one job: it diffs the previous and the
-new `build-metadata.yaml`, runs `helm upgrade`, and posts one deploy event with the references and
-the result. With Flux that job splits in two:
+Today `Reconcile <env>` posts **one** deploy event after `helm upgrade` has finished, with the final
+status and with references it computes itself: it diffs the previous and the current
+`build-metadata.yaml` of that environment, resolves the commit range from the SCM and extracts the
+Jira keys. The promotion that triggered the deploy was created earlier by a separate script, which
+computed its own diff (target environment's current version → promoted version) with the same
+modules. In the ordinary case the two lists are the same.
 
-- the **promotion pipeline** still knows *what* changes (it computes the commit diff), but it no
-  longer installs anything, so it does not know the result;
-- **Flux** knows the result, but only in its own event format, and it cannot compute a diff.
+With Flux, the install happens in the cluster and Flux reports the result in its own notification
+format (`involvedObject`, `reason`, `message`, `metadata`). Flux knows nothing about commits,
+pull requests or tickets, and cannot post to `POST /api/deployments/events`.
 
-Two gaps follow:
-
-1. Flux cannot post to `POST /api/deployments/events`: its notification payload has a different
-   shape (`involvedObject`, `reason`, `message`, `metadata`).
-2. A second deploy event for the same version does not complete the first one. A replay
-   (same natural key) refreshes only `run` and `logs`; a different `deployedAt` inserts a new row
-   (§2). Posting `in_progress` from the pipeline and the result from Flux would leave two rows,
-   with the references on the one that never finished.
-
-**New model:** InfraPortal gets one **integration endpoint**, `POST /api/integrations/flux/events`,
-that only maps a Flux event onto the existing deploy-event model. When the promotion pipeline has
-already posted the deployment as `in_progress`, the endpoint **completes that row** (status, logs);
-otherwise it ingests a minimal event. The core ingest API and its current senders do not change.
+**New model:** InfraPortal gets one **integration endpoint**, `POST /api/integrations/flux/events`.
+Flux calls it **once, when the install has finished**. The endpoint maps the event onto a deploy
+event and **copies the references of the open promotion candidate** for the same service, version
+and target environment — the change set people already reviewed and signed off — then ingests it
+through the existing `IngestEventWithResult`. Everything downstream of ingest (webhooks, promotion
+and rollback completion, migrations, analytics, release notes) runs unchanged.
 
 The portal stays the decision plane (`knowledge/webhook-catalogue.yaml`): promotions, approvals,
 sign-offs and rollbacks keep working as they do today. Flux replaces the delivery step only.
@@ -44,20 +40,20 @@ sign-offs and rollbacks keep working as they do today. Flux replaces the deliver
 
 ```
 promotion test → staging:
-  Flux (test) installs the version, posts UpgradeSucceeded
-    → POST /api/integrations/flux/events                        [Flux → InfraPortal]
-    → deployment.completed webhook → repository_dispatch        [InfraPortal → GitOps repo]
+  Flux (test) installs the version
+    → POST /api/integrations/flux/events (UpgradeSucceeded)     [Flux → InfraPortal]
+    → deploy event on test (references from the test candidate)
+    → deployment.created webhook → repository_dispatch          [InfraPortal → GitOps repo]
     → workflow computes the net change set (compare, PRs, Jira keys)
     → POST /api/promotions with references                      [GitOps repo → InfraPortal]
   sign-offs, approval                                           [InfraPortal]
     → promotion.approved → repository_dispatch                  [InfraPortal → GitOps repo]
     → workflow commits the version to apps/<service>/staging/
-    → GET /api/promotions/{id}, then POST /api/deployments/events
-      status in_progress, references copied from the promotion  [GitOps repo → InfraPortal]
   Flux (staging) pulls the commit (≤ 5 min) and upgrades the release
     → POST /api/integrations/flux/events (UpgradeSucceeded | UpgradeFailed)
-    → the in_progress row becomes succeeded | failed            [InfraPortal]
-    → succeeded closes the promotion as Deployed (existing hook)
+    → adapter finds the open staging candidate, copies its references
+    → IngestEventWithResult: one deploy event, deployment.created,
+      succeeded closes the candidate as Deployed (existing hook)
 ```
 
 ---
@@ -68,15 +64,15 @@ promotion test → staging:
 |---|---|
 | Deploy ingest route (API key, rate limit, product scope) | `DeploymentEndpoints.MapDeploymentEndpoints` → `src/Platform.Api/Features/Deployments/DeploymentEndpoints.cs:14` |
 | Ingest + idempotent replay | `DeploymentService.IngestEventWithResult` → `src/Platform.Api/Features/Deployments/DeploymentService.cs:156` |
-| Replay branch (refreshes `Run` + logs only, never `Status` or references) | same file `:183` |
-| Insert of a new row | same file `:291` |
-| Promotion close on ingest | `PromotionIngestHook.OnIngestedAsync` → `src/Platform.Api/Features/Promotions/PromotionIngestHook.cs:74`, called from `DeploymentService.cs:207` (replay) and `:325` (insert) |
-| Natural key | `(Product, Service, Environment, Version, DeployedAt, Source)` — `DeploymentService.cs:144` (doc comment), `:993` (`DuplicateKey`) |
+| Environment resolution (normalisation + aliases), private today | `DeploymentService.ResolveEnvironmentAsync` → same file `:134`; `EnvironmentAliasResolver` → `src/Platform.Api/Features/Settings/EnvironmentAliasResolver.cs:22` |
+| Product resolution (service→product override) | `ServiceProductOverrideService.ResolveProductAsync` → `src/Platform.Api/Features/Deployments/ServiceProductOverrideService.cs:101` |
+| `deployment.created` webhook (insert only) | `DeploymentService.cs:301`; template `src/Platform.Api/Features/Webhooks/NotificationTemplates.cs:34` |
+| Promotion close on ingest | `PromotionIngestHook.OnIngestedAsync` → `src/Platform.Api/Features/Promotions/PromotionIngestHook.cs:74`; matching rule `MatchCompletionAsync` → `:116` |
+| Candidate change set | `PromotionCandidate.ReferencesJson` → `src/Platform.Api/Features/Promotions/Models/PromotionCandidate.cs:78`; statuses `PromotionStatus` → `:115` |
+| Migrations derived from deploy logs (`helm hook logs`) | `MigrationService.OnDeployIngestedAsync` / `DeriveFromDeployAsync` → `src/Platform.Api/Features/Migrations/MigrationService.cs:392` |
 | Ingest payload | `CreateDeployEventDto` → `src/Platform.Api/Features/Deployments/Models/DeploymentDtos.cs:7` |
-| Status values | `DeployEventStatuses` → `src/Platform.Api/Features/Deployments/Models/DeployEvent.cs:68` |
 | API-key policy and scopes | `ApiKeyAuthHandler.PolicyName` → `src/Platform.Api/Infrastructure/Auth/ApiKeyAuthHandler.cs:14`; `ApiKeyScopes` → `:174` |
 | Route groups | `src/Platform.Api/Program.cs:506` (`/api/deployments`, group-level `CanApprove`) |
-| `deployment.created` webhook | dispatched on insert only: `DeploymentService.cs:301`; template `src/Platform.Api/Features/Webhooks/NotificationTemplates.cs:34`; catalogue `knowledge/webhook-catalogue.yaml` |
 | Real-deploy sources for analytics | `knowledge/deploy-event-sources.yaml` (`helm-deploy`, `run.workflowName` discriminator) |
 
 There is no route group for adapters of third-party formats today. `/api/webhooks` is the admin
@@ -93,7 +89,8 @@ src/Platform.Api/Features/Integrations/
   IntegrationEndpoints.cs      MapIntegrationEndpoints(): mounts every adapter
   Flux/FluxEndpoints.cs        MapPost("/flux/events", ...)
   Flux/FluxEventDto.cs         Flux notification payload
-  Flux/FluxEventMapper.cs      FluxEventDto → FluxDeployOutcome (pure, unit-tested)
+  Flux/FluxEventMapper.cs      FluxEventDto → CreateDeployEventDto (pure, unit-tested)
+  Flux/FluxIngestService.cs    resolve key → find candidate → copy references → ingest
 ```
 
 `Program.cs`:
@@ -105,7 +102,7 @@ app.MapGroup("/api/integrations").MapIntegrationEndpoints();
 No group-level `CanApprove`: integrations are called by systems, not users. Each adapter declares
 `.RequireAuthorization(ApiKeyAuthHandler.PolicyName)` and
 `.RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName)`, as `/api/deployments/events` does.
-The adapter never writes to the database itself: it maps, then calls `DeploymentService`.
+The adapter writes nothing itself: the deploy event is stored by `IngestEventWithResult`.
 
 ### 3.2 Input — Flux notification (`type: generic` provider)
 
@@ -130,71 +127,55 @@ The adapter never writes to the database itself: it maps, then calls `Deployment
 
 ### 3.3 Mapping
 
-| Deploy event | Source in the Flux event |
+| Deploy event | Source |
 |---|---|
 | `product` | `metadata.product` — required; `400` when missing |
 | `service` | `metadata.service`, else `involvedObject.name` |
-| `environment` | `metadata.environment` — required; resolved through environment aliases like any ingest |
+| `environment` | `metadata.environment` — required |
 | `version` | `metadata.app-version`, else `metadata.revision` |
 | `status` | `InstallSucceeded`, `UpgradeSucceeded` → `succeeded`; `InstallFailed`, `UpgradeFailed`, `RollbackFailed`, `UninstallFailed` → `failed`; `UninstallSucceeded` → `removed` |
 | `source` | `helm-deploy` (counts as a real deployment in analytics, see D5) |
-| `deployedAt` | `timestamp` (only for a newly ingested event, see §3.4) |
-| `run` | `{ provider: "flux", workflowName: "Flux <metadata.cluster>" }` (only for a newly ingested event) |
+| `deployedAt` | `timestamp` — the time Flux finished, so a retry of the same event is a replay |
+| `run` | `{ provider: "flux", workflowName: "Flux <metadata.cluster>", completedAt: <timestamp>, failureReason: <message> on failure }` |
+| `references` | copied from the matched candidate (§3.4); empty when none matches |
+| `participants` | the matched candidate's event-level participants (e.g. `triggered-by`); empty when none matches |
 | `logs` | one block `{ name: "flux event", source: <reportingController>, content: <message> }` |
-| `metadata.flux` | `{ kind, namespace, name, reason, revision, cluster, timestamp }` |
+| `metadata` | `{ flux: { kind, namespace, name, reason, revision, cluster }, promotionId: <candidate id> }` |
 
 Events that are not `HelmRelease`, or whose `reason` is not in the table, are accepted and ignored
-(`202`). Flux does not need to filter perfectly; the `Alert` only reduces traffic.
+(`202`). The `Alert` only reduces traffic; the endpoint is the filter.
 
-### 3.4 Completing an in-progress event
+### 3.4 Copying references from the promotion candidate
 
-New `DeploymentService.CompleteInProgressAsync(FluxDeployOutcome outcome, CancellationToken ct)`:
+`FluxIngestService.IngestAsync(FluxEventDto evt, CancellationToken ct)`:
 
-1. Resolve product (service→product override) and environment (aliases) exactly as
-   `IngestEventWithResult` does, so both paths agree on the key.
-2. Find the newest event with that `(Product, Service, Environment, Version)`, `Status == in_progress`
-   and `CreatedAt` within `Integrations:Flux:InProgressLookbackHours` (default 24).
-3. **Found:** set `Status`; set `DeployedAt` to the Flux `timestamp` and keep the pipeline's value
-   in `metadata.flux.requestedAt` (D9); append the `flux event` log block; merge `metadata.flux`
-   into `MetadataJson`. `References`, `Participants`, `Run` and `Source` stay as the pipeline sent
-   them. Then do what an insert does after saving: dispatch the completion webhook (§3.4.1) and run
-   the promotion hook (`OnIngestedAsync`). The hook only runs on ingest today, so without this call
-   a `succeeded` completion would never close the candidate. Return `updated`.
-4. **Not found:** build a `CreateDeployEventDto` from the mapping and call `IngestEventWithResult`.
-   Its replay guard makes Flux retries of the same event harmless (same `deployedAt` = Flux
-   `timestamp`). Return `created` or `replayed`.
+1. **Resolve the key** the way ingest does. Extract the product/environment resolution at the top of
+   `IngestEventWithResult` into a public `DeploymentService.ResolveKeyAsync(product, service,
+   environment)` and call it from both places, so the candidate lookup and the stored row can never
+   disagree on the product (service→product override) or the environment (aliases).
+2. **Find the candidate** with the same `(Product, Service, TargetEnv, Version)` and a status other
+   than `Deployed` and `Superseded` — the same set `MatchCompletionAsync` would close. When several
+   match (different source environments), prefer `Deploying`, then `Approved`, `Pending`,
+   `Rejected`; within a status the newest `CreatedAt`.
+3. **Copy** the candidate's `References` and event-level `Participants` into the
+   `CreateDeployEventDto`, and its id into `metadata.promotionId`.
+4. **Ingest** with `IngestEventWithResult`. Its post-insert steps run as for any sender:
+   `deployment.created` with the final status, the promotion hook (a `succeeded` closes the
+   candidate the references came from), the rollback hook, migrations.
 
-`IngestEventWithResult` and the existing replay semantics are untouched.
+The lookup happens before ingest, so the candidate is still open when its references are read;
+the hook closes it right after. A `failed` event copies the references too: the failed attempt
+belongs to that change set, and the candidate stays open for the next attempt.
 
-Moving `DeployedAt` changes the row's natural key. A pipeline retry of its `in_progress` POST that
-arrives **after** Flux completed the row no longer replays and inserts a second `in_progress` row.
-The pipeline posts right after its commit and Flux completes minutes later, so the window is small;
-the stale-row sweep (open question 1) cleans up what slips through.
-
-#### 3.4.1 Webhooks on completion
-
-`deployment.created` is dispatched only when a row is **inserted** (`DeploymentService.cs:301`),
-with the row's `status`. A replay or an update dispatches nothing. With Flux the insert happens
-when the pipeline posts `in_progress`, so subscribers get `deployment.created` with
-`status: in_progress` and nothing when the deployment actually finishes.
-
-That matters for the *Create promotion* workflow (§3.8): it needs to hear "version V succeeded on
-test" to open the test → staging candidate. Completion therefore dispatches a new event,
-**`deployment.completed`**, with the same payload as `deployment.created` and the final `status`
-(`succeeded`, `failed` or `removed`). `deployment.created` keeps its meaning (a row was recorded) and
-existing subscribers do not receive the same deployment twice. Subscribers that react to finished
-deployments subscribe to `deployment.completed` and filter on `status`.
-
-An event ingested with a final status straight away (the adapter's minimal row, or any other
-sender) dispatches `deployment.created` as today and `deployment.completed` as well, so a
-subscriber of `deployment.completed` sees every finished deployment whichever path recorded it.
+No candidate (a commit made outside the promotion flow, the very first deploy of a service, a
+rollback — see §4.2) means an event without references, as any out-of-band deploy today.
 
 ### 3.5 Responses
 
 | Status | When | Body |
 |---|---|---|
-| `200 OK` | an `in_progress` row was completed, or a replay | `{ "id", "status", "updated": true }` / `{ "id", "status", "replayed": true }` |
-| `201 Created` | no `in_progress` row; a new event was ingested | `{ "id", "version", "previousVersion" }` |
+| `201 Created` | event ingested | `{ "id", "version", "previousVersion", "promotionId" }` (`promotionId` null when no candidate matched) |
+| `200 OK` | replay of an event already ingested | same body, `"replayed": true` |
 | `202 Accepted` | event kind or reason not handled | `{ "ignored": true, "reason": "..." }` |
 | `400 Bad Request` | missing `product` / `environment`, unparseable payload | `{ "errors": [ ... ] }` |
 | `403 Forbidden` | product outside the key's `AllowedProducts`, or a scoped key without `integration:flux` | — |
@@ -210,8 +191,7 @@ subscriber of `deployment.completed` sees every finished deployment whichever pa
   { "Name": "flux-staging-weu-1", "KeyHash": "<sha256-hex>", "AllowedProducts": ["checkout"], "Scopes": ["integration:flux"] }
   ```
 
-- `appsettings`: `Integrations:Flux:Enabled` (default `false`) and
-  `Integrations:Flux:InProgressLookbackHours` (default `24`). Configuration rather than a
+- `appsettings`: `Integrations:Flux:Enabled` (default `false`). Configuration rather than a
   `FeatureFlagKeys` entry: those flags gate portal UI sections, this gates an ingest path, like
   `Deployments:Enrichment:Enabled`.
 
@@ -238,23 +218,20 @@ spec:
 ```
 
 Every `HelmRelease` carries `event.toolkit.fluxcd.io/product` and `event.toolkit.fluxcd.io/service`
-annotations. Change sets never go into annotations: they are computed per promotion and can be
-tens of kilobytes (D3).
+annotations. Change sets never go into annotations (D3).
 
 ### 3.8 GitOps repository — promotion pipeline
 
 GitHub Actions, replacing the delivery part of `Reconcile <env>`:
 
-- **Create promotion** — `repository_dispatch` from `deployment.completed` with `status: succeeded`
-  on the source environment → compute the net change set → `POST /api/promotions`.
+- **Create promotion** — `repository_dispatch` from `deployment.created` with `status: succeeded`
+  on the source environment → compute the net change set → `POST /api/promotions`. The
+  change-set computation is the existing logic (commit diff, PRs, Jira keys) moved into a shared
+  action; the payload format does not change.
 - **Promote** — `promotion.approved` / `rollback.approved` → commit the version to
-  `apps/<service>/<env>/` → read the candidate's references (`GET /api/promotions/{id}`, `full`
-  view) → `POST /api/deployments/events` with `status: in_progress`.
-- **First environment** — a new build → commit the version to `apps/<service>/dev/` → compute
-  the change set against the version on dev → `in_progress`.
-
-The change-set computation is the existing `Reconcile` logic (compare, PRs, Jira keys) moved into a
-shared action; the payload format does not change.
+  `apps/<service>/<env>/`. Nothing is posted to InfraPortal: the deploy event comes from Flux.
+- **First environment** — new builds reach the first environment as promotions from the `build`
+  source (`docs/plans/feature-branch-builds.md`), so the dev deploy also finds a candidate.
 
 ---
 
@@ -262,36 +239,39 @@ shared action; the payload format does not change.
 
 ### 4.1 Resolved
 
-- **D1** — One adapter endpoint that only maps; no SCM or Jira calls in it. Change sets come from
-  the pipeline, titles from the existing Jira enrichment.
-- **D2** — Adapters live under `/api/integrations/<provider>/...`, separate from the core API,
-  so the canonical payloads (`/events`, `/promotions`) stay the only documented formats.
-- **D3** — References are computed once, at promotion creation, and copied into the `in_progress`
-  event. Flux never carries them.
-- **D4** — Completion updates the existing `in_progress` row instead of inserting a second one;
-  references, participants and run stay the pipeline's.
+- **D1** — One adapter endpoint; no SCM or Jira calls in it. It reads only InfraPortal's own data
+  (the promotion candidate). Ticket titles come from the existing Jira enrichment.
+- **D2** — Adapters live under `/api/integrations/<provider>/...`, separate from the core API, so
+  the canonical payloads (`/events`, `/promotions`) stay the only documented formats.
+- **D3** — References are computed once, when the promotion is created, and copied into the deploy
+  event. Flux never carries them. This differs from `Reconcile <env>`, which recomputes the diff at
+  deploy time: the two lists differ only when something else reached the target environment
+  between candidate creation and the deploy, and in that case the overtaken candidate is
+  `Superseded` and is not matched.
+- **D4** — Flux sends one event per deployment, after the install. No `in_progress` events, no
+  update of an existing row: ingest, webhooks, analytics and release notes behave as today.
 - **D5** — `source: helm-deploy`, so Flux deployments count in analytics like today's reconciles;
-  `run.workflowName: "Flux <cluster>"` tells them apart for events the adapter ingests itself.
+  `run.workflowName: "Flux <cluster>"` tells them apart.
 - **D6** — Dedicated scope `integration:flux`; a cluster key cannot create promotions or register
   builds.
 - **D7** — Disabled by default (`Integrations:Flux:Enabled`).
 - **D8** — No What's new entry: the change is API-only and nobody meets it in the portal
   (`AGENTS.md`).
-- **D9** — Completion moves `deployedAt` to the Flux install time. It is when the version went
-  live: the promotion hook stamps `Deployed` with it (`MarkDeployedAsync(..., landing.DeployedAt)`),
-  overtaken candidates are judged by it, and lead time ends at it. The pipeline's time is kept in
-  `metadata.flux.requestedAt`.
-- **D10** — Completion dispatches a new `deployment.completed` webhook (§3.4.1);
-  `deployment.created` is unchanged.
 
 ### 4.2 Open questions
 
-1. **Stale `in_progress` rows.** A commit Flux never applies leaves a row `in_progress` forever.
-   Mark them `failed` after the lookback window (background sweep), or leave them?
-2. **Replay filling references.** Should a replay of `/api/deployments/events` add references to a
-   row that has none (the pipeline was late and the adapter created a minimal row first)?
-3. **Network.** The endpoint must be reachable from every cluster's egress (NAT prefix per cluster).
-4. **Flux header support.** The `headers` key in the provider secret is assumed to work with the
+1. **Migrations.** `MigrationService` derives schema migrations from the `helm hook logs` block a
+   deploy event carries. A Flux event carries only Helm's one-line message, so services deployed by
+   Flux get no entries on the migrations page. Options: collect the migration job's pod logs from
+   the cluster and post them (`POST /api/migrations/runs`), or accept the gap per service.
+2. **Rollbacks.** `rollback.approved` redeploys an earlier version; there is no promotion candidate
+   for it, and `RollbackRequest` holds no change set (`Features/Rollbacks/Models/RollbackRequest.cs`),
+   so the event has no references. Today `Reconcile` computes the diff of a rollback too. Have the
+   rollback workflow compute it and store it on the request, or accept rollbacks without references?
+3. **Visibility while installing.** The deployments view shows nothing until Flux finishes (as
+   today). The promotion's `Deploying` state is the only in-progress signal. Is that enough?
+4. **Network.** The endpoint must be reachable from every cluster's egress (NAT prefix per cluster).
+5. **Flux header support.** The `headers` key in the provider secret is assumed to work with the
    `microsoft.flux` extension's notification-controller; verify on the first test, fall back to
    `generic-hmac` with signature verification if not.
 
@@ -299,54 +279,47 @@ shared action; the payload format does not change.
 
 ## 5. Work breakdown (suggested order)
 
-**Global constraints:** no change to `IngestEventWithResult` or `CreateDeployEventDto`; no commits on
-`main`, no push, no PR without the user's consent.
+**Global constraints:** no change to `CreateDeployEventDto` or to what `IngestEventWithResult`
+stores; no commits on `main`, no push, no PR without the user's consent.
 
 ### Task 1: Scope and configuration
 
 **Files:** `Infrastructure/Auth/ApiKeyAuthHandler.cs` (`ApiKeyScopes.IntegrationFlux`), `appsettings.json`
-(`Integrations:Flux`), options class under `Features/Integrations/Flux/`.
+(`Integrations:Flux:Enabled`), options class under `Features/Integrations/Flux/`.
 
 ### Task 2: DTO and mapper (TDD)
 
 **Files:** `FluxEventDto.cs`, `FluxEventMapper.cs`.
 Tests: every reason in §3.3; non-`HelmRelease` → ignored; `app-version` wins over `revision`;
-`service` falls back to the object name; missing `product` / `environment` → validation errors.
+`service` falls back to the object name; missing `product` / `environment` → validation errors;
+`failureReason` set only on failure.
 
-### Task 3: `CompleteInProgressAsync` (TDD)
+### Task 3: Key resolution and candidate lookup (TDD)
 
-**Files:** `DeploymentService.cs`.
-Tests: completes the newest `in_progress` row and keeps its references; ignores rows older than the
-lookback; resolves aliases and service→product overrides the same way as ingest; inserts a minimal
-event when nothing matches; a repeated Flux event is a replay; `succeeded` closes a pending promotion
-candidate on the target environment.
-
-### Task 3a: `deployment.completed` webhook (TDD)
-
-**Files:** `DeploymentService.cs` (dispatch on completion and on a final-status insert),
-`Features/Webhooks/NotificationTemplates.cs` (default template), webhook event list used by the
-subscription UI.
-Tests: completion dispatches `deployment.completed` with the final status and no `deployment.created`;
-a `succeeded` insert dispatches both; an `in_progress` insert dispatches only `deployment.created`;
-filters (product, environment, service) apply.
+**Files:** `DeploymentService.cs` (`ResolveKeyAsync`, used by `IngestEventWithResult` and the adapter),
+`FluxIngestService.cs`.
+Tests: aliases and service→product overrides resolve the same as ingest; the candidate is matched on
+the resolved key; `Deployed` and `Superseded` are never matched; preference order across several
+candidates; references and participants copied verbatim (nested participants, `commits`,
+`content`); no candidate → empty references.
 
 ### Task 4: Endpoint and integration tests
 
 **Files:** `IntegrationEndpoints.cs`, `FluxEndpoints.cs`, `Program.cs`.
-Tests: `200` / `201` / `202` / `400` / `403` / `404`; rate limit applies; a user session cannot call it.
+Tests: `201` / `200` replay / `202` / `400` / `403` / `404`; a `succeeded` event closes the candidate
+its references came from and dispatches `deployment.created`; a `failed` event leaves the candidate
+open; rate limit applies; a user session cannot call it.
 
 ### Task 5: Docs
 
-`notes/integrations/flux.md` (payload, mapping, responses, `Provider`/`Alert` example);
-`notes/deployment-ingest-api.md` (pointer to integrations, `in_progress` completion);
-`knowledge/webhook-catalogue.yaml` (`deployment.completed`); `knowledge/deploy-event-sources.yaml`
-(`run.workflowName: "Flux <cluster>"`); `AGENTS.md` (list the new note); `GLOSSARY.md` if the term
-*Integration* is adopted.
+`notes/integrations/flux.md` (payload, mapping, candidate matching, responses, `Provider`/`Alert`
+example); `notes/deployment-ingest-api.md` (pointer to integrations);
+`knowledge/deploy-event-sources.yaml` (`run.workflowName: "Flux <cluster>"`); `AGENTS.md` (list the
+new note); `GLOSSARY.md` if the term *Integration* is adopted.
 
 ### Task 6: Verify
 
-`dotnet test`; post the sample from §3.2 to a local instance with and without a matching
-`in_progress` row.
+`dotnet test`; post the sample from §3.2 to a local instance with and without a matching candidate.
 
 ---
 
@@ -356,7 +329,8 @@ Tests: `200` / `201` / `202` / `400` / `403` / `404`; rate limit applies; a user
 2. Enable on the instance, provision a `flux-<cluster>` key, add the `Provider`/`Alert` to
    `clusters/<cluster>/` and deploy a sample app (podinfo). Check the events in the portal.
 3. Move one real service on one environment from `Reconcile <env>` to the GitOps repository,
-   disabling its `helm upgrade` in the release repository in the same change. Compare its events with the old path.
+   disabling its `helm upgrade` in the release repository in the same change. Compare its events
+   with the old path, references included.
 4. Roll out per service with a checklist; then per cluster.
 
 ---
@@ -364,15 +338,15 @@ Tests: `200` / `201` / `202` / `400` / `403` / `404`; rate limit applies; a user
 ## 7. Acceptance scenarios
 
 1. **Promotion through Flux.** A test → staging candidate with work items is signed off and
-   approved; the pipeline commits the version and posts `in_progress`; Flux upgrades the release.
-   The portal shows **one** staging deploy event with the candidate's references and status
-   `succeeded`, and the candidate is `Deployed`.
-2. **Failed upgrade.** Same, but the chart fails its readiness wait. The row becomes `failed` with
-   the Helm message in the `flux event` log block; the candidate is not `Deployed`.
-3. **No pipeline event.** Someone commits a version straight to the GitOps repository. Flux installs it;
-   the adapter ingests a minimal `succeeded` event without references; a pending candidate for that
-   version and edge still closes as `Deployed`, as for any out-of-band deploy.
-4. **Retry.** Flux re-sends the same event; the response is a replay or an update with no second
-   row.
+   approved; the pipeline commits the version; Flux upgrades the release. The portal shows **one**
+   staging deploy event with the candidate's references and status `succeeded`, the candidate is
+   `Deployed`, and `deployment.created` went out once.
+2. **Failed upgrade.** Same, but the chart fails its readiness wait. One `failed` event with the
+   candidate's references and Helm's message in the `flux event` log block; the candidate stays
+   open.
+3. **No candidate.** Someone commits a version straight to the GitOps repository. Flux installs it;
+   the event has no references; a pending candidate for another version is superseded by the
+   existing hook if this version overtakes it.
+4. **Retry.** Flux re-sends the same event; the response is a replay, with no second row.
 5. **Removal.** A service is removed from `clusters/<cluster>/`; prune uninstalls it and the portal
    records `removed`.
