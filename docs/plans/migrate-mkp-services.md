@@ -233,7 +233,7 @@ mkp-release Helm component for what stops that. "own" means a per-service chart 
 
 | Owner | Blocker | Blocks |
 |---|---|---|
-| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name`. Resolved 2026-11-18 ("Repository naming", below) | No longer blocks. adobe, installation, usage-reporting and delivery go through the `.github` allow-list ([.github#113](https://github.com/acmetrix/.github/pull/113)); acx-extension-adobe/aws are named after the component at import |
+| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name`. Resolved 2026-11-18 ("Repository naming", below) | No longer blocks. The six repositories already on GitHub under another name (mkp-extension-adobe, -installation, -usage-reporting, -delivery, acx-extension-adobe, acx-extension-aws) go through the `.github` allow-list ([.github#115](https://github.com/acmetrix/.github/pull/115)); repositories still on Azure DevOps are named after their component at import |
 | `acx-service` | No extra objects or Service aliases | acx-extension-adobe/aws |
 | | No multiple workers | acx-extension-nav |
 | | No config-only mode | mkp-extension-operations |
@@ -244,19 +244,28 @@ mkp-release Helm component for what stops that. "own" means a per-service chart 
 **Repository naming (decided 2026-11-18).**
 - **Repositories migrated from Azure DevOps** take the mkp-release component name as their GitHub
   name (`gh ado2gh migrate-repo --github-repo <component>`), and their ops-infra-terraform data
-  file is `data/repositories/<component>.yaml`. That covers acx-extension-adobe and
-  acx-extension-aws, whose ADO repository names differ from their components, and every later
-  service. reusable-ci then names the service, the image paths and the build metadata correctly,
-  with no exception.
-- **Repositories already on GitHub under another name** (those of mkp-extension-adobe,
-  -installation and -usage-reporting, and `mkp-extension-dcrm` for -delivery) keep their names.
-  They publish under their component name through a platform-owned allow-list in
-  `acmetrix/.github`
-  ([.github#113](https://github.com/acmetrix/.github/pull/113), being reworked).
+  file is `data/repositories/<component>.yaml`. That covers every service still on Azure DevOps.
+  reusable-ci then names the service, the image paths and the build metadata correctly, with no
+  exception.
+- **Repositories already on GitHub under another name** keep their names and publish under their
+  component name through the closed allow-list
+  `.github/actions/service-name/service-names.yaml` in `acmetrix/.github`
+  ([.github#113](https://github.com/acmetrix/.github/pull/113) and
+  [.github#115](https://github.com/acmetrix/.github/pull/115), merged 2026-11-18).
+  It has six entries:
+
+  | GitHub repository | Publishes as |
+  |---|---|
+  | `mkp-adobe-vipm-ef-extension` | mkp-extension-adobe |
+  | `mkp-extension-dcrm` | mkp-extension-delivery |
+  | `mkp-installation-extension` | mkp-extension-installation |
+  | `mkp-usage-reporting-extension` | mkp-extension-usage-reporting |
+  | `acx-adobe-vipm-extension` | acx-extension-adobe |
+  | `acx-aws-extension` | acx-extension-aws |
 - **The allow-list is closed.** A migrated repository is never added to it; rename it to the
   component instead.
 - **No GitHub App Variables permission is needed.** ops-infra-terraform#165, which kept the list in
-  a repository variable, is being closed as superseded.
+  a repository variable, was closed as superseded.
 - **Spotlight is unaffected:** `mkp-spotlight` and `mkp-web-spotlight` already match their
   component names.
 
