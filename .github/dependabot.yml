@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # Microsoft.AspNetCore.OpenApi 10.x requires Microsoft.OpenApi >= 2.x and < 3.0.0; the 3.x
+      # API is incompatible and its source generator fails to compile (see PR #422). Minor and
+      # patch bumps within 2.x stay allowed; drop this once we move to AspNetCore.OpenApi 11.
+      - dependency-name: "Microsoft.OpenApi"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: "npm"
     directory: "/src/Platform.Web"
@@ -38,3 +45,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 3
+    ignore:
+      # The projects target net10.0 (LTS). A dotnet/aspnet 11.0 runtime image does not ship the
+      # .NET 10 shared framework, so the container would not start, and CI only builds the image
+      # without running it (see PRs #427/#428). Moving to .NET 11 is a deliberate migration.
+      - dependency-name: "dotnet/sdk"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "dotnet/aspnet"
+        update-types:
+          - "version-update:semver-major"
