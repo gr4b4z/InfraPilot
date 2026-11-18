@@ -6,7 +6,9 @@ what the first migration (`mpt-spotlight`, 2026-10-22) taught, and the log.
 
 Moving a service's source and build from Azure DevOps to GitHub is the next, separate step. It is
 in [migrate-spotlight-to-github.md](migrate-spotlight-to-github.md), and the reusable procedure is
-the runbook SS-CICD-RB-007 in the CTO & Platforms Confluence space.
+the runbook SS-CICD-RB-007 in the CTO & Platforms Confluence space. A repository imported from
+Azure DevOps takes its mpt-release component name on GitHub ("Repository naming", under "Helm
+readiness for GitHub" below).
 
 ## The rule
 
@@ -220,7 +222,7 @@ mpt-release Helm component for what stops that. "own" means a per-service chart 
 |---|---|---|
 | nav-stats, csp-pricing-fix, interim-renewals, marketo-sync, nav-tools, platform-stats, weekly-digest, aws-management, platform-support | swo-service@2.2.0 | none |
 | mpt-extensions, -producthub, -procurement, -nav-billing, swo-extension-mscsp | own | ADO repos; `apipool` |
-| mpt-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name |
+| mpt-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name. Resolved 2026-11-18: the existing GitHub repositories (delivery's is `mpt-extension-dcrm`) keep their names and publish under the component name through the `.github` allow-list ([.github#113](https://github.com/softwareone-platform/.github/pull/113)) |
 | mpt-extension-scrm | own | manifest at the repo root; image component `api`; its build is disabled. With `main` in the `mpt` `build → dev` policy, re-enabling it auto-deploys to dev |
 | swo-extension-adobe, swo-extension-aws | own + alias Service | needs extra objects |
 | swo-extension-nav | own + 4 workers + cli chart | needs multiple workers |
@@ -231,13 +233,32 @@ mpt-release Helm component for what stops that. "own" means a per-service chart 
 
 | Owner | Blocker | Blocks |
 |---|---|---|
-| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name` | adobe, installation, usage-reporting, delivery, swo-extension-adobe/aws: their repository and component names differ |
+| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name`. Resolved 2026-11-18 ("Repository naming", below) | No longer blocks. adobe, installation, usage-reporting and delivery go through the `.github` allow-list ([.github#113](https://github.com/softwareone-platform/.github/pull/113)); swo-extension-adobe/aws are named after the component at import |
 | `swo-service` | No extra objects or Service aliases | swo-extension-adobe/aws |
 | | No multiple workers | swo-extension-nav |
 | | No config-only mode | mpt-extension-operations |
 | | `values.schema.json` forbids `nodeSelector` / `tolerations` on `api` (`additionalProperties: false`), so `apipool` placement is lost | Every service that wants `apipool`, mpt-spotlight first (its decision 6). The fix would be `swo-service` 2.4.0 with the keys |
 | mpt-release | Hard-codes the `swo-service` version it seeds, 2.2.0. The chart is already at 2.3.0 | Every new `swo-service` seed |
-| ops-infra-terraform | `stack` is gone since fe0796e (2026-11-17). Each new data file needs `acr_publish: true`, or the ACR push fails with AADSTS700213 | Every repository that publishes to ACR |
+| ops-infra-terraform | `stack` is gone since fe0796e (2026-11-17). Each new data file, `data/repositories/<component>.yaml`, needs `acr_publish: true`, or the ACR push fails with AADSTS700213 | Every repository that publishes to ACR |
+
+**Repository naming (decided 2026-11-18).**
+- **Repositories migrated from Azure DevOps** take the mpt-release component name as their GitHub
+  name (`gh ado2gh migrate-repo --github-repo <component>`), and their ops-infra-terraform data
+  file is `data/repositories/<component>.yaml`. That covers swo-extension-adobe and
+  swo-extension-aws, whose ADO repository names differ from their components, and every later
+  service. reusable-ci then names the service, the image paths and the build metadata correctly,
+  with no exception.
+- **Repositories already on GitHub under another name** (those of mpt-extension-adobe,
+  -installation and -usage-reporting, and `mpt-extension-dcrm` for -delivery) keep their names.
+  They publish under their component name through a platform-owned allow-list in
+  `softwareone-platform/.github`
+  ([.github#113](https://github.com/softwareone-platform/.github/pull/113), being reworked).
+- **The allow-list is closed.** A migrated repository is never added to it; rename it to the
+  component instead.
+- **No GitHub App Variables permission is needed.** ops-infra-terraform#165, which kept the list in
+  a repository variable, is being closed as superseded.
+- **Spotlight is unaffected:** `mpt-spotlight` and `mpt-web-spotlight` already match their
+  component names.
 
 **Do not revoke app `38449d1e`.** The chart publish and mpt-release's `deploy-registered-build.yml`
 still log in to ACR as `38449d1e`. ops-infra-terraform `data/registry.yaml` names a deleted workflow
