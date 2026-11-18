@@ -26,7 +26,7 @@ With Flux, the install happens in the cluster and Flux reports the result in its
 format (`involvedObject`, `reason`, `message`, `metadata`). Flux knows nothing about commits,
 pull requests or tickets, and cannot post to `POST /api/deployments/events`.
 
-**New model:** InfraPortal gets one **integration endpoint**, `POST /api/integrations/flux/events`.
+**New model:** InfraPortal gets one **integration endpoint**, `POST /api/integrations/flux/{client}/events`.
 Flux calls it **once, when the install has finished**. The endpoint maps the event onto a deploy
 event and **copies the references of the open promotion candidate** for the same service, version
 and target environment — the change set people already reviewed and signed off — then ingests it
@@ -41,7 +41,7 @@ sign-offs and rollbacks keep working as they do today. Flux replaces the deliver
 ```
 promotion test → staging:
   Flux (test) installs the version
-    → POST /api/integrations/flux/events (UpgradeSucceeded)     [Flux → InfraPortal]
+    → POST /api/integrations/flux/{client}/events (UpgradeSucceeded)  [Flux → InfraPortal]
     → deploy event on test (references from the test candidate)
     → deployment.created webhook → repository_dispatch          [InfraPortal → GitOps repo]
     → workflow computes the net change set (compare, PRs, Jira keys)
@@ -50,7 +50,7 @@ promotion test → staging:
     → promotion.approved → repository_dispatch                  [InfraPortal → GitOps repo]
     → workflow commits the version to apps/<service>/staging/
   Flux (staging) pulls the commit (≤ 5 min) and upgrades the release
-    → POST /api/integrations/flux/events (UpgradeSucceeded | UpgradeFailed)
+    → POST /api/integrations/flux/{client}/events (UpgradeSucceeded | UpgradeFailed)
     → adapter finds the open staging candidate, copies its references
     → IngestEventWithResult: one deploy event, deployment.created,
       succeeded closes the candidate as Deployed (existing hook)
@@ -87,7 +87,8 @@ surface for *outgoing* webhook subscriptions and is not the place for this.
 ```
 src/Platform.Api/Features/Integrations/
   IntegrationEndpoints.cs      MapIntegrationEndpoints(): mounts every adapter
-  Flux/FluxEndpoints.cs        MapPost("/flux/events", ...)
+  Flux/FluxEndpoints.cs        MapPost("/flux/{client}/events", ...)
+  Flux/FluxSignatureAuthHandler.cs   authentication scheme: verifies X-Signature (§3.6)
   Flux/FluxEventDto.cs         Flux notification payload
   Flux/FluxEventMapper.cs      FluxEventDto → CreateDeployEventDto (pure, unit-tested)
   Flux/FluxIngestService.cs    resolve key → find candidate → copy references → ingest
@@ -99,9 +100,10 @@ src/Platform.Api/Features/Integrations/
 app.MapGroup("/api/integrations").MapIntegrationEndpoints();
 ```
 
-No group-level `CanApprove`: integrations are called by systems, not users. Each adapter declares
-`.RequireAuthorization(ApiKeyAuthHandler.PolicyName)` and
-`.RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName)`, as `/api/deployments/events` does.
+No group-level `CanApprove`: integrations are called by systems, not users. The Flux adapter
+authenticates with its own scheme (§3.6) and keeps
+`.RequireRateLimiting(DeploymentIngestionRateLimit.PolicyName)`, which partitions on the
+authenticated name, so each Flux client gets its own window as each API key does today.
 The adapter writes nothing itself: the deploy event is stored by `IngestEventWithResult`.
 
 ### 3.2 Input — Flux notification (`type: generic` provider)
@@ -137,10 +139,10 @@ The adapter writes nothing itself: the deploy event is stored by `IngestEventWit
 | `source` | `helm-deploy` (counts as a real deployment in analytics, see D5) |
 | `deployedAt` | `timestamp` — the time Flux finished, so a retry of the same event is a replay |
 | `run` | `{ provider: "flux", workflowName: "Flux <metadata.cluster>", completedAt: <timestamp>, failureReason: <message> on failure }` |
-| `references` | copied from the matched candidate (§3.4); empty when none matches |
+| `references` | copied from the matched candidate or rollback item (§3.4); empty when none matches |
 | `participants` | the matched candidate's event-level participants (e.g. `triggered-by`); empty when none matches |
 | `logs` | one block `{ name: "flux event", source: <reportingController>, content: <message> }` |
-| `metadata` | `{ flux: { kind, namespace, name, reason, revision, cluster }, promotionId: <candidate id> }` |
+| `metadata` | `{ flux: { kind, namespace, name, reason, revision, cluster, client }, promotionId: <candidate id>, rollbackItemId: <item id> }` |
 
 Events that are not `HelmRelease`, or whose `reason` is not in the table, are accepted and ignored
 (`202`). The `Alert` only reduces traffic; the endpoint is the filter.
@@ -167,8 +169,13 @@ The lookup happens before ingest, so the candidate is still open when its refere
 the hook closes it right after. A `failed` event copies the references too: the failed attempt
 belongs to that change set, and the candidate stays open for the next attempt.
 
-No candidate (a commit made outside the promotion flow, the very first deploy of a service, a
-rollback — see §4.2) means an event without references, as any out-of-band deploy today.
+**Rollbacks** have no candidate. When step 2 finds nothing, the adapter looks for the open rollback
+item the event would complete — the same rule as `RollbackService.MatchCompletionAsync`: request
+`Approved` or `RollingBack` for `(Product, TargetEnv)`, item `Pending` or `RollingBack` for
+`(Service, ToVersion)` — and copies the references stored on that item (§3.9).
+
+No candidate and no rollback item (a commit made outside the promotion flow, the very first deploy
+of a service) means an event without references, as any out-of-band deploy today.
 
 ### 3.5 Responses
 
@@ -178,21 +185,45 @@ rollback — see §4.2) means an event without references, as any out-of-band de
 | `200 OK` | replay of an event already ingested | same body, `"replayed": true` |
 | `202 Accepted` | event kind or reason not handled | `{ "ignored": true, "reason": "..." }` |
 | `400 Bad Request` | missing `product` / `environment`, unparseable payload | `{ "errors": [ ... ] }` |
-| `403 Forbidden` | product outside the key's `AllowedProducts`, or a scoped key without `integration:flux` | — |
+| `401 Unauthorized` | unknown `{client}`, missing or wrong `X-Signature`, body over 1 MiB | — |
+| `403 Forbidden` | product outside the client's `AllowedProducts` | — |
 | `404 Not Found` | `Integrations:Flux:Enabled` is `false` | — |
 
 ### 3.6 Configuration & auth
 
-- New scope `ApiKeyScopes.IntegrationFlux = "integration:flux"`. A key **with** a `Scopes` list
-  needs it; a key without one stays unrestricted, as for the other scopes. Cluster keys should be
-  least-privilege:
+Flux's documentation offers three ways to authenticate a `generic` webhook: a static header from the
+`headers` key of the provider secret, HMAC signing with the `generic-hmac` type, and mutual TLS
+(`certSecretRef`). Of these, the documentation presents the signature as the mechanism that "allows
+the receiver to verify the authenticity and integrity of the request", and its receiver example
+checks it on every request. A static header only proves the sender knows the value, which travels
+with every request. mTLS would need client certificates per cluster and TLS termination that passes
+them through. The endpoint uses **`generic-hmac`**:
+
+- Flux sends `X-Signature: <hash-function>=<hex>` — the HMAC of the raw request body with the
+  `token` key of the provider secret. The hash function currently defaults to `sha256`; accept
+  `sha224`, `sha256`, `sha384` and `sha512`, as the documentation's receiver does.
+- An HMAC has to be verified with the secret itself, not a hash of it, and the header does not say
+  who signed. So each sender is a named **client** in the URL, with its own secret:
 
   ```jsonc
-  { "Name": "flux-staging-weu-1", "KeyHash": "<sha256-hex>", "AllowedProducts": ["checkout"], "Scopes": ["integration:flux"] }
+  "Integrations": {
+    "Flux": {
+      "Enabled": false,
+      "Clients": [
+        { "Name": "staging-weu-1", "Secret": "<from the secret store>", "AllowedProducts": ["checkout"] }
+      ]
+    }
+  }
   ```
 
-- `appsettings`: `Integrations:Flux:Enabled` (default `false`). Configuration rather than a
-  `FeatureFlagKeys` entry: those flags gate portal UI sections, this gates an ingest path, like
+- `FluxSignatureAuthHandler` (an authentication scheme like `ApiKeyAuthHandler`): look up
+  `{client}`; read the body with a 1 MiB limit, enable buffering so the endpoint can still bind it;
+  recompute the HMAC and compare with `CryptographicOperations.FixedTimeEquals`; on success issue a
+  principal with `ClaimTypes.Name = client` and one `allowed_product` claim per allowed product, so
+  the rate limit and the product-scope check reuse the existing code. Anything else is `401`.
+- The client secret is valid only for this endpoint, so no API-key scope is involved.
+- `Integrations:Flux:Enabled` (default `false`): configuration rather than a `FeatureFlagKeys`
+  entry, since those flags gate portal UI sections and this gates an ingest path, like
   `Deployments:Enrichment:Enabled`.
 
 ### 3.7 GitOps repository — what Flux sends
@@ -204,8 +235,8 @@ apiVersion: notification.toolkit.fluxcd.io/v1beta3
 kind: Provider
 metadata: { name: infraportal, namespace: flux-system }
 spec:
-  type: generic
-  secretRef: { name: infraportal-webhook }   # address + headers (X-Api-Key), created from the secret store, not in Git
+  type: generic-hmac
+  secretRef: { name: infraportal-webhook }   # keys: address (…/api/integrations/flux/<cluster>/events), token; from the secret store, not in Git
 ---
 apiVersion: notification.toolkit.fluxcd.io/v1beta3
 kind: Alert
@@ -230,8 +261,27 @@ GitHub Actions, replacing the delivery part of `Reconcile <env>`:
   action; the payload format does not change.
 - **Promote** — `promotion.approved` / `rollback.approved` → commit the version to
   `apps/<service>/<env>/`. Nothing is posted to InfraPortal: the deploy event comes from Flux.
+- **Rollback** — `rollback.approved` → for each item, compute the change set between the version
+  running in the environment and the rollback target with the same shared action → attach it to the
+  item (§3.9) → commit the target version. The diff is computed in the pipeline, like today's
+  `Reconcile`; InfraPortal only stores it.
 - **First environment** — new builds reach the first environment as promotions from the `build`
   source (`docs/plans/feature-branch-builds.md`), so the dev deploy also finds a candidate.
+
+### 3.9 InfraPortal — references on rollback items
+
+`RollbackRequest` and `RollbackItem` hold no change set today. Add `ReferencesJson` to
+`RollbackItem` (same JSON pattern as `PromotionCandidate.ReferencesJson`) and an API-key route for
+the rollback workflow:
+
+```
+PUT /api/rollbacks/{id}/items/{itemId}/references     body: { "references": [ ... ] }
+```
+
+API-key auth with product scope, plus a new scope `rollback:references` for keys with a `Scopes`
+list. Allowed while the item is `Pending` or `RollingBack`; a repeated PUT replaces the list.
+The rollback detail page can show the list later; that is not part of this plan.
+
 
 ---
 
@@ -252,28 +302,24 @@ GitHub Actions, replacing the delivery part of `Reconcile <env>`:
   update of an existing row: ingest, webhooks, analytics and release notes behave as today.
 - **D5** — `source: helm-deploy`, so Flux deployments count in analytics like today's reconciles;
   `run.workflowName: "Flux <cluster>"` tells them apart.
-- **D6** — Dedicated scope `integration:flux`; a cluster key cannot create promotions or register
-  builds.
+- **D6** — Flux authenticates with `generic-hmac`, the mechanism Flux's documentation gives for
+  verifying the sender and the payload; one named client and secret per cluster, valid only for
+  this endpoint.
 - **D7** — Disabled by default (`Integrations:Flux:Enabled`).
 - **D8** — No What's new entry: the change is API-only and nobody meets it in the portal
   (`AGENTS.md`).
+- **D9** — Migrations are out of scope. Flux events carry no `helm hook logs`, so services deployed
+  by Flux get no entries on the migrations page; that is accepted.
+- **D10** — Rollback change sets are computed by the rollback workflow in the pipeline and stored on
+  the rollback item (§3.9); the adapter copies them like a candidate's.
+- **D11** — The promotion's `Deploying` state is enough as the in-progress signal; the deployments
+  view shows the deployment when Flux has finished, as today.
+- **D12** — Every cluster's egress can reach the endpoint.
 
 ### 4.2 Open questions
 
-1. **Migrations.** `MigrationService` derives schema migrations from the `helm hook logs` block a
-   deploy event carries. A Flux event carries only Helm's one-line message, so services deployed by
-   Flux get no entries on the migrations page. Options: collect the migration job's pod logs from
-   the cluster and post them (`POST /api/migrations/runs`), or accept the gap per service.
-2. **Rollbacks.** `rollback.approved` redeploys an earlier version; there is no promotion candidate
-   for it, and `RollbackRequest` holds no change set (`Features/Rollbacks/Models/RollbackRequest.cs`),
-   so the event has no references. Today `Reconcile` computes the diff of a rollback too. Have the
-   rollback workflow compute it and store it on the request, or accept rollbacks without references?
-3. **Visibility while installing.** The deployments view shows nothing until Flux finishes (as
-   today). The promotion's `Deploying` state is the only in-progress signal. Is that enough?
-4. **Network.** The endpoint must be reachable from every cluster's egress (NAT prefix per cluster).
-5. **Flux header support.** The `headers` key in the provider secret is assumed to work with the
-   `microsoft.flux` extension's notification-controller; verify on the first test, fall back to
-   `generic-hmac` with signature verification if not.
+None blocking. To confirm on the first test: the `microsoft.flux` extension's notification-controller
+signs `generic-hmac` requests as the upstream documentation describes.
 
 ---
 
@@ -284,8 +330,11 @@ stores; no commits on `main`, no push, no PR without the user's consent.
 
 ### Task 1: Scope and configuration
 
-**Files:** `Infrastructure/Auth/ApiKeyAuthHandler.cs` (`ApiKeyScopes.IntegrationFlux`), `appsettings.json`
-(`Integrations:Flux:Enabled`), options class under `Features/Integrations/Flux/`.
+**Files:** `appsettings.json` (`Integrations:Flux`), options class under `Features/Integrations/Flux/`,
+`FluxSignatureAuthHandler.cs`, scheme registration in `Program.cs`.
+Tests: valid signature for each accepted hash function; wrong secret, missing header, unknown client,
+unsupported hash function and body over 1 MiB → `401`; the principal carries the client name and its
+allowed products.
 
 ### Task 2: DTO and mapper (TDD)
 
@@ -303,17 +352,27 @@ the resolved key; `Deployed` and `Superseded` are never matched; preference orde
 candidates; references and participants copied verbatim (nested participants, `commits`,
 `content`); no candidate → empty references.
 
+### Task 3b: References on rollback items (TDD)
+
+**Files:** `Features/Rollbacks/Models/RollbackItem.cs` (`ReferencesJson`), migrations under
+`Migrations/Postgres` and `Migrations/SqlServer`, `RollbackEndpoints.cs` (`PUT .../references`),
+`ApiKeyScopes.RollbackReferences`, `FluxIngestService.cs` (rollback item lookup).
+Tests: PUT stores and replaces the list; refused for completed or cancelled items and for products
+outside the key; the adapter copies the item's references when no candidate matches, using the same
+match as `RollbackService.MatchCompletionAsync`.
+
 ### Task 4: Endpoint and integration tests
 
 **Files:** `IntegrationEndpoints.cs`, `FluxEndpoints.cs`, `Program.cs`.
-Tests: `201` / `200` replay / `202` / `400` / `403` / `404`; a `succeeded` event closes the candidate
+Tests: `201` / `200` replay / `202` / `400` / `401` / `403` / `404`; a `succeeded` event closes the candidate
 its references came from and dispatches `deployment.created`; a `failed` event leaves the candidate
 open; rate limit applies; a user session cannot call it.
 
 ### Task 5: Docs
 
-`notes/integrations/flux.md` (payload, mapping, candidate matching, responses, `Provider`/`Alert`
-example); `notes/deployment-ingest-api.md` (pointer to integrations);
+`notes/integrations/flux.md` (payload, mapping, candidate and rollback matching, signing, responses,
+`Provider`/`Alert` example); `notes/deployment-ingest-api.md` (pointer to integrations);
+the rollback references route in the rollback notes;
 `knowledge/deploy-event-sources.yaml` (`run.workflowName: "Flux <cluster>"`); `AGENTS.md` (list the
 new note); `GLOSSARY.md` if the term *Integration* is adopted.
 
@@ -326,7 +385,7 @@ new note); `GLOSSARY.md` if the term *Integration* is adopted.
 ## 6. Rollout
 
 1. Merge with `Integrations:Flux:Enabled = false`.
-2. Enable on the instance, provision a `flux-<cluster>` key, add the `Provider`/`Alert` to
+2. Enable on the instance, add a client and secret for the cluster, add the `Provider`/`Alert` to
    `clusters/<cluster>/` and deploy a sample app (podinfo). Check the events in the portal.
 3. Move one real service on one environment from `Reconcile <env>` to the GitOps repository,
    disabling its `helm upgrade` in the release repository in the same change. Compare its events
@@ -347,6 +406,9 @@ new note); `GLOSSARY.md` if the term *Integration* is adopted.
 3. **No candidate.** Someone commits a version straight to the GitOps repository. Flux installs it;
    the event has no references; a pending candidate for another version is superseded by the
    existing hook if this version overtakes it.
-4. **Retry.** Flux re-sends the same event; the response is a replay, with no second row.
-5. **Removal.** A service is removed from `clusters/<cluster>/`; prune uninstalls it and the portal
+4. **Rollback.** A rollback is approved; the workflow attaches the item's change set and commits the
+   earlier version; Flux installs it. The event carries the item's references and the rollback
+   completes.
+5. **Retry.** Flux re-sends the same event; the response is a replay, with no second row.
+6. **Removal.** A service is removed from `clusters/<cluster>/`; prune uninstalls it and the portal
    records `removed`.
