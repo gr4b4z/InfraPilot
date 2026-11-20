@@ -1824,12 +1824,13 @@ export interface AppSettingsPayload {
     retired?: boolean;
   }[];
   /** `aliases` are other names producers send for the role; `assigneeGroups` narrow the person
-   *  picker for it to members of those directory groups. */
+   *  picker for it to members of those directory groups; `team` is the people offered first for it. */
   roles: {
     key: string;
     displayName: string;
     aliases?: string[] | null;
     assigneeGroups?: PromotionPolicyGroupRef[] | null;
+    team?: { email: string; displayName: string }[] | null;
   }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
   /** How the delivery report ties incidents to deploys. Absent means the defaults (7 days, 15 min). */

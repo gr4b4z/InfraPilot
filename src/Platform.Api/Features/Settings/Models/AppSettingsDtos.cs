@@ -77,12 +77,22 @@ public record EnvironmentConfigDto(
 // directory groups (any of them). Empty means anybody in the directory. A picker filter, not a
 // write gate: ingest still records whoever a producer named.
 //
-// Both optional so settings rows written before they existed deserialize unchanged.
+// Team is the people who usually take this role — the QA team for `qa-owner`. The web client offers
+// them first in every assignment picker for the role (before anything is typed, and whether or not
+// they are in AssigneeGroups: an admin named them), and always lists them in the work-items queue's
+// "Assigned to" filter, with or without anything assigned. Presentation only, like AssigneeGroups.
+//
+// All three optional so settings rows written before they existed deserialize unchanged.
 public record RoleConfigDto(
     string Key,
     string DisplayName,
     List<string>? Aliases = null,
-    List<GroupRef>? AssigneeGroups = null);
+    List<GroupRef>? AssigneeGroups = null,
+    List<RoleTeamMemberDto>? Team = null);
+
+/// <summary>One person on a role's <see cref="RoleConfigDto.Team"/>. Stored with the email trimmed and
+/// the display name defaulting to it.</summary>
+public record RoleTeamMemberDto(string Email, string DisplayName);
 
 public record ActivityTemplateLineDto(string Template, string Style);
 

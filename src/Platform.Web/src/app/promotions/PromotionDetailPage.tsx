@@ -19,7 +19,7 @@ import { FreezeNotice } from './FreezeNotice';
 import { useAuthStore } from '@/stores/authStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
+import { matchTeam, roleDisplay, useConfiguredRoles, useRoleTeam, withoutTeam } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
   AlertTriangle,
@@ -1018,6 +1018,12 @@ function PeopleCard({
     return () => clearTimeout(handle);
   }, [userQuery, showForm]);
 
+  // The chosen role's team (Settings → Participant Roles → Team) is offered ahead of the directory.
+  const team = useRoleTeam(role);
+  const typed = userQuery.trim().length >= 2;
+  const teamMatches = useMemo(() => matchTeam(team, userQuery), [team, userQuery]);
+  const directory = useMemo(() => withoutTeam(userResults, team), [userResults, team]);
+
   const sourceParticipants: PromotionSourceEventParticipant[] = sourceEvent
     ? [...sourceEvent.participants, ...(sourceEvent.enrichment?.participants ?? [])]
     : [];
@@ -1200,29 +1206,61 @@ function PeopleCard({
                 color: 'var(--text-primary)',
               }}
             />
-            {userSearchOpen && userQuery.trim().length >= 2 && (
+            {userSearchOpen && (typed || teamMatches.length > 0) && (
               <div
-                className="absolute left-0 right-0 mt-1 rounded-lg border shadow-lg max-h-48 overflow-y-auto z-10"
+                className="absolute left-0 right-0 mt-1 rounded-lg border shadow-lg max-h-60 overflow-y-auto z-10"
                 style={{
                   backgroundColor: 'var(--bg-primary)',
                   borderColor: 'var(--border-color)',
                 }}
               >
-                {userSearchLoading && (
+                {/* The role's team first — the whole of it before anything is typed. */}
+                {teamMatches.length > 0 && (
+                  <div
+                    className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    {roleDisplay({ role })} team
+                  </div>
+                )}
+                {teamMatches.map((m) => (
+                  <button
+                    key={`team:${m.email}`}
+                    type="button"
+                    onClick={() => pickUser(m)}
+                    className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    <span className="font-medium">{m.displayName}</span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      {m.email}
+                    </span>
+                  </button>
+                ))}
+                {typed && teamMatches.length > 0 && (directory.length > 0 || userSearchLoading) && (
+                  <div
+                    className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider border-t"
+                    style={{ color: 'var(--text-muted)', borderColor: 'var(--border-color)' }}
+                  >
+                    Directory
+                  </div>
+                )}
+                {typed && userSearchLoading && (
                   <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
                     Searching...
                   </div>
                 )}
-                {!userSearchLoading && directoryUnavailable && (
+                {typed && !userSearchLoading && directoryUnavailable && (
                   <DirectoryUnavailableNotice detail="Fill in the name and email below." />
                 )}
-                {!userSearchLoading && userResults.length === 0 && !directoryUnavailable && (
+                {typed && !userSearchLoading && directory.length === 0 && teamMatches.length === 0
+                  && !directoryUnavailable && (
                   <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
                     No matches — fill in manually below.
                   </div>
                 )}
-                {!userSearchLoading &&
-                  userResults.map((u) => (
+                {typed && !userSearchLoading &&
+                  directory.map((u) => (
                     <button
                       key={u.id}
                       type="button"
