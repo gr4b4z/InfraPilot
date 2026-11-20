@@ -11,7 +11,7 @@ public static class AppSettingsEndpoints
     public static RouteGroupBuilder MapAppSettingsEndpoints(this RouteGroupBuilder group)
     {
         // Shared UI config consumed by the deployment views. Readable by any authenticated
-        // user (the group requires auth); writes are admin-only.
+        // user or key (the group requires CanApprove); writes are admin-only.
         group.MapGet("/", async (AppSettingsService settings, CancellationToken ct) =>
             Results.Ok(await settings.GetSettings(ct)));
 
@@ -53,6 +53,20 @@ public static class AppSettingsEndpoints
 
             await settings.SaveSettings(cleaned, ct);
             return Results.NoContent();
+        }).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+
+        // One participant role, without resending the rest of the settings: the PUT above replaces
+        // the whole row, which is the wrong tool for "set the QA team". See UpdateRoleAsync: alias-
+        // resolved key, 404 for a role nobody configured, fields left out kept, the PUT's 400s.
+        group.MapPatch("/roles/{key}", async (
+            string key, RoleConfigPatchDto body, AppSettingsService settings, CancellationToken ct) =>
+        {
+            if (body is null) return Results.BadRequest(new { error = "request body is required" });
+
+            var result = await settings.UpdateRoleAsync(key, body, ct);
+            if (result.NotFound is { } missing) return Results.NotFound(new { error = missing });
+            if (result.Errors.Count > 0) return Results.BadRequest(new { error = result.Errors[0], errors = result.Errors });
+            return Results.Ok(result.Role);
         }).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
         // ── Environment consolidation ────────────────────────────────────────

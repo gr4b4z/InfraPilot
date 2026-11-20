@@ -46,7 +46,8 @@ public static class McpServerSetup
             .WithTools<WorkItemTools>()
             .WithTools<BuildTools>()
             .WithTools<DiagnosticTools>()
-            .WithTools<AnalyticsTools>();
+            .WithTools<AnalyticsTools>()
+            .WithTools<SettingsTools>();
 
         // One bucket per caller, apart from the ingestion limiter: an agent in a loop should run out
         // of its own budget, not the budget of the pipeline whose key it happens to share a name with.
@@ -96,6 +97,8 @@ public static class McpServerSetup
         - Promotion lifecycle: Pending → Approved → Deploying → Deployed, or Rejected / Superseded. A
           succeeded deploy of the version to the target closes it. `fromVersion` is what the target ran when
           the promotion was created; `targetCurrentVersion` is what it runs now.
+        - People: look a person up with find_people before assigning them or adding them to a role's team
+          (list_participant_roles, update_participant_role); a name typed in chat is rarely the directory's.
         - Approving or rejecting promotions and signing off work items are human decisions made in the
           portal; no tool does them. Write tools act as the caller — call whoami to see what it may do.
         - Times are UTC ISO-8601.

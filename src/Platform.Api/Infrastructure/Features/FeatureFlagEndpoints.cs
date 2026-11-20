@@ -32,15 +32,16 @@ public static class FeatureFlagEndpoints
                     updatedBy = r.UpdatedBy,
                 }),
             });
-        }).RequireAuthorization();
+        }).RequireAuthorization(AuthorizationPolicies.CanApprove);
 
-        // Single flag read — anonymous-friendly so the login / shell components can decide
-        // whether to even render a link without forcing a full list fetch.
+        // Single flag read — so the login / shell components can decide whether to even render a
+        // link without forcing a full list fetch. Both reads take either scheme (CanApprove), like
+        // the toggle below: an admin key that may flip a flag can also see where it stands.
         group.MapGet("/{key}", async (IFeatureFlags flags, string key) =>
         {
             var enabled = await flags.IsEnabled(key);
             return Results.Ok(new { key, enabled });
-        }).RequireAuthorization();
+        }).RequireAuthorization(AuthorizationPolicies.CanApprove);
 
         // Toggle — admin only.
         group.MapPut("/{key}", async (

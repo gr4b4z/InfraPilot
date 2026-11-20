@@ -150,6 +150,9 @@ finds the right one.
 | `promote_build` | Open a promotion from a registered build, as the caller |
 | `add_promotion_comment` / `add_work_item_comment` | Comment as the caller |
 | `set_promotion_participant` / `remove_promotion_participant` | Assign or clear a configured role |
+| `find_people` | Directory search by name or email (≥ 2 characters), optionally limited to a role's assignee groups — for the exact email before assigning someone; a directory outage is an error, not an empty list |
+| `list_participant_roles` | Settings → Participant Roles: each role's key, label, aliases, assignee groups and team |
+| `update_participant_role` | Admin only. Change one role (label, aliases, assignee groups, team) and nothing else; fields left out are kept, `[]` clears — the same path as `PATCH /api/settings/roles/{key}` |
 
 No tool approves, rejects or signs off. With a standard token those stay human actions in the
 portal; a QA or Admin token can make them over REST (see [Access levels](#access-levels)).

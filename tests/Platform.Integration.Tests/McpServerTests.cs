@@ -36,7 +36,12 @@ public class McpServerTests : IClassFixture<McpServerTests.McpFactory>
             builder.UseSetting("Deployments:ApiKeys:1:Name", "mcp-builds-only");
             builder.UseSetting("Deployments:ApiKeys:1:Key", BuildsOnlyKey);
             builder.UseSetting("Deployments:ApiKeys:1:Scopes:0", "build:register");
+            builder.UseSetting("Deployments:ApiKeys:2:Name", "mcp-admin");
+            builder.UseSetting("Deployments:ApiKeys:2:Key", AdminKey);
+            builder.UseSetting("Deployments:ApiKeys:2:Roles:0", "InfraPortal.Admin");
         }
+
+        public const string AdminKey = "mcp-admin-key-12345";
     }
 
     private const string Product = "mcp-shop";
@@ -282,5 +287,81 @@ public class McpServerTests : IClassFixture<McpServerTests.McpFactory>
         // Reads work as for any key.
         var state = await CallJsonAsync(client, "get_deployment_state", new() { ["product"] = Product });
         Assert.NotEmpty(state.GetProperty("services").EnumerateArray());
+    }
+
+    // ── Participant roles and the directory ──────────────────────────────────
+
+    [Fact]
+    public async Task Find_people_searches_the_directory()
+    {
+        await using var client = await ConnectAsync(McpFactory.PipelineKey);
+
+        var found = await CallJsonAsync(client, "find_people", new() { ["query"] = "admin@local" });
+
+        Assert.Contains(found.GetProperty("people").EnumerateArray(),
+            p => p.GetProperty("email").GetString() == "admin@localhost");
+        var (isError, text) = await CallAsync(client, "find_people", new() { ["query"] = "a" });
+        Assert.True(isError);
+        Assert.Contains("2 characters", text);
+    }
+
+    [Fact]
+    public async Task An_admin_sets_a_role_team_and_the_rest_of_the_role_stays()
+    {
+        await using var admin = await ConnectAsync(McpFactory.AdminKey);
+        try
+        {
+            await CallJsonAsync(admin, "update_participant_role", new()
+            {
+                ["role"] = "qa-owner", ["aliases"] = new[] { "quality" },
+            });
+
+            var updated = await CallJsonAsync(admin, "update_participant_role", new()
+            {
+                ["role"] = "Quality", // an alias reaches the role
+                ["team"] = new[]
+                {
+                    new { email = "ada@example.com", displayName = "Ada Tester" },
+                    new { email = "ADA@example.com", displayName = "Ada again" },
+                },
+            });
+            var role = updated.GetProperty("role");
+            Assert.Equal("qa-owner", role.GetProperty("key").GetString());
+            Assert.Equal("quality", Assert.Single(role.GetProperty("aliases").EnumerateArray()).GetString());
+            Assert.Equal("ada@example.com", Assert.Single(role.GetProperty("team").EnumerateArray()).GetProperty("email").GetString());
+
+            var listed = await CallJsonAsync(admin, "list_participant_roles");
+            var owner = listed.GetProperty("roles").EnumerateArray().Single(r => r.GetProperty("key").GetString() == "qa-owner");
+            Assert.Single(owner.GetProperty("team").EnumerateArray());
+            Assert.EndsWith("/settings/roles", listed.GetProperty("url").GetString());
+
+            var (isError, text) = await CallAsync(admin, "update_participant_role", new()
+            {
+                ["role"] = "qa-lead", ["team"] = Array.Empty<object>(),
+            });
+            Assert.True(isError);
+            Assert.Contains("qa-owner", text); // the configured list
+        }
+        finally
+        {
+            await CallJsonAsync(admin, "update_participant_role", new()
+            {
+                ["role"] = "qa-owner", ["aliases"] = Array.Empty<string>(), ["team"] = Array.Empty<object>(),
+            });
+        }
+    }
+
+    [Fact]
+    public async Task Changing_a_role_needs_an_admin()
+    {
+        await using var client = await ConnectAsync(McpFactory.PipelineKey);
+
+        var (isError, text) = await CallAsync(client, "update_participant_role", new()
+        {
+            ["role"] = "qa-owner", ["team"] = new[] { new { email = "ada@example.com", displayName = "Ada" } },
+        });
+
+        Assert.True(isError);
+        Assert.Contains("admin", text);
     }
 }
