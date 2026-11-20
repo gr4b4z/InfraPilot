@@ -534,11 +534,16 @@ app.MapGroup("/api/releases").MapReleaseEndpoints().RequireAuthorization(Authori
 app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
-app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
-// The signed-in user's own preferences. Any authenticated user, no role gate — these are personal.
-app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization();
-// Their addresses (sign-in name and mail), for the web app's "is this me?".
-app.MapGroup("/api/me").MapCurrentUserEndpoints().RequireAuthorization();
+// Readable by anyone signed in or holding a key (CanApprove: either scheme), so an agent can read
+// what it is about to change; the writes inside are admin-only.
+app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// The caller's own preferences. Any authenticated user, no role gate — these are personal. Either
+// scheme (CanApprove): a personal token acts as its owner, so an agent sees and keeps the same
+// hidden-products filter the person does.
+app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Their addresses (sign-in name and mail), for "is this me?" — the web app's, or an agent's working
+// out which work items are its owner's.
+app.MapGroup("/api/me").MapCurrentUserEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // Their personal access tokens — a signed-in session only, so a token cannot mint another.
 app.MapGroup("/api/me/tokens").MapPersonalAccessTokenEndpoints().RequireAuthorization(AuthorizationPolicies.SignedInSession);
 // Everyone's tokens, for administrators: find and revoke any of them (Settings → Agent Tokens).

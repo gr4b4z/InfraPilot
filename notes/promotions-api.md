@@ -586,6 +586,14 @@ Each configured role may also carry:
   and deduped on email (case-insensitive), the name defaulting to the email; a member whose email isn't
   `x@y` shaped is a `400`.
 
+**Changing one role:** `PATCH /api/settings/roles/{key}` (admin; an admin API key or Admin personal
+token works) with any of `{ displayName, aliases, assigneeGroups, team }`. Fields left out are kept,
+an empty list clears, and every other setting stays as stored, unlike `PUT /api/settings`, which
+replaces the whole row. `{key}` may be an alias (`qa` once it is listed under `qa-owner`). An unknown
+role is a `404` naming the configured ones; it is never created. The result is validated as part of
+the whole role list (the `400`s above), and the saved role comes back. MCP: `update_participant_role`,
+`list_participant_roles`, `find_people`. `GET /api/settings` reads with any key or token.
+
 ---
 
 ## Approval policy (admin) — `/api/promotions/admin/policies`
