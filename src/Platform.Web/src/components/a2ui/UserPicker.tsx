@@ -96,7 +96,7 @@ export function UserPicker({ component, value, error, onChange, readOnly }: Comp
               >
                 <span
                   className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium text-white"
-                  style={{ backgroundColor: 'var(--color-swo-purple)' }}
+                  style={{ backgroundColor: 'var(--color-brand-purple)' }}
                 >
                   {u.initials}
                 </span>

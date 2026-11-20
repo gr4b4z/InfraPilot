@@ -248,7 +248,7 @@ export function Sidebar() {
             <div className="flex items-center gap-2.5">
               <div
                 className="w-7 h-7 rounded-lg flex items-center justify-center"
-                style={{ background: 'linear-gradient(135deg, var(--color-swo-purple), var(--color-swo-cyan))' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-brand-purple), var(--color-brand-cyan))' }}
               >
                 <Zap size={14} className="text-white" />
               </div>
@@ -267,7 +267,7 @@ export function Sidebar() {
           ) : (
             <div
               className="w-7 h-7 rounded-lg flex items-center justify-center mx-auto"
-              style={{ background: 'linear-gradient(135deg, var(--color-swo-purple), var(--color-swo-cyan))' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-brand-purple), var(--color-brand-cyan))' }}
             >
               <Zap size={14} className="text-white" />
             </div>

@@ -25,10 +25,10 @@ interface Props {
 }
 
 const metricColor: Record<string, string> = {
-  Completed: 'var(--color-swo-green)',
+  Completed: 'var(--color-brand-green)',
   Failed: '#FCA5A5',
-  Executing: 'var(--color-swo-cyan)',
-  'Awaiting Approval': 'var(--color-swo-yellow)',
+  Executing: 'var(--color-brand-cyan)',
+  'Awaiting Approval': 'var(--color-brand-yellow)',
 };
 
 export function SummaryCard({ title, data }: Props) {

@@ -12,8 +12,8 @@ const icons = {
 };
 
 const styles = {
-  info: { bg: 'var(--color-swo-light-blue)', border: 'var(--color-swo-blue)' },
-  warning: { bg: 'var(--color-swo-yellow)', border: '#B8A800' },
+  info: { bg: 'var(--color-brand-light-blue)', border: 'var(--color-brand-blue)' },
+  warning: { bg: 'var(--color-brand-yellow)', border: '#B8A800' },
   error: { bg: '#FEE2E2', border: '#EF4444' },
 };
 

@@ -22,7 +22,7 @@
         "src/Platform.Api/Platform.Api.csproj",
         "--",
         "--ConnectionStrings:Platform",
-        "Host=localhost;Port=5433;Database=swo_platform;Username=postgres;Password=postgres"
+        "Host=localhost;Port=5433;Database=infrapilot;Username=postgres;Password=postgres"
       ],
       "port": 5259
     }

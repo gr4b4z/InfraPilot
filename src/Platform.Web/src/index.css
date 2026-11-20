@@ -3,26 +3,26 @@
 /* Acmetrix Brand Design Tokens */
 @theme {
   /* Primary Colors */
-  --color-swo-black: #000000;
-  --color-swo-white: #FFFFFF;
+  --color-brand-black: #000000;
+  --color-brand-white: #FFFFFF;
 
   /* Neutral Colors */
-  --color-swo-gray-10: #F7F8FA;
-  --color-swo-gray-20: #EEF0F4;
-  --color-swo-gray-30: #C6C6C6;
+  --color-brand-gray-10: #F7F8FA;
+  --color-brand-gray-20: #EEF0F4;
+  --color-brand-gray-30: #C6C6C6;
 
   /* Secondary Colors */
-  --color-swo-dark-blue: #1801B4;
-  --color-swo-blue: #3E00FF;
-  --color-swo-purple: #5B49DE;
-  --color-swo-teal: #00ECD4;
-  --color-swo-cyan: #00DEFF;
+  --color-brand-dark-blue: #1801B4;
+  --color-brand-blue: #3E00FF;
+  --color-brand-purple: #5B49DE;
+  --color-brand-teal: #00ECD4;
+  --color-brand-cyan: #00DEFF;
 
   /* Light Colors */
-  --color-swo-light-blue: #81A5FF;
-  --color-swo-light-purple: #B7A5FF;
-  --color-swo-green: #1DEEA1;
-  --color-swo-yellow: #E3EE14;
+  --color-brand-light-blue: #81A5FF;
+  --color-brand-light-purple: #B7A5FF;
+  --color-brand-green: #1DEEA1;
+  --color-brand-yellow: #E3EE14;
 
   /* Font Families */
   --font-sans: "Inter", "Neue Haas Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
@@ -528,13 +528,13 @@ body {
   }
 }
 
-/* SWO Gradient - Cyan to Light Purple */
-.swo-gradient {
-  background: linear-gradient(135deg, var(--color-swo-cyan), var(--color-swo-light-purple));
+/* Brand gradient - Cyan to Light Purple */
+.brand-gradient {
+  background: linear-gradient(135deg, var(--color-brand-cyan), var(--color-brand-light-purple));
 }
 
-.swo-gradient-text {
-  background: linear-gradient(135deg, var(--color-swo-cyan), var(--color-swo-light-purple));
+.brand-gradient-text {
+  background: linear-gradient(135deg, var(--color-brand-cyan), var(--color-brand-light-purple));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

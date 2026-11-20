@@ -28,7 +28,7 @@ $DbPort  = 5433
 
 $PgService   = 'postgres'             # service name in docker-compose.yml
 $PgContainer = 'infrapilot-postgres'  # container_name in the same file
-$DbName      = 'swo_platform'
+$DbName      = 'infrapilot'
 $DbUser      = 'postgres'
 $DbPassword  = 'postgres'
 
@@ -36,7 +36,7 @@ $DbPassword  = 'postgres'
     The connection string is passed on the API's command line rather than left to configuration,
     because the committed default doesn't point at this database: appsettings.json has
     `Host=localhost;Database=platform` — port 5432, database `platform` — while docker-compose serves
-    `swo_platform` on 5433. appsettings.Development.json would override it but is gitignored, so every
+    `infrapilot` on 5433. appsettings.Development.json would override it but is gitignored, so every
     clone would have to recreate it. .claude/launch.json passes the same string for the same reason.
 #>
 $ConnectionString = "Host=localhost;Port=$DbPort;Database=$DbName;Username=$DbUser;Password=$DbPassword"

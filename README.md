@@ -110,8 +110,8 @@ demo dataset back.
 ```
 
 Catches InfraPortal up after an outage or a restore. Reads the version manifests MPT publishes for
-[staging](https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json) and
-[production](https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json), confirms
+[staging](https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json) and
+[production](https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json), confirms
 each version against the AKS cluster behind the environment (`mpt-staging-r1-aks`,
 `mpt-prod-r1-aks`), and records a manual deployment for every component whose version has moved
 forward. It never creates services, never records an older version, and never writes a version the
@@ -142,11 +142,11 @@ For the default local Docker setup, you do not need to provide extra environment
 
 The local stack already uses:
 
-- Postgres database: `swo_platform`
+- Postgres database: `infrapilot`
 - Postgres user: `postgres`
 - Postgres password: `postgres`
 - API connection string:
-  `Host=postgres;Database=swo_platform;Username=postgres;Password=postgres`
+  `Host=postgres;Database=infrapilot;Username=postgres;Password=postgres`
 
 If you want to change local settings, edit [docker-compose.yml](/Users/sylwestergrabowski/dev/infraPilot/docker-compose.yml:1).
 

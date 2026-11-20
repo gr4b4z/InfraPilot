@@ -149,7 +149,7 @@ export const useConversationStore = create<ConversationState>()(
       },
     }),
     {
-      name: 'swo-conversation',
+      name: 'infrapilot-conversation',
       partialize: (state) => ({
         threadId: state.threadId,
         messages: state.messages.filter((m) => !m.isLoading).slice(-50), // keep last 50

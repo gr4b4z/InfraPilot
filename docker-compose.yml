@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine
     container_name: infrapilot-postgres
     environment:
-      POSTGRES_DB: swo_platform
+      POSTGRES_DB: infrapilot
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d swo_platform"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d infrapilot"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -23,7 +23,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://0.0.0.0:5259
-      ConnectionStrings__Platform: Host=postgres;Database=swo_platform;Username=postgres;Password=postgres
+      ConnectionStrings__Platform: Host=postgres;Database=infrapilot;Username=postgres;Password=postgres
     ports:
       - "5259:5259"
     volumes:

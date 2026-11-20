@@ -10,8 +10,8 @@
 
       1. The version manifest each environment publishes as a public blob:
 
-             staging     https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json
-             production  https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json
+             staging     https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json
+             production  https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json
 
          Both have the same shape — a flat `components` map of service → version:
 
@@ -126,8 +126,8 @@ param(
     [string]$Note,
     [string[]]$Service,
     [switch]$NoClusterCheck,
-    [string]$StagingManifestUrl = 'https://mptstagingr1data.blob.core.windows.net/public/manifest/versions.json',
-    [string]$ProductionManifestUrl = 'https://mptprodr1data.blob.core.windows.net/public/manifest/versions.json',
+    [string]$StagingManifestUrl = 'https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json',
+    [string]$ProductionManifestUrl = 'https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json',
     [string]$StagingCluster = 'mpt-staging-r1-aks',
     [string]$ProductionCluster = 'mpt-prod-r1-aks',
     [string]$ClusterNamespace = 'mp-platform',

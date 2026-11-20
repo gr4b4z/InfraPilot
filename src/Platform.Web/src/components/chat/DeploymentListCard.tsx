@@ -16,11 +16,11 @@ interface Props {
 }
 
 const statusColors: Record<string, string> = {
-  Completed: 'var(--color-swo-green)',
+  Completed: 'var(--color-brand-green)',
   Failed: '#FCA5A5',
-  Executing: 'var(--color-swo-cyan)',
-  AwaitingApproval: 'var(--color-swo-yellow)',
-  Draft: 'var(--color-swo-gray-30)',
+  Executing: 'var(--color-brand-cyan)',
+  AwaitingApproval: 'var(--color-brand-yellow)',
+  Draft: 'var(--color-brand-gray-30)',
   Rejected: '#FCA5A5',
 };
 
