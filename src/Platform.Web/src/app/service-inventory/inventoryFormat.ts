@@ -66,10 +66,14 @@ export const FEED_LABEL: Record<FeedType, string> = {
   cost: 'Cost',
 };
 
-/** A failed last refresh, or no successful check for longer than the feed's allowance. */
+/**
+ * A failed last refresh, or no successful check for longer than the feed's allowance. A closed cost
+ * month is final and is not fetched again, so its age says nothing: only a failure counts.
+ */
 export function isOutOfDate(f: Freshness, now = Date.now()): boolean {
   if (f.lastError) return true;
   if (!f.refreshedAt) return false;
+  if (f.feed === 'cost' && f.period && f.version && !f.version.endsWith(' to date')) return false;
   return now - new Date(f.refreshedAt).getTime() > STALE_AFTER_MS[f.feed];
 }
 
@@ -95,4 +99,13 @@ export function findBinding<B extends { environment: string; kind: string; datab
   if (exact) return exact;
   const only = candidates.length === 1 ? candidates[0] : undefined;
   return only && (!server(only.server) || !server(db.server)) ? only : undefined;
+}
+
+/** Whether the catalog declares a database for an environment (per-environment declarations). */
+export function declaredIn(
+  db: { onlyInEnvironments: string[] | null; notInEnvironments: string[] },
+  environment: string,
+): boolean {
+  const has = (list: string[]) => list.some((e) => e.toLowerCase() === environment.toLowerCase());
+  return (db.onlyInEnvironments == null || has(db.onlyInEnvironments)) && !has(db.notInEnvironments ?? []);
 }

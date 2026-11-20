@@ -52,6 +52,10 @@ without it `portal` is `null`.
 }
 ```
 
+Each `databases` entry also has `onlyInEnvironments` (set when the catalog declares the database
+under `bindings.environments.<env>` only; `null` means every environment) and `notInEnvironments`
+(environments that declare the same database on another server instead).
+
 `404` when no catalog entry has that id. `workloads`, `type`, `bindings` and `databases` are empty
 while the service's own file is missing or invalid.
 
@@ -117,7 +121,8 @@ teams, for a picker), `scope` and `freshness`.
   `services` (`id`, `product`, `team`, `direct`, `shared`, `total`, `sharedFrom`, `deployments`)
   sorted the same way, and `trend`: one row per stored month with `complete`, `direct` and `shared`.
   `deployments` is `{ product, service }`, the portal product the service is deployed under (its
-  page is `/deployments/{product}/{service}`), or `null` for a service never deployed.
+  page is `/deployments/{product}/{service}`), or `null` for a service the deployments pages show
+  nothing of (never deployed, deleted, or current only in retired environments).
 
 Product and team ids are compared trimmed and without regard to case, between the catalog, the cost
 file and the query; the catalog's spelling is the one returned. An id a file repeats counts once.

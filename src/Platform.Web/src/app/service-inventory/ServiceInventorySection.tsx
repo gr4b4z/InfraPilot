@@ -13,7 +13,7 @@ import type {
   InventoryServiceResponse,
   OnboardingStep,
 } from './inventoryTypes';
-import { SERIES_DIRECT, SERIES_SHARED, findBinding, isPlaceholder, isZero, monthLabel, repoLink } from './inventoryFormat';
+import { SERIES_DIRECT, SERIES_SHARED, declaredIn, findBinding, isPlaceholder, isZero, monthLabel, repoLink } from './inventoryFormat';
 import { Freshness, InventoryLink, MoneyLines, SectionCard, StateChip, Swatch } from './InventoryUi';
 
 const ONBOARDING_STEPS: [string, string][] = [
@@ -352,6 +352,14 @@ export function ServiceInventorySection({ product, service }: { product: string;
                       {envKeys.map((env) => {
                         // No observation for this environment is "not observed", never "absent".
                         const seen = findBinding(state?.azure?.bindings, env, db);
+                        // Not declared for this environment (and nothing seen): not a question to answer.
+                        if (!seen && !declaredIn(db, env)) {
+                          return (
+                            <td key={env} className="px-1 py-1.5" style={{ color: 'var(--text-muted)' }}>
+                              <span title="Not declared for this environment">—</span>
+                            </td>
+                          );
+                        }
                         return (
                           <td key={env} className="px-1 py-1.5">
                             <StateChip state={seen?.state} detail={seen?.resource} />

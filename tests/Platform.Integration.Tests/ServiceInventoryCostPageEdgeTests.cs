@@ -168,4 +168,35 @@ public class ServiceInventoryCostPageEdgeTests
         var payments = await Get(factory, "/cost?product=payments&period=2026-10");
         Assert.Equal(JsonValueKind.Null, Assert.Single(payments.GetProperty("services").EnumerateArray()).GetProperty("deployments").ValueKind);
     }
+
+    [Fact]
+    public async Task A_service_with_nothing_the_deployments_pages_show_has_no_link()
+    {
+        using var factory = new ServiceInventoryEndpointTests.InventoryFactory();
+        factory.Seed();
+        static DeployEvent Event(string product, string service, string status, int minutesAgo) => new()
+        {
+            Id = Guid.NewGuid(), Product = product, Service = service, Environment = "dev", Version = "1.0.0",
+            Source = "ci", Status = status, DeployedAt = DateTimeOffset.UtcNow.AddMinutes(-minutesAgo), CreatedAt = DateTimeOffset.UtcNow,
+        };
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            // order-router: deployed, then taken out of its only environment.
+            db.DeployEvents.Add(Event("storefront", "order-router", "succeeded", 60));
+            db.DeployEvents.Add(Event("storefront", "order-router", DeployEventStatuses.Removed, 5));
+            // ledger-api: under a product an admin deleted it from, and still current under another.
+            db.DeployEvents.Add(Event("payments", "ledger-api", "succeeded", 60));
+            db.DeletedServices.Add(new DeletedService { Id = Guid.NewGuid(), Product = "payments", Service = "ledger-api" });
+            db.DeployEvents.Add(Event("billing", "ledger-api", "succeeded", 30));
+            await db.SaveChangesAsync();
+        }
+
+        var storefront = await Get(factory, "/cost?product=storefront&period=2026-10");
+        Assert.Equal(JsonValueKind.Null, Assert.Single(storefront.GetProperty("services").EnumerateArray()).GetProperty("deployments").ValueKind);
+
+        // The deleted product matches the cost file's, but only the visible one is a destination.
+        var payments = await Get(factory, "/cost?product=payments&period=2026-10");
+        Assert.Equal("billing", Assert.Single(payments.GetProperty("services").EnumerateArray()).GetProperty("deployments").GetProperty("product").GetString());
+    }
 }

@@ -247,6 +247,7 @@ function CoverageTrend({ currency, rows }: {
   rows: { period: string; complete: boolean; total: number; attributed: number }[];
 }) {
   const [hover, setHover] = useState<number | null>(null);
+  const [asTable, setAsTable] = useState(false);
   const id = useId().replace(/:/g, '');
   const H = 120;
   const h = hover != null ? rows[hover] : null;
@@ -264,7 +265,38 @@ function CoverageTrend({ currency, rows }: {
             </>
           ) : 'share attributed to services'}
         </span>
+        <button
+          type="button"
+          onClick={() => setAsTable((v) => !v)}
+          className="text-[11px] hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {asTable ? 'Show chart' : 'Show as table'}
+        </button>
       </div>
+      {asTable ? (
+        <table className="w-full text-[12px] tabular-nums">
+          <thead>
+            <tr style={{ color: 'var(--text-muted)' }}>
+              <th className="text-left font-medium py-1">Month</th>
+              <th className="text-right font-medium py-1">Attributed</th>
+              <th className="text-right font-medium py-1">Total</th>
+              <th className="text-right font-medium py-1">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m) => (
+              <tr key={m.period} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
+                <td className="py-1">{monthLabel(m.period)}{m.complete ? '' : ' (to date)'}</td>
+                <td className="py-1 text-right">{formatAmount(m.attributed, currency)}</td>
+                <td className="py-1 text-right">{formatAmount(m.total, currency)}</td>
+                <td className="py-1 text-right">{fmtPct(pct(m.attributed, m.total))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+      <>
       <svg width="100%" height={H} role="img" aria-label={`Coverage per month in ${currency}`} onMouseLeave={() => setHover(null)} style={{ display: 'block' }}>
         <defs>
           <pattern id={`${id}-c`} width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -309,6 +341,8 @@ function CoverageTrend({ currency, rows }: {
           </span>
         ))}
       </div>
+      </>
+      )}
     </section>
   );
 }

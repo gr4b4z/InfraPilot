@@ -1,6 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.ServiceInventory.Documents;
 using Platform.Api.Features.ServiceInventory.Models;
+using Platform.Api.Features.Settings;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -114,15 +117,15 @@ public static class InventoryCostEndpoints
 
     private static async Task<IResult> GetCostAsync(
         string? period, string? product, string? team,
-        InventoryReadService read, PlatformDbContext db, ICurrentUser user, CancellationToken ct) =>
-        await CostAsync(period, product, team, read, db, user, ct)
-        ?? await CostAsync(period, product, team, read, db, user, ct)
+        InventoryReadService read, PlatformDbContext db, EnvironmentAliasResolver environments, ICurrentUser user, CancellationToken ct) =>
+        await CostAsync(period, product, team, read, db, environments, user, ct)
+        ?? await CostAsync(period, product, team, read, db, environments, user, ct)
         ?? Changed();
 
     /// <summary>Null when the month's copy was removed during the request.</summary>
     private static async Task<IResult?> CostAsync(
         string? period, string? product, string? team,
-        InventoryReadService read, PlatformDbContext db, ICurrentUser user, CancellationToken ct)
+        InventoryReadService read, PlatformDbContext db, EnvironmentAliasResolver environments, ICurrentUser user, CancellationToken ct)
     {
         var (month, months, problem) = await ResolveAsync(period, read, db, ct);
         if (problem is not null) return problem;
@@ -248,11 +251,26 @@ public static class InventoryCostEndpoints
             .ToDictionary(g => g.Key, g => g.First().SharedFrom.Select(f => f.Shared).ToList());
 
         // Where each service's own page is: the product it is deployed under in the portal, which
-        // need not be the product the cost file names. A service never deployed has no page to go to.
+        // need not be the product the cost file names. Only what the deployments pages show counts
+        // (as DeploymentService's current state): not a deleted service, not a retired environment,
+        // not a cell whose newest event is a removal. A service with nothing current has no page.
         var serviceIds = scoped.Select(r => r.ServiceId).Distinct().ToList();
-        var deployed = serviceIds.Count == 0 ? [] : await db.DeployEvents.AsNoTracking()
+        var cells = serviceIds.Count == 0 ? [] : await db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(db)
+            .ExcludingRetiredEnvironments(await environments.RetiredKeysAsync(ct))
             .Where(e => serviceIds.Contains(e.Service.ToLower()))
-            .Select(e => new { e.Product, e.Service }).Distinct().ToListAsync(ct);
+            .Select(e => new { e.Product, e.Service, e.Environment }).Distinct()
+            .Select(k => new
+            {
+                k.Product,
+                k.Service,
+                Status = db.DeployEvents
+                    .Where(e => e.Product == k.Product && e.Service == k.Service && e.Environment == k.Environment)
+                    .OrderByDescending(e => e.DeployedAt).Select(e => e.Status).First(),
+            })
+            .ToListAsync(ct);
+        var deployed = cells.Where(c => c.Status != DeployEventStatuses.Removed)
+            .Select(c => new { c.Product, c.Service }).Distinct().ToList();
         object? Deployments(string id, string costProduct) => deployed
             .Where(d => string.Equals(d.Service, id, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(d => Same(d.Product, costProduct)).ThenBy(d => d.Product, StringComparer.Ordinal)
@@ -294,6 +312,8 @@ public static class InventoryCostEndpoints
             .Where(m => snapshotIds.Contains(m.SnapshotId)).Select(m => m.SnapshotId).Distinct().ToListAsync(ct)).ToHashSet();
         foreach (var other in months.Where(m => !projected.Contains(m.SnapshotId)))
         {
+            // Rows read before they were pruned may already be in: the month is taken once.
+            trendRows.RemoveAll(r => r.SnapshotId == other.SnapshotId);
             if (other.SnapshotId == month.SnapshotId)
             {
                 trendRows.AddRange(scoped.Select(r => (r.SnapshotId, r.Currency, r.Direct, r.Shared)));
@@ -304,7 +324,6 @@ public static class InventoryCostEndpoints
             var rows = await new Pinned(other, read).RowsAsync(
                 db.InventoryCostServices.AsNoTracking().Where(r => r.SnapshotId == other.SnapshotId), p => p.CostServices, ct);
             if (rows is null) return null;
-            trendRows.RemoveAll(r => r.SnapshotId == other.SnapshotId);
             trendRows.AddRange(rows.Where(r => InScope(r.Product, r.Team)).Select(r => (r.SnapshotId, r.Currency, r.Direct, r.Shared)));
         }
         var trend = months.Select(m =>

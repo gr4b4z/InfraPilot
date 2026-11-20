@@ -77,7 +77,7 @@ public static class ServiceInventoryEndpoints
                     .Select(e => new { environment = e.Key, cluster = e.Value.Aks?.Cluster, @namespace = e.Value.Aks?.Namespace }),
                 workloads = entry.Workloads?.Select(w => new { name = w.Key, kind = w.Value.Kind }),
                 databases = entry.DatabaseBindings()
-                    .Select(b => new { b.Kind, b.Database, b.Server, b.Owner, b.Workloads }),
+                    .Select(b => new { b.Kind, b.Database, b.Server, b.Owner, b.Workloads, b.OnlyInEnvironments, b.NotInEnvironments }),
                 bindings = entry.Bindings,
             },
             team = team is null ? null : new { team.Id, team.Lead, team.Deputy, team.GithubTeam, team.EntraGroup, team.Lifecycle },

@@ -34,6 +34,35 @@ public class DocumentReaderTests
     }
 
     [Fact]
+    public void A_database_declared_per_environment_is_read_with_the_environments_it_is_for()
+    {
+        var node = JsonNode.Parse(Fixture.Bytes("catalog.json"))!;
+        var router = node["services"]!.AsArray().Single(s => s!["id"]!.GetValue<string>() == "order-router")!;
+        router["bindings"]!["environments"] = JsonNode.Parse("""
+            {
+              "prod": { "postgres": [ { "database": "order-router", "server": "prod-postgres", "owner": true, "workloads": [] },
+                                      { "database": "order-audit", "owner": true, "workloads": [] } ] },
+              "dev":  { "postgres": [ { "database": "order-router", "server": "shared-postgres", "owner": true, "workloads": [] } ],
+                        "something_else": 7, "mssql": "not a list" },
+              "test": "not an object"
+            }
+            """);
+
+        var result = DocumentReader.Read("catalog", Encoding.UTF8.GetBytes(node.ToJsonString()));
+        Assert.True(result.Ok, result.Error);
+        var bindings = ((CatalogDocument)result.Document!).Services.Single(s => s.Id == "order-router").DatabaseBindings();
+
+        Assert.Equal(3, bindings.Count);
+        // Declared for every environment, except where an environment names another server.
+        var everywhere = bindings.Single(b => b.Server == "shared-postgres");
+        Assert.Null(everywhere.OnlyInEnvironments);
+        Assert.Equal(["prod"], everywhere.NotInEnvironments);
+        // The same declaration repeated for dev adds nothing.
+        Assert.Equal(["prod"], bindings.Single(b => b.Server == "prod-postgres").OnlyInEnvironments);
+        Assert.Equal(["prod"], bindings.Single(b => b.Database == "order-audit").OnlyInEnvironments);
+    }
+
+    [Fact]
     public void An_unknown_field_is_ignored()
     {
         var node = JsonNode.Parse(Fixture.Bytes("cost-2026-11.json"))!;
@@ -132,6 +161,23 @@ public class InventoryProjectorTests
         // A service with no EUR cost still gets a zero EUR row, so every list shows both currencies.
         Assert.Equal(0m, rows.CostServices.Single(r => r.ServiceId == "ledger-api" && r.Currency == "EUR").Total);
         Assert.Equal(["EUR", "USD"], rows.CostMonths.Where(m => m.Source == "").Select(m => m.Currency).Order());
+    }
+
+    [Fact]
+    public void Amounts_are_rounded_to_the_scale_they_are_stored_with()
+    {
+        // So rows read back from the database and rows built again from the file are the same.
+        var node = JsonNode.Parse(Fixture.Bytes("cost-2026-10.json"))!;
+        node["totals"]!["total"]!["USD"] = 1.23456m;
+        node["services"]![0]!["direct"]!["USD"] = 2.00005m;
+        node["unallocated"]!["by_scope"]![0]!["cost"]!["USD"] = 0.00004m;
+        var cost = (CostDocument)DocumentReader.Read("cost", Encoding.UTF8.GetBytes(node.ToJsonString())).Document!;
+
+        var rows = InventoryProjector.Project(Guid.NewGuid(), "cost", cost);
+
+        Assert.Equal(1.2346m, rows.CostMonths.Single(m => m.Source == "" && m.Currency == "USD").Total);
+        Assert.Equal(2.0001m, rows.CostServices.First(r => r.Currency == "USD").Direct);
+        Assert.Equal(0m, rows.CostUnallocated.First(u => u.Currency == "USD").Amount);
     }
 
     [Fact]

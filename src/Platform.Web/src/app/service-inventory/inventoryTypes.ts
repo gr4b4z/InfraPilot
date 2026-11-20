@@ -38,7 +38,17 @@ export interface InventoryServiceResponse {
     retiredAt: string | null;
     environments: { environment: string; cluster: string | null; namespace: string | null }[];
     workloads: { name: string; kind: string | null }[] | null;
-    databases: { kind: string; database: string; server: string | null; owner: boolean; workloads: string[] }[];
+    databases: {
+      kind: string;
+      database: string;
+      server: string | null;
+      owner: boolean;
+      workloads: string[];
+      /** Declared for these environments only; null: every environment. */
+      onlyInEnvironments: string[] | null;
+      /** Environments that declare this database on another server instead. */
+      notInEnvironments: string[];
+    }[];
   };
   team: { id: string; lead: string | null; deputy: string | null; githubTeam: string | null } | null;
   product: { id: string; name: string | null } | null;
