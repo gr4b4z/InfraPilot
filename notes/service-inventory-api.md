@@ -114,8 +114,15 @@ teams, for a picker), `scope` and `freshness`.
   `direct` / `shared` / `total`, sorted by the month's largest currency. Products and teams without
   services are listed too, with no amounts.
 - With one of them: `scope` (`kind`, `id`, `name`, `known`: whether the catalog has it), `totals`,
-  `services` (`id`, `product`, `team`, `direct`, `shared`, `total`, `sharedFrom`) sorted the same way,
-  and `trend`: one row per stored month with `complete`, `direct` and `shared`.
+  `services` (`id`, `product`, `team`, `direct`, `shared`, `total`, `sharedFrom`, `deployments`)
+  sorted the same way, and `trend`: one row per stored month with `complete`, `direct` and `shared`.
+  `deployments` is `{ product, service }`, the portal product the service is deployed under (its
+  page is `/deployments/{product}/{service}`), or `null` for a service never deployed.
+
+Product and team ids are compared trimmed and without regard to case, between the catalog, the cost
+file and the query; the catalog's spelling is the one returned. An id a file repeats counts once.
+`freshness` is the state of the month shown: a month asked for by `period` reports its own last
+refresh, as `GET /services/{serviceName}/cost` does.
 
 ## `GET /coverage?period=YYYY-MM`
 
@@ -123,6 +130,10 @@ What the **Cost coverage** page reads: `currencies` (one entry per currency with
 `shared`, `sharedUnsplit`, `untagged`, `unknownTag`, and the ten `largestGroups` and `largestScopes`
 of unattributed cost), `sources` (per source and currency: `total`, `attributed`, `rows`, `scopes`),
 `unsplitShared`, `trend` (per month and currency: `total`, `attributed`), `months` and `freshness`.
+
+Both read each month through one stored copy, so a refresh during the request never mixes two
+versions of a month. In the rare case that copy is removed while it is being read, the request
+starts over once and otherwise answers `503`; asking again works.
 
 ## Admin
 

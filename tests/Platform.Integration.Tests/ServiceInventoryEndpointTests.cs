@@ -44,8 +44,13 @@ public sealed class FixtureSourceFactory : IArtifactSourceFactory
         ["cost"] = "cost-2026-10.json",
     };
 
+    /// <summary>Content served in place of a fixture file, by file name.</summary>
+    public Dictionary<string, byte[]> Overrides { get; } = [];
+
     public IArtifactSource Create(InventoryFeedOptions feed) =>
-        new FixtureSource(_ => FixtureSource.File(Files[feed.Name], "v-" + Files[feed.Name]));
+        new FixtureSource(_ => Overrides.TryGetValue(Files[feed.Name], out var content)
+            ? FetchResult.Downloaded(new ArtifactFile(content, "v-" + Files[feed.Name], "files.example.com/feed.json", "https"))
+            : FixtureSource.File(Files[feed.Name], "v-" + Files[feed.Name]));
 }
 
 /// <summary>

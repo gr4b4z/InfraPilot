@@ -61,6 +61,16 @@ public class InventoryReadService
         where T : class
     {
         if (feed?.CurrentSnapshotId is not { } id) return null;
+        return await SnapshotDocumentAsync<T>(id, ct);
+    }
+
+    /// <summary>
+    /// One stored copy by its id. A caller that reads several things about one copy takes the id
+    /// once and uses it for all of them, so a refresh in between never mixes two copies.
+    /// </summary>
+    public async Task<(T Document, InventorySnapshot Snapshot)?> SnapshotDocumentAsync<T>(Guid id, CancellationToken ct)
+        where T : class
+    {
         var snapshot = await _db.InventorySnapshots.AsNoTracking()
             .Where(s => s.Id == id)
             .Select(s => new InventorySnapshot
@@ -81,6 +91,20 @@ public class InventoryReadService
             return DocumentReader.Read(snapshot.FeedType, Gzip.Decompress(content)).Document;
         });
         return document is T typed ? (typed, snapshot) : null;
+    }
+
+    /// <summary>
+    /// The row whose refresh state describes a cost month. The month the latest file is for is
+    /// refreshed through the feed itself, so its state is the feed's, however it was asked for —
+    /// unless only the month's own row recorded a failure. Any other month asked for by name reports
+    /// its own state (a closed month that failed says so).
+    /// </summary>
+    public static InventoryFeed? CostStateRow(InventoryFeed? feedRow, InventoryFeed? monthRow, bool requested)
+    {
+        var isLatestMonth = monthRow is not null && monthRow.CurrentSnapshotId == feedRow?.CurrentSnapshotId;
+        return requested && !isLatestMonth
+            ? monthRow
+            : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
     }
 
     /// <summary>What everyone but an admin is told when the last refresh failed.</summary>

@@ -165,21 +165,40 @@ function ScopeView({ data }: { data: InventoryCostResponse }) {
     }));
   }, [data.trend]);
 
+  const trendCharts = (
+    <div className={`grid gap-3 ${charts.length > 1 ? 'lg:grid-cols-2' : ''}`}>
+      {charts.map((c) => (
+        <MonthlyCostChart key={c.currency} title={`Per month · ${c.currency}`} currency={c.currency} bars={c.bars} />
+      ))}
+    </div>
+  );
+
   if (services.length === 0) {
+    // No cost in any month and a name the catalog does not have: most likely a mistyped address.
+    if (!scope.known && charts.length === 0) {
+      return (
+        <ListEmptyState
+          icon={SearchX}
+          title={`The inventory has no ${scope.kind} called ${scope.id}`}
+          body="Pick a product or team from the list above."
+        />
+      );
+    }
+    // The month has no entry for it. That says nothing about which services it has, and other
+    // months may well have cost: the trend stays.
     return (
-      <ListEmptyState
-        icon={scope.kind === 'team' ? Users : PackageOpen}
-        title={
-          scope.known
-            ? `${scope.kind === 'team' ? 'This team owns' : 'This product has'} no services in the inventory`
-            : `The inventory has no ${scope.kind} called ${scope.id}`
-        }
-        body={
-          scope.known
-            ? 'Cost is attributed to services, so there is nothing to show until a service names it in the catalog.'
-            : 'Pick a product or team from the list above.'
-        }
-      />
+      <>
+        <ListEmptyState
+          icon={scope.kind === 'team' ? Users : PackageOpen}
+          title={`No cost entries for ${scope.name} in ${monthLabel(data.period!)}`}
+          body={
+            charts.length > 0
+              ? `The cost read for this month lists no service of this ${scope.kind}. Other months do: see below, or pick another month.`
+              : `The cost read so far lists no service of this ${scope.kind}. A service appears here once the cost allocation attributes cost to it.`
+          }
+        />
+        {trendCharts}
+      </>
     );
   }
 
@@ -210,14 +229,19 @@ function ScopeView({ data }: { data: InventoryCostResponse }) {
               {services.map((s) => (
                 <tr key={s.id} className="border-t align-top" style={{ borderColor: 'var(--border-color)' }}>
                   <td className="px-3 py-2">
-                    {/* The catalog id is the portal's service name; the catalog's product is where its page lives. */}
-                    <Link
-                      to={`/deployments/${encodeURIComponent(s.product)}/${encodeURIComponent(s.id)}`}
-                      className="font-medium hover:underline"
-                      style={{ color: 'var(--text-primary)' }}
-                    >
-                      {s.id}
-                    </Link>
+                    {/* Its own page is under the product it is deployed as, which need not be the
+                        product the cost file names. Never deployed: no page to go to. */}
+                    {s.deployments ? (
+                      <Link
+                        to={`/deployments/${encodeURIComponent(s.deployments.product)}/${encodeURIComponent(s.deployments.service)}`}
+                        className="font-medium hover:underline"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {s.id}
+                      </Link>
+                    ) : (
+                      <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{s.id}</span>
+                    )}
                     {isZero(s.total) && (
                       <span className="block text-[11px]" style={{ color: 'var(--text-muted)' }}>no cost attributed this month</span>
                     )}
@@ -238,11 +262,7 @@ function ScopeView({ data }: { data: InventoryCostResponse }) {
         </div>
       </section>
 
-      <div className={`grid gap-3 ${charts.length > 1 ? 'lg:grid-cols-2' : ''}`}>
-        {charts.map((c) => (
-          <MonthlyCostChart key={c.currency} title={`Per month · ${c.currency}`} currency={c.currency} bars={c.bars} />
-        ))}
-      </div>
+      {trendCharts}
     </>
   );
 }

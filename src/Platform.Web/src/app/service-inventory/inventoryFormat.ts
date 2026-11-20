@@ -76,3 +76,23 @@ export function isOutOfDate(f: Freshness, now = Date.now()): boolean {
 /** The two cost series. The hidden themes do not define them, hence the fallbacks. */
 export const SERIES_DIRECT = 'var(--series-direct, var(--accent))';
 export const SERIES_SHARED = 'var(--series-shared, var(--info))';
+
+/**
+ * The observed binding of one catalog database in one environment. A service can bind databases of
+ * the same name and kind on different servers, so the server is part of the match; when either side
+ * does not name one (the catalog's default server), only an unambiguous candidate is taken.
+ */
+export function findBinding<B extends { environment: string; kind: string; database: string; server?: string | null }>(
+  bindings: B[] | undefined,
+  environment: string,
+  db: { kind: string; database: string; server: string | null },
+): B | undefined {
+  const candidates = (bindings ?? []).filter(
+    (b) => b.environment === environment && b.database === db.database && b.kind === db.kind,
+  );
+  const server = (v: string | null | undefined) => (v ?? '').trim().toLowerCase();
+  const exact = candidates.find((b) => server(b.server) === server(db.server));
+  if (exact) return exact;
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  return only && (!server(only.server) || !server(db.server)) ? only : undefined;
+}

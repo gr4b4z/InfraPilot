@@ -161,13 +161,7 @@ public static class ServiceInventoryEndpoints
 
         var monthRow = period is null ? null : await read.FeedAsync(InventoryFeedTypes.Cost, period, ct);
         var month = await read.DocumentAsync<CostDocument>(monthRow, ct);
-        // The month the latest file is for is refreshed through the feed itself, so its state is the
-        // feed's, however it was asked for — unless only the month's own row recorded a failure. Any
-        // other month asked for by name reports its own state (a closed month that failed says so).
-        var isLatestMonth = monthRow is not null && monthRow.CurrentSnapshotId == feedRow?.CurrentSnapshotId;
-        var stateRow = requested && !isLatestMonth
-            ? monthRow
-            : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
+        var stateRow = InventoryReadService.CostStateRow(feedRow, monthRow, requested);
         var freshness = InventoryReadService.Freshness(stateRow, month?.Snapshot, InventoryFeedTypes.Cost, user.IsAdmin);
         if (month is null)
             return Results.NotFound(new { error = period is null ? "No cost has been read yet." : $"No cost has been read for {period}.", freshness });

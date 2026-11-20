@@ -13,7 +13,7 @@ import type {
   InventoryServiceResponse,
   OnboardingStep,
 } from './inventoryTypes';
-import { SERIES_DIRECT, SERIES_SHARED, isPlaceholder, isZero, monthLabel, repoLink } from './inventoryFormat';
+import { SERIES_DIRECT, SERIES_SHARED, findBinding, isPlaceholder, isZero, monthLabel, repoLink } from './inventoryFormat';
 import { Freshness, InventoryLink, MoneyLines, SectionCard, StateChip, Swatch } from './InventoryUi';
 
 const ONBOARDING_STEPS: [string, string][] = [
@@ -339,7 +339,7 @@ export function ServiceInventorySection({ product, service }: { product: string;
                 </thead>
                 <tbody>
                   {svc.databases.map((db) => (
-                    <tr key={`${db.kind}:${db.database}`} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
+                    <tr key={`${db.kind}:${db.server ?? ''}:${db.database}`} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
                       <td className="px-1 py-1.5">
                         <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{db.database}</span>
                         <span className="block text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -351,9 +351,7 @@ export function ServiceInventorySection({ product, service }: { product: string;
                       </td>
                       {envKeys.map((env) => {
                         // No observation for this environment is "not observed", never "absent".
-                        const seen = state?.azure?.bindings.find(
-                          (b) => b.environment === env && b.database === db.database && b.kind === db.kind,
-                        );
+                        const seen = findBinding(state?.azure?.bindings, env, db);
                         return (
                           <td key={env} className="px-1 py-1.5">
                             <StateChip state={seen?.state} detail={seen?.resource} />

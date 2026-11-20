@@ -117,6 +117,8 @@ export interface CostServiceRow {
   shared: Money;
   total: Money;
   sharedFrom: string[];
+  /** Where the service's own page is: the product it is deployed under. Null: never deployed. */
+  deployments: { product: string; service: string } | null;
 }
 
 export interface InventoryCostResponse {
