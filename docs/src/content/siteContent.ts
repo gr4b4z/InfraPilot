@@ -126,7 +126,7 @@ export const proofMetrics: Metric[] = [
 
 export const featureCards: FeatureCard[] = [
   {
-    title: 'Service catalog for real platform work',
+    title: 'Request catalog for real platform work',
     body: 'Publish reusable workflows as YAML so teams request infrastructure through guided forms instead of ad hoc tickets.',
     points: [
       'Dynamic inputs, validations, approval policies, and executor mappings',
@@ -194,7 +194,7 @@ export const workflowSteps: WorkflowStep[] = [
 
 export const proofPanels: ProofPanel[] = [
   {
-    title: 'Service Catalog',
+    title: 'Request Catalog',
     label: 'Catalog UI',
     eyebrow: 'Requestable workflows',
     lines: [
@@ -246,7 +246,7 @@ export const evaluatorChecklist: ChecklistStep[] = [
     expected: 'You should see the InfraPilot portal with catalog, requests, approvals, deployments, and promotions sections available.',
   },
   {
-    title: 'Browse the service catalog',
+    title: 'Browse the request catalog',
     action: 'Open the catalog and inspect request patterns like namespace creation, role assignment, or repository bootstrap.',
     expected: 'You should see structured inputs, approval metadata, and executor-backed request definitions rather than generic forms.',
   },

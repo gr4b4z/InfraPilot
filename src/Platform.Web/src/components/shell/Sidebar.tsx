@@ -94,7 +94,7 @@ const navGroups: NavGroup[] = [
     label: 'Catalog',
     featureFlag: FeatureFlag.ServiceCatalog,
     items: [
-      { to: '/catalog',   label: 'Service Catalog', icon: LayoutGrid  },
+      { to: '/catalog',   label: 'Request Catalog', icon: LayoutGrid  },
       { to: '/requests',  label: 'My Requests',     icon: FileText    },
       { to: '/approvals', label: 'Approvals',        icon: CheckCircle, badge: 0, featureFlag: FeatureFlag.Approvals },
     ],
