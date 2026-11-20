@@ -44,8 +44,13 @@ public sealed class FixtureSourceFactory : IArtifactSourceFactory
         ["cost"] = "cost-2026-10.json",
     };
 
+    /// <summary>Content served in place of a fixture file, by file name.</summary>
+    public Dictionary<string, byte[]> Overrides { get; } = [];
+
     public IArtifactSource Create(InventoryFeedOptions feed) =>
-        new FixtureSource(_ => FixtureSource.File(Files[feed.Name], "v-" + Files[feed.Name]));
+        new FixtureSource(_ => Overrides.TryGetValue(Files[feed.Name], out var content)
+            ? FetchResult.Downloaded(new ArtifactFile(content, "v-" + Files[feed.Name], "files.example.com/feed.json", "https"))
+            : FixtureSource.File(Files[feed.Name], "v-" + Files[feed.Name]));
 }
 
 /// <summary>
@@ -84,6 +89,10 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
                 foreach (var feed in new[] { "catalog", "status", "cost" })
                     refresher.RefreshAsync(new InventoryFeedOptions { Name = feed, Type = feed, Source = new() { Kind = "https" } }, default)
                         .GetAwaiter().GetResult();
+                // Then the latest file moves on to November (to date, nothing attributed): two months.
+                Sources.Files["cost"] = "cost-2026-11.json";
+                refresher.RefreshAsync(new InventoryFeedOptions { Name = "cost", Type = "cost", Source = new() { Kind = "https" } }, default)
+                    .GetAwaiter().GetResult();
                 _seeded = true;
             }
         }
@@ -143,7 +152,7 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
     [Fact]
     public async Task Cost_comes_back_per_currency_with_direct_and_shared_apart()
     {
-        var response = await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost");
+        var response = await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost?period=2026-10");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await Json(response);

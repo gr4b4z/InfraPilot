@@ -2,7 +2,7 @@
 
 > **Status:** views, storage, this plan and ADR-0004 approved 2026-11-20. Phase 1 (tasks 2–12) is
 > implemented; where the code went another way than first planned, this file was updated to match.
-> Phase 2 (the pages) follows once Phase 1 is merged.
+> Phase 2 (the pages) is implemented too; see the end of this file.
 
 **Goal:** Show, for each service, who owns it, where it runs, which resources it has and what it
 costs, read from JSON artifacts other systems publish (catalog, status, cost). The portal fetches,
@@ -424,11 +424,8 @@ ADR-0004, this plan, the `GLOSSARY.md` entry.
 (`FeatureFlagKeys.ServiceInventory = "features.serviceInventory"`), `Program.cs`, `appsettings.json`
 (empty `ServiceInventory` section with a `_comment`), `featureFlagsStore.ts` (key only).
 
-The flag is **not seeded** in Phase 1: with no row it reads as off and has no toggle under
-**Settings → Feature Flags**, so Phase 1 shows nothing to anyone. An admin turns it on with
-`PUT /api/features/features.serviceInventory`. The seeder entry (default `false`, config path
-`Features:ServiceInventory:DefaultEnabled`) is added in Phase 2, with the pages and the "What's new"
-entry.
+The flag was not seeded in Phase 1, so that nothing showed before the pages existed; Phase 2 adds
+the seeder entry (default `false`, config path `Features:ServiceInventory:DefaultEnabled`).
 
 Tests: validation rejects a host not in `AllowedHosts`, `http://`, an unknown credential, two catalog
 feeds, a `query` credential on an `oci` source; a valid configuration binds.
@@ -588,8 +585,21 @@ requires admin and hides query strings; two currencies come back as two entries.
 `dotnet test` for both test projects; `npx tsc -b` in `src/Platform.Web`; both migration sets applied
 to fresh databases; a manual run against a local HTTPS file server serving the fictional fixtures.
 
-## Phase 2 (after Phase 1 is merged)
+## Phase 2 (implemented)
 
-The prototype's views built on the stored data, behind the flag: the service section on the service
-page, `/inventory/cost`, `/inventory/coverage` and the admin feed panel, with the product, team and
-coverage endpoints they need (queries above); and a "What's new" entry in the PR that turns the flag on.
+The prototype's views built on the stored data, behind the flag:
+
+- **Service section** on the service page (`app/service-inventory/ServiceInventorySection.tsx`): owner,
+  where it runs, cost of the month (direct, shared, total), databases with their observed state per
+  environment, resources, onboarding. Reads the three `/services/{name}` endpoints; a service that is
+  not in the inventory says so, with the age of the catalog.
+- **Service cost** (`/inventory/cost`, `GET /cost`): all products and teams, or one of them with its
+  totals per currency, its services by cost and the monthly trend (month to date hatched).
+- **Cost coverage** (`/inventory/coverage`, `GET /coverage`): share attributed per currency, the parts
+  that are not and why, the largest unattributed resource groups and subscriptions, coverage per
+  month, per-source totals, and for admins the feeds with their last attempt and error.
+- Every view shows the age of its data and a warning when a refresh failed; unknown and unresolved
+  states are grey, never red; amounts are one line per currency.
+- The flag is seeded (off by default; `Features:ServiceInventory:DefaultEnabled`), gates the routes,
+  the nav group **Service inventory** and the section, and has a "What's new" entry.
+- A catalog `repo` becomes a link only when it is an `https://` URL or an `org/repo` shorthand.

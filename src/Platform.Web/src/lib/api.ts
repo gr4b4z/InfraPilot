@@ -93,7 +93,12 @@ class ApiClient {
         }
       }
       const error = await response.json().catch(() => ({ error: response.statusText }));
-      throw new Error(error.error || `API error: ${response.status}`);
+      // The status and the parsed body ride along for the few callers that tell a 404 with details
+      // (the service inventory's "not in the inventory, and this is how old the data is") from a failure.
+      throw Object.assign(new Error(error.error || `API error: ${response.status}`), {
+        status: response.status,
+        body: error,
+      });
     }
 
     if (response.status === 204) return undefined as T;
@@ -262,6 +267,49 @@ class ApiClient {
     const query = params?.versionsLimit ? `?versionsLimit=${params.versionsLimit}` : '';
     return this.request<import('./types').ServiceDetail>(
       `/deployments/services/${encodeURIComponent(product)}/${encodeURIComponent(service)}${query}`,
+    );
+  }
+
+  // Service inventory (ADR-0004): read-only. See notes/service-inventory-api.md.
+  getInventoryService(service: string, product?: string) {
+    const query = product ? `?product=${encodeURIComponent(product)}` : '';
+    return this.request<import('@/app/service-inventory/inventoryTypes').InventoryServiceResponse>(
+      `/service-inventory/services/${encodeURIComponent(service)}${query}`,
+    );
+  }
+
+  getInventoryObserved(service: string) {
+    return this.request<import('@/app/service-inventory/inventoryTypes').InventoryObservedResponse>(
+      `/service-inventory/services/${encodeURIComponent(service)}/observed`,
+    );
+  }
+
+  getInventoryServiceCost(service: string, period?: string) {
+    const query = period ? `?period=${encodeURIComponent(period)}` : '';
+    return this.request<import('@/app/service-inventory/inventoryTypes').InventoryServiceCostResponse>(
+      `/service-inventory/services/${encodeURIComponent(service)}/cost${query}`,
+    );
+  }
+
+  getInventoryCost(params: { period?: string; product?: string; team?: string }) {
+    const query = new URLSearchParams(
+      Object.entries(params).filter((e): e is [string, string] => !!e[1]),
+    ).toString();
+    return this.request<import('@/app/service-inventory/inventoryTypes').InventoryCostResponse>(
+      `/service-inventory/cost${query ? `?${query}` : ''}`,
+    );
+  }
+
+  getInventoryCoverage(period?: string) {
+    const query = period ? `?period=${encodeURIComponent(period)}` : '';
+    return this.request<import('@/app/service-inventory/inventoryTypes').InventoryCoverageResponse>(
+      `/service-inventory/coverage${query}`,
+    );
+  }
+
+  getInventoryFeeds() {
+    return this.request<import('@/app/service-inventory/inventoryTypes').InventoryFeedsResponse>(
+      '/service-inventory/feeds',
     );
   }
 

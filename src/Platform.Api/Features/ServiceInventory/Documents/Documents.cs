@@ -62,7 +62,7 @@ public sealed record CatalogService
     {
         var list = new List<DatabaseBinding>();
         if (Bindings is not { ValueKind: JsonValueKind.Object } bindings) return list;
-        foreach (var kind in new[] { "postgres", "mssql" })
+        foreach (var kind in DatabaseKinds)
         {
             if (!bindings.TryGetProperty(kind, out var entries) || entries.ValueKind != JsonValueKind.Array) continue;
             foreach (var entry in entries.EnumerateArray())
@@ -71,8 +71,55 @@ public sealed record CatalogService
                 if (binding is not null && !string.IsNullOrEmpty(binding.Database)) list.Add(binding with { Kind = kind });
             }
         }
-        return list;
+
+        // bindings.environments.<env>: the same lists, for one environment. An entry there for a
+        // database declared above replaces it in that environment (another server, say); any other
+        // is a database only that environment has. An override this does not understand is left out
+        // rather than failing the file: its shape is not part of the format the reader enforces.
+        var overrides = new List<(string Environment, DatabaseBinding Binding)>();
+        if (bindings.TryGetProperty("environments", out var environments) && environments.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var environment in environments.EnumerateObject().Where(e => e.Value.ValueKind == JsonValueKind.Object))
+            foreach (var kind in DatabaseKinds)
+            {
+                if (!environment.Value.TryGetProperty(kind, out var entries) || entries.ValueKind != JsonValueKind.Array) continue;
+                foreach (var entry in entries.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object))
+                {
+                    DatabaseBinding? binding;
+                    try { binding = entry.Deserialize<DatabaseBinding>(StrictJson); }
+                    catch (JsonException) { continue; }
+                    if (binding is not null && !string.IsNullOrEmpty(binding.Database))
+                        overrides.Add((environment.Name, binding with { Kind = kind }));
+                }
+            }
+        }
+        if (overrides.Count == 0) return list;
+
+        static bool SameDatabase(DatabaseBinding a, DatabaseBinding b) =>
+            a.Kind == b.Kind && string.Equals(a.Database, b.Database, StringComparison.OrdinalIgnoreCase);
+        static bool SameServer(DatabaseBinding a, DatabaseBinding b) =>
+            string.Equals(a.Server ?? "", b.Server ?? "", StringComparison.OrdinalIgnoreCase);
+
+        var result = list
+            .Select(top => top with
+            {
+                NotInEnvironments = overrides.Where(o => SameDatabase(o.Binding, top) && !SameServer(o.Binding, top))
+                    .Select(o => o.Environment).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            })
+            .ToList();
+        foreach (var group in overrides
+                     .Where(o => !list.Any(top => SameDatabase(o.Binding, top) && SameServer(o.Binding, top)))
+                     .GroupBy(o => (o.Binding.Kind, Database: o.Binding.Database.ToLowerInvariant(), Server: (o.Binding.Server ?? "").ToLowerInvariant())))
+        {
+            result.Add(group.First().Binding with
+            {
+                OnlyInEnvironments = group.Select(o => o.Environment).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            });
+        }
+        return result;
     }
+
+    private static readonly string[] DatabaseKinds = ["postgres", "mssql"];
 }
 
 public sealed record CatalogEnvironment
@@ -99,6 +146,10 @@ public sealed record DatabaseBinding
     [JsonPropertyName("server")] public string? Server { get; init; }
     [JsonPropertyName("owner")] public bool Owner { get; init; }
     [JsonPropertyName("workloads")] public List<string> Workloads { get; init; } = [];
+    /// <summary>Set for a database declared for some environments only; null: every environment.</summary>
+    [JsonIgnore] public IReadOnlyList<string>? OnlyInEnvironments { get; init; }
+    /// <summary>Environments that declare this database on another server instead.</summary>
+    [JsonIgnore] public IReadOnlyList<string> NotInEnvironments { get; init; } = [];
 }
 
 public sealed record CatalogTeam

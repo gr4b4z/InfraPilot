@@ -29,6 +29,7 @@ public static class ServiceInventoryEndpoints
         group.MapGet("/services/{serviceName}", GetServiceAsync);
         group.MapGet("/services/{serviceName}/observed", GetObservedAsync);
         group.MapGet("/services/{serviceName}/cost", GetCostAsync);
+        group.MapInventoryCostEndpoints();
         group.MapGet("/feeds", GetFeedsAsync).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
         group.MapPost("/rebuild", async (InventoryRefresher refresher, CancellationToken ct) =>
             Results.Ok(new { rebuilt = await refresher.RebuildAsync(force: true, ct) }))
@@ -76,7 +77,7 @@ public static class ServiceInventoryEndpoints
                     .Select(e => new { environment = e.Key, cluster = e.Value.Aks?.Cluster, @namespace = e.Value.Aks?.Namespace }),
                 workloads = entry.Workloads?.Select(w => new { name = w.Key, kind = w.Value.Kind }),
                 databases = entry.DatabaseBindings()
-                    .Select(b => new { b.Kind, b.Database, b.Server, b.Owner, b.Workloads }),
+                    .Select(b => new { b.Kind, b.Database, b.Server, b.Owner, b.Workloads, b.OnlyInEnvironments, b.NotInEnvironments }),
                 bindings = entry.Bindings,
             },
             team = team is null ? null : new { team.Id, team.Lead, team.Deputy, team.GithubTeam, team.EntraGroup, team.Lifecycle },
@@ -160,13 +161,7 @@ public static class ServiceInventoryEndpoints
 
         var monthRow = period is null ? null : await read.FeedAsync(InventoryFeedTypes.Cost, period, ct);
         var month = await read.DocumentAsync<CostDocument>(monthRow, ct);
-        // The month the latest file is for is refreshed through the feed itself, so its state is the
-        // feed's, however it was asked for — unless only the month's own row recorded a failure. Any
-        // other month asked for by name reports its own state (a closed month that failed says so).
-        var isLatestMonth = monthRow is not null && monthRow.CurrentSnapshotId == feedRow?.CurrentSnapshotId;
-        var stateRow = requested && !isLatestMonth
-            ? monthRow
-            : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
+        var stateRow = InventoryReadService.CostStateRow(feedRow, monthRow, requested);
         var freshness = InventoryReadService.Freshness(stateRow, month?.Snapshot, InventoryFeedTypes.Cost, user.IsAdmin);
         if (month is null)
             return Results.NotFound(new { error = period is null ? "No cost has been read yet." : $"No cost has been read for {period}.", freshness });

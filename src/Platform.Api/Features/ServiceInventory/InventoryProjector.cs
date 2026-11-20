@@ -126,7 +126,7 @@ public static class InventoryProjector
                 {
                     SnapshotId = snapshotId, Ordinal = ordinal++, Period = period,
                     Source = scope.Source, Scope = scope.Scope, ResourceGroup = scope.Group ?? "",
-                    Currency = currency, Amount = amount,
+                    Currency = currency, Amount = Round(amount),
                 });
             }
         }
@@ -134,7 +134,15 @@ public static class InventoryProjector
         return new ProjectedRows([], months, services, unallocated);
     }
 
-    private static decimal Amount(Money money, string currency) => money.TryGetValue(currency, out var v) ? v : 0m;
+    /// <summary>
+    /// The scale of the amount columns. Rounded here, not left to the database, so the rows read
+    /// back from storage and the rows built again from the file are the same amounts.
+    /// </summary>
+    public const int AmountScale = 4;
+
+    private static decimal Round(decimal amount) => Math.Round(amount, AmountScale, MidpointRounding.AwayFromZero);
+
+    private static decimal Amount(Money money, string currency) => money.TryGetValue(currency, out var v) ? Round(v) : 0m;
 }
 
 public static class Gzip
