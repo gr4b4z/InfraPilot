@@ -23,6 +23,8 @@ import {
   Package,
   ScrollText,
   Undo2,
+  Coins,
+  PieChart,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -111,6 +113,16 @@ const navGroups: NavGroup[] = [
       { to: '/analytics/delivery', label: 'Delivery metrics', icon: Gauge, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
       { to: '/artifacts', label: 'Artifacts', icon: Package },
+    ],
+  },
+  {
+    // Who owns a service, where it runs and what it costs, read from published artifacts (ADR-0004).
+    // The per-service part lives on the service page; these two are the cross-service views.
+    label: 'Service inventory',
+    featureFlag: FeatureFlag.ServiceInventory,
+    items: [
+      { to: '/inventory/cost', label: 'Service cost', icon: Coins },
+      { to: '/inventory/coverage', label: 'Cost coverage', icon: PieChart },
     ],
   },
   {

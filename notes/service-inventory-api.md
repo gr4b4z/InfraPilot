@@ -6,9 +6,7 @@ derived copy (ADR-0004, `docs/plans/service-inventory.md`); nothing here edits t
 
 All endpoints are under `/api/service-inventory`, require a signed-in user or an API key, and answer
 `404` with `"The service inventory is not enabled on this platform"` while the feature flag
-`features.serviceInventory` is off. Until the pages exist the flag has no row and no toggle under
-**Settings → Feature Flags**; an admin turns it on with
-`PUT /api/features/features.serviceInventory` and the body `{"enabled": true}`.
+`features.serviceInventory` is off. An admin turns it on under **Settings → Feature Flags** (**ServiceInventory**).
 
 A service is addressed by its **portal service name**: the catalog `id` is the service name
 (compared case-insensitively). Every response carries `freshness`, the age of the portal's copy:
@@ -104,6 +102,27 @@ added together.
 
 `complete: false` is a month to date, replaced by later files. `400` for a malformed `period`, `404`
 when that month was never read or has no such service.
+
+## `GET /cost?period=YYYY-MM&product=|team=`
+
+What the **Service cost** page reads. Without `period`: the month of the latest cost file. Always:
+`period`, `complete`, `catalogVersion`, `month` (the whole month's `total`, `direct`, `shared`,
+`unallocated`), `months` (every stored month with `complete`), `options` (the catalog's products and
+teams, for a picker), `scope` and `freshness`.
+
+- Without `product` or `team`: `products` and `teams`, each row with `id`, `name`, `services` and
+  `direct` / `shared` / `total`, sorted by the month's largest currency. Products and teams without
+  services are listed too, with no amounts.
+- With one of them: `scope` (`kind`, `id`, `name`, `known`: whether the catalog has it), `totals`,
+  `services` (`id`, `product`, `team`, `direct`, `shared`, `total`, `sharedFrom`) sorted the same way,
+  and `trend`: one row per stored month with `complete`, `direct` and `shared`.
+
+## `GET /coverage?period=YYYY-MM`
+
+What the **Cost coverage** page reads: `currencies` (one entry per currency with `total`, `direct`,
+`shared`, `sharedUnsplit`, `untagged`, `unknownTag`, and the ten `largestGroups` and `largestScopes`
+of unattributed cost), `sources` (per source and currency: `total`, `attributed`, `rows`, `scopes`),
+`unsplitShared`, `trend` (per month and currency: `total`, `attributed`), `months` and `freshness`.
 
 ## Admin
 

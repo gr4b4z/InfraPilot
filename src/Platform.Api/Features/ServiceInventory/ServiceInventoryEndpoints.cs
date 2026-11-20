@@ -29,6 +29,7 @@ public static class ServiceInventoryEndpoints
         group.MapGet("/services/{serviceName}", GetServiceAsync);
         group.MapGet("/services/{serviceName}/observed", GetObservedAsync);
         group.MapGet("/services/{serviceName}/cost", GetCostAsync);
+        group.MapInventoryCostEndpoints();
         group.MapGet("/feeds", GetFeedsAsync).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
         group.MapPost("/rebuild", async (InventoryRefresher refresher, CancellationToken ct) =>
             Results.Ok(new { rebuilt = await refresher.RebuildAsync(force: true, ct) }))
