@@ -149,11 +149,13 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
         var body = await Json(response);
         Assert.Equal("2026-10", body.GetProperty("period").GetString());
         Assert.True(body.GetProperty("complete").GetBoolean());
-        var amounts = body.GetProperty("amounts").EnumerateArray().ToList();
-        Assert.Equal(["EUR", "USD"], amounts.Select(a => a.GetProperty("currency").GetString()));
-        Assert.Equal(113.40m, amounts[1].GetProperty("direct").GetDecimal());
-        Assert.Equal(82.50m, amounts[1].GetProperty("shared").GetDecimal());
-        Assert.Equal(205.00m, amounts[0].GetProperty("total").GetDecimal());
+        // Every amount is a map per currency, as in the published file; currencies are never added.
+        Assert.Equal(["EUR", "USD"], body.GetProperty("total").EnumerateObject().Select(c => c.Name));
+        Assert.Equal(113.40m, body.GetProperty("direct").GetProperty("USD").GetDecimal());
+        Assert.Equal(82.50m, body.GetProperty("shared").GetProperty("USD").GetDecimal());
+        Assert.Equal(0m, body.GetProperty("shared").GetProperty("EUR").GetDecimal());
+        Assert.Equal(205.00m, body.GetProperty("total").GetProperty("EUR").GetDecimal());
+        Assert.Equal(113.40m, body.GetProperty("resources")[0].GetProperty("cost").GetProperty("USD").GetDecimal());
         Assert.Equal("shared-postgres", body.GetProperty("sharedFrom")[0].GetProperty("shared").GetString());
     }
 
@@ -209,9 +211,8 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
         {
             var body = await Json(await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost?period=2026-10"));
 
-            var amounts = body.GetProperty("amounts").EnumerateArray().ToList();
-            Assert.Equal(["EUR", "USD"], amounts.Select(a => a.GetProperty("currency").GetString()));
-            Assert.Equal(195.90m, amounts[1].GetProperty("total").GetDecimal());
+            Assert.Equal(["EUR", "USD"], body.GetProperty("total").EnumerateObject().Select(c => c.Name));
+            Assert.Equal(195.90m, body.GetProperty("total").GetProperty("USD").GetDecimal());
         }
         finally
         {
@@ -225,25 +226,27 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
     }
 
     [Fact]
-    public async Task A_second_deploy_product_next_to_the_catalogs_still_counts_as_differing()
+    public async Task The_page_names_its_portal_product_and_learns_whether_the_catalogs_differs()
     {
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            foreach (var product in new[] { "storefront", "payments" })
-                db.DeployEvents.Add(new Platform.Api.Features.Deployments.Models.DeployEvent
-                {
-                    Id = Guid.NewGuid(), Product = product, Service = "order-router", Environment = "dev",
-                    Version = "1.0.0", Source = "test", DeployedAt = DateTimeOffset.UtcNow,
-                });
-            await db.SaveChangesAsync();
-        }
+        var client = _factory.CreateAdminClient();
 
-        var body = await Json(await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router"));
+        var same = (await Json(await client.GetAsync("/api/service-inventory/services/order-router?product=Storefront"))).GetProperty("portal");
+        var other = (await Json(await client.GetAsync("/api/service-inventory/services/order-router?product=payments"))).GetProperty("portal");
+        var none = (await Json(await client.GetAsync("/api/service-inventory/services/order-router"))).GetProperty("portal");
 
-        var portal = body.GetProperty("portal");
-        Assert.Equal(["payments", "storefront"], portal.GetProperty("products").EnumerateArray().Select(p => p.GetString()));
-        Assert.True(portal.GetProperty("productDiffers").GetBoolean());
+        Assert.False(same.GetProperty("productDiffers").GetBoolean());
+        Assert.True(other.GetProperty("productDiffers").GetBoolean());
+        Assert.Equal("payments", other.GetProperty("product").GetString());
+        Assert.Equal(JsonValueKind.Null, none.ValueKind);
+    }
+
+    [Fact]
+    public async Task Feed_state_marks_rows_left_behind_by_a_feed_that_is_no_longer_configured()
+    {
+        var body = await Json(await _factory.CreateAdminClient().GetAsync("/api/service-inventory/feeds"));
+
+        // The test host configures no feeds; every stored row is therefore a leftover.
+        Assert.All(body.GetProperty("state").EnumerateArray(), s => Assert.False(s.GetProperty("configured").GetBoolean()));
     }
 
     [Fact]
@@ -426,6 +429,33 @@ public class ServiceInventoryAtomicityTests
 
         Assert.Equal(1, rebuilt);
         Assert.Equal(rows, await db.InventoryCostServices.CountAsync());
+    }
+
+    [Fact]
+    public async Task Only_one_replica_takes_a_due_feed()
+    {
+        await using var connection = TestDatabase.Open();
+        var clock = new FixedClock(new DateTimeOffset(2026, 11, 20, 16, 0, 0, TimeSpan.Zero));
+        InventoryRefresher Replica()
+        {
+            var db = new SqliteTestDbContext(new DbContextOptionsBuilder<SqliteTestDbContext>().UseSqlite(connection).Options);
+            return new InventoryRefresher(db, new SingleSource(new FixtureSource(_ => FixtureSource.File("catalog.json", "v1"))),
+                clock, NullLogger<InventoryRefresher>.Instance);
+        }
+        var feed = new InventoryFeedOptions { Name = "catalog", Type = "catalog", PollMinutes = 15, Source = new() { Kind = "https" } };
+
+        Assert.True(await Replica().TryClaimAsync(feed, default));
+        Assert.False(await Replica().TryClaimAsync(feed, default));
+
+        clock.Now = clock.Now.AddMinutes(16);
+        Assert.True(await Replica().TryClaimAsync(feed, default));
+        Assert.False(await Replica().TryClaimAsync(feed, default));
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     private sealed class SingleSource(IArtifactSource source) : IArtifactSourceFactory

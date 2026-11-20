@@ -25,6 +25,9 @@ public class InventoryRefresher
     /// <summary>Closed months fetched in one cycle at most, so a long backlog doesn't stall the loop.</summary>
     private const int MaxClosedMonthsPerCycle = 12;
 
+    /// <summary>How long a closed month that was not published is left alone before asking again.</summary>
+    public static readonly TimeSpan AbsentMonthRetry = TimeSpan.FromHours(6);
+
     private readonly PlatformDbContext _db;
     private readonly IArtifactSourceFactory _sources;
     private readonly TimeProvider _clock;
@@ -37,6 +40,46 @@ public class InventoryRefresher
         _sources = sources;
         _clock = clock;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Takes the feed for this refresh, so that of several API replicas polling at once only one
+    /// fetches it: an atomic "still due?" update of the feed's <c>LastAttemptAt</c>, the same idea as
+    /// the webhook worker's claim. A replica that dies mid-refresh simply leaves the feed to be due
+    /// again after its poll interval.
+    /// </summary>
+    /// <remarks>
+    /// The guarantee is the database's (<c>ExecuteUpdate</c>). A non-relational provider (the unit
+    /// tests' InMemory one) has a single process and nothing to race with, so it always claims.
+    /// </remarks>
+    public async Task<bool> TryClaimAsync(InventoryFeedOptions feed, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational()) return true;
+
+        var key = InventoryFeed.KeyFor(feed.Name, "");
+        if (!await _db.InventoryFeeds.AnyAsync(f => f.FeedKey == key, ct))
+        {
+            _db.InventoryFeeds.Add(new InventoryFeed
+            {
+                FeedKey = key, FeedName = feed.Name, FeedType = feed.Type.Trim().ToLowerInvariant(), Period = "",
+            });
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException)
+            {
+                // Another replica created the row in the same instant; the claim below decides.
+            }
+            _db.ChangeTracker.Clear();
+        }
+
+        var now = _clock.GetUtcNow();
+        var dueBefore = now - TimeSpan.FromMinutes(feed.PollMinutes);
+        var claimed = await _db.InventoryFeeds
+            .Where(f => f.FeedKey == key && (f.LastAttemptAt == null || f.LastAttemptAt <= dueBefore))
+            .ExecuteUpdateAsync(s => s.SetProperty(f => f.LastAttemptAt, now), ct);
+        return claimed == 1;
     }
 
     public async Task RefreshAsync(InventoryFeedOptions feed, CancellationToken ct)
@@ -76,11 +119,20 @@ public class InventoryRefresher
         // Months never tried first, then the ones tried longest ago, newest first within each: the
         // per-cycle limit then rotates through the backlog instead of retrying the same unpublished
         // months forever while later published ones wait.
-        var lastAttempt = await _db.InventoryFeeds.AsNoTracking()
+        var monthRows = await _db.InventoryFeeds.AsNoTracking()
             .Where(f => f.FeedName == feedName && f.Period != "")
-            .Select(f => new { f.Period, f.LastAttemptAt })
-            .ToDictionaryAsync(f => f.Period, f => f.LastAttemptAt, ct);
+            .Select(f => new { f.Period, f.LastAttemptAt, f.CurrentSnapshotId, f.LastError })
+            .ToDictionaryAsync(f => f.Period, ct);
+        var lastAttempt = monthRows.ToDictionary(r => r.Key, r => r.Value.LastAttemptAt);
+        var now = _clock.GetUtcNow();
+        // A month that was simply not there (no copy, no error) is asked for again a few times a day,
+        // not on every poll: a gap that will never be filled must not cost a request an hour forever.
+        // A month whose fetch failed keeps being retried at the feed's own pace.
+        bool RecentlyAbsent(string m) =>
+            monthRows.TryGetValue(m, out var r) && r.CurrentSnapshotId is null && r.LastError is null
+            && r.LastAttemptAt is { } at && now - at < AbsentMonthRetry;
         var due = months
+            .Where(m => !RecentlyAbsent(m))
             .OrderBy(m => lastAttempt.GetValueOrDefault(m) ?? DateTimeOffset.MinValue)
             .ThenByDescending(m => m, StringComparer.Ordinal)
             .Take(MaxClosedMonthsPerCycle);
@@ -249,6 +301,12 @@ public class InventoryRefresher
         {
             _logger.LogError(ex, "Service inventory: storing {Feed} failed", LogSanitizer.Clean(tracker.FeedKey));
             _db.ChangeTracker.Clear();
+            // Another replica may have stored this very file in the same instant (the claim normally
+            // prevents it; a refresh that outlives its poll interval can still overlap). Then the
+            // data is there and nothing failed.
+            var storedElsewhere = await _db.InventorySnapshots.AsNoTracking()
+                .AnyAsync(s => s.FeedName == tracker.FeedName && s.Period == read.Period && s.ContentSha256 == sha, ct);
+            if (storedElsewhere && existing is null) return;
             // On a feed's first refresh its row was part of the failed save and is gone: recreate it.
             var fresh = await GetOrCreateRowAsync(tracker.FeedName, tracker.FeedType, tracker.Period, ct);
             await RecordFailureAsync(fresh, "The file could not be stored; the previous copy is kept.", ct);

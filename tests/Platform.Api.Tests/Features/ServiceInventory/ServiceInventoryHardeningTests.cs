@@ -325,6 +325,49 @@ public class RefreshHardeningTests
     }
 
     [Fact]
+    public async Task A_month_that_was_not_there_is_asked_for_again_only_after_a_while()
+    {
+        _source.Next = _ => FetchResult.Unchanged(null);
+        _source.ListedMonths = ["2026-10"];
+        var asked = 0;
+        _source.Months["2026-10"] = () =>
+        {
+            asked++;
+            throw new InventoryFetchException("not published", HttpStatusCode.NotFound);
+        };
+        var feed = Feed("cost", new ClosedMonthsOptions { From = "2026-10" });
+
+        await Refresher().RefreshAsync(feed, default);
+        _clock.Now = _clock.Now.AddHours(1);
+        await Refresher().RefreshAsync(feed, default);
+        Assert.Equal(1, asked);
+
+        _clock.Now = _clock.Now + InventoryRefresher.AbsentMonthRetry;
+        await Refresher().RefreshAsync(feed, default);
+        Assert.Equal(2, asked);
+    }
+
+    [Fact]
+    public async Task A_month_whose_fetch_failed_is_retried_on_the_next_poll()
+    {
+        _source.Next = _ => FetchResult.Unchanged(null);
+        _source.ListedMonths = ["2026-10"];
+        var asked = 0;
+        _source.Months["2026-10"] = () =>
+        {
+            asked++;
+            throw new InventoryFetchException("registry down", HttpStatusCode.BadGateway);
+        };
+        var feed = Feed("cost", new ClosedMonthsOptions { From = "2026-10" });
+
+        await Refresher().RefreshAsync(feed, default);
+        _clock.Now = _clock.Now.AddHours(1);
+        await Refresher().RefreshAsync(feed, default);
+
+        Assert.Equal(2, asked);
+    }
+
+    [Fact]
     public async Task Unpublished_months_do_not_starve_later_published_ones()
     {
         // 14 candidate months; only the two oldest are unpublished-forever, the rest exist. With 12

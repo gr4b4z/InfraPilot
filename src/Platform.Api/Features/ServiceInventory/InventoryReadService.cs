@@ -47,10 +47,14 @@ public class InventoryReadService
     {
         var configured = _options.CurrentValue.Feeds
             .FirstOrDefault(f => string.Equals(f.Type?.Trim(), type, StringComparison.OrdinalIgnoreCase))?.Name;
-        var rows = _db.InventoryFeeds.AsNoTracking().Where(f => f.FeedType == type && f.Period == period);
         if (configured is not null)
-            return await rows.FirstOrDefaultAsync(f => f.FeedName == configured, ct);
-        return (await rows.ToListAsync(ct)).OrderByDescending(f => f.LastSuccessAt).FirstOrDefault();
+        {
+            // By primary key.
+            var key = InventoryFeed.KeyFor(configured, period);
+            return await _db.InventoryFeeds.AsNoTracking().FirstOrDefaultAsync(f => f.FeedKey == key, ct);
+        }
+        var rows = await _db.InventoryFeeds.AsNoTracking().Where(f => f.FeedType == type && f.Period == period).ToListAsync(ct);
+        return rows.OrderByDescending(f => f.LastSuccessAt).FirstOrDefault();
     }
 
     public async Task<(T Document, InventorySnapshot Snapshot)?> DocumentAsync<T>(InventoryFeed? feed, CancellationToken ct)

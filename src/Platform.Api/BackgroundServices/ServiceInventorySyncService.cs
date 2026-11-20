@@ -101,7 +101,10 @@ public class ServiceInventorySyncService : BackgroundService
             {
                 // A fresh scope per feed: one feed's failed save never leaves state for the next.
                 using var feedScope = _scopeFactory.CreateScope();
-                await feedScope.ServiceProvider.GetRequiredService<InventoryRefresher>().RefreshAsync(feed, ct);
+                var feedRefresher = feedScope.ServiceProvider.GetRequiredService<InventoryRefresher>();
+                // With several replicas, exactly one of them takes a due feed.
+                if (!await feedRefresher.TryClaimAsync(feed, ct)) continue;
+                await feedRefresher.RefreshAsync(feed, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

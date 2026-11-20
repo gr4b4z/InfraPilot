@@ -22,8 +22,7 @@ public static class ServiceInventoryEndpoints
         {
             var flags = context.HttpContext.RequestServices.GetRequiredService<IFeatureFlags>();
             if (!await flags.IsEnabled(FeatureFlagKeys.ServiceInventory, context.HttpContext.RequestAborted))
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound,
-                    title: "The service inventory is not enabled on this platform");
+                return Results.NotFound(new { error = "The service inventory is not enabled on this platform" });
             return await next(context);
         });
 
@@ -39,8 +38,11 @@ public static class ServiceInventoryEndpoints
 
     private static string Key(string serviceName) => serviceName.Trim().ToLowerInvariant();
 
+    private static SortedDictionary<string, decimal> Money(IEnumerable<(string Currency, decimal Amount)> amounts) =>
+        new(amounts.ToDictionary(a => a.Currency, a => a.Amount), StringComparer.Ordinal);
+
     private static async Task<IResult> GetServiceAsync(
-        string serviceName, InventoryReadService read, PlatformDbContext db, ICurrentUser user, CancellationToken ct)
+        string serviceName, string? product, InventoryReadService read, ICurrentUser user, CancellationToken ct)
     {
         var feed = await read.FeedAsync(InventoryFeedTypes.Catalog, ct: ct);
         var current = await read.DocumentAsync<CatalogDocument>(feed, ct);
@@ -52,13 +54,7 @@ public static class ServiceInventoryEndpoints
 
         var catalog = current.Value.Document;
         var team = catalog.Teams.FirstOrDefault(t => t.Id == entry.Team);
-        var product = catalog.Products.FirstOrDefault(p => p.Id == entry.Product);
-
-        // The portal's own products for this name, from deploy events. They may differ from the
-        // catalog's while deploys are brought in line; the page says so.
-        var portalProducts = await db.DeployEvents.AsNoTracking()
-            .Where(e => e.Service.ToLower() == id)
-            .Select(e => e.Product).Distinct().OrderBy(p => p).ToListAsync(ct);
+        var catalogProduct = catalog.Products.FirstOrDefault(p => p.Id == entry.Product);
 
         return Results.Ok(new
         {
@@ -84,12 +80,14 @@ public static class ServiceInventoryEndpoints
                 bindings = entry.Bindings,
             },
             team = team is null ? null : new { team.Id, team.Lead, team.Deputy, team.GithubTeam, team.EntraGroup, team.Lifecycle },
-            product = product is null ? null : new { product.Id, product.Name, product.BusinessOwner, product.TechnicalOwner, product.Lifecycle },
-            portal = new
+            product = catalogProduct is null ? null : new { catalogProduct.Id, catalogProduct.Name, catalogProduct.BusinessOwner, catalogProduct.TechnicalOwner, catalogProduct.Lifecycle },
+            // The caller says which portal product it is looking at (?product=, the service page's
+            // own); whether it differs from the catalog's is then a comparison, not a search through
+            // every deploy event for the name. Deploys may differ while they are brought in line.
+            portal = string.IsNullOrWhiteSpace(product) ? null : new
             {
-                products = portalProducts,
-                // Any reported product other than the catalog's counts, also next to a matching one.
-                productDiffers = portalProducts.Any(p => !string.Equals(p, entry.Product, StringComparison.OrdinalIgnoreCase)),
+                product = product.Trim(),
+                productDiffers = !string.Equals(product.Trim(), entry.Product, StringComparison.OrdinalIgnoreCase),
             },
             catalogVersion = catalog.CatalogVersion,
             freshness,
@@ -162,10 +160,13 @@ public static class ServiceInventoryEndpoints
 
         var monthRow = period is null ? null : await read.FeedAsync(InventoryFeedTypes.Cost, period, ct);
         var month = await read.DocumentAsync<CostDocument>(monthRow, ct);
-        // A month asked for by name reports its own refresh state (a closed month that failed to
-        // refresh says so). The default month reports the latest file's state, which is what
-        // refreshes it, unless only the month's own row recorded a failure.
-        var stateRow = requested ? monthRow : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
+        // The month the latest file is for is refreshed through the feed itself, so its state is the
+        // feed's, however it was asked for — unless only the month's own row recorded a failure. Any
+        // other month asked for by name reports its own state (a closed month that failed says so).
+        var isLatestMonth = monthRow is not null && monthRow.CurrentSnapshotId == feedRow?.CurrentSnapshotId;
+        var stateRow = requested && !isLatestMonth
+            ? monthRow
+            : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
         var freshness = InventoryReadService.Freshness(stateRow, month?.Snapshot, InventoryFeedTypes.Cost, user.IsAdmin);
         if (month is null)
             return Results.NotFound(new { error = period is null ? "No cost has been read yet." : $"No cost has been read for {period}.", freshness });
@@ -197,8 +198,11 @@ public static class ServiceInventoryEndpoints
             complete = doc.Complete,
             generatedAt = doc.GeneratedAt,
             catalogVersion = doc.CatalogVersion,
-            // One entry per currency. Direct and shared stay separate; currencies are never added.
-            amounts = amounts.OrderBy(a => a.Currency, StringComparer.Ordinal),
+            // Amounts per currency, in the shape the published file uses everywhere ({"USD": 1.5}).
+            // Direct and shared stay separate; currencies are never added together.
+            direct = Money(amounts.Select(a => (a.Currency, a.Direct))),
+            shared = Money(amounts.Select(a => (a.Currency, a.Shared))),
+            total = Money(amounts.Select(a => (a.Currency, a.Total))),
             resources = line?.Resources ?? [],
             sharedFrom = line?.SharedFrom ?? [],
             freshness,
@@ -236,6 +240,8 @@ public static class ServiceInventoryEndpoints
                 return new
                 {
                     feed = r.FeedName,
+                    // False for rows a renamed or removed feed left behind; nothing reads them.
+                    configured = configuration.Feeds.Any(f => string.Equals(f.Name, r.FeedName, StringComparison.OrdinalIgnoreCase)),
                     period = r.Period == "" ? null : r.Period,
                     type = r.FeedType,
                     stored = s is null ? null : new

@@ -28,10 +28,11 @@ A failed refresh never removes data: the previous copy keeps being served, with 
 Admins get the recorded reason, which names the source; everyone else gets
 `"The last refresh failed. An administrator can see why."`.
 
-## `GET /services/{serviceName}`
+## `GET /services/{serviceName}?product=`
 
-The catalog entry, its team and product, and whether the product the portal's deploy events report
-differs from the catalog's.
+The catalog entry, its team and product. Pass `product` (the portal product the service is deployed
+under, as in `/deployments/{product}/{service}`) to learn whether it differs from the catalog's;
+without it `portal` is `null`.
 
 ```jsonc
 {
@@ -45,7 +46,7 @@ differs from the catalog's.
   },
   "team": { "id": "storefront-team", "lead": "…", "deputy": "…", "githubTeam": "…", "entraGroup": "…" },
   "product": { "id": "storefront", "name": "Storefront", "businessOwner": "…", "technicalOwner": "…" },
-  "portal": { "products": ["storefront"], "productDiffers": false },
+  "portal": { "product": "storefront", "productDiffers": false },
   "catalogVersion": 5,
   "freshness": { … }
 }
@@ -56,7 +57,9 @@ while the service's own file is missing or invalid.
 
 ## `GET /services/{serviceName}/observed`
 
-The observed state from the status feed, as published. `unknown` and `unresolved` mean *not observed*,
+The observed state from the status feed. The portal's own fields are camelCase; everything under
+`onboarding`, `bindings`, `shared` and `taggedResources` is passed through with the field names the
+status file uses. `unknown` and `unresolved` mean *not observed*,
 never failed or absent.
 
 ```jsonc
@@ -80,16 +83,17 @@ never failed or absent.
 
 ## `GET /services/{serviceName}/cost?period=YYYY-MM`
 
-The service's cost in one month (default: the month of the latest cost file). One entry per currency;
-direct and shared cost are separate and currencies are never added together.
+The service's cost in one month (default: the month of the latest cost file). Every amount is an
+object per currency, the shape the published file uses (`{"USD": 1.5}`); a currency of the month the
+service has no cost in is there as `0`. Direct and shared cost are separate and currencies are never
+added together.
 
 ```jsonc
 {
   "serviceId": "order-router", "period": "2026-10", "complete": true, "generatedAt": "…", "catalogVersion": 5,
-  "amounts": [
-    { "currency": "EUR", "direct": 205.00, "shared": 0, "total": 205.00 },
-    { "currency": "USD", "direct": 113.40, "shared": 82.50, "total": 195.90 }
-  ],
+  "direct": { "EUR": 205.00, "USD": 113.40 },
+  "shared": { "EUR": 0, "USD": 82.50 },
+  "total":  { "EUR": 205.00, "USD": 195.90 },
   "resources": [{ "source": "azure", "id": "/subscriptions/…", "cost": { "USD": 113.40 }, "via": "tag" }],
   "sharedFrom": [{ "shared": "shared-postgres", "cost": { "USD": 82.50 } }],
   "freshness": { … }
@@ -103,7 +107,8 @@ when that month was never read or has no such service.
 
 - `GET /feeds` — the configured feeds (kind, location without credentials or query string, poll
   interval), configuration errors, and per feed and cost month: the stored copy, `lastSuccessAt`,
-  `lastAttemptAt`, `lastChangedAt`, `lastError`, `consecutiveFailures`.
+  `lastAttemptAt`, `lastChangedAt`, `lastError`, `consecutiveFailures`, and `configured` (false for
+  rows a renamed or removed feed left behind).
 - `POST /rebuild` — re-projects the query tables from the stored raw copies.
 
 ## Configuration

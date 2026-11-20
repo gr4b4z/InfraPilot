@@ -86,7 +86,16 @@ public class InventoryRetention
         _db.RemoveRange(unallocated);
         var rows = services.Count + months.Count + costServices.Count + unallocated.Count;
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Another replica pruned the same rows first. Nothing is lost; the next run finds less.
+            _db.ChangeTracker.Clear();
+            return (0, 0);
+        }
         return (drop.Count, rows);
     }
 }

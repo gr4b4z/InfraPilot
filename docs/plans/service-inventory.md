@@ -1,7 +1,8 @@
 # Service inventory — implementation plan
 
-> **Status:** views and storage approved 2026-11-20. This plan and ADR-0004 await approval; no
-> production code exists yet. Phase 1 starts after that approval.
+> **Status:** views, storage, this plan and ADR-0004 approved 2026-11-20. Phase 1 (tasks 2–12) is
+> implemented; where the code went another way than first planned, this file was updated to match.
+> Phase 2 (the pages) follows once Phase 1 is merged.
 
 **Goal:** Show, for each service, who owns it, where it runs, which resources it has and what it
 costs, read from JSON artifacts other systems publish (catalog, status, cost). The portal fetches,
@@ -152,7 +153,9 @@ erDiagram
         datetime LastChangedAt
         string LastError
         int ConsecutiveFailures
+        datetime LastErrorAt
         int ProjectionVersion
+        bool Complete "cost month: the current copy is a closed month"
     }
     inventory_snapshots {
         guid Id PK
@@ -168,6 +171,7 @@ erDiagram
         datetime GeneratedAt
         datetime FetchedAt
         int ContentLength
+        bool Complete "cost only"
         bytes ContentGzip
     }
     inventory_services {
@@ -450,10 +454,13 @@ never sent to a different host; error text contains no query string.
 ```csharp
 public interface IArtifactSource
 {
-    /// Cheap check. A null version means unknown: the caller downloads and compares hashes.
-    Task<ChangeCheck> CheckAsync(string? lastVersion, CancellationToken ct);
-    Task<ArtifactFile> FetchAsync(CancellationToken ct);                       // bytes + version + location
-    Task<IReadOnlyList<string>> ListClosedMonthsAsync(CancellationToken ct);   // YYYY-MM
+    string Kind { get; }
+    string Location { get; }      // for display; never a credential or query string
+    string Identity { get; }      // what is read; a stored version is only sent back to the same identity
+    /// Downloads only when changed since lastVersion (null: always). One call, because an HTTPS
+    /// conditional GET checks and fetches in a single request.
+    Task<FetchResult> FetchIfChangedAsync(string? lastVersion, CancellationToken ct);
+    Task<IReadOnlyList<string>> ListClosedMonthsAsync(string from, ISet<string> stored, DateTimeOffset now, CancellationToken ct);
     IArtifactSource ForMonth(string period);                                   // the closed-month artifact
 }
 ```
@@ -543,7 +550,10 @@ unsupported `schemaVersion` → previous copy kept, `LastError` set and redacted
 
 Same shape as `CatalogSyncService`: a loop with a scope per cycle; each feed refreshed when its
 `PollMinutes` have elapsed; one feed's failure never stops the others; does nothing while the flag is
-off or the configuration is invalid. Retention runs once a day, keeps snapshots per "History kept"
+off or the configuration is invalid. Every API replica runs the loop, so a due feed is first
+**claimed** with an atomic update of its `LastAttemptAt` (the webhook worker's pattern): one replica
+fetches it, the others skip it. A closed month that was simply not published is asked for again
+every six hours, not on every poll. Retention runs once a day, keeps snapshots per "History kept"
 and deletes the projected rows of snapshots that are no longer current.
 
 Tests: only due feeds refresh; a throwing feed does not stop the next; flag off → no outbound call;
@@ -557,7 +567,7 @@ Under `/api/service-inventory`, for signed-in users, flag-gated like the other f
 
 | Endpoint | Returns |
 |---|---|
-| `GET /services/{serviceName}` | The catalog entry matched by name: team, product, lifecycle, environments, bindings, workloads; whether the portal's product differs; data age. `404` when there is no entry. |
+| `GET /services/{serviceName}?product=` | The catalog entry matched by name: team, product, lifecycle, environments, bindings, workloads; with `product` (the portal product the page is on), whether it differs from the catalog's; data age. `404` when there is no entry. |
 | `GET /services/{serviceName}/observed` | Observed bindings per environment and database, the shared resources it uses with their state, tagged resources, onboarding, warnings; data age. |
 | `GET /services/{serviceName}/cost?period=YYYY-MM` | Direct, shared and total per currency, resource lines, shared-from, `complete`; the current period by default. |
 | `GET /feeds` (admin) | Per feed: type, source kind, location without credentials or query string, stored version, `LastSuccessAt`, `LastAttemptAt`, `LastError`. |
