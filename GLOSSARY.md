@@ -57,6 +57,15 @@ and Work Item Sign-offs are still recorded; Auto-approve waits. Lifting the free
 Pending candidate it covered.
 _Avoid_: Environment freeze, lock, blackout, maintenance window, approval block
 
+### Service inventory
+
+**Service Inventory**:
+The portal's read-only copy of the services, teams, products and shared resources published by the
+service catalog, with their observed state and attributed cost. Rebuilt at any time from the published
+artifacts; never edited in the portal. A portal service belongs to the inventory entry whose `id` is its
+service name.
+_Avoid_: Service catalog (the request catalog's former name), service registry, CMDB
+
 ## Relationships
 
 - A **Promotion Freeze** applies to exactly one product — the whole product, or exactly one of its
