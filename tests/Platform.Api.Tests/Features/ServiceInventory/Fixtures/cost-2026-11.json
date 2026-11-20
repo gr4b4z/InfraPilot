@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 2,
+  "period": "2026-11",
+  "complete": false,
+  "generated_at": "2026-11-20T15:24:57.448Z",
+  "catalog_version": 5,
+  "sources": [
+    {
+      "id": "azure",
+      "rows": 333,
+      "scopes": 1,
+      "totals": {
+        "total": {
+          "USD": 9876.4
+        },
+        "direct": {},
+        "shared": {},
+        "shared_unsplit": {},
+        "unallocated": {
+          "USD": 9876.4
+        }
+      }
+    }
+  ],
+  "totals": {
+    "total": {
+      "USD": 9876.4
+    },
+    "direct": {},
+    "shared": {},
+    "shared_unsplit": {},
+    "unallocated": {
+      "USD": 9876.4
+    }
+  },
+  "services": [
+    {
+      "id": "ledger-api",
+      "product": "payments",
+      "team": "platform-team",
+      "direct": {},
+      "shared": {},
+      "total": {},
+      "resources": [],
+      "shared_from": []
+    },
+    {
+      "id": "order-router",
+      "product": "storefront",
+      "team": "storefront-team",
+      "direct": {},
+      "shared": {},
+      "total": {},
+      "resources": [],
+      "shared_from": [
+        {
+          "shared": "shared-postgres",
+          "cost": {}
+        }
+      ]
+    }
+  ],
+  "shared": [
+    {
+      "id": "shared-postgres",
+      "cost": {},
+      "split": "equal",
+      "services": [
+        "order-router"
+      ],
+      "resources": []
+    }
+  ],
+  "unallocated": {
+    "untagged": {
+      "USD": 9876.4
+    },
+    "unknown_tag": {},
+    "by_scope": [
+      {
+        "source": "azure",
+        "scope": "11111111-2222-4333-8444-555555555555",
+        "group": "aks-prod-nodes",
+        "cost": {
+          "USD": 2310.25
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "11111111-2222-4333-8444-555555555555",
+        "group": "analytics-db-rg",
+        "cost": {
+          "USD": 1254.0
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "11111111-2222-4333-8444-555555555555",
+        "group": "LEGACY-VMS-RG",
+        "cost": {
+          "USD": 866.9
+        }
+      }
+    ]
+  }
+}

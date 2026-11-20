@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 2,
+  "period": "2026-10",
+  "complete": true,
+  "generated_at": "2026-11-01T03:08:00.000Z",
+  "catalog_version": 5,
+  "sources": [
+    {
+      "id": "azure",
+      "rows": 320,
+      "scopes": 1,
+      "totals": {
+        "total": {
+          "USD": 10215.7
+        },
+        "direct": {
+          "USD": 1628.2
+        },
+        "shared": {
+          "USD": 82.5
+        },
+        "shared_unsplit": {},
+        "unallocated": {
+          "USD": 8505.0
+        }
+      }
+    },
+    {
+      "id": "mongodb-atlas",
+      "rows": 4,
+      "scopes": 1,
+      "totals": {
+        "total": {
+          "EUR": 330.0
+        },
+        "direct": {
+          "EUR": 205.0
+        },
+        "shared": {},
+        "shared_unsplit": {},
+        "unallocated": {
+          "EUR": 125.0
+        }
+      }
+    }
+  ],
+  "totals": {
+    "total": {
+      "USD": 10215.7,
+      "EUR": 330.0
+    },
+    "direct": {
+      "USD": 1628.2,
+      "EUR": 205.0
+    },
+    "shared": {
+      "USD": 82.5
+    },
+    "shared_unsplit": {},
+    "unallocated": {
+      "USD": 8505.0,
+      "EUR": 125.0
+    }
+  },
+  "services": [
+    {
+      "id": "ledger-api",
+      "product": "payments",
+      "team": "platform-team",
+      "direct": {
+        "USD": 1514.8
+      },
+      "shared": {},
+      "total": {
+        "USD": 1514.8
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/payments-ledger-prod/providers/Microsoft.Storage/storageAccounts/ledgerprodsa",
+          "cost": {
+            "USD": 939.18
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/payments-ledger-prod/providers/Microsoft.KeyVault/vaults/ledger-prod-kv",
+          "cost": {
+            "USD": 575.62
+          },
+          "via": "override"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "order-router",
+      "product": "storefront",
+      "team": "storefront-team",
+      "direct": {
+        "USD": 113.4,
+        "EUR": 205.0
+      },
+      "shared": {
+        "USD": 82.5
+      },
+      "total": {
+        "USD": 195.9,
+        "EUR": 205.0
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/storefront-prod-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/order-router",
+          "cost": {
+            "USD": 113.4
+          },
+          "via": "tag"
+        },
+        {
+          "source": "mongodb-atlas",
+          "id": "atlas:project/storefront/cluster/router-prod",
+          "cost": {
+            "EUR": 205.0
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres",
+          "cost": {
+            "USD": 82.5
+          }
+        }
+      ]
+    }
+  ],
+  "shared": [
+    {
+      "id": "shared-postgres",
+      "cost": {
+        "USD": 82.5
+      },
+      "split": "equal",
+      "services": [
+        "order-router"
+      ],
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/shared-data-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-prod",
+          "cost": {
+            "USD": 82.5
+          },
+          "via": "tag"
+        }
+      ]
+    }
+  ],
+  "unallocated": {
+    "untagged": {
+      "USD": 8505.0,
+      "EUR": 125.0
+    },
+    "unknown_tag": {},
+    "by_scope": [
+      {
+        "source": "azure",
+        "scope": "11111111-2222-4333-8444-555555555555",
+        "group": "aks-prod-nodes",
+        "cost": {
+          "USD": 2326.9
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "11111111-2222-4333-8444-555555555555",
+        "group": "analytics-db-rg",
+        "cost": {
+          "USD": 1254.0
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "11111111-2222-4333-8444-555555555555",
+        "group": "LEGACY-VMS-RG",
+        "cost": {
+          "USD": 867.7
+        }
+      },
+      {
+        "source": "mongodb-atlas",
+        "scope": "atlas-org-main",
+        "group": "sandbox",
+        "cost": {
+          "EUR": 125.0
+        }
+      }
+    ]
+  }
+}

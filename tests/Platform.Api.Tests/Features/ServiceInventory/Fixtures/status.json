@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "catalog_version": 5,
+  "generated_at": "2026-11-20T13:28:32.314Z",
+  "services": [
+    {
+      "id": "ledger-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-11-20T13:28:32.314Z",
+        "repo": {
+          "status": "unknown",
+          "detail": "not observed in this run",
+          "checks": {
+            "exists": "unknown",
+            "component_file": true,
+            "codeowners": "unknown",
+            "branch_protection": "unknown"
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-11-20T13:28:32.314Z",
+          "checks": {
+            "component_file": true
+          }
+        },
+        "namespace": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "identity": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "contract": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "resources": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "dev_deploy": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        }
+      },
+      "freshness": {}
+    },
+    {
+      "id": "order-router",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-11-20T13:28:32.314Z",
+        "repo": {
+          "status": "unknown",
+          "detail": "not observed in this run",
+          "checks": {
+            "exists": "unknown",
+            "component_file": true,
+            "codeowners": "unknown",
+            "branch_protection": "unknown"
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-11-20T13:28:32.314Z",
+          "checks": {
+            "component_file": true
+          }
+        },
+        "namespace": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "identity": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "contract": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "resources": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        },
+        "dev_deploy": {
+          "status": "unknown",
+          "detail": "not observed yet"
+        }
+      },
+      "freshness": {}
+    }
+  ],
+  "azure": {
+    "observed_at": "2026-11-20T13:28:32.314Z",
+    "subscriptions": [
+      "11111111-2222-4333-8444-555555555555",
+      "66666666-7777-4888-9999-000000000000"
+    ],
+    "services": [],
+    "shared": [
+      {
+        "id": "shared-postgres",
+        "state": "ok",
+        "resources": [
+          {
+            "id": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/shared-data-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-prod",
+            "type": "microsoft.dbforpostgresql/flexibleservers",
+            "env": "prod",
+            "databases": [
+              {
+                "name": "order-router",
+                "state": "linked",
+                "owner": "order-router"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "bindings": [
+      {
+        "service": "order-router",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "order-router",
+        "server": "shared-postgres",
+        "state": "present",
+        "resource": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/shared-data-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-prod"
+      },
+      {
+        "service": "order-router",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "order-router",
+        "server": "shared-postgres",
+        "state": "present",
+        "resource": "/subscriptions/11111111-2222-4333-8444-555555555555/resourceGroups/shared-data-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-prod"
+      }
+    ],
+    "unknown_tags": [],
+    "untagged": [
+      {
+        "subscription": "11111111-2222-4333-8444-555555555555",
+        "resource_group": "demo-bot-rg",
+        "count": 8
+      },
+      {
+        "subscription": "11111111-2222-4333-8444-555555555555",
+        "resource_group": "ai-webhook-a_managed",
+        "count": 1
+      },
+      {
+        "subscription": "11111111-2222-4333-8444-555555555555",
+        "resource_group": "ai-webhook-b_managed",
+        "count": 1
+      }
+    ]
+  },
+  "discovered": [
+    {
+      "id": "example-service",
+      "name": "Example.Service",
+      "normalised_from": "Example.Service",
+      "evidence": [
+        {
+          "source": "release-repo",
+          "env": "prod",
+          "path": "prod/Example.Service"
+        }
+      ],
+      "product_hint": "storefront",
+      "repo_hint": "https://github.com/example-org/example-service",
+      "first_seen_at": "2026-11-20T10:00:00.000Z",
+      "last_seen_at": "2026-11-20T13:30:00.000Z"
+    }
+  ]
+}

@@ -21,6 +21,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Fictional files with the shape of the published service inventory artifacts. -->
+    <None Include="Features\ServiceInventory\Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Platform.Api\Platform.Api.csproj" />
   </ItemGroup>
 

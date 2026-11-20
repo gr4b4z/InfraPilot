@@ -30,4 +30,6 @@ public static class FeatureFlagKeys
     public const string Approvals = "features.approvals";
     public const string ReleaseNotes = "features.releaseNotes";
     public const string Analytics = "features.analytics";
+    /// <summary>The service inventory (ADR-0004). Off by default until its pages exist.</summary>
+    public const string ServiceInventory = "features.serviceInventory";
 }
