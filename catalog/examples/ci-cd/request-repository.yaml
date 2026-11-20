@@ -126,7 +126,7 @@ executor:
     - { label: "Business justification",          value: "{{justification}}" }
     - { label: "Jira key",                        value: "{{jira_key}}" }
   # The issue author is the portal's token; this records who actually asked.
-  comment: "Requested via InfraPortal by {{requester_name}} ({{requester_email}}). Portal request `{{request_id}}`."
+  comment: "Requested via InfraPortal by {{request.requester_name}} ({{request.requester_email}}). Portal request `{{request.id}}`."
   completion:
     closed_completed: Completed
     closed_not_planned: Failed

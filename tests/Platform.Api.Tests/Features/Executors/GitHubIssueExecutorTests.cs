@@ -40,7 +40,7 @@ public class GitHubIssueExecutorTests
         ]);
 
         Assert.Equal(
-            "### Repository name\n\nmpt-billing-service\n\n" +
+            "### Repository name\n\nmkp-billing-service\n\n" +
             "### Product (if applicable)\n\n_No response_\n\n" +
             "### Business justification\n\nLine one\nLine two",
             body);
@@ -120,7 +120,7 @@ public class GitHubIssueExecutorTests
         Assert.Equal("[Repo Request] mkp-billing-service", doc.RootElement.GetProperty("title").GetString());
         Assert.Equal(["repository-request"], doc.RootElement.GetProperty("labels").EnumerateArray().Select(l => l.GetString()!).ToArray());
         Assert.Equal(
-            "### Repository name\n\nmpt-billing-service\n\n" +
+            "### Repository name\n\nmkp-billing-service\n\n" +
             "### Product (if applicable)\n\n_No response_\n\n" +
             "### Visibility\n\nInternal\n\n" +
             "### Register builds in InfraPortal?\n\nyes — publish registers the build in InfraPortal\n\n" +
@@ -183,7 +183,7 @@ public class GitHubIssueExecutorTests
         var request = NewRequest(inputs: new { name = "x" }, configure: e =>
         {
             e.Fields = [];
-            e.Body = "Please create {{name}} for {{requester_name}}";
+            e.Body = "Please create {{name}} for {{request.requester_name}}";
             e.Comment = null;
         });
         await _sut.Execute(request, CancellationToken.None);
@@ -345,7 +345,7 @@ public class GitHubIssueExecutorTests
                 new IssueFormField { Label = "Register builds in InfraPortal?", Value = "{{infraportal}}" },
                 new IssueFormField { Label = "Business justification", Value = "{{justification}}" },
             ],
-            Comment = "Requested via InfraPortal by {{requester_name}} ({{requester_email}}). Portal request `{{request_id}}`.",
+            Comment = "Requested via InfraPortal by {{request.requester_name}} ({{request.requester_email}}). Portal request `{{request.id}}`.",
             Completion = new IssueCompletionConfig { FailureCommentMarker = "validation failed" },
         };
         configure?.Invoke(executor);

@@ -1,8 +1,10 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Catalog.Models;
+using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Tests.Features.Catalog;
 
@@ -35,7 +37,7 @@ public class GitHubIssueExecutorYamlTests
                 - { label: "Repository name", value: "{{name}}" }
                 - label: Jira key
                   value: "{{jira_key}}"
-              comment: "Requested by {{requester_name}}"
+              comment: "Requested by {{request.requester_name}}"
               completion:
                 closed_completed: Completed
                 closed_not_planned: Failed
@@ -54,7 +56,7 @@ public class GitHubIssueExecutorYamlTests
         Assert.Collection(executor.Fields,
             f => { Assert.Equal("Repository name", f.Label); Assert.Equal("{{name}}", f.Value); },
             f => { Assert.Equal("Jira key", f.Label); Assert.Equal("{{jira_key}}", f.Value); });
-        Assert.Equal("Requested by {{requester_name}}", executor.Comment);
+        Assert.Equal("Requested by {{request.requester_name}}", executor.Comment);
         Assert.Equal("validation failed", executor.Completion!.FailureCommentMarker);
         Assert.Equal(72, executor.Completion.TimeoutHours);
     }
@@ -108,6 +110,37 @@ public class GitHubIssueExecutorYamlTests
             var placeholder = field.Value.Trim('{', '}');
             Assert.Contains(placeholder, inputIds);
         }
+    }
+
+    [Fact]
+    public void ValidateYaml_flags_unknown_request_variable_in_issue_templates()
+    {
+        using var db = new PlatformDbContext(new DbContextOptionsBuilder<PlatformDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var service = new CatalogService(db, _loader, Substitute.For<ILogger<CatalogService>>());
+
+        const string yaml = """
+            id: request-repository
+            name: Request Repository
+            category: ci-cd
+            inputs:
+              - { id: name, component: TextInput, label: Repository name, required: true }
+            executor:
+              type: github-issue
+              repository: acme/.github
+              title: "[Repo Request] {{name}}"
+              fields:
+                - { label: "Repository name", value: "{{name}}" }
+              comment: "Requested by {{request.requester}}"
+            """;
+
+        var result = service.ValidateYaml(yaml);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("{{request.requester}}") && e.Contains("{{request.requester_name}}"));
+
+        var fixedResult = service.ValidateYaml(yaml.Replace("{{request.requester}}", "{{request.requester_name}}"));
+        Assert.True(fixedResult.IsValid, string.Join("; ", fixedResult.Errors));
     }
 
     private static string FindRepoFile(string relative)

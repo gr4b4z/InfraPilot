@@ -20,7 +20,7 @@ public class GitHubIssueExecutor : IExecutor
 
     private const int ErrorExcerptLength = 500;
 
-    private static readonly Regex Placeholder = new(@"\{\{(\w+)\}\}", RegexOptions.Compiled);
+    private static readonly Regex Placeholder = new(@"\{\{([\w.]+)\}\}", RegexOptions.Compiled);
 
     private readonly GitHubClient _github;
     private readonly ILogger<GitHubIssueExecutor> _logger;
@@ -216,7 +216,9 @@ public class GitHubIssueExecutor : IExecutor
     /// <summary>
     /// Fills {{placeholders}} from request inputs, rendering each as an issue form would show it
     /// (option labels, not ids). Inputs that are absent (hidden by visible_when, never filled)
-    /// resolve to an empty string so the section renders as <c>_No response_</c>.
+    /// resolve to an empty string so the section renders as <c>_No response_</c>. The
+    /// <c>{{request.*}}</c> variables are the same ones <see cref="ExecutorTemplate"/> gives every
+    /// executor's parameters_map, so a catalog author learns one vocabulary.
     /// </summary>
     internal static string ResolveTemplate(
         string template,
@@ -227,17 +229,15 @@ public class GitHubIssueExecutor : IExecutor
         return Placeholder.Replace(template, match =>
         {
             var name = match.Groups[1].Value;
-            switch (name)
-            {
-                case "requester_name": return request.RequesterName;
-                case "requester_email": return request.RequesterEmail;
-                case "request_id": return request.Id.ToString();
-            }
+            if (name.StartsWith(ExecutorTemplate.RequestPrefix, StringComparison.Ordinal))
+                return ExecutorTemplate.Resolve(match.Value, NoInputs, request);
 
             var input = catalogInputs.FirstOrDefault(i => i.Id == name);
             return IssueFormBodyRenderer.DisplayValue(input, inputs.GetValueOrDefault(name));
         });
     }
+
+    private static readonly Dictionary<string, string> NoInputs = [];
 
     private static string NormalizeStatus(string? configured)
         => string.Equals(configured, "Failed", StringComparison.OrdinalIgnoreCase) ? "Failed" : "Completed";
