@@ -10,8 +10,10 @@
 
       1. The version manifest each environment publishes as a public blob:
 
-             staging     https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json
-             production  https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json
+             staging     -StagingManifestUrl,    or $env:STAGING_MANIFEST_URL
+             production  -ProductionManifestUrl, or $env:PRODUCTION_MANIFEST_URL
+
+         Neither has a default: the script only reads a manifest from a location you name.
 
          Both have the same shape — a flat `components` map of service → version:
 
@@ -84,7 +86,9 @@
 
 .PARAMETER StagingManifestUrl
 .PARAMETER ProductionManifestUrl
-    Override the manifest locations. A path to a saved copy on disk works as well as a URL.
+    Where each environment's manifest lives. Required for the environments -Target selects; they
+    default to $env:STAGING_MANIFEST_URL and $env:PRODUCTION_MANIFEST_URL. A path to a saved copy on
+    disk works as well as a URL.
 
 .PARAMETER StagingCluster
 .PARAMETER ProductionCluster
@@ -102,7 +106,8 @@
 .EXAMPLE
     .\scripts\sync-mpt-versions.ps1 -WhatIf
 
-    Dry run with DEPLOYMENTS_URL / DEPLOYMENTS_API_KEY from the environment: reads both manifests,
+    Dry run with DEPLOYMENTS_URL / DEPLOYMENTS_API_KEY and the two manifest URLs from the
+    environment: reads both manifests,
     both clusters and InfraPortal, prints every entry it would record, writes nothing.
 
 .EXAMPLE
@@ -126,8 +131,8 @@ param(
     [string]$Note,
     [string[]]$Service,
     [switch]$NoClusterCheck,
-    [string]$StagingManifestUrl = 'https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json',
-    [string]$ProductionManifestUrl = 'https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json',
+    [string]$StagingManifestUrl = $env:STAGING_MANIFEST_URL,
+    [string]$ProductionManifestUrl = $env:PRODUCTION_MANIFEST_URL,
     [string]$StagingCluster = 'mpt-staging-r1-aks',
     [string]$ProductionCluster = 'mpt-prod-r1-aks',
     [string]$ClusterNamespace = 'mp-platform',
@@ -506,6 +511,13 @@ function Sync-Environment {
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────────────────────
+
+if (($Target -in 'staging', 'all') -and [string]::IsNullOrWhiteSpace($StagingManifestUrl)) {
+    throw 'No staging manifest: pass -StagingManifestUrl or set STAGING_MANIFEST_URL.'
+}
+if (($Target -in 'production', 'all') -and [string]::IsNullOrWhiteSpace($ProductionManifestUrl)) {
+    throw 'No production manifest: pass -ProductionManifestUrl or set PRODUCTION_MANIFEST_URL.'
+}
 
 $environments = @()
 if ($Target -in 'staging', 'all') {

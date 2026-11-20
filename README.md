@@ -110,8 +110,8 @@ demo dataset back.
 ```
 
 Catches InfraPortal up after an outage or a restore. Reads the version manifests MPT publishes for
-[staging](https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json) and
-[production](https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json), confirms
+staging and production (`-StagingManifestUrl` / `-ProductionManifestUrl`, or the
+`STAGING_MANIFEST_URL` / `PRODUCTION_MANIFEST_URL` environment variables; there are no defaults), confirms
 each version against the AKS cluster behind the environment (`mpt-staging-r1-aks`,
 `mpt-prod-r1-aks`), and records a manual deployment for every component whose version has moved
 forward. It never creates services, never records an older version, and never writes a version the
