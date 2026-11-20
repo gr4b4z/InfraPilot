@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure;
@@ -16,14 +17,20 @@ namespace Platform.Api.Features.Settings;
 /// fix is to delete the <c>qa</c> row, which costs nothing here: roles are resolved on read (see
 /// <see cref="RoleAliasMap"/>), so there is no history to move.</para>
 ///
-/// <para>Redundancy is not an error: blank aliases, an alias equal to its own role, repeats, and
-/// blank or repeated groups are dropped quietly.</para>
+/// <para>Redundancy is not an error: blank aliases, an alias equal to its own role, repeats, blank
+/// or repeated groups, and blank or repeated team members are dropped quietly. A team member whose
+/// address isn't one is refused — they could never be assigned.</para>
 /// </summary>
 public static class RoleConfigValidator
 {
+    // The same loose shape the manual-assignment endpoints check: an "@" with something either side.
+    private static readonly Regex EmailShape = new(
+        @"^[^\s@]+@[^\s@]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     /// <summary>
     /// One role row as it should be stored: trimmed key and label, aliases canonicalised to
-    /// lower-kebab (the form every comparison uses), groups trimmed with a name defaulting to the id.
+    /// lower-kebab (the form every comparison uses), groups trimmed with a name defaulting to the id,
+    /// team members trimmed with a name defaulting to the email.
     /// </summary>
     public static RoleConfigDto Clean(RoleConfigDto role)
     {
@@ -32,7 +39,26 @@ public static class RoleConfigValidator
             key,
             (role.DisplayName ?? "").Trim(),
             CleanAliases(key, role.Aliases),
-            CleanGroups(role.AssigneeGroups));
+            CleanGroups(role.AssigneeGroups),
+            CleanTeam(role.Team));
+    }
+
+    /// <summary>
+    /// Team members with a non-blank email, deduped on email (case-insensitive, first wins). Order is
+    /// the admin's.
+    /// </summary>
+    public static List<RoleTeamMemberDto> CleanTeam(IEnumerable<RoleTeamMemberDto>? team)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cleaned = new List<RoleTeamMemberDto>();
+        foreach (var m in team ?? [])
+        {
+            var email = (m?.Email ?? "").Trim();
+            if (email.Length == 0 || !seen.Add(email)) continue;
+            var name = (m!.DisplayName ?? "").Trim();
+            cleaned.Add(new RoleTeamMemberDto(email, name.Length > 0 ? name : email));
+        }
+        return cleaned;
     }
 
     /// <summary>
@@ -109,6 +135,15 @@ public static class RoleConfigValidator
                 }
 
                 aliasOwners[name] = key;
+            }
+
+            foreach (var member in role.Team ?? [])
+            {
+                if (!EmailShape.IsMatch(member.Email ?? ""))
+                {
+                    errors.Add($"'{member.Email}' on the '{key}' team isn't an email address. "
+                             + "Pick the person from the directory, or enter their full address.");
+                }
             }
         }
 

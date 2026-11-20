@@ -42,6 +42,14 @@ export interface RoleConfig {
   /** Directory groups the assignment picker narrows this role to — anyone in any of them. Empty
    *  means the whole directory. */
   assigneeGroups?: { id: string; name: string }[] | null;
+  /** The people who usually take this role (the QA team for `qa-owner`). Offered first by every
+   *  assignment picker for the role, and always listed in the work-items "Assigned to" filter. */
+  team?: RoleTeamMember[] | null;
+}
+
+export interface RoleTeamMember {
+  email: string;
+  displayName: string;
 }
 
 export interface ActivityTemplateLine {

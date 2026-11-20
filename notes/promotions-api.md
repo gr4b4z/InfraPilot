@@ -580,6 +580,11 @@ Each configured role may also carry:
 - **`assigneeGroups`** — `[{ id, name }]` directory groups; the person search for the role
   (`users/search?role=`) only returns their members (Graph transitive membership; locally, users whose
   roles include the group). A picker filter, not a write gate.
+- **`team`** — `[{ email, displayName }]` the people who usually take the role (the QA team for
+  `qa-owner`). Presentation only: the web pickers offer them first for the role (even when they are
+  outside `assigneeGroups`), and the work-items queue's **Assigned to** filter always lists them. Trimmed
+  and deduped on email (case-insensitive), the name defaulting to the email; a member whose email isn't
+  `x@y` shaped is a `400`.
 
 ---
 
