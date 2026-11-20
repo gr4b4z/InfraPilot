@@ -30,6 +30,7 @@ import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
 import { EnvBadge, EnvLabel } from '@/components/environments/EnvBadge';
 import { DeployArtifactDialog } from '@/components/artifacts/DeployArtifactDialog';
 import { ReleaseTimeline } from './ReleaseTimeline';
+import { ServiceInventorySection } from '@/app/service-inventory/ServiceInventorySection';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import type {
@@ -269,6 +270,9 @@ export function ServiceDetailPage() {
           ))}
         </KeyboardList>
       </section>
+
+      {/* PROTOTYPE — service inventory: owner, where it runs, databases, resources, cost. */}
+      {product && service && <ServiceInventorySection product={product} service={service} />}
 
       {/* ── Release timeline ── when versions landed where, on one shared time axis. Renders
          nothing until its own history fetch returns, so the page never blocks on it. */}

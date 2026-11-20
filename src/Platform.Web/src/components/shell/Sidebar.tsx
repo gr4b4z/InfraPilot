@@ -23,6 +23,8 @@ import {
   Package,
   ScrollText,
   Undo2,
+  Coins,
+  PieChart,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
@@ -111,6 +113,14 @@ const navGroups: NavGroup[] = [
       { to: '/analytics/delivery', label: 'Delivery metrics', icon: Gauge, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
       { to: '/artifacts', label: 'Artifacts', icon: Package },
+    ],
+  },
+  {
+    // PROTOTYPE — the service inventory: ownership, resources and cost read from published artifacts.
+    label: 'Service inventory',
+    items: [
+      { to: '/inventory/cost', label: 'Service cost', icon: Coins },
+      { to: '/inventory/coverage', label: 'Cost coverage', icon: PieChart },
     ],
   },
   {

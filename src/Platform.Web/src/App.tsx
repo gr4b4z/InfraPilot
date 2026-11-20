@@ -54,6 +54,9 @@ import { FeatureRoute } from '@/components/auth/FeatureRoute';
 import { QaRoute } from '@/components/auth/QaRoute';
 import { FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
+// PROTOTYPE — service inventory views on static fixtures (throwaway branch).
+import { InventoryCostPage } from './app/service-inventory/InventoryCostPage';
+import { InventoryCoveragePage } from './app/service-inventory/InventoryCoveragePage';
 
 /** `/builds?product=x` → `/artifacts?product=x`. See the route it serves. */
 function LegacyBuildsRedirect() {
@@ -112,6 +115,9 @@ function App() {
               per-deploy list keeps living under /history as a sub-page of it. */}
           <Route path="/deployments/:product/:service" element={<ServiceDetailPage />} />
           <Route path="/deployments/:product/:service/history" element={<DeploymentHistoryPage />} />
+          {/* PROTOTYPE — service inventory. */}
+          <Route path="/inventory/cost" element={<InventoryCostPage />} />
+          <Route path="/inventory/coverage" element={<InventoryCoveragePage />} />
           <Route path="/analytics" element={<FeatureRoute flag={FeatureFlag.Analytics}><AnalyticsPage /></FeatureRoute>} />
           <Route path="/analytics/delivery" element={<FeatureRoute flag={FeatureFlag.Analytics}><DeliveryMetricsPage /></FeatureRoute>} />
           <Route path="/promotions" element={<FeatureRoute flag={FeatureFlag.Promotions}><PromotionsPage /></FeatureRoute>} />

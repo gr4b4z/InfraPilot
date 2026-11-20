@@ -1,0 +1,24 @@
+/* PROTOTYPE — the two cost series, validated for colour-vision deficiency in both modes.
+   Direct is the portal accent; shared is a teal that separates from it for every CVD type. */
+:root {
+  --series-direct: #5B49DE;
+  --series-shared: #1A9BA6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --series-direct: #8C80F5;
+    --series-shared: #1F9AA4;
+  }
+}
+.dark {
+  --series-direct: #8C80F5;
+  --series-shared: #1F9AA4;
+}
+.light {
+  --series-direct: #5B49DE;
+  --series-shared: #1A9BA6;
+}
+
+/* The month to date: same colours, drawn hatched so "incomplete" never depends on colour alone. */
+.inv-incomplete-direct { fill: url(#inv-hatch-direct); }
+.inv-incomplete-shared { fill: url(#inv-hatch-shared); }
