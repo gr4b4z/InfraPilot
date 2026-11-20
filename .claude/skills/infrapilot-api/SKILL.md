@@ -57,6 +57,8 @@ The InfraPilot repo's `.mcp.json` does the same from the environment. Design and
 | Builds and where they went | `list_builds`, `get_build` (`promotableTo`) |
 | How do the pipelines behave? | `search_knowledge` — answer from it, with its as-of date |
 | Cadence, failure rate, lead time | `get_deployment_frequency`, `get_lead_time` (quote `definition` / `coverage`) |
+| Someone's exact email | `find_people` (`role` limits it to who that role's picker offers) |
+| Participant roles, a role's team | `list_participant_roles`; change one with `update_participant_role` (admin) |
 
 ### Triage recipes
 
@@ -76,7 +78,8 @@ The InfraPilot repo's `.mcp.json` does the same from the environment. Design and
 ### Write tools — only when the user asked for that action
 
 `add_promotion_comment`, `add_work_item_comment`, `set/remove_promotion_participant`,
-`promote_build` and `create_promotion` change shared state that everyone in the portal sees. Never
+`update_participant_role`, `promote_build` and `create_promotion` change shared state that everyone in
+the portal sees. Never
 call them while investigating or reviewing. No tool approves, rejects or signs off. A standard
 personal token gets `403` on those routes over REST too; a QA token may sign off work items and an
 Admin token may approve and reject over REST — do that only when the user asked for that decision.
@@ -114,7 +117,8 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
 ## Auth model and limits
 
 - The API key authenticates **both writes and all standard reads** (deployments, promotions,
-  builds, work-items, analytics, release notes). No bearer token needed.
+  builds, work-items, analytics, release notes, settings, feature flags, `/api/me`). No bearer token
+  needed. Only `/api/me/tokens` (minting and revoking tokens) is a signed-in session alone.
 - Two kinds of key go in `X-Api-Key`: **configured keys** (pipeline keys in `Deployments:ApiKeys`,
   added by a deployment) and **personal access tokens** (`ipt_…`), which any user mints for
   themselves on the portal's **Agent access** page (`/me/agent-access`, user menu). A personal token
@@ -278,6 +282,20 @@ the release), `PUT /api/releases/{id}/services` (`{ excluded: ["product/service"
 (with release `links`), `PATCH /api/releases/{id}/steps/{stepId}` (status, dates, note, `links`;
 backdating is allowed), and `POST /api/releases/{id}/complete|cancel|reopen`. See
 `notes/releases-api.md`.
+
+## Settings
+
+`GET /api/settings` returns the shared portal settings: environments (labels, aliases, retired),
+participant roles, the activity template and analytics knobs. Any key can read it. Writes need the
+admin role:
+
+- `PATCH /api/settings/roles/{key}` `{ displayName?, aliases?, assigneeGroups?, team? }` changes
+  **one** participant role and leaves everything else as stored. A field left out is kept, `[]` clears
+  it, and `team` is the whole team (`[{ email, displayName }]`). The key may be an alias. `404` lists
+  the configured roles; `400` for a team member whose email isn't one. Returns the saved role. Look the
+  people up first (`GET /api/promotions/users/search?q=` or `find_people`).
+- `PUT /api/settings` replaces the **whole** row. Send back everything `GET` returned, or what you
+  left out is wiped. Prefer the PATCH for roles.
 
 ## Error handling
 
