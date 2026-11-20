@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Platform.Api.Features.ServiceInventory;
@@ -187,6 +188,58 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
     }
 
     [Fact]
+    public async Task Cost_is_projected_from_the_stored_file_when_its_rows_were_pruned_mid_request()
+    {
+        Guid snapshot;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            snapshot = (await db.InventoryFeeds.SingleAsync(f => f.FeedKey == "cost:2026-10")).CurrentSnapshotId!.Value;
+            db.InventoryCostServices.RemoveRange(db.InventoryCostServices.Where(r => r.SnapshotId == snapshot));
+            await db.SaveChangesAsync();
+        }
+        try
+        {
+            var body = await Json(await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost?period=2026-10"));
+
+            var amounts = body.GetProperty("amounts").EnumerateArray().ToList();
+            Assert.Equal(["EUR", "USD"], amounts.Select(a => a.GetProperty("currency").GetString()));
+            Assert.Equal(195.90m, amounts[1].GetProperty("total").GetDecimal());
+        }
+        finally
+        {
+            // Put the rows back through the admin rebuild, which also runs the rebuild path end to end.
+            var rebuild = await _factory.CreateAdminClient().PostAsync("/api/service-inventory/rebuild", null);
+            Assert.Equal(HttpStatusCode.OK, rebuild.StatusCode);
+            using var scope = _factory.Services.CreateScope();
+            Assert.True(await scope.ServiceProvider.GetRequiredService<PlatformDbContext>()
+                .InventoryCostServices.AnyAsync(r => r.SnapshotId == snapshot));
+        }
+    }
+
+    [Fact]
+    public async Task A_second_deploy_product_next_to_the_catalogs_still_counts_as_differing()
+    {
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            foreach (var product in new[] { "storefront", "payments" })
+                db.DeployEvents.Add(new Platform.Api.Features.Deployments.Models.DeployEvent
+                {
+                    Id = Guid.NewGuid(), Product = product, Service = "order-router", Environment = "dev",
+                    Version = "1.0.0", Source = "test", DeployedAt = DateTimeOffset.UtcNow,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await Json(await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router"));
+
+        var portal = body.GetProperty("portal");
+        Assert.Equal(["payments", "storefront"], portal.GetProperty("products").EnumerateArray().Select(p => p.GetString()));
+        Assert.True(portal.GetProperty("productDiffers").GetBoolean());
+    }
+
+    [Fact]
     public async Task A_month_that_was_never_read_is_404()
     {
         var response = await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost?period=2020-01");
@@ -339,6 +392,33 @@ public class ServiceInventoryAtomicityTests
         Assert.Contains("could not be stored", row.LastError);
         Assert.Equal(1, row.ConsecutiveFailures);
         Assert.Equal(0, await db.InventorySnapshots.CountAsync());
+    }
+
+    /// <summary>
+    /// Production runs EnableRetryOnFailure on both engines; a strategy like it refuses a transaction
+    /// opened outside it. SQLite has none, so this one stands in for it.
+    /// </summary>
+    private sealed class RetryingStrategy(ExecutionStrategyDependencies dependencies)
+        : ExecutionStrategy(dependencies, maxRetryCount: 3, maxRetryDelay: TimeSpan.FromMilliseconds(1))
+    {
+        protected override bool ShouldRetryOn(Exception exception) => false;
+    }
+
+    [Fact]
+    public async Task Rebuild_works_under_a_retrying_execution_strategy()
+    {
+        await using var connection = TestDatabase.Open();
+        await using var db = new SqliteTestDbContext(new DbContextOptionsBuilder<SqliteTestDbContext>()
+            .UseSqlite(connection, o => o.ExecutionStrategy(d => new RetryingStrategy(d))).Options);
+        var refresher = new InventoryRefresher(db, new SingleSource(new FixtureSource(_ => FixtureSource.File("cost-2026-10.json", "v1"))),
+            TimeProvider.System, NullLogger<InventoryRefresher>.Instance);
+        await refresher.RefreshAsync(new InventoryFeedOptions { Name = "cost", Type = "cost", Source = new() { Kind = "https" } }, default);
+        var rows = await db.InventoryCostServices.CountAsync();
+
+        var rebuilt = await refresher.RebuildAsync(force: true, default);
+
+        Assert.Equal(1, rebuilt);
+        Assert.Equal(rows, await db.InventoryCostServices.CountAsync());
     }
 
     private sealed class SingleSource(IArtifactSource source) : IArtifactSourceFactory

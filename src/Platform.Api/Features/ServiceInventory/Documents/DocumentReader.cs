@@ -87,6 +87,7 @@ public static partial class DocumentReader
 
     private static ReadResult ReadCatalog(byte[] content, int schemaVersion)
     {
+        if (MissingArray(content, "services") is { } missing) return ReadResult.Rejected(missing, schemaVersion);
         var doc = JsonSerializer.Deserialize<CatalogDocument>(content, Json)!;
         if (HasNull(doc.Services) || HasNull(doc.Teams) || HasNull(doc.Products) || HasNull(doc.Shared))
             return ReadResult.Rejected("a list holds a null entry", schemaVersion);
@@ -105,6 +106,7 @@ public static partial class DocumentReader
 
     private static ReadResult ReadStatus(byte[] content, int schemaVersion)
     {
+        if (MissingArray(content, "services") is { } missing) return ReadResult.Rejected(missing, schemaVersion);
         var doc = JsonSerializer.Deserialize<StatusDocument>(content, Json)!;
         if (doc.GeneratedAt is null) return ReadResult.Rejected("the file has no generated_at", schemaVersion);
         var azure = doc.Azure;
@@ -139,6 +141,19 @@ public static partial class DocumentReader
         if (AllMoney(doc).SelectMany(m => m.Keys).FirstOrDefault(k => !CurrencyCode().IsMatch(k)) is { } bad)
             return ReadResult.Rejected($"'{Clip(bad)}' is not a currency code", schemaVersion);
         return new ReadResult(doc, null, schemaVersion, doc.Period, doc.CatalogVersion, doc.GeneratedAt, doc.Complete);
+    }
+
+    /// <summary>
+    /// A field the file must carry. The models default a missing list to empty, so without this a file
+    /// without <c>services</c> would replace the last good copy with an empty inventory. An explicit
+    /// <c>[]</c> is accepted.
+    /// </summary>
+    private static string? MissingArray(byte[] content, string field)
+    {
+        using var raw = JsonDocument.Parse(content);
+        return raw.RootElement.TryGetProperty(field, out var value) && value.ValueKind == JsonValueKind.Array
+            ? null
+            : $"the file has no {field} list";
     }
 
     /// <summary>Nullable annotations do not cover list elements: <c>[null]</c> is checked here.</summary>

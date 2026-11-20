@@ -39,6 +39,19 @@ public class DocumentHardeningTests
         Assert.False(DocumentReader.Read("cost", Edit("cost-2026-11.json", n => n["services"]!.AsArray().Add(null))).Ok);
     }
 
+    [Theory]
+    [InlineData("catalog", "catalog.json")]
+    [InlineData("status", "status.json")]
+    public void A_file_without_services_is_rejected_but_an_empty_list_is_accepted(string type, string fixture)
+    {
+        var missing = DocumentReader.Read(type, Edit(fixture, n => n.AsObject().Remove("services")));
+        var empty = DocumentReader.Read(type, Edit(fixture, n => n["services"] = new JsonArray()));
+
+        Assert.False(missing.Ok);
+        Assert.Contains("no services list", missing.Error);
+        Assert.True(empty.Ok, empty.Error);
+    }
+
     [Fact]
     public void A_null_service_id_is_rejected()
     {
@@ -179,6 +192,73 @@ public class OutboundHardeningTests
         var result = await source.FetchIfChangedAsync(null, default);
 
         Assert.Equal("sha256:get", result.Version);
+    }
+
+    private static OciArtifactSource Plain(RecordingHandler handler, string repository = "service-catalog/catalog", string file = "catalog.json") =>
+        new(Http.Client(handler, Http.Options(Registry, "auth.example.com")), new OciTokenCache(), TimeProvider.System,
+            Registry, repository, "latest", file, new InventoryCredentialOptions { Kind = "basic", Username = "u", Password = "p" },
+            "auth.example.com");
+
+    private static HttpResponseMessage Challenge()
+    {
+        var challenge = Http.Status(HttpStatusCode.Unauthorized);
+        challenge.Headers.WwwAuthenticate.ParseAdd($"Bearer realm=\"https://auth.example.com/token\",service=\"{Registry}\"");
+        return challenge;
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("[1, 2]")]
+    [InlineData("{\"tags\": 5}")]
+    public async Task A_malformed_tag_list_is_a_fetch_error(string body)
+    {
+        var handler = new RecordingHandler(_ => Http.Json(body));
+
+        await Assert.ThrowsAsync<InventoryFetchException>(() => Plain(handler, "service-cost/allocation", "cost.json")
+            .ListClosedMonthsAsync("2026-01", new HashSet<string>(), new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero), default));
+    }
+
+    [Theory]
+    [InlineData("{\"layers\":[{\"digest\":\"sha256:x\",\"annotations\":{\"org.opencontainers.image.title\":7}}]}")]
+    [InlineData("{\"layers\":[7]}")]
+    [InlineData("[]")]
+    public async Task A_manifest_of_the_wrong_shape_is_a_fetch_error(string manifest)
+    {
+        var handler = new RecordingHandler(r =>
+        {
+            var response = r.Method == HttpMethod.Head ? Http.Status(HttpStatusCode.OK) : Http.Json(manifest, "application/vnd.oci.image.manifest.v1+json");
+            response.Headers.Add("Docker-Content-Digest", "sha256:new");
+            return response;
+        });
+
+        await Assert.ThrowsAsync<InventoryFetchException>(() => Plain(handler).FetchIfChangedAsync(null, default));
+    }
+
+    [Theory]
+    [InlineData("{\"access_token\":123}")]
+    [InlineData("[\"token\"]")]
+    public async Task A_token_response_of_the_wrong_shape_is_a_fetch_error(string tokenBody)
+    {
+        var handler = new RecordingHandler(r => r.RequestUri!.Host == "auth.example.com" ? Http.Json(tokenBody) : Challenge());
+
+        var ex = await Assert.ThrowsAsync<InventoryFetchException>(() => Plain(handler).FetchIfChangedAsync(null, default));
+        Assert.Contains("returned no token", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_string_expiry_falls_back_to_a_default_lifetime_instead_of_failing()
+    {
+        var handler = new RecordingHandler(r =>
+        {
+            if (r.RequestUri!.Host == "auth.example.com") return Http.Json("{\"access_token\":\"t\",\"expires_in\":\"soon\"}");
+            if (r.Headers.Authorization?.Parameter != "t") return Challenge();
+            var ok = Http.Status(HttpStatusCode.OK);
+            ok.Headers.Add("Docker-Content-Digest", "sha256:same");
+            return ok;
+        });
+
+        var result = await Plain(handler).FetchIfChangedAsync("sha256:same", default);
+        Assert.False(result.Changed);
     }
 
     [Fact]

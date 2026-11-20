@@ -127,10 +127,23 @@ public partial class OciArtifactSource : IArtifactSource
         {
             var current = next;
             var response = await SendAsync(HttpMethod.Get, current, expectJson: true, ct: ct);
-            using (var doc = JsonDocument.Parse(response.Body))
+            try
             {
-                if (doc.RootElement.TryGetProperty("tags", out var list) && list.ValueKind == JsonValueKind.Array)
-                    tags.AddRange(list.EnumerateArray().Select(t => t.GetString()).OfType<string>());
+                using var doc = JsonDocument.Parse(response.Body);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                    throw new InventoryFetchException($"{Location}: the tag list is not a JSON object.");
+                // "tags" may be null for a repository without tags; anything else that isn't a list of
+                // strings is not a tag list.
+                if (doc.RootElement.TryGetProperty("tags", out var list) && list.ValueKind != JsonValueKind.Null)
+                {
+                    if (list.ValueKind != JsonValueKind.Array)
+                        throw new InventoryFetchException($"{Location}: the tag list has no list of tags.");
+                    tags.AddRange(list.EnumerateArray().Select(Str).OfType<string>());
+                }
+            }
+            catch (JsonException)
+            {
+                throw new InventoryFetchException($"{Location}: the tag list is not valid JSON.");
             }
             var link = response.Header("Link");
             var match = link is null ? null : NextLink().Match(link);
@@ -156,16 +169,20 @@ public partial class OciArtifactSource : IArtifactSource
         try
         {
             using var doc = JsonDocument.Parse(manifest);
-            if (doc.RootElement.TryGetProperty("layers", out var layers) && layers.ValueKind == JsonValueKind.Array)
+            // Every value's kind is checked before it is read: a manifest of the wrong shape is a failed
+            // fetch, recorded like any other, never an exception the refresher does not expect.
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("layers", out var layers) && layers.ValueKind == JsonValueKind.Array)
             {
                 foreach (var layer in layers.EnumerateArray())
                 {
-                    if (layer.TryGetProperty("annotations", out var annotations)
+                    if (layer.ValueKind == JsonValueKind.Object
+                        && layer.TryGetProperty("annotations", out var annotations)
                         && annotations.ValueKind == JsonValueKind.Object
                         && annotations.TryGetProperty("org.opencontainers.image.title", out var title)
-                        && title.GetString() == _file
+                        && Str(title) == _file
                         && layer.TryGetProperty("digest", out var digest)
-                        && digest.GetString() is { } value
+                        && Str(digest) is { } value
                         && value.StartsWith("sha256:", StringComparison.Ordinal))
                         return value;
                 }
@@ -179,6 +196,9 @@ public partial class OciArtifactSource : IArtifactSource
     }
 
     private string TokenKey => $"{_registry}|{_repository}";
+
+    /// <summary>The string, or null for any other kind of value (GetString would throw).</summary>
+    private static string? Str(JsonElement e) => e.ValueKind == JsonValueKind.String ? e.GetString() : null;
 
     private async Task<InventoryResponse> SendAsync(
         HttpMethod method, Uri uri, string? accept = null, bool expectJson = false,
@@ -240,10 +260,13 @@ public partial class OciArtifactSource : IArtifactSource
         {
             using var doc = JsonDocument.Parse(response.Body);
             var root = doc.RootElement;
-            var token = (root.TryGetProperty("access_token", out var a) ? a.GetString() : null)
-                        ?? (root.TryGetProperty("token", out var t) ? t.GetString() : null)
+            if (root.ValueKind != JsonValueKind.Object)
+                throw new InventoryFetchException($"{InventoryHttpClient.Describe(tokenUri)} returned no token.");
+            var token = (root.TryGetProperty("access_token", out var a) ? Str(a) : null)
+                        ?? (root.TryGetProperty("token", out var t) ? Str(t) : null)
                         ?? throw new InventoryFetchException($"{InventoryHttpClient.Describe(tokenUri)} returned no token.");
-            var lifetime = root.TryGetProperty("expires_in", out var e) && e.TryGetInt32(out var seconds) ? seconds : 300;
+            var lifetime = root.TryGetProperty("expires_in", out var e) && e.ValueKind == JsonValueKind.Number
+                           && e.TryGetInt32(out var seconds) ? seconds : 300;
             // Renew a little early so a token never expires between the check and the request.
             _tokens.Set(TokenKey, token, _clock.GetUtcNow().AddSeconds(Math.Max(30, lifetime - 30)));
             return token;

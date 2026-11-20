@@ -10,7 +10,10 @@ public static class ServiceInventoryRegistration
     public static IServiceCollection AddServiceInventory(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<ServiceInventoryOptions>(configuration.GetSection(ServiceInventoryOptions.SectionName));
-        services.AddHttpClient(InventoryHttpClient.ClientName)
+        services.AddHttpClient(InventoryHttpClient.ClientName,
+                // TimeoutSeconds is the only timeout: HttpClient's own 100 s default would otherwise
+                // cut a longer configured one short.
+                client => client.Timeout = Timeout.InfiniteTimeSpan)
             // Redirects are followed by InventoryHttpClient, which re-checks every hop and drops
             // credentials off their host; the handler must never follow one on its own.
             // No cookies either: a cookie set by one host could otherwise reach a sibling host and

@@ -88,8 +88,8 @@ public static class ServiceInventoryEndpoints
             portal = new
             {
                 products = portalProducts,
-                productDiffers = portalProducts.Count > 0
-                    && !portalProducts.Any(p => string.Equals(p, entry.Product, StringComparison.OrdinalIgnoreCase)),
+                // Any reported product other than the catalog's counts, also next to a matching one.
+                productDiffers = portalProducts.Any(p => !string.Equals(p, entry.Product, StringComparison.OrdinalIgnoreCase)),
             },
             catalogVersion = catalog.CatalogVersion,
             freshness,
@@ -174,6 +174,16 @@ public static class ServiceInventoryEndpoints
             .Where(r => r.SnapshotId == snapshotId && r.ServiceId == id)
             .Select(r => new { r.Currency, r.Direct, r.Shared, r.Total })
             .ToListAsync(ct);
+        if (amounts.Count == 0)
+        {
+            // A refresh can replace this month's snapshot, and retention remove the old one's rows,
+            // between reading the pointer and reading the rows. The rows are a pure projection of the
+            // stored file the document came from, so project them from it instead of answering empty.
+            amounts = InventoryProjector.Project(snapshotId, InventoryFeedTypes.Cost, month.Value.Document).CostServices
+                .Where(r => r.ServiceId == id)
+                .Select(r => new { r.Currency, r.Direct, r.Shared, r.Total })
+                .ToList();
+        }
         var line = month.Value.Document.Services.FirstOrDefault(s => s.Id.Trim().ToLowerInvariant() == id);
         if (line is null && amounts.Count == 0)
             return Results.NotFound(new { error = $"The cost of {period} has no service '{id}'.", freshness });

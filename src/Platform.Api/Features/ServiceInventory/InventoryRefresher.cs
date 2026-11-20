@@ -283,7 +283,7 @@ public class InventoryRefresher
     /// </summary>
     public async Task<int> RebuildAsync(bool force, CancellationToken ct)
     {
-        var feeds = await _db.InventoryFeeds
+        var feeds = await _db.InventoryFeeds.AsNoTracking()
             .Where(f => f.CurrentSnapshotId != null && (force || f.ProjectionVersion < InventoryProjector.Version))
             .ToListAsync(ct);
         var rebuilt = 0;
@@ -297,16 +297,25 @@ public class InventoryRefresher
                 _logger.LogWarning("Service inventory: snapshot {Id} can no longer be read: {Reason}", snapshot.Id, read.Error);
                 continue;
             }
-            var rows = InventoryProjector.Project(snapshot.Id, snapshot.FeedType, read.Document!);
-            // Delete, then insert the same keys: two saves, in one transaction where the provider
-            // has them, so a reader sees the old rows or the new ones.
-            await using var tx = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
-            await RemoveRowsAsync(snapshot.Id, ct);
-            await _db.SaveChangesAsync(ct);
-            AddRows(rows);
-            foreach (var feed in group) feed.ProjectionVersion = InventoryProjector.Version;
-            await _db.SaveChangesAsync(ct);
-            if (tx is not null) await tx.CommitAsync(ct);
+            var feedKeys = group.Select(f => f.FeedKey).ToList();
+            // Delete, then insert the same keys: two saves in one transaction, so a reader sees the old
+            // rows or the new ones. Production runs a retrying execution strategy, which refuses a
+            // transaction opened outside it: the whole unit goes through the strategy, from a clean
+            // change tracker on every attempt.
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                _db.ChangeTracker.Clear();
+                var rows = InventoryProjector.Project(snapshot.Id, snapshot.FeedType, read.Document!);
+                await using var tx = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
+                await RemoveRowsAsync(snapshot.Id, ct);
+                await _db.SaveChangesAsync(ct);
+                AddRows(rows);
+                foreach (var feed in await _db.InventoryFeeds.Where(f => feedKeys.Contains(f.FeedKey)).ToListAsync(ct))
+                    feed.ProjectionVersion = InventoryProjector.Version;
+                await _db.SaveChangesAsync(ct);
+                if (tx is not null) await tx.CommitAsync(ct);
+            });
             rebuilt++;
         }
         return rebuilt;
